@@ -55,5 +55,34 @@ protected:
     void _send_once(TensorBatch batch) override;
 
 public:
-    MuAttnDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels={});
+    MuAttnDispatcher(std::vector<int> layer_ids, 
+                     int device_id, 
+                     std::vector<Channel_t> channels={});
+};
+
+class MuExpertDispatcher: public MuDispatcher {
+protected:
+    void _send_once(TensorBatch batch) override;
+
+public:
+    MuExpertDispatcher(std::vector<int> layer_ids, 
+                       int device_id, 
+                       std::vector<Channel_t> channels={},
+                       std::vector<ChannelInfo> channel_infos={});
+};
+
+class MuPool: public MuHelper {
+protected:
+    bool is_attn;
+
+public:
+    MuPool(int device_id,
+           std::vector<Channel_t> channels,
+           bool is_attn = false);
+
+    void run() override;
+
+    void wait_for_new_requests();
+
+    std::vector<TensorBatch> fetch_largest_batch();
 };

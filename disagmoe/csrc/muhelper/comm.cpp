@@ -30,10 +30,10 @@ void NcclChannel::instantiate() {
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     // TODO(hogura|20240926): check if ncclGroupStart may influence the performance
     void* data = reinterpret_cast<void*>(data_ptr);
-    printf("sending %d\n", metadata.get_num_element());
+    printf("sending %d\n", metadata.num_element());
     NCCLCHECK(ncclSend(
         data, 
-        /*count=*/ metadata.get_num_element(),
+        /*count=*/ metadata.num_element(),
         /*datatype=*/ metadata.get_nccl_datatype(),
         this->other,
         this->comm,
@@ -43,10 +43,10 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
     void* data = reinterpret_cast<void*>(data_ptr);
-    printf("recving %d\n", metadata.get_num_element());
+    printf("recving %d\n", metadata.num_element());
     NCCLCHECK(ncclRecv(
         data,
-        /*count=*/ metadata.get_num_element(),
+        /*count=*/ metadata.num_element(),
         /*datatype=*/ metadata.get_nccl_datatype(),
         this->other,
         this->comm,
