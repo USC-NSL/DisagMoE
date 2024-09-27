@@ -29,8 +29,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("expert_ids", &ChannelInfo::expert_ids)
         .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
 
-    py::class_<Channel, PyChannel>(m, "Channel")
-        .def(py::init<int, int>());
+    py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
+
+    // py::class_<Channel, PyChannel, std::shared_ptr<PyChannel>>(m, "Channel")
+    //     .def(py::init<int, int>());
 
     // static function calls
     m.def("create_channel", &create_channel);
