@@ -1,7 +1,11 @@
 #pragma once
 
+#include <stdexcept>
 #include <cassert>
+#include <cstdlib>
 #include <memory>
+#include <thread>
+#include <vector>
 
 #include "cuda_runtime.h"
 #include "nccl.h"
@@ -38,11 +42,11 @@ public:
     NcclChannel(int party_local, int party_other, ncclUniqueId comm_id): Channel::Channel(party_local, party_other), comm_id(comm_id) 
         {
             CUDACHECK(cudaStreamCreate(&this->stream));
+            puts("Created a cuda stream");
         }
 
     ~NcclChannel() {
         CUDACHECK(cudaStreamDestroy(this->stream));
-        delete this->stream;
     }
 
     void instantiate() override {
@@ -77,3 +81,28 @@ public:
         ));
     }
 };
+
+static Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
+    ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
+    auto channel = std::make_shared<NcclChannel>(
+        party_local, party_other, id
+    );
+    return channel;
+}
+
+static void* get_nccl_unique_id() {
+    void* _data = std::malloc(sizeof(ncclUniqueId));
+    ncclGetUniqueId((ncclUniqueId*)_data);
+    return _data;
+}
+
+static void instantiate_channels(std::vector<Channel_t> channels) {
+    std::vector<std::thread> threads;
+    for (auto c: channels) {
+        threads.push_back(std::thread([&] {c->instantiate();}));
+    }
+    for (auto &t: threads) {
+        t.join();
+    }
+    puts("threads inited");
+}

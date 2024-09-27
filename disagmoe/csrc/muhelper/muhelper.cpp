@@ -17,9 +17,6 @@ void MuHelper::start() {
         [&](MuHelper* helper) { helper->run(); }, 
         this
     );
-    puts("threaded");
-    this->thread.detach();
-    puts("detach");
 }
 
 void MuHelper::terminate() {
@@ -36,7 +33,7 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 void MuDispatcher::run() {
     while (!this->end_flag) {
         std::unique_lock<std::mutex> lock(this->mtx);
-        this->cv.wait(lock);
+        this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
         auto batch = this->send_queue.front();
         this->send_queue.pop();
         this->_send_once(batch);

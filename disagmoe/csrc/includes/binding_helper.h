@@ -1,4 +1,7 @@
+#pragma once
+
 #include "muhelper.h"
+#include "comm.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -11,5 +14,21 @@ public:
 
     void run() override {
         PYBIND11_OVERRIDE_PURE(void, MuHelper, run);
+    }
+};
+
+class PyChannel: Channel {
+public:
+    using Channel::Channel;
+
+    void instantiate() override {
+        PYBIND11_OVERRIDE_PURE(void, Channel, instantiate);
+    }
+
+    void send(void* data, const Metadata& metadata) override {
+        PYBIND11_OVERRIDE_PURE(void, Channel, send);
+    }
+    void recv(void* data, const Metadata& metadata) override {
+        PYBIND11_OVERRIDE_PURE(void, Channel, recv);
     }
 };

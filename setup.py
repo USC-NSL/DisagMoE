@@ -1,5 +1,8 @@
 from setuptools import setup, Extension
 import pybind11
+import subprocess
+
+subprocess.run(["g++", "--version"])
 
 from pybind11.setup_helpers import build_ext, Pybind11Extension
 
@@ -9,9 +12,7 @@ CSRC_DIR = "disagmoe/csrc"
 
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
 CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "include"))
-CUDA_LIBRARY_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "lib"))
-
-NCCL_INCLUDE_DIR = os.environ.get("NCCL_INCLUDE_DIR", "/usr/include")
+CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
 
 def find_all_c_targets(path):
     res = []
@@ -28,13 +29,14 @@ ext_modules = [
         find_all_c_targets(CSRC_DIR),
         include_dirs=[
             pybind11.get_include(),
-            CUDA_INCLUDE_DIR,
-            NCCL_INCLUDE_DIR,
             os.path.join(CSRC_DIR, "includes"),
+            CUDA_INCLUDE_DIR,
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
         ],
+        libraries=["cudart", "nccl"],
+        extra_compile_args=["-lstdc++"],
         language='c++',
     ),
 ]

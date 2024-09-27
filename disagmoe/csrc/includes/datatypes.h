@@ -7,6 +7,15 @@
 
 #include "nccl.h"
 
+struct ChannelInfo {
+    std::vector<int> expert_ids;
+    std::vector<int> attn_layer_ids;
+
+    inline bool is_sampler_channel() {
+        return expert_ids.empty() && attn_layer_ids.empty();
+    }
+};
+
 struct TokenMetadata {
     int req_id;
     int exp_id;
