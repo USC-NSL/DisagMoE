@@ -2,6 +2,8 @@
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id): Channel::Channel(party_local, party_other), comm_id(comm_id) 
     {
+        // TODO(hogura|20240927): convert the party_local to local gpu rank (0<local<num_gpu)
+        CUDACHECK(cudaSetDevice(this->local));
         CUDACHECK(cudaStreamCreate(&this->stream));
         puts("Created a cuda stream");
         printf("%d %d\n", this->local, this->other);
@@ -9,6 +11,8 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id)
 
 NcclChannel::~NcclChannel() {
     CUDACHECK(cudaStreamDestroy(this->stream));
+    NCCLCHECK(ncclCommFinalize(this->comm));
+    NCCLCHECK(ncclCommDestroy(this->comm));
 }
 
 void NcclChannel::instantiate() {
@@ -23,8 +27,10 @@ void NcclChannel::instantiate() {
     puts("called nccl init");
 }
 
-void NcclChannel::send(void* data, const Metadata& metadata) {
+void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     // TODO(hogura|20240926): check if ncclGroupStart may influence the performance
+    void* data = reinterpret_cast<void*>(data_ptr);
+    printf("sending %d\n", metadata.get_num_element());
     NCCLCHECK(ncclSend(
         data, 
         /*count=*/ metadata.get_num_element(),
@@ -35,7 +41,9 @@ void NcclChannel::send(void* data, const Metadata& metadata) {
     ));
 }
 
-void NcclChannel::recv(void* data, const Metadata& metadata) {
+void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
+    void* data = reinterpret_cast<void*>(data_ptr);
+    printf("recving %d\n", metadata.get_num_element());
     NCCLCHECK(ncclRecv(
         data,
         /*count=*/ metadata.get_num_element(),

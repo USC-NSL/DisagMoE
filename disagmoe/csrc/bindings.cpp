@@ -5,6 +5,9 @@
 #include "datatypes.h"
 
 #include "binding_helper.h"
+#include "binding_tests.hpp"
+
+#define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 
 namespace py = pybind11;
 
@@ -31,11 +34,18 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
 
-    // py::class_<Channel, PyChannel, std::shared_ptr<PyChannel>>(m, "Channel")
-    //     .def(py::init<int, int>());
+    REGISTER_STRUCT(TokenMetadata);
+
+    REGISTER_STRUCT(Metadata, std::vector<size_t>);
+
+    py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
+        .def("send", &NcclChannel::send)
+        .def("recv", &NcclChannel::recv);
 
     // static function calls
     m.def("create_channel", &create_channel);
     m.def("get_nccl_unique_id", &get_nccl_unique_id);
     m.def("instantiate_channels", &instantiate_channels);
+
+    m.def("test_nccl_p2p", &test_nccl_p2p);
 }

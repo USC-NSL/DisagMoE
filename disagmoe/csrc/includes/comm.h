@@ -26,8 +26,8 @@ public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
     virtual void instantiate() = 0;
-    virtual void send(void* data, const Metadata& metadata) = 0;
-    virtual void recv(void* data, const Metadata& metadata) = 0;
+    virtual void send(uintptr_t data, const Metadata& metadata) = 0;
+    virtual void recv(uintptr_t data, const Metadata& metadata) = 0;
 
     void _debug_print() {
         printf("%d %d\n", local, other);
@@ -49,9 +49,9 @@ public:
 
     void instantiate() override;
 
-    void send(void* data, const Metadata& metadata) override;
+    void send(uintptr_t data, const Metadata& metadata) override;
 
-    void recv(void* data, const Metadata& metadata) override;
+    void recv(uintptr_t data, const Metadata& metadata) override;
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);

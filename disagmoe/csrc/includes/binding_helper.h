@@ -25,10 +25,10 @@ public:
         PYBIND11_OVERRIDE_PURE(void, Channel, instantiate);
     }
 
-    void send(void* data, const Metadata& metadata) override {
+    void send(uintptr_t data, const Metadata& metadata) override {
         PYBIND11_OVERRIDE_PURE(void, Channel, send);
     }
-    void recv(void* data, const Metadata& metadata) override {
+    void recv(uintptr_t data, const Metadata& metadata) override {
         PYBIND11_OVERRIDE_PURE(void, Channel, recv);
     }
 };
