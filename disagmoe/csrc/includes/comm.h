@@ -10,7 +10,7 @@
 #include "cuda_runtime.h"
 #include "nccl.h"
 
-#include "datatypes.h"
+#include "datatypes.hpp"
 #include "cuda_utils.h"
 
 class Channel {
@@ -31,6 +31,10 @@ public:
 
     void _debug_print() {
         printf("%d %d\n", local, other);
+    }
+
+    int get_peer_id() const {
+        return this->other;
     }
 };
 

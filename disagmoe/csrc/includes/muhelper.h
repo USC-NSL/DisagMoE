@@ -6,6 +6,7 @@
 #include <condition_variable>
 
 #include "comm.h"
+#include "zmq.hpp"
 
 class MuHelper {
 
@@ -37,6 +38,10 @@ protected:
     std::queue<TensorBatch> send_queue;
     std::mutex mtx;
     std::condition_variable cv;
+
+    // ctx must be ahead of mq
+    zmq::context_t ctx;
+    zmq::socket_t mq;
 
     virtual void _send_once(TensorBatch batch) = 0;
 
@@ -75,8 +80,21 @@ class MuPool: public MuHelper {
 protected:
     bool is_attn;
 
+    // ctx must be ahead of mq
+    zmq::context_t ctx;
+    zmq::socket_t mq;
+
+    std::vector<std::vector<TensorBatch>> data_queue;
+    std::vector<int> inner_layer_id;
+    std::vector<std::mutex> layer_mutex;
+
+    std::mutex request_mutex;
+    std::condition_variable request_cv;
+    int cur_request_count;
+
 public:
-    MuPool(int device_id,
+    MuPool(std::vector<int> layer_ids,
+           int device_id,
            std::vector<Channel_t> channels,
            bool is_attn = false);
 

@@ -7,6 +7,10 @@
 
 #include "nccl.h"
 
+#include <cereal/types/vector.hpp>
+#include <cereal/types/string.hpp>
+#include <cereal/types/map.hpp>
+
 struct ChannelInfo {
     std::vector<int> expert_ids;
     std::vector<int> attn_layer_ids;
@@ -21,6 +25,12 @@ struct TokenMetadata {
     int exp_id;
     int first_attn_id;
     int prefill_pos;
+
+    template<class Archive>
+    void serialize(Archive &archive) {
+        archive(req_id, exp_id, first_attn_id, prefill_pos);
+    }
+
 };
 
 struct Metadata {
@@ -59,6 +69,15 @@ struct Metadata {
         return Metadata{
             shape, this->dtype, this->layer_id, infos, this->prompt_lens
         };
+    }
+
+    template<class Archive>
+    void serialize(Archive &archive) {
+        archive(shape, dtype, layer_id, infos, prompt_lens);
+    }
+
+    size_t size() {
+        return sizeof(this);
     }
 };
 
