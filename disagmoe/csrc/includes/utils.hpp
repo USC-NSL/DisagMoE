@@ -43,6 +43,9 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
     const std::vector<T> &keys) {
 
     std::map<T, std::vector<int>, T_COMP> ids;
+    ids.clear();
+
+    LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
 
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
@@ -55,6 +58,7 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
 
     std::vector<std::pair<T, TensorBatch>> results;
     for (auto &[key, grouped_ids]: ids) {
+        LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
         auto sliced_meta = metadata.at(grouped_ids); 
         auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids);
         results.push_back(std::make_pair(

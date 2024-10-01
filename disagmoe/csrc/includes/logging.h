@@ -29,7 +29,7 @@ const static std::vector<std::string> COLOR_MAP = {
     C_MAGENTA + "[CRITICAL]"
 };
 
-void log(LogLevel level, const std::string& message) {
+static void log(LogLevel level, const std::string& message) {
     switch (level) {
         case INFO:
             std::cerr << C_GREEN << "[INFO] " << message << C_RESET << std::endl;

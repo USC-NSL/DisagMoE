@@ -145,6 +145,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 }
 
 Channel_t MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
+    assert(this->attn_channel[layer_id].get() != nullptr);
     return this->attn_channel[layer_id];
 }
 
@@ -161,7 +162,6 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &[channel, sub_batch]: batches) {
-        // FIXME(hogura|20241001)
         channel->send(sub_batch.data, *sub_batch.metadata);
     }
     LOG(DEBUG) << "expert sent a batch" << LEND;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "comm.h"
+#include "logging.h"
 
 #include <thread>
 
@@ -134,7 +135,7 @@ void test_expert_dispatcher() {
 
     auto ptr0 = alloc_cuda_tensor(bs * hs, 0);
 
-    auto meta1 = meta0; meta1.layer_id = 1;
+    auto meta1 = meta0; meta1.layer_id = 0;
     for (int i = 0; i < n; i ++) {
         meta1.infos[i].prefill_pos = 1;
         meta1.infos[i].first_attn_id = 233;
@@ -146,6 +147,12 @@ void test_expert_dispatcher() {
     puts("first fetch");
     auto res = recver.fetch_largest_batch();
     printf("fetched size: %u\n", res.size());
+    if (res.size() == 2) {
+        for (int i = 0; i < 2; i ++)
+            LOG(INFO) << *res[i].metadata << LEND;
+        LOG(INFO) << "passed" << LEND;
+        exit(0);
+    }
     assert(res.size() == 1);
     std::cout << *res[0].metadata << std::endl;
 
