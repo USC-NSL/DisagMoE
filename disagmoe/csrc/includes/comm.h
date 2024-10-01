@@ -22,6 +22,10 @@ protected:
         return local < other ? 0 : 1;
     }
 
+    int m_other() {
+        return local < other ? 1 : 0;
+    }
+
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
@@ -53,7 +57,7 @@ protected:
     cudaStream_t stream;
 
 public:
-    NcclChannel(int party_local, int party_other, ncclUniqueId comm_id);
+    NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
 
     ~NcclChannel();
 

@@ -27,7 +27,10 @@ MuHelper::MuHelper(std::vector<int> layer_ids, int device_id, std::vector<Channe
 void MuHelper::start() {
     LOG(INFO) << "muhelper@" << device_id << " start" << LEND;
     this->thread = std::thread(
-        [&](MuHelper* helper) { helper->run(); }, 
+        [&](MuHelper* helper) {
+            helper->init_cuda_device();
+            helper->run(); 
+        }, 
         this
     );
 }
@@ -37,13 +40,17 @@ void MuHelper::terminate() {
     this->thread.join();
 }
 
+void MuHelper::init_cuda_device() {
+    CUDACHECK(cudaSetDevice(this->device_id));
+}
+
 // MuDispatcher
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels): 
     MuHelper(layer_ids, device_id, channels), 
     ctx(channels.size()), 
     mq(this->ctx, zmq::socket_type::push) {
-    
+    sprintf(this->device_id_str, "%d", this->device_id);
 }
 
 std::string _serialize(metadata_t metadata) {
@@ -63,21 +70,22 @@ metadata_t _deserialize(char* buf, size_t n) {
     return std::make_shared<Metadata>(result);
 }
 
+void MuDispatcher::_send_batch(Channel_t c, uintptr_t buf, const Metadata& meta) {
+    auto data = _serialize(std::make_shared<Metadata>(meta));
+    this->mq.send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
+    this->mq.send(zmq::buffer(data.c_str(), data.size()));
+    c->send(buf, meta);
+}
+
 void MuDispatcher::run() {
     this->mq.connect("tcp://127.0.0.1:24927");
     int i = 0;
-    char device_id[2] = "";
-    sprintf(device_id, "%d", this->device_id, device_id);
     while (!this->end_flag && i < 1024) {
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
         auto batch = this->send_queue.front();
         this->send_queue.pop();
         
-        auto data = _serialize(batch.metadata);
-        this->mq.send(zmq::str_buffer(device_id), zmq::send_flags::sndmore);
-        LOG(DEBUG) << "sending data with " << data.size() << " bytes" << LEND;
-        this->mq.send(zmq::buffer(data.c_str(), data.size()));
         this->_send_once(batch);
         i += 1;
     }
@@ -111,7 +119,11 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         while (j < n && batch.metadata->infos[j].exp_id == eid)
             j ++;
         auto buf = tensor_at(batch.data, *batch.metadata, i);
-        this->channels[eid]->send(buf, batch.metadata->slice(i, j));
+        this->_send_batch(
+            this->channels[eid],
+            buf,
+            batch.metadata->slice(i, j)
+        );
         i = j;
     }
 
@@ -162,7 +174,11 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &[channel, sub_batch]: batches) {
-        channel->send(sub_batch.data, *sub_batch.metadata);
+        this->_send_batch(
+            channel,
+            sub_batch.data,
+            *sub_batch.metadata
+        );
     }
     LOG(DEBUG) << "expert sent a batch" << LEND;
 }
@@ -192,6 +208,16 @@ MuPool::MuPool(
     this->layer_mutex = std::vector<std::mutex>(this->data_queue.size());
 
     this->cur_request_count = 0;
+
+    int max_peer_id = 0;
+    for (auto c: channels)
+        max_peer_id = std::max(max_peer_id, c->get_peer_id());
+    this->peer_channels = std::vector<Channel_t>(max_peer_id + 1);
+    for (size_t i = 0; i < channels.size(); i ++) {
+        int id = channels[i]->get_peer_id();
+        assert(this->peer_channels[id].get() == nullptr);
+        this->peer_channels[ channels[i]->get_peer_id() ] = channels[i];
+    }
 }
 
 void MuPool::run() {
@@ -213,7 +239,8 @@ void MuPool::run() {
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = _deserialize((char*) recv_msgs[1].data(), recv_msgs[1].size());
         auto tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
-        this->channels[peer_id]->recv(tensor_buf, *metadata);
+        LOG(DEBUG) << "calling NCCL recv from " << peer_id << " metadata= " << *metadata << LEND;
+        this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
 
         int lid = this->inner_layer_id[metadata->layer_id];
 

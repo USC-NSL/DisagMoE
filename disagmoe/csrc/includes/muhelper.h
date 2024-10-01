@@ -27,6 +27,8 @@ public:
 
     void start();
 
+    void init_cuda_device();
+
     void terminate();
 
 };
@@ -35,6 +37,8 @@ public:
 class MuDispatcher: public MuHelper {
     
 protected:
+    char device_id_str[2];
+
     std::queue<TensorBatch> send_queue;
     std::mutex mtx;
     std::condition_variable cv;
@@ -44,6 +48,8 @@ protected:
     zmq::socket_t mq;
 
     virtual void _send_once(TensorBatch batch) = 0;
+
+    void _send_batch(Channel_t channel, uintptr_t buf, const Metadata& meta);
 
     void run() override;
 
@@ -83,6 +89,7 @@ public:
 class MuPool: public MuHelper {
 protected:
     bool is_attn;
+    std::vector<Channel_t> peer_channels;
 
     // ctx must be ahead of mq
     zmq::context_t ctx;

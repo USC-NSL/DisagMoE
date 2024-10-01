@@ -30,10 +30,13 @@
 
 inline uintptr_t alloc_cuda_tensor(int count, int device_id) {
     assert(count > 0);
+    printf("device: %d %d\n", device_id, count);
     // FIXME(hogura|20241001): replace float with half float
-    float* data;
+    void* data;
     CUDACHECK(cudaSetDevice(device_id));
-    CUDACHECK(cudaMalloc(&data, count * sizeof(float)));
+    CUDACHECK(cudaMalloc(&data, count * sizeof(short)));
     printf("allocated cuda addr: %u, count: %d\n", (uintptr_t) data, count);
     return (uintptr_t) (data);
 }
+
+// TODO(hogura|20241001): add allocAsync

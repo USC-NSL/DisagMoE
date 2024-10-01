@@ -16,6 +16,7 @@ inline uintptr_t tensor_slice(uintptr_t src, const Metadata& metadata, const std
     int device;
     CUDACHECK(cudaGetDevice(&device));
 
+    LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
     LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
 
     size_t count_per_token = metadata.num_element() / metadata.num_tokens();
@@ -24,7 +25,8 @@ inline uintptr_t tensor_slice(uintptr_t src, const Metadata& metadata, const std
 
     for (size_t i = 0; i < ids.size(); i ++) {
         int id = ids[i];
-        CUDACHECK(cudaMemcpyAsync(
+        // TODO(hogura|20241001): replace cudaMemcpy to cudaMemcpyAsync
+        CUDACHECK(cudaMemcpy(
             (void*) (dst + i * size_per_token), 
             (void*) (src + id * size_per_token), 
             /*size=*/ size_per_token, 
