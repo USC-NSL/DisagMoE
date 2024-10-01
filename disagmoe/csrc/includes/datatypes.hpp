@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iostream>
 #include <vector>
 #include <string>
 #include <map>
@@ -31,6 +32,13 @@ struct TokenMetadata {
         archive(req_id, exp_id, first_attn_id, prefill_pos);
     }
 
+    friend std::ostream& operator<<(std::ostream &out, const TokenMetadata& token) {
+        out << "TokenMetadata{req_id=" << token.req_id << ", "
+            << "exp_id=" << token.exp_id << ", "
+            << "first_attn_id=" << token.first_attn_id << ", "
+            << "prefill_pos=" << token.prefill_pos << "}";
+        return out;
+    }
 };
 
 struct Metadata {
@@ -61,11 +69,22 @@ struct Metadata {
     }
 
     inline Metadata slice(int l, int r) {
-        shape = this->shape;
+        auto shape = this->shape;
         shape[0] = r - l;
         auto infos = std::vector<TokenMetadata>(
             this->infos.begin() + l, 
             this->infos.begin() + r);
+        return Metadata{
+            shape, this->dtype, this->layer_id, infos, this->prompt_lens
+        };
+    }
+
+    inline Metadata at(const std::vector<int>& ids) const {
+        auto shape = this->shape;
+        shape[0] = ids.size();
+        auto infos = std::vector<TokenMetadata>(ids.size());
+        for (size_t i = 0; i < ids.size(); i ++)
+            infos[i] = this->infos[ids[i]];
         return Metadata{
             shape, this->dtype, this->layer_id, infos, this->prompt_lens
         };
@@ -78,6 +97,28 @@ struct Metadata {
 
     size_t size() {
         return sizeof(this);
+    }
+
+    friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
+        out << "Metadata{";
+        {
+            out << "shape=(" << meta.shape[0];
+            for (size_t i = 1; i < meta.shape.size(); i ++)
+                out << ", " << meta.shape[i];
+            out << "), ";
+
+            out << "layer_id=" << meta.layer_id << ", ";
+
+            out << "infos={";
+            if (meta.infos.size() > 0) {
+                out << meta.infos[0];
+                for (size_t i = 1; i < meta.infos.size(); i ++)
+                    out << ", " << meta.infos[i];
+            }
+            out << "}";
+        }
+        out << "}";
+        return out;
     }
 };
 

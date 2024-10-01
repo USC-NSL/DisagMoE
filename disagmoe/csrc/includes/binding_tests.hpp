@@ -80,6 +80,10 @@ void test_attn_dispatcher() {
     auto ptr0 = alloc_cuda_tensor(bs * hs, 0);
 
     auto meta1 = meta0; meta1.layer_id = 1;
+    for (int i = 0; i < n; i ++) {
+        meta1.infos[i].prefill_pos = 1;
+        meta1.infos[i].first_attn_id = 233;
+    }
     sender.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta0)});
     sender.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta1)});
 
@@ -88,10 +92,70 @@ void test_attn_dispatcher() {
     auto res = recver.fetch_largest_batch();
     printf("fetched size: %u\n", res.size());
     assert(res.size() == 1);
+    std::cout << *res[0].metadata << std::endl;
+
+    recver.wait_for_new_requests();
     puts("second fetch");
     res = recver.fetch_largest_batch();
     printf("fetched size: %u\n", res.size());
     assert(res.size() == 1);
+    std::cout << *res[0].metadata << std::endl;
+
+    puts("passed");
+    fflush(stdout);
+    exit(0);
+}
+
+void test_expert_dispatcher() {
+    auto pr = _init_channel();
+    auto c0 = pr.first, c1 = pr.second;
+
+    MuExpertDispatcher sender({0, 1}, 0, {c0}, {ChannelInfo{{0}, {0}}});
+    MuPool recver({0, 1}, 1, {c1});
+
+    sender.start();
+    recver.start();
+
+    puts("started sender & recver");
+
+    int n = 10;
+    int bs = 8;
+    int hs = 8;
+
+    std::vector<TokenMetadata> infos(n);
+    for (int i = 0; i < n; i ++)
+        infos[i].req_id = i;
+    auto meta0 = Metadata{
+        /*shape=*/ {bs, hs},
+        "fp16",
+        /*layer_id=*/ 0,
+        infos
+    };
+
+    auto ptr0 = alloc_cuda_tensor(bs * hs, 0);
+
+    auto meta1 = meta0; meta1.layer_id = 1;
+    for (int i = 0; i < n; i ++) {
+        meta1.infos[i].prefill_pos = 1;
+        meta1.infos[i].first_attn_id = 233;
+    }
+    sender.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta0)});
+    sender.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta1)});
+
+    recver.wait_for_new_requests();
+    puts("first fetch");
+    auto res = recver.fetch_largest_batch();
+    printf("fetched size: %u\n", res.size());
+    assert(res.size() == 1);
+    std::cout << *res[0].metadata << std::endl;
+
+    recver.wait_for_new_requests();
+    puts("second fetch");
+    res = recver.fetch_largest_batch();
+    printf("fetched size: %u\n", res.size());
+    assert(res.size() == 1);
+    std::cout << *res[0].metadata << std::endl;
+
     puts("passed");
     fflush(stdout);
     exit(0);

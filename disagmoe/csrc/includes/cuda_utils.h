@@ -30,6 +30,7 @@
 
 inline uintptr_t alloc_cuda_tensor(int count, int device_id) {
     assert(count > 0);
+    // FIXME(hogura|20241001): replace float with half float
     float* data;
     CUDACHECK(cudaSetDevice(device_id));
     CUDACHECK(cudaMalloc(&data, count * sizeof(float)));

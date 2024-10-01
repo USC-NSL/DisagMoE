@@ -40,6 +40,12 @@ public:
 
 typedef std::shared_ptr<Channel> Channel_t;
 
+struct cmp_channel_t {
+    bool operator()(const Channel_t &l, const Channel_t &r) const {
+        return l->get_peer_id() < r->get_peer_id();
+    }
+};
+
 class NcclChannel: public Channel {
 protected:
     ncclUniqueId comm_id;

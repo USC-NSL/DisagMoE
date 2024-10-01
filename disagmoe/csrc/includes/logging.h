@@ -1,6 +1,8 @@
 #pragma once
 
 #include <iostream>
+#include <vector>
+#include <string>
 
 const std::string C_RESET = "\033[0m";
 const std::string C_RED = "\033[31m";
@@ -12,10 +14,19 @@ const std::string C_CYAN = "\033[36m";
 
 
 enum LogLevel {
+    DEBUG,
     INFO,
     WARNING,
     ERROR,
     CRITICAL
+};
+
+const static std::vector<std::string> COLOR_MAP = {
+    C_BLUE + "[DEBUG]",
+    C_GREEN + "[INFO]",
+    C_YELLOW + "[WARNING]",
+    C_RED + "[ERROR]",
+    C_MAGENTA + "[CRITICAL]"
 };
 
 void log(LogLevel level, const std::string& message) {
@@ -37,3 +48,9 @@ void log(LogLevel level, const std::string& message) {
             break;
     }
 }
+
+#define LOG(LEVEL) std::cerr << COLOR_MAP[int(LEVEL)] << "" \
+                             << " - " << __FILE__ ":" << __LINE__ \
+                             << "@" << __FUNCTION__ \
+                             << ">: " << C_RESET
+#define LEND std::endl
