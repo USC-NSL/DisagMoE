@@ -55,6 +55,6 @@ void Scheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
 
-std::vector<TensorBatch> Scheduler::schedule_largest() {
-
+std::vector<TensorBatch> LargestScheduler::_schedule() {
+    return pool->fetch_largest_batch();
 }

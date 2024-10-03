@@ -28,8 +28,6 @@ public:
 
     TensorBatch schedule();
 
-    std::vector<TensorBatch> schedule_largest();
-
     void wait_for_new_requests();
 };
 
