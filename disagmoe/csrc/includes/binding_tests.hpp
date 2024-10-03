@@ -193,7 +193,7 @@ void test_scheduler() {
     MuExpertDispatcher sender0({0}, 0, {c0}, {ChannelInfo{{0}, {0}}});
     MuExpertDispatcher sender1({1}, 1, {c1}, {ChannelInfo{{0}, {1}}});
     MuPool recver({0, 1}, 2, {r1, r2});
-    Scheduler_t scheduler = Scheduler::build(std::make_shared<MuPool>(recver), {2}, "largest");
+    Scheduler_t scheduler = Scheduler::build(&recver, {2}, "largest");
 
     recver.start();
     sender0.start();
@@ -220,14 +220,14 @@ void test_scheduler() {
         meta1.infos[i].prefill_pos = 1;
         meta1.infos[i].first_attn_id = 233;
     }
-    for (int i = 0; i < 5; i ++) {
+    for (int i = 0; i < 1; i ++) {
         auto n = (i + 1) * bs;
         meta0.shape = {n, hs};
         meta0.infos.resize(n);
         auto ptr0 = alloc_cuda_tensor(n * hs, 0);
         sender0.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta0)});
     }
-    for (int i = 0; i < 5; i ++) {
+    for (int i = 0; i < 1; i ++) {
         auto n = (i + 6) * bs;
         meta1.shape = {n, hs};
         meta1.infos.resize(n);

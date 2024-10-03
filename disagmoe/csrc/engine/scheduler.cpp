@@ -3,9 +3,9 @@
 
 #include <exception>
 
-Scheduler_t Scheduler::build(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest") {
+Scheduler_t Scheduler::build(MuPool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
-        return std::make_shared<Scheduler>(LargestScheduler(pool, layer_ids));
+        return std::make_shared<LargestScheduler>(pool, layer_ids);
     } else {
         throw std::runtime_error(policy + " schedule not implemented.");
     }
@@ -16,7 +16,7 @@ LargestScheduler::LargestScheduler(MuPool_t pool, std::vector<int> layer_ids):
 
     }
 
-Scheduler::Scheduler(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest"): 
+Scheduler::Scheduler(MuPool_t pool, std::vector<int> layer_ids, std::string policy): 
     pool(pool), layer_ids(layer_ids), policy(policy) {
     
 }
@@ -30,7 +30,7 @@ TensorBatch Scheduler::merge(std::vector<TensorBatch> batches) {
     auto dtype = meta->get_datatype_size();
     
     uintptr_t buf = alloc_cuda_tensor(
-        meta->num_element() * dtype, 
+        meta->num_element(), 
         this->pool->get_device_id()
     );
     

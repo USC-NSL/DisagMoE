@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <cassert>
 
 #include "nccl.h"
 
@@ -133,7 +134,8 @@ struct Metadata {
         std::vector<TokenMetadata> infos;
         std::map<int, int> prompt_lens;
 
-        for (auto meta: metas) {
+        for (size_t i = 1; i < metas.size(); i ++) {
+            auto meta = metas[i];
             shape[0] += meta->shape[0];
             for (auto info: meta->infos)
                 infos.push_back(info);

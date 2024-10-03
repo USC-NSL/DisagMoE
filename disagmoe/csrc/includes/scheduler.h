@@ -31,7 +31,7 @@ public:
     void wait_for_new_requests();
 };
 
-class LargestScheduler: Scheduler {
+class LargestScheduler: public Scheduler {
 protected:
     std::vector<TensorBatch> _schedule() override;
 
