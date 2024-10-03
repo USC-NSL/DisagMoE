@@ -31,11 +31,13 @@ ext_modules = [
             pybind11.get_include(),
             os.path.join(CSRC_DIR, "includes"),
             CUDA_INCLUDE_DIR,
+            "third_party/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
+            "third_party/cereal/include",
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
         ],
-        libraries=["cudart", "nccl"],
+        libraries=["cudart", "nccl", "zmq"],
         extra_compile_args=["-lstdc++"],
         language='c++',
     ),

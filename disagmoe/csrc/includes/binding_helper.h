@@ -28,6 +28,7 @@ public:
     void send(uintptr_t data, const Metadata& metadata) override {
         PYBIND11_OVERRIDE_PURE(void, Channel, send);
     }
+    
     void recv(uintptr_t data, const Metadata& metadata) override {
         PYBIND11_OVERRIDE_PURE(void, Channel, recv);
     }

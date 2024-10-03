@@ -10,7 +10,7 @@
 #include "cuda_runtime.h"
 #include "nccl.h"
 
-#include "datatypes.h"
+#include "datatypes.hpp"
 #include "cuda_utils.h"
 
 class Channel {
@@ -20,6 +20,10 @@ protected:
 
     int m_rank() {
         return local < other ? 0 : 1;
+    }
+
+    int m_other() {
+        return local < other ? 1 : 0;
     }
 
 public:
@@ -32,9 +36,19 @@ public:
     void _debug_print() {
         printf("%d %d\n", local, other);
     }
+
+    int get_peer_id() const {
+        return this->other;
+    }
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
+
+struct cmp_channel_t {
+    bool operator()(const Channel_t &l, const Channel_t &r) const {
+        return l->get_peer_id() < r->get_peer_id();
+    }
+};
 
 class NcclChannel: public Channel {
 protected:
@@ -43,7 +57,7 @@ protected:
     cudaStream_t stream;
 
 public:
-    NcclChannel(int party_local, int party_other, ncclUniqueId comm_id);
+    NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
 
     ~NcclChannel();
 
