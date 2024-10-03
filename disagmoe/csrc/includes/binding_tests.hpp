@@ -2,6 +2,7 @@
 
 #include "comm.h"
 #include "logging.h"
+#include "scheduler.h"
 
 #include <thread>
 
@@ -180,4 +181,67 @@ void test_expert_dispatcher() {
     puts("passed");
     fflush(stdout);
     exit(0);
+}
+
+void test_scheduler() {
+
+    auto pr = _init_channel(0, 2);
+    auto c0 = pr.first, r1 = pr.second;
+    pr = _init_channel(1, 2);
+    auto c1 = pr.first, r2 = pr.second;
+
+    MuExpertDispatcher sender0({0}, 0, {c0}, {ChannelInfo{{0}, {0}}});
+    MuExpertDispatcher sender1({1}, 1, {c1}, {ChannelInfo{{0}, {1}}});
+    MuPool recver({0, 1}, 2, {r1, r2});
+    Scheduler_t scheduler = Scheduler::build(&recver, {2}, "largest");
+
+    recver.start();
+    sender0.start();
+    sender1.start();
+
+    puts("started sender0 & recver");
+
+    int n = 8;
+    size_t bs = 8;
+    size_t hs = 8;
+
+    std::vector<TokenMetadata> infos(n);
+    for (int i = 0; i < n; i ++)
+        infos[i].req_id = i;
+    auto meta0 = Metadata{
+        /*shape=*/ {bs, hs},
+        "fp16",
+        /*layer_id=*/ 0,
+        infos
+    };
+
+    auto meta1 = meta0; meta1.layer_id = 1;
+    for (int i = 0; i < n; i ++) {
+        meta1.infos[i].prefill_pos = 1;
+        meta1.infos[i].first_attn_id = 233;
+    }
+    for (int i = 0; i < 1; i ++) {
+        auto n = (i + 1) * bs;
+        meta0.shape = {n, hs};
+        meta0.infos.resize(n);
+        auto ptr0 = alloc_cuda_tensor(n * hs, 0);
+        sender0.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta0)});
+    }
+    for (int i = 0; i < 1; i ++) {
+        auto n = (i + 6) * bs;
+        meta1.shape = {n, hs};
+        meta1.infos.resize(n);
+        auto ptr1 = alloc_cuda_tensor(n * hs, 1);
+        sender1.put((TensorBatch) {ptr1, std::make_shared<Metadata>(meta1)});
+    }
+
+    sleep(1);
+
+    scheduler->wait_for_new_requests();
+    auto batch1 = scheduler->schedule();
+    auto batch2 = scheduler->schedule();
+    
+    LOG(INFO) << "batch1:" << *(batch1.metadata) << "\n" << "batch2: " << *(batch2.metadata) << LEND;
+
+    exit(0);    
 }
