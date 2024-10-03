@@ -41,6 +41,10 @@ struct TokenMetadata {
     }
 };
 
+struct Metadata;
+
+typedef std::shared_ptr<Metadata> metadata_t;
+
 struct Metadata {
     std::vector<size_t> shape;
     std::string dtype;
@@ -120,9 +124,28 @@ struct Metadata {
         out << "}";
         return out;
     }
-};
 
-typedef std::shared_ptr<Metadata> metadata_t;
+    static metadata_t concat(const std::vector<metadata_t> &metas) {
+        assert(metas.size() > 0);
+        std::vector<size_t> shape = metas[0]->shape;
+        auto dtype = metas[0]->dtype;
+        auto layer_id = metas[0]->layer_id;
+        std::vector<TokenMetadata> infos;
+        std::map<int, int> prompt_lens;
+
+        for (auto meta: metas) {
+            shape[0] += meta->shape[0];
+            for (auto info: meta->infos)
+                infos.push_back(info);
+            for (auto [k, v]: meta->prompt_lens)
+                prompt_lens[k] = v;
+        }
+
+        return std::make_shared<Metadata>(Metadata {
+            shape, dtype, layer_id, infos, prompt_lens
+        });
+    }
+};
 
 struct TensorBatch {
     uintptr_t data;

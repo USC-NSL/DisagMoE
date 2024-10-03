@@ -31,6 +31,8 @@ public:
 
     void terminate();
 
+    int get_device_id();
+
 };
 
 
@@ -115,3 +117,5 @@ public:
 
     std::vector<TensorBatch> fetch_largest_batch();
 };
+
+typedef std::shared_ptr<MuPool> MuPool_t;

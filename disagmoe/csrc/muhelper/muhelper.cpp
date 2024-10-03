@@ -35,6 +35,10 @@ void MuHelper::start() {
     );
 }
 
+int MuHelper::get_device_id() {
+    return device_id;
+}
+
 void MuHelper::terminate() {
     this->end_flag = true;
     this->thread.join();
