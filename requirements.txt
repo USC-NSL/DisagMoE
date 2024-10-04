@@ -3,3 +3,4 @@ pytorch==2.2.0
 torchvision==0.17.0
 torchaudio==2.2.0
 ray==2.31.0
+vllm==0.6.2

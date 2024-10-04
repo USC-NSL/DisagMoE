@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-sudo apt-get install libzmq3-dev
+sudo apt-get install libzmq3-dev libcereal-dev
 pip install -r requirements.txt
 pip install .
 ```
