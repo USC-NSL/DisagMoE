@@ -2,7 +2,7 @@ from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
 from disagmoe.frontend.adapter import Scheduler, Dispatcher
 from disagmoe.frontend.datatypes import Metadata
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import tensor_as_buf
+from disagmoe.utils.utils import tensor_as_buf, get_ip
 
 from typing import Optional
 from threading import Thread
@@ -32,7 +32,9 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
-        self.scheduler, self.dispatcher = init_engine(self.device_id)
+        self.scheduler, self.dispatcher = init_engine(
+            self.device_id
+        )
         
     def start(self):
         start_engine(self.scheduler, self.dispatcher)
@@ -67,3 +69,6 @@ class Engine:
     
     def terminate(self):
         self.end_flag = True
+        
+    def get_node_ip(self) -> str:
+        return get_ip()

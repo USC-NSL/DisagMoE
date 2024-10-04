@@ -6,7 +6,7 @@
 #include "scheduler.h"
 #include "comm.h"
 
-static std::pair<Scheduler_t, MuDispatcher_t> init_engine(
+std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
     const std::vector<int> &layer_ids,
@@ -16,4 +16,4 @@ static std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     const std::map<int, uintptr_t> &nccl_ids
 );
 
-static void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher);
+void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher);

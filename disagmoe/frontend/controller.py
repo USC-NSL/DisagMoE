@@ -11,10 +11,10 @@ class Controller:
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
         self.n_gpu_per_worker = 1
+        self.workers = []
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._init_engines()
-        self.workers = []
         
     def _init_engines(self):
         pg = get_global_placement_group()
@@ -43,7 +43,7 @@ class Controller:
                 node_ids[worker_ip] = len(node_ids)
             node_id = node_ids[worker_ip]
             
-            worker.set_device_id(node_id * self.n_gpu_per_node + cur_device_on_worker)
+            worker.set_device_id.remote(node_id * self.n_gpu_per_node + cur_device_on_worker)
             
             self.workers.append(worker)
         
