@@ -2,6 +2,14 @@ from dataclasses import dataclass
 from typing import List, Dict
 
 @dataclass
+class ChannelInfo:
+    expert_ids: List[int]
+    attn_layer_ids: List[int]
+    
+    def is_sampler_channel(self) -> bool:
+        ...
+
+@dataclass
 class TokenMetadata:
     req_id: int
     exp_id: int
