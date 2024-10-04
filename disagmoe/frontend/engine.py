@@ -7,23 +7,21 @@ from disagmoe.utils.utils import tensor_as_buf, get_ip
 from typing import Optional, List, Dict
 from threading import Thread
 
-from disagmoe_c import init_engine, start_engine
-
+from disagmoe_c import init_engine, start_engine, ChannelInfo as ChannelInfo_C
 
 class Engine:
 
     def __init__(self, 
-                 is_attn: bool,
                  scheduler: Optional[Scheduler] = None, 
                  executor: Optional[Executor] = None, 
                  dispatcher: Optional[Dispatcher] = None, 
                  device_id: Optional[int] = None):
-        self.is_attn = is_attn
         self.scheduler: Scheduler = scheduler
         self.executor: Executor = executor
         self.dispatcher: Dispatcher = dispatcher
         self.device_id = device_id
         self.end_flag = False
+        self.is_attn = False
         
         if device_id is not None:
             self._logger = get_logger(f"engine{device_id}")
@@ -41,13 +39,15 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
+        self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos, nccl_ids}")
         self.scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
             layer_ids,
             in_device_ids,
             out_device_ids,
-            out_channel_infos,
+            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
+                for info in out_channel_infos],
             nccl_ids
         )
         
@@ -58,6 +58,9 @@ class Engine:
     def set_device_id(self, device_id: int):
         self.device_id = device_id
         self._logger = get_logger(f"engine{device_id}")
+        
+    def set_is_attn(self, is_attn: bool):
+        self.is_attn = is_attn
 
     def loop(self):
         while not self.end_flag:

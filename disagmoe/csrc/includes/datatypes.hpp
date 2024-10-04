@@ -18,6 +18,12 @@ struct ChannelInfo {
     std::vector<int> expert_ids;
     std::vector<int> attn_layer_ids;
 
+    ChannelInfo() {}
+    ChannelInfo(const std::vector<int> &expert_ids,
+                const std::vector<int> &attn_layer_ids):
+                expert_ids(expert_ids), attn_layer_ids(attn_layer_ids) 
+    {}
+
     inline bool is_sampler_channel() {
         return expert_ids.empty() && attn_layer_ids.empty();
     }

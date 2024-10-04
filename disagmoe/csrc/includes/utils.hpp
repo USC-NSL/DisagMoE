@@ -74,3 +74,11 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
 
     return results;
 }
+
+inline void* convert_to_nccl_uid(char* bytes) {
+    // FIXME(hogura|20241003): the buf here never recycled actually
+    size_t n = strlen(bytes);
+    void* buf = (uint8_t*) std::malloc(n);
+    memcpy(buf, bytes, n);
+    return buf;
+}

@@ -24,3 +24,8 @@ mp = ModelPlacement(
 )
 
 master.init_engine(mp)
+
+print("passed")
+
+while True:
+    pass
