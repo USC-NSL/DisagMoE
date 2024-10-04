@@ -3,18 +3,18 @@ from typing import Iterable, List, Optional, Tuple
 import torch
 from torch import nn
 from transformers import MixtralConfig
-from disagmoe.third_party.vllm.vllm.attention import Attention, AttentionMetadata
+from vllm.attention import Attention, AttentionMetadata
 
-from disagmoe.third_party.vllm.vllm.config import CacheConfig
-from disagmoe.third_party.vllm.vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.config import CacheConfig
+from vllm.distributed import get_tensor_model_parallel_world_size
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
-from disagmoe.third_party.vllm.vllm.model_executor.layers.quantization.base_config import (
+from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
-from disagmoe.third_party.vllm.vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.model_executor.layers.rotary_embedding import get_rope
 
-from disagmoe.third_party.vllm.vllm.model_executor.layers.fused_moe.fused_moe import (
+from vllm.model_executor.layers.fused_moe.fused_moe import (
             fused_topk)
 
 class MoEAttention(nn.Module):
