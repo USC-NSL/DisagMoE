@@ -1,3 +1,0 @@
-[submodule "disagmoe/third_party/vllm"]
-	path = disagmoe/third_party/vllm
-	url = https://github.com/vllm-project/vllm.git
