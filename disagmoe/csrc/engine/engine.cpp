@@ -4,8 +4,10 @@
 #include "engine.h"
 #include "comm.h"
 
+#include <chrono>
 #include <thread>
 #include <vector>
+#include <ctime>
 #include <map>
 
 std::pair<Scheduler_t, MuDispatcher_t> init_engine(
@@ -16,7 +18,7 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     const std::vector<int> &out_device_ids,
     // const std::vector<std::shared_ptr<ChannelInfo>> &out_channel_infos,
     const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, char*> &nccl_ids) {
+    std::map<int, std::string> &nccl_ids) {
     int n_in = in_device_ids.size();
     int n_out = out_device_ids.size();
 
@@ -33,18 +35,21 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     std::vector<std::thread> threads;
     for (auto &[peer_id, channel]: channels) {
         channel = create_channel(local_id, peer_id, 
-            convert_to_nccl_uid(nccl_ids.at(peer_id))
+            convert_to_nccl_uid((char*) nccl_ids.at(peer_id).c_str())
         );
+        LOG(DEBUG) << local_id << " created a thread" << LEND;
         threads.push_back(std::thread(
             [&](Channel_t channel) { 
+                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
+                // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }, 
             channel
         ));
     }
     LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
-    // for (auto &t: threads)
-    //     t.join();
+    for (auto &t: threads)
+        t.join();
 
     for (int i = 0; i < n_in; i ++)
         in_channels[i] = channels[ in_device_ids[i] ];

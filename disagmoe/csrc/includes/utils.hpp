@@ -6,6 +6,7 @@
 #include "datatypes.hpp"
 #include "cuda_utils.h"
 #include "logging.h"
+#include "nccl.h"
 
 inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {
     return buf + i * metadata.num_element() / metadata.num_tokens();
@@ -77,8 +78,16 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
 
 inline void* convert_to_nccl_uid(char* bytes) {
     // FIXME(hogura|20241003): the buf here never recycled actually
-    size_t n = strlen(bytes);
-    void* buf = (uint8_t*) std::malloc(n);
+    std::cout << "!!!!!! nccl uid: ";
+    size_t n = sizeof(ncclUniqueId::internal);
+
+    int i = 0;
+    for (char* c = bytes; i < n; c ++, i ++) {
+        std::cout << std::hex << std::setfill('0') << std::setw(2) << int(*c) << " ";
+    }
+    std::cout << LEND;
+
+    char* buf = (char*) std::malloc(n);
     memcpy(buf, bytes, n);
-    return buf;
+    return (void*) buf;
 }

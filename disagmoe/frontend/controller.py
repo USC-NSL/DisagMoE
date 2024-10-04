@@ -1,5 +1,7 @@
 import ray
+import os
 
+import ray.runtime_env
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
@@ -42,6 +44,7 @@ class Controller:
                 num_cpus=0,
                 num_gpus=self.n_gpu_per_worker,
                 scheduling_strategy=ray_scheduling_strategy,
+                runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
             )(Engine).remote()
             
             worker_ip = ray.get(worker.get_node_ip.remote())

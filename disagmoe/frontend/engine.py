@@ -1,5 +1,5 @@
 from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
-from disagmoe.frontend.adapter import Scheduler, Dispatcher
+from disagmoe.frontend.adapter import Scheduler, MuDispatcher
 from disagmoe.frontend.datatypes import Metadata, ChannelInfo
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip
@@ -14,11 +14,11 @@ class Engine:
     def __init__(self, 
                  scheduler: Optional[Scheduler] = None, 
                  executor: Optional[Executor] = None, 
-                 dispatcher: Optional[Dispatcher] = None, 
+                 dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
         self.scheduler: Scheduler = scheduler
         self.executor: Executor = executor
-        self.dispatcher: Dispatcher = dispatcher
+        self.dispatcher: MuDispatcher = dispatcher
         self.device_id = device_id
         self.end_flag = False
         self.is_attn = False

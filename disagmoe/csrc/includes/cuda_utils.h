@@ -13,9 +13,9 @@
   if (err != cudaSuccess) {                         \
     printf("Failed: Cuda error %s:%d '%s'\n",       \
         __FILE__,__LINE__,cudaGetErrorString(err)); \
-    exit(EXIT_FAILURE);                             \
   }                                                 \
 } while(0)
+    // exit(EXIT_FAILURE);                             \
 
 
 #define NCCLCHECK(cmd) do {                         \
@@ -23,9 +23,9 @@
   if (res != ncclSuccess) {                         \
     printf("Failed, NCCL error %s:%d '%s'\n",       \
         __FILE__,__LINE__,ncclGetErrorString(res)); \
-    exit(EXIT_FAILURE);                             \
   }                                                 \
 } while(0)
+    // exit(EXIT_FAILURE);                             \
 
 
 inline uintptr_t alloc_cuda_tensor(int count, int device_id) {

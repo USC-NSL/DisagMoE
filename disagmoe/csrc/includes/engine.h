@@ -14,7 +14,7 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     const std::vector<int> &out_device_ids,
     // const std::vector<std::shared_ptr<ChannelInfo>> &out_channel_infos,
     const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, char*> &nccl_ids
+    std::map<int, std::string> &nccl_ids
 );
 
 void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher);
