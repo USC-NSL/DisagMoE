@@ -1,8 +1,15 @@
 import ray
+import os
+
+import ray.runtime_env
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine
+from disagmoe.frontend.datatypes import ChannelInfo
+from disagmoe.utils.placement import ModelPlacement
+from disagmoe.utils.utils import get_nccl_unique_id
+from disagmoe.utils.logger import get_logger
 
 class Controller:
     
@@ -12,17 +19,20 @@ class Controller:
         self.n_gpu_per_node = n_gpu_per_node
         self.n_gpu_per_worker = 1
         self.workers = []
+        self.device_ids = []
+        self._logger = get_logger("controller")
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
-        self._init_engines()
+        self._create_engines()
         
-    def _init_engines(self):
+    def _create_engines(self):
         pg = get_global_placement_group()
         device_count = {}
         node_ids = {}
         
         for bundle_id, bundle in enumerate(pg.bundle_specs):
             if not bundle.get("GPU", 0):
+                # TODO(hogura|20241003): sampler/tokenizer worker
                 continue
             
             ray_scheduling_strategy = PlacementGroupSchedulingStrategy(
@@ -34,6 +44,7 @@ class Controller:
                 num_cpus=0,
                 num_gpus=self.n_gpu_per_worker,
                 scheduling_strategy=ray_scheduling_strategy,
+                runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
             )(Engine).remote()
             
             worker_ip = ray.get(worker.get_node_ip.remote())
@@ -43,11 +54,52 @@ class Controller:
                 node_ids[worker_ip] = len(node_ids)
             node_id = node_ids[worker_ip]
             
-            worker.set_device_id.remote(node_id * self.n_gpu_per_node + cur_device_on_worker)
+            device_id = node_id * self.n_gpu_per_node + cur_device_on_worker
+            worker.set_device_id.remote(device_id)
             
             self.workers.append(worker)
-        
-        ray.get([worker.init_core.remote() for worker in self.workers])
+            self.device_ids.append(device_id)
+        print("#workers", len(self.workers))
+    
+    def _get_nccl_ids(self, model_place: ModelPlacement):
+        prs = {}
+        nccl_ids = {k: {} for k in model_place.out_device_ids}
+        for i, js in model_place.out_device_ids.items():
+            for j in js:
+                p = tuple(sorted((i, j)))
+                if p not in prs:
+                    prs[p] = get_nccl_unique_id()
+                nccl_ids[i][j] = prs[p]
+                nccl_ids[j][i] = prs[p]
+        self._logger.info(f"nccl_ids {nccl_ids}")
+        return nccl_ids
+    
+    def init_engine(self, model_place: ModelPlacement):
+        nccl_ids = self._get_nccl_ids(model_place)
+        ray.get([
+            worker.set_is_attn.remote(
+                len(model_place.attn_ids_at(device_id)) > 0
+            )
+                for worker, device_id in zip(self.workers, self.device_ids)
+        ])
+        tasks = [
+            worker.init_core.remote(
+                layer_ids=model_place.layer_ids_at(device_id),
+                in_device_ids=model_place.in_device_ids.get(device_id, []),
+                out_device_ids=model_place.out_device_ids.get(device_id, []),
+                out_channel_infos=[
+                    ChannelInfo(
+                        model_place.expert_ids_at(out),
+                        model_place.attn_ids_at(out)
+                    )
+                        for out in model_place.out_device_ids.get(device_id, [])
+                ],
+                nccl_ids=nccl_ids[device_id],
+            )
+                for worker, device_id in zip(self.workers, self.device_ids)
+        ]
+        self._logger.info("launched all tasks")
+        ray.get(tasks)
         
     def start_engine(self):
         ray.get([worker.start.remote() for worker in self.workers])

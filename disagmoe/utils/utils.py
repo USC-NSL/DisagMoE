@@ -15,6 +15,27 @@ def tensor_as_buf(buf: int, shape: List[int], dtype = torch.float16) -> Tensor:
         data, shape, dtype
     )
     
+def get_nccl_unique_id():
+    from torch.cuda.nccl import unique_id
+    return unique_id()
+    
+class Counter:
+
+    def __init__(self, start: int = 0, end: int = 1e9, step: int = 1) -> None:
+        self.counter = start
+        self.end = end
+        self.step = step
+
+    def __next__(self) -> int:
+        i = self.counter
+        self.counter += self.step
+        if self.counter >= self.end:
+            self.counter = 0
+        return i
+
+    def reset(self) -> None:
+        self.counter = 0
+    
 def get_ip():
     # adpated from VLLM: https://github.com/vllm-project/vllm/blob/v0.6.0/vllm/utils.py#L484
     host_ip = os.environ.get("HOST_IP", None)

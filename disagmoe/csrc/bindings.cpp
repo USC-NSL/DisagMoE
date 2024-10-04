@@ -23,13 +23,20 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("terminate", &MuAttnDispatcher::terminate)
         .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
 
+    py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
+        .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
+        .def("schedule", &Scheduler::schedule);
+
+    py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
+        .def("put", &MuDispatcher::put);
+
     py::class_<TensorBatch>(m, "TensorBatch")
         .def(py::init<>())
         .def_readwrite("data", &TensorBatch::data)
         .def_readwrite("metadata", &TensorBatch::metadata);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
-        .def(py::init<>())
+        .def(py::init<const std::vector<int> &, const std::vector<int> &>())
         .def_readwrite("expert_ids", &ChannelInfo::expert_ids)
         .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
 
@@ -41,10 +48,20 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)
-        .def("recv", &NcclChannel::recv);
+        .def("recv", &NcclChannel::recv)
+        .def("instantiate", &NcclChannel::instantiate);
 
     // static function calls
     m.def("create_channel", &create_channel);
+    m.def("create_channel_py_map", [](int local, int peer, std::map<int, std::string> &uids) {
+        puts("converting uuid");
+        printf("uid len: %d\n", uids.at(peer).size());
+        return create_channel(local, peer, (void*) uids.at(peer).c_str());
+    });
+    m.def("create_channel_py_single", [](int local, int peer, char* uid) {
+        puts("converting uuid");
+        return create_channel(local, peer, (void*) uid);
+    });
     m.def("get_nccl_unique_id", &get_nccl_unique_id);
     m.def("instantiate_channels", &instantiate_channels);
     m.def("init_engine", &init_engine);

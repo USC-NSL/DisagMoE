@@ -10,7 +10,7 @@ class Scheduler:
     def schedule(self) -> TensorBatch:
         ...
 
-class Dispatcher:
+class MuDispatcher:
         
     def put(self, tensor: torch.Tensor, meta):
         ...

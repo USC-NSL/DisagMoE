@@ -6,11 +6,12 @@ _placement_group: PlacementGroup = None
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
     ray.init()
     pg = placement_group([
-        {"GPU": n_gpu_per_worker} for i in range(n_worker)
-    ], strategy="SPREAD")
+        {"GPU": n_gpu_per_worker, "CPU": 0} for i in range(n_worker)
+    ], strategy="PACK")
     ray.get(pg.ready(), timeout=10)
     global _placement_group
     _placement_group = pg
+    print("workers", n_worker, "gpus", n_gpu_per_worker)
 
 def get_global_placement_group():
     global _placement_group

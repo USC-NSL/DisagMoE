@@ -1,4 +1,7 @@
 #include "comm.h"
+#include "logging.h"
+
+#include <iomanip>
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream): 
     Channel::Channel(party_local, party_other), comm_id(comm_id) 
@@ -15,15 +18,25 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
     }
 
 NcclChannel::~NcclChannel() {
-    NCCLCHECK(ncclCommFinalize(this->comm));
-    NCCLCHECK(ncclCommDestroy(this->comm));
+    // NCCLCHECK(ncclCommFinalize(this->comm));
+    // NCCLCHECK(ncclCommDestroy(this->comm));
+}
+
+extern char** _environ;
+void debug_print_environ() {
+    puts("Printing environ");
+    for (char** s = _environ; *s; s++) {
+        printf("%s\n", *s);
+    }
 }
 
 void NcclChannel::instantiate() {
+    // debug_print_environ();
     printf("calling nccl init (%d, %d) %d\n", this->local, this->other, this->m_rank());
-    #ifndef D_ENABLE_RAY
-    CUDACHECK(cudaSetDevice(this->local));
-    #endif
+    // #ifndef D_ENABLE_RAY
+    printf("CUDA SET DEVICE: %d\n", this->local);
+    CUDACHECK(cudaSetDevice(0));
+    // #endif
     NCCLCHECK(ncclCommInitRank(
         &this->comm,
         /*nranks=*/ 2,
