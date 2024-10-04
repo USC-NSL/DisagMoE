@@ -1,8 +1,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "engine.h"
 #include "muhelper.h"
-#include "datatypes.hpp"
+#include "datatypes.hpp""
 
 #include "binding_helper.h"
 #include "binding_tests.hpp"
@@ -46,6 +47,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("create_channel", &create_channel);
     m.def("get_nccl_unique_id", &get_nccl_unique_id);
     m.def("instantiate_channels", &instantiate_channels);
+    m.def("init_engine", &init_engine);
 
     m.def("test_nccl_p2p", &test_nccl_p2p);
     m.def("test_zmq_sub_pub", &test_zmq_sub_pub);

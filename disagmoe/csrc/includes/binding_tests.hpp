@@ -5,6 +5,7 @@
 #include "scheduler.h"
 
 #include <thread>
+#include <memory>
 
 void test_nccl_p2p(Channel_t c1, uintptr_t p1, Channel_t c2, uintptr_t p2, const Metadata& metadata) {
     auto t1 = std::thread([&]{c1->send(p1, metadata);});
@@ -192,10 +193,10 @@ void test_scheduler() {
 
     MuExpertDispatcher sender0({0}, 0, {c0}, {ChannelInfo{{0}, {0}}});
     MuExpertDispatcher sender1({1}, 1, {c1}, {ChannelInfo{{0}, {1}}});
-    MuPool recver({0, 1}, 2, {r1, r2});
-    Scheduler_t scheduler = Scheduler::build(&recver, {2}, "largest");
+    MuPool_t recver = std::make_shared<MuPool>(std::vector<int>({0, 1}), 2, std::vector<Channel_t>({r1, r2}), false);
+    Scheduler_t scheduler = Scheduler::build(recver, {2}, "largest");
 
-    recver.start();
+    recver->start();
     sender0.start();
     sender1.start();
 

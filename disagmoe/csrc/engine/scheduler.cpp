@@ -45,6 +45,10 @@ TensorBatch Scheduler::merge(std::vector<TensorBatch> batches) {
     return TensorBatch {ptr, meta};
 }
 
+void Scheduler::start() {
+    this->pool->start();
+}
+
 TensorBatch Scheduler::schedule() {
     auto batches = this->_schedule();
     auto batch = this->merge(batches);

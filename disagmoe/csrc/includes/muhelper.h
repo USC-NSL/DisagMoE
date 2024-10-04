@@ -118,4 +118,5 @@ public:
     std::vector<TensorBatch> fetch_largest_batch();
 };
 
-typedef MuPool* MuPool_t;
+typedef std::shared_ptr<MuPool> MuPool_t;
+typedef std::shared_ptr<MuDispatcher> MuDispatcher_t;
