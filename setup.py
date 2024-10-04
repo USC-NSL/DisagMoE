@@ -1,4 +1,4 @@
-from setuptools import setup, Extension
+from setuptools import setup, Extension, find_packages
 import pybind11
 import subprocess
 
@@ -39,6 +39,9 @@ ext_modules = [
         ],
         libraries=["cudart", "nccl", "zmq"],
         extra_compile_args=["-lstdc++"],
+        define_macros=[
+            ("D_ENABLE_RAY", "1"),
+        ],
         language='c++',
     ),
 ]
@@ -48,4 +51,5 @@ setup(
     version='0.2',
     cmdclass={"build_ext": build_ext},
     ext_modules=ext_modules,
+    packages=find_packages(".")
 )

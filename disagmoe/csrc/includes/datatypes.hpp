@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <cassert>
+#include <algorithm>
 
 #include "nccl.h"
 
@@ -146,6 +147,22 @@ struct Metadata {
         return std::make_shared<Metadata>(Metadata {
             shape, dtype, layer_id, infos, prompt_lens
         });
+    }
+
+    void step_layer() {
+        this->layer_id ++;
+    }
+
+    void update_exp_ids(const std::vector<int> &new_exp_ids, bool required_sort) {
+        assert(new_exp_ids.size() == infos.size());
+        for (int i = 0; i < infos.size(); i ++) {
+            infos[i].exp_id = new_exp_ids[i];
+        }
+        if (required_sort)
+            std::sort(infos.begin(), infos.end(),
+                [](const TokenMetadata &l, const TokenMetadata &r) {
+                    return l.exp_id < r.exp_id;
+                });
     }
 };
 

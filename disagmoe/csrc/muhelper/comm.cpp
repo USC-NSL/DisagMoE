@@ -4,7 +4,9 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
     Channel::Channel(party_local, party_other), comm_id(comm_id) 
     {
         // TODO(hogura|20240927): convert the party_local to local gpu rank (0<local<num_gpu)
+        #ifndef D_ENABLE_RAY
         CUDACHECK(cudaSetDevice(this->local));
+        #endif
         if (stream == nullptr) {
             CUDACHECK(cudaStreamCreate(&this->stream));
         } else {
@@ -19,7 +21,9 @@ NcclChannel::~NcclChannel() {
 
 void NcclChannel::instantiate() {
     printf("calling nccl init (%d, %d) %d\n", this->local, this->other, this->m_rank());
+    #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->local));
+    #endif
     NCCLCHECK(ncclCommInitRank(
         &this->comm,
         /*nranks=*/ 2,

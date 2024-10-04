@@ -45,7 +45,9 @@ void MuHelper::terminate() {
 }
 
 void MuHelper::init_cuda_device() {
+    #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->device_id));
+    #endif
 }
 
 // MuDispatcher

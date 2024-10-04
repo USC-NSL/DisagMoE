@@ -29,6 +29,8 @@ public:
     TensorBatch schedule();
 
     void wait_for_new_requests();
+
+    void start();
 };
 
 class LargestScheduler: public Scheduler {
