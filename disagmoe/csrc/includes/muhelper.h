@@ -46,12 +46,12 @@ protected:
     std::condition_variable cv;
 
     // ctx must be ahead of mq
-    zmq::context_t ctx;
-    zmq::socket_t mq;
+    std::vector<zmq::context_t> peer_ctx;
+    std::vector<zmq::socket_t> peer_mq;
 
     virtual void _send_once(TensorBatch batch) = 0;
 
-    void _send_batch(Channel_t channel, uintptr_t buf, const Metadata& meta);
+    void _send_batch(int cid, uintptr_t buf, const Metadata& meta);
 
     void run() override;
 
@@ -76,10 +76,10 @@ public:
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
-    std::vector<Channel_t> attn_channel;
+    std::vector<int> attn_channel;
 
     void _send_once(TensorBatch batch) override;
-    Channel_t _get_attn_channel(int req_id, int layer_id);
+    int _get_attn_channel(int req_id, int layer_id);
 
 public:
     MuExpertDispatcher(std::vector<int> layer_ids, 
