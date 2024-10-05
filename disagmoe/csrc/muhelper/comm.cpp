@@ -33,10 +33,9 @@ void debug_print_environ() {
 void NcclChannel::instantiate() {
     // debug_print_environ();
     printf("calling nccl init (%d, %d) %d\n", this->local, this->other, this->m_rank());
-    // #ifndef D_ENABLE_RAY
-    printf("CUDA SET DEVICE: %d\n", this->local);
-    CUDACHECK(cudaSetDevice(0));
-    // #endif
+    #ifndef D_ENABLE_RAY
+    CUDACHECK(cudaSetDevice(this->local));
+    #endif
     NCCLCHECK(ncclCommInitRank(
         &this->comm,
         /*nranks=*/ 2,

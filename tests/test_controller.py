@@ -26,3 +26,8 @@ mp = ModelPlacement(
 master.init_engine(mp)
 
 print("engine inited")
+
+master.start_engine()
+
+while True:
+    pass

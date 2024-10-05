@@ -5,6 +5,7 @@
 
 #include "datatypes.hpp"
 #include "cuda_utils.h"
+#include "constants.h"
 #include "logging.h"
 #include "nccl.h"
 
@@ -78,16 +79,16 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
 
 inline void* convert_to_nccl_uid(char* bytes) {
     // FIXME(hogura|20241003): the buf here never recycled actually
-    std::cout << "!!!!!! nccl uid: ";
     size_t n = sizeof(ncclUniqueId::internal);
-
-    int i = 0;
-    for (char* c = bytes; i < n; c ++, i ++) {
-        std::cout << std::hex << std::setfill('0') << std::setw(2) << int(*c) << " ";
-    }
-    std::cout << LEND;
 
     char* buf = (char*) std::malloc(n);
     memcpy(buf, bytes, n);
     return (void*) buf;
+}
+
+
+inline std::string get_zmq_addr(int device_id) {
+    char ip[256];
+    sprintf(ip, "tcp://127.0.0.1:%d\0", ZMQ_PORT_BASE + device_id);
+    return std::string(ip);
 }

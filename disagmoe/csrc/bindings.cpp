@@ -17,11 +17,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("start", &MuHelper::start)
         .def("terminate", &MuHelper::terminate);
 
-    py::class_<MuAttnDispatcher, std::shared_ptr<MuAttnDispatcher>>(m, "MuAttnDispatcher")
-        .def(py::init<std::vector<int>, int>())
-        .def("start", &MuAttnDispatcher::start)
-        .def("terminate", &MuAttnDispatcher::terminate)
-        .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
+    // py::class_<MuAttnDispatcher, std::shared_ptr<MuAttnDispatcher>>(m, "MuAttnDispatcher")
+    //     .def(py::init<std::vector<int>, int>())
+    //     .def("start", &MuAttnDispatcher::start)
+    //     .def("terminate", &MuAttnDispatcher::terminate)
+    //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
 
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)

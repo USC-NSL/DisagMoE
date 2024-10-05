@@ -11,6 +11,7 @@
 #include "comm.h"
 #include "utils.hpp"
 #include "logging.h"
+#include "constants.h"
 
 #include "zmq.hpp"
 #include "zmq_addon.hpp"
@@ -54,9 +55,13 @@ void MuHelper::init_cuda_device() {
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels): 
     MuHelper(layer_ids, device_id, channels), 
-    ctx(channels.size()), 
-    mq(this->ctx, zmq::socket_type::push) {
+    peer_ctx(channels.size()),
+    peer_mq(channels.size()) {
     sprintf(this->device_id_str, "%d", this->device_id);
+    for (int i = 0; i < channels.size(); i ++) {
+        peer_ctx[i] = zmq::context_t(1);
+        peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
+    }
 }
 
 std::string _serialize(metadata_t metadata) {
@@ -76,24 +81,23 @@ metadata_t _deserialize(char* buf, size_t n) {
     return std::make_shared<Metadata>(result);
 }
 
-void MuDispatcher::_send_batch(Channel_t c, uintptr_t buf, const Metadata& meta) {
+void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     auto data = _serialize(std::make_shared<Metadata>(meta));
-    this->mq.send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
-    this->mq.send(zmq::buffer(data.c_str(), data.size()));
-    c->send(buf, meta);
+    this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
+    this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
+    this->channels[cid]->send(buf, meta);
 }
 
 void MuDispatcher::run() {
-    this->mq.connect("tcp://127.0.0.1:24927");
-    int i = 0;
-    while (!this->end_flag && i < 1024) {
+    for (int i = 0; i < this->channels.size(); i ++)
+        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
+
+    while (!this->end_flag) {
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
         auto batch = this->send_queue.front();
         this->send_queue.pop();
-        
         this->_send_once(batch);
-        i += 1;
     }
 }
 
@@ -126,7 +130,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             j ++;
         auto buf = tensor_at(batch.data, *batch.metadata, i);
         this->_send_batch(
-            this->channels[eid],
+            eid,
             buf,
             batch.metadata->slice(i, j)
         );
@@ -150,7 +154,7 @@ MuExpertDispatcher::MuExpertDispatcher(
     int max_layer = 0;
     for (auto i: layer_ids)
         max_layer = std::max(i, max_layer);
-    this->attn_channel = std::vector<Channel_t>(max_layer + 1);
+    this->attn_channel = std::vector<int>(max_layer + 1, -1);
 
     assert(channels.size() == channel_infos.size());
     for (size_t i = 0; i < channels.size(); i ++) {
@@ -158,12 +162,12 @@ MuExpertDispatcher::MuExpertDispatcher(
         assert(channel_infos[i].attn_layer_ids.size() <= 1);
         this->attn_channel[
             channel_infos[i].attn_layer_ids[0]
-        ] = channels[i];
+        ] = i;
     }
 }
 
-Channel_t MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
-    assert(this->attn_channel[layer_id].get() != nullptr);
+int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
+    assert(this->attn_channel[layer_id] != -1);
     return this->attn_channel[layer_id];
 }
 
@@ -171,12 +175,12 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     LOG(DEBUG) << "expert sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
-    std::vector<Channel_t> chans;
+    std::vector<int> chans;
     for (auto &info: meta->infos) {
         chans.push_back(_get_attn_channel(info.req_id, meta->layer_id));
     }
 
-    auto batches = group_by<Channel_t, cmp_channel_t>(batch.data, *meta, chans);
+    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans);
     LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &[channel, sub_batch]: batches) {
@@ -227,6 +231,10 @@ MuPool::MuPool(
 }
 
 void MuPool::run() {
+    if (this->channels.empty()) {
+        LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
+        return;
+    }
     this->mq.bind("tcp://127.0.0.1:24927");
 
     auto last = clock();
