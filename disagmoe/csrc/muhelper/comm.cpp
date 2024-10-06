@@ -74,6 +74,18 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
     printf("%d NCCL recved\n", this->local);
 }
 
+ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender):
+    Channel(party_local, party_other), is_sender(is_sender) {
+
+    }
+
+std::map<int, zmq::socket_t> ZmqChannel::global_mq = {};
+
+void ZmqChannel::instantiate() {
+    if (global_mq.find(this->local) != global_mq.end()) {
+        this->mq = global_mq[this->local];
+    }
+}
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
     ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));

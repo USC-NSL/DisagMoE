@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "cuda_runtime.h"
+#include "zmq.hpp"
 #include "nccl.h"
+#include "zmq.h"
 
 #include "datatypes.hpp"
 #include "cuda_utils.h"
@@ -66,6 +68,25 @@ public:
     void send(uintptr_t data, const Metadata& metadata) override;
 
     void recv(uintptr_t data, const Metadata& metadata) override;
+};
+
+typedef std::shared_ptr<zmq::socket_t> mq_t;
+
+class ZmqChannel: public Channel {
+protected:
+    static std::map<int, zmq::socket_t> global_mq;
+    zmq::context_t ctx;
+    zmq::socket_t mq;
+    bool is_sender;
+
+public:
+    ZmqChannel(int party_local, int party_other, bool is_sender);
+
+    void instantiate() override;
+
+    void send(uintptr_t data, const Metadata& metadata) override;
+
+    void recv(uintptr_t data, const Metadata &metadata) override;
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
