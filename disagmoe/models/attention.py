@@ -42,6 +42,7 @@ class MoEAttention(nn.Module):
         self.num_heads = self.total_num_heads // tp_size
         self.total_num_kv_heads = num_kv_heads
         self.num_experts = num_heads
+        assert top_k == 1, "Only supports top_1 gating for now"
         self.top_k = top_k
         if self.total_num_kv_heads >= tp_size:
             # Number of KV heads is greater than TP size, so we partition
@@ -114,7 +115,7 @@ class MoEAttention(nn.Module):
         
         # (shaoyuw): We only consider top_1 at first
         _, topk_ids = fused_topk(hidden_states=hidden_states,
-                                                gating_output=router_logits,
-                                                topk=self.top_k,
-                                                renormalize=True)
+                                gating_output=router_logits,
+                                topk=self.top_k,
+                                renormalize=True)
         return output, topk_ids
