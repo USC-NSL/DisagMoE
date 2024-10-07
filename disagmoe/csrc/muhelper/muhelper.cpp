@@ -138,13 +138,14 @@ MuExpertDispatcher::MuExpertDispatcher(
         max_layer = std::max(i, max_layer);
     this->attn_channel = std::vector<int>(max_layer + 1, -1);
 
-    assert(channels.size() == channel_infos.size());
-    for (size_t i = 0; i < channels.size(); i ++) {
-        // TODO(hogura|20240930): currently, only support #attn_replica=1
-        assert(channel_infos[i].attn_layer_ids.size() <= 1);
-        this->attn_channel[
-            channel_infos[i].attn_layer_ids[0]
-        ] = i;
+    if (channels.size() == channel_infos.size()) {
+        for (size_t i = 0; i < channels.size(); i ++) {
+            // TODO(hogura|20240930): currently, only support #attn_replica=1
+            assert(channel_infos[i].attn_layer_ids.size() <= 1);
+            this->attn_channel[
+                channel_infos[i].attn_layer_ids[0]
+            ] = i;
+        }
     }
 }
 
@@ -217,7 +218,7 @@ void MuPool::run() {
         LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq.bind("tcp://127.0.0.1:24927");
+    this->mq.bind(get_zmq_addr(this->device_id));
 
     auto last = clock();
     auto start = last;

@@ -15,31 +15,60 @@ inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {
     return buf + i * metadata.num_element() / metadata.num_tokens();
 }
 
-inline uintptr_t tensor_slice(uintptr_t src, const Metadata& metadata, const std::vector<int> &ids) {
-    // TODO(hogura|20241001): rewrite this function as a cuda kernel for better performance
-    int device;
-    CUDACHECK(cudaGetDevice(&device));
+inline uintptr_t tensor_at(uintptr_t buf, metadata_t metadata, int i) {
+    return tensor_at(buf, *metadata, i);
+}
 
-    LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
+inline uintptr_t tensor_slice(uintptr_t src, 
+                              const Metadata& metadata, 
+                              const std::vector<int> &ids,
+                              bool on_gpu = true) {
+    // TODO(hogura|20241001): rewrite this function as a cuda kernel for better performance
     LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
 
     size_t count_per_token = metadata.num_element() / metadata.num_tokens();
     size_t size_per_token = count_per_token * metadata.get_datatype_size();
-    uintptr_t dst = alloc_cuda_tensor(ids.size() * count_per_token, device);
 
-    for (size_t i = 0; i < ids.size(); i ++) {
-        int id = ids[i];
-        // TODO(hogura|20241001): replace cudaMemcpy to cudaMemcpyAsync
-        CUDACHECK(cudaMemcpy(
-            (void*) (dst + i * size_per_token), 
-            (void*) (src + id * size_per_token), 
-            /*size=*/ size_per_token, 
-            cudaMemcpyKind::cudaMemcpyDeviceToDevice
-        ));
+    uintptr_t dst;
+    if (on_gpu) {
+        int device;
+        CUDACHECK(cudaGetDevice(&device));
+        LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
+        dst = alloc_cuda_tensor(ids.size() * count_per_token, device);
+
+        for (size_t i = 0; i < ids.size(); i ++) {
+            int id = ids[i];
+            // TODO(hogura|20241001): replace cudaMemcpy to cudaMemcpyAsync
+            CUDACHECK(cudaMemcpy(
+                (void*) (dst + i * size_per_token), 
+                (void*) (src + id * size_per_token), 
+                /*size=*/ size_per_token, 
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice
+            ));
+        }
+    } else {
+        void* buf = std::malloc(ids.size() * count_per_token);
+        // TODO(hogura|20241007): use `omp parallel for` to accelerate
+        for (int i = 0; i < ids.size(); i ++) {
+            int id = ids[i];
+            memcpy(
+                buf + i * size_per_token,
+                (void*) (src + id * size_per_token),
+                size_per_token
+            );
+        }
+        dst = (uintptr_t) buf;
     }
 
     LOG(DEBUG) << "copied " << ids.size() << " tokens." << LEND;
     return dst;
+}
+
+inline uintptr_t tensor_slice(uintptr_t src, 
+                              metadata_t metadata, 
+                              const std::vector<int> &ids,
+                              bool on_gpu = true) {
+    return tensor_slice(src, *metadata, ids, on_gpu);
 }
 
 template<class T, class T_COMP = std::less<T>>
@@ -101,7 +130,7 @@ inline bool is_embedding_node(int device_id) {
 }
 
 
-std::string cerealize(metadata_t metadata) {
+std::string static cerealize(metadata_t metadata) {
     // use cereal to serialize metadata
     std::stringstream ss;
     cereal::BinaryOutputArchive oarchive(ss);
@@ -109,7 +138,7 @@ std::string cerealize(metadata_t metadata) {
     return ss.str();
 }
 
-metadata_t decerealize(char* buf, size_t n) {
+metadata_t static decerealize(char* buf, size_t n) {
     std::string buffer(buf, n);
     std::istringstream ss(buffer);
     cereal::BinaryInputArchive iarchive(ss);

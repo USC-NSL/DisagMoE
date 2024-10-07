@@ -2,18 +2,45 @@
 
 #include "muhelper.h"
 
-class Sampler: public MuHelper {
+#include <set>
+
+class Sampler: public MuExpertDispatcher {
 protected:
+    // channels info
+    std::vector<Channel_t> peer_channels, out_channels;
+
+    // zmq info
+    zmq::context_t ctx;
+    zmq::socket_t recv_mq;
+
+    zmq::context_t send_ctx;
+    std::vector<zmq::socket_t> send_mqs;
+
+    // batch processing info
+    std::set<int> finished_seqs;
+    std::map<int, int> output_lens;
+
     void run() override;
+
+    int _get_attn_channel(int req_id, int layer_id) override;
+
+    void process_batch(uintptr_t data, metadata_t meta);
+
+    int sample(uintptr_t buf, metadata_t meta);
+
+    bool check_finished(int token, int req_id);
 
 public:
-    Sampler(int device_id, std::vector<Channel_t> channels);
+    Sampler(int device_id, 
+            std::vector<Channel_t> in_channels, 
+            std::vector<Channel_t> out_channels);
 };
 
-class Tokenizer: public MuHelper {
+class Tokenizer: public MuExpertDispatcher {
 protected:
-    void run() override;
+    int req_count;
 
 public:
     Tokenizer(int device_id, std::vector<Channel_t> channels);
+    void put_request(uintptr_t buf, std::vector<size_t> shape);
 };
