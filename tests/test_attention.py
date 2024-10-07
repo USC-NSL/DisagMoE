@@ -4,6 +4,7 @@ from vllm.config import CacheConfig
 from typing import Union
 import random
 from vllm.attention.backends.flash_attn import FlashAttentionBackend, FlashAttentionMetadata
+from torch.nn.utils.rnn import pad_sequence
 def make_kv_cache(num_blocks: int,
                   num_heads: int,
                   head_size: int,
@@ -70,7 +71,7 @@ def make_naive_mapping(lens, mode):
         end = num_blocks + allocated_blocks
         block_list = list(range(start, end))
         allocated_blocks = end
-        block_table.append(block_list)
+        block_table.append(torch.tensor(block_list, dtype=torch.int32))
         if mode == "prefill":
             start_slot = start * block_size
             end_slot = start_slot + l
@@ -85,14 +86,13 @@ def make_naive_mapping(lens, mode):
         else:
             assert False
             
-    
-    block_table = torch.tensor(block_table, dtype=torch.int32)
+    block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
     slots_table = torch.tensor(slots_table, dtype=torch.long)
     return block_table, slots_table
     
 def test_prefill():
     num_prefills = 8
-    lens = [random.randint(32, b=63) for _ in range(num_prefills)]
+    lens = [random.randint(32, b=127) for _ in range(num_prefills)]
     seqlens = torch.tensor(lens)
     num_prefill_tokens = sum(lens)
     seqlens = torch.tensor(lens, dtype=torch.int32, device=torch.get_default_device())
@@ -128,7 +128,7 @@ def test_decode():
     num_decode_tokens = 8
     num_prefills = 0
     num_prefill_tokens = 0
-    lens = [random.randint(32, b=63) for _ in range(num_decode_tokens)]
+    lens = [random.randint(32, b=127) for _ in range(num_decode_tokens)]
     seqlens = torch.tensor(lens, dtype=torch.int32, device=torch.get_default_device())
     max_decode_seq_len = max(lens)
     block_table, slot_mapping = make_naive_mapping(lens, "decode")
