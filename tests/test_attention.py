@@ -30,7 +30,7 @@ def make_kv_cache(num_blocks: int,
         device = torch.get_default_device()
         
     kv_cache = torch.rand(
-        (2, num_blocks, block_size * num_heads * head_size)).to(device)
+        (2, num_blocks, block_size, num_heads, head_size)).to(device)
     if default_val is not None:
         kv_cache[:, :, :] = default_val
     return kv_cache
@@ -60,10 +60,10 @@ def make_seqlens(lens):
         seqlen.append(seqlen[-1] + l)
     return torch.tensor(seqlen, dtype=torch.int32, device=torch.get_default_device())
 
-def make_naive_mapping(lens):
+def make_naive_mapping(lens, mode):
     block_table = []
     slots_table = []
-    allocated_blocks = 0
+    allocated_blocks = 4
     for l in lens:
         num_blocks = (l + block_size) // block_size
         start = allocated_blocks
@@ -71,10 +71,20 @@ def make_naive_mapping(lens):
         block_list = list(range(start, end))
         allocated_blocks = end
         block_table.append(block_list)
-        start_slot = start * block_size
-        end_slot = start_slot + l
-        slots_list = list(range(start_slot, end_slot))
-        slots_table.extend(slots_list)
+        if mode == "prefill":
+            start_slot = start * block_size
+            end_slot = start_slot + l
+            slots_list = list(range(start_slot, end_slot))
+            slots_table.extend(slots_list)
+        elif mode == "decode":
+            end_slot = start * block_size + l - 1
+            slots_table.append(end_slot)
+        elif mode == "mix":
+            # chunked prefill
+            pass
+        else:
+            assert False
+            
     
     block_table = torch.tensor(block_table, dtype=torch.int32)
     slots_table = torch.tensor(slots_table, dtype=torch.long)
@@ -83,20 +93,22 @@ def make_naive_mapping(lens):
 def test_prefill():
     num_prefills = 8
     lens = [random.randint(32, b=63) for _ in range(num_prefills)]
+    seqlens = torch.tensor(lens)
     num_prefill_tokens = sum(lens)
+    seqlens = torch.tensor(lens, dtype=torch.int32, device=torch.get_default_device())
     seqlens_q = make_seqlens(lens)
     context_lens_tensor = [0] * num_prefills
     seqlens_kv = seqlens_q
     max_seqlen_q = max(lens)
     max_seqlen_kv = max_seqlen_q
-    block_table, slot_mapping = make_naive_mapping(lens)
+    block_table, slot_mapping = make_naive_mapping(lens, "prefill")
     meta = FlashAttentionMetadata(
         num_prefills=num_prefills,
         num_prefill_tokens=num_prefill_tokens,
         num_decode_tokens=0,
         slot_mapping=slot_mapping,
         seq_lens=lens,
-        seq_lens_tensor=seqlens_q,
+        seq_lens_tensor=seqlens,
         max_query_len=max_seqlen_q,
         max_prefill_seq_len=max_seqlen_q,
         max_decode_seq_len=0,
@@ -113,7 +125,34 @@ def test_prefill():
     
 
 def test_decode():
-    pass
+    num_decode_tokens = 8
+    num_prefills = 0
+    num_prefill_tokens = 0
+    lens = [random.randint(32, b=63) for _ in range(num_decode_tokens)]
+    seqlens = torch.tensor(lens, dtype=torch.int32, device=torch.get_default_device())
+    max_decode_seq_len = max(lens)
+    block_table, slot_mapping = make_naive_mapping(lens, "decode")
+    meta = FlashAttentionMetadata(
+        num_prefills=num_prefills,
+        num_prefill_tokens=num_prefill_tokens,
+        num_decode_tokens=num_decode_tokens,
+        slot_mapping=slot_mapping,
+        seq_lens=lens,
+        seq_lens_tensor=seqlens,
+        max_query_len=None,
+        max_prefill_seq_len=0,
+        max_decode_seq_len=max_decode_seq_len,
+        query_start_loc=None,
+        seq_start_loc=None,
+        context_lens_tensor=None,
+        block_tables=block_table,
+        use_cuda_graph=False,
+    )
+    inputs = torch.randn((num_decode_tokens, hidden_size))
+    positions = torch.zeros_like(inputs, dtype=torch.long)
+    attn.forward(positions, inputs, cache, meta)
+    print(f">>> decode test passed")
+    
 
 def test_prefill_decode():
     pass
