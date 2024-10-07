@@ -1,5 +1,4 @@
 #include <condition_variable>
-#include <sstream>
 #include <cstdlib>
 #include <string>
 #include <mutex>
@@ -64,25 +63,8 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
     }
 }
 
-std::string _serialize(metadata_t metadata) {
-    // use cereal to serialize metadata
-    std::stringstream ss;
-    cereal::BinaryOutputArchive oarchive(ss);
-    oarchive(*metadata);
-    return ss.str();
-}
-
-metadata_t _deserialize(char* buf, size_t n) {
-    std::string buffer(buf, n);
-    std::istringstream ss(buffer);
-    cereal::BinaryInputArchive iarchive(ss);
-    Metadata result;
-    iarchive(result);
-    return std::make_shared<Metadata>(result);
-}
-
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
-    auto data = _serialize(std::make_shared<Metadata>(meta));
+    auto data = cerealize(std::make_shared<Metadata>(meta));
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -251,7 +233,7 @@ void MuPool::run() {
         assert(*result == 2);
 
         int peer_id = std::stoi(recv_msgs[0].to_string());
-        auto metadata = _deserialize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
         auto tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
         LOG(DEBUG) << "calling NCCL recv from " << peer_id << " metadata= " << *metadata << LEND;
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cereal/archives/binary.hpp>
+#include <sstream>
 #include <vector>
 #include <map>
 
@@ -91,4 +93,27 @@ inline std::string get_zmq_addr(int device_id) {
     char ip[256];
     sprintf(ip, "tcp://127.0.0.1:%d\0", ZMQ_PORT_BASE + device_id);
     return std::string(ip);
+}
+
+
+inline bool is_embedding_node(int device_id) {
+    return device_id / 8 >= 100;
+}
+
+
+std::string cerealize(metadata_t metadata) {
+    // use cereal to serialize metadata
+    std::stringstream ss;
+    cereal::BinaryOutputArchive oarchive(ss);
+    oarchive(*metadata);
+    return ss.str();
+}
+
+metadata_t decerealize(char* buf, size_t n) {
+    std::string buffer(buf, n);
+    std::istringstream ss(buffer);
+    cereal::BinaryInputArchive iarchive(ss);
+    Metadata result;
+    iarchive(result);
+    return std::make_shared<Metadata>(result);
 }

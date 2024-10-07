@@ -39,7 +39,7 @@ public:
 class MuDispatcher: public MuHelper {
     
 protected:
-    char device_id_str[2];
+    char device_id_str[3];
 
     std::queue<TensorBatch> send_queue;
     std::mutex mtx;

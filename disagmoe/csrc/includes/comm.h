@@ -74,10 +74,13 @@ typedef std::shared_ptr<zmq::socket_t> mq_t;
 
 class ZmqChannel: public Channel {
 protected:
-    static std::map<int, zmq::socket_t> global_mq;
+    static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
-    zmq::socket_t mq;
+    mq_t mq;
     bool is_sender;
+    char device_id_str[3];
+
+    void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t* dst = 0);
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender);
