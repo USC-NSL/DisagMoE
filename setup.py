@@ -11,8 +11,12 @@ import os
 CSRC_DIR = "disagmoe/csrc"
 
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
+NCCL_HOME = os.environ.get("NCCL_HOME", "/usr/local/nccl2")
+
 CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "include"))
 CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
+CUDA_LIB64_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib64"))
+NCCL_LIB_DIR = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(NCCL_HOME, "lib"))
 
 def find_all_c_targets(path):
     res = []
@@ -33,9 +37,12 @@ ext_modules = [
             CUDA_INCLUDE_DIR,
             "third_party/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
             "third_party/cereal/include",
+            "/usr/local/nccl2/include"
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
+            CUDA_LIB64_DIR,
+            NCCL_LIB_DIR,
         ],
         libraries=["cudart", "nccl", "zmq"],
         extra_compile_args=["-lstdc++", "-O0", "-g"],
