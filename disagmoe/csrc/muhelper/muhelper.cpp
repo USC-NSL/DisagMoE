@@ -1,5 +1,4 @@
 #include <condition_variable>
-#include <sstream>
 #include <cstdlib>
 #include <string>
 #include <mutex>
@@ -64,25 +63,8 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
     }
 }
 
-std::string _serialize(metadata_t metadata) {
-    // use cereal to serialize metadata
-    std::stringstream ss;
-    cereal::BinaryOutputArchive oarchive(ss);
-    oarchive(*metadata);
-    return ss.str();
-}
-
-metadata_t _deserialize(char* buf, size_t n) {
-    std::string buffer(buf, n);
-    std::istringstream ss(buffer);
-    cereal::BinaryInputArchive iarchive(ss);
-    Metadata result;
-    iarchive(result);
-    return std::make_shared<Metadata>(result);
-}
-
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
-    auto data = _serialize(std::make_shared<Metadata>(meta));
+    auto data = cerealize(std::make_shared<Metadata>(meta));
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -156,13 +138,14 @@ MuExpertDispatcher::MuExpertDispatcher(
         max_layer = std::max(i, max_layer);
     this->attn_channel = std::vector<int>(max_layer + 1, -1);
 
-    assert(channels.size() == channel_infos.size());
-    for (size_t i = 0; i < channels.size(); i ++) {
-        // TODO(hogura|20240930): currently, only support #attn_replica=1
-        assert(channel_infos[i].attn_layer_ids.size() <= 1);
-        this->attn_channel[
-            channel_infos[i].attn_layer_ids[0]
-        ] = i;
+    if (channels.size() == channel_infos.size()) {
+        for (size_t i = 0; i < channels.size(); i ++) {
+            // TODO(hogura|20240930): currently, only support #attn_replica=1
+            assert(channel_infos[i].attn_layer_ids.size() <= 1);
+            this->attn_channel[
+                channel_infos[i].attn_layer_ids[0]
+            ] = i;
+        }
     }
 }
 
@@ -235,7 +218,7 @@ void MuPool::run() {
         LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq.bind("tcp://127.0.0.1:24927");
+    this->mq.bind(get_zmq_addr(this->device_id));
 
     auto last = clock();
     auto start = last;
@@ -251,7 +234,7 @@ void MuPool::run() {
         assert(*result == 2);
 
         int peer_id = std::stoi(recv_msgs[0].to_string());
-        auto metadata = _deserialize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
         auto tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
         LOG(DEBUG) << "calling NCCL recv from " << peer_id << " metadata= " << *metadata << LEND;
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);

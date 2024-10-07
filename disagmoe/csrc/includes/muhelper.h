@@ -39,7 +39,7 @@ public:
 class MuDispatcher: public MuHelper {
     
 protected:
-    char device_id_str[2];
+    char device_id_str[3];
 
     std::queue<TensorBatch> send_queue;
     std::mutex mtx;
@@ -79,7 +79,7 @@ protected:
     std::vector<int> attn_channel;
 
     void _send_once(TensorBatch batch) override;
-    int _get_attn_channel(int req_id, int layer_id);
+    virtual int _get_attn_channel(int req_id, int layer_id);
 
 public:
     MuExpertDispatcher(std::vector<int> layer_ids, 

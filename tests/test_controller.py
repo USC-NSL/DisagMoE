@@ -29,5 +29,7 @@ print("engine inited")
 
 master.start_engine()
 
+print("engine started")
+
 while True:
     pass

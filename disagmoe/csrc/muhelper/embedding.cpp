@@ -1,0 +1,141 @@
+#include "embedding.h"
+#include "constants.h"
+#include "logging.h"
+#include "utils.hpp"
+
+#include "zmq.hpp"
+#include "zmq_addon.hpp"
+
+Sampler::Sampler(int device_id, 
+                std::vector<Channel_t> in_channels, 
+                std::vector<Channel_t> out_channels):
+    MuExpertDispatcher({}, device_id, out_channels) {
+        ctx = zmq::context_t(in_channels.size());
+        recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
+
+        for (auto &_: out_channels) {
+            auto c = zmq::context_t(1);
+            send_mqs.push_back(zmq::socket_t(c, zmq::socket_type::push));
+        }
+        this->out_channels = out_channels;
+
+        // copied from MuPool
+        int max_peer_id = 0;
+        for (auto c: in_channels)
+            max_peer_id = std::max(max_peer_id, c->get_peer_id());
+        this->peer_channels = std::vector<Channel_t>(max_peer_id + 1);
+        for (size_t i = 0; i < in_channels.size(); i ++) {
+            int id = in_channels[i]->get_peer_id();
+            assert(this->peer_channels[id].get() == nullptr);
+            this->peer_channels[ in_channels[i]->get_peer_id() ] = in_channels[i];
+        }
+    }
+
+void Sampler::run() {
+    while (!this->end_flag) {
+        std::vector<zmq::message_t> recv_msgs;
+        zmq::recv_result_t result =
+            zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
+        
+        assert(*result == 2);
+        int peer_id = std::stoi(recv_msgs[0].to_string());
+        auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
+
+        this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
+        
+        this->process_batch(tensor_buf, metadata);
+    }
+}
+
+int Sampler::_get_attn_channel(int req_id, int layer_id) {
+    // TODO(hogura|20241007): no attn replicas yet
+    return 0;
+}
+
+void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
+    // Step 1. select finished & unfinished batches
+    std::vector<int> continue_ids;
+
+    for (int i = 0; i < meta->infos.size(); i ++) {
+        auto &info = meta->infos[i];
+        int rid = info.req_id;
+        output_lens[rid] ++;
+
+        if (info.prefill_pos == -1) {
+            // at decode phase
+            if (finished_seqs.find(rid) == finished_seqs.end()) {
+                // Not marked as finished, can continue.
+                continue_ids.push_back(i);
+            }
+            else {
+                // Finished, end.
+                LOG(INFO) << "Request " << rid << " ended, generated " 
+                          << output_lens[rid] << " tokens." << LEND;
+            }
+        } else {
+            // at prefill phase
+            continue_ids.push_back(i);
+        }
+    }
+
+    // Step 2. update metadata
+    Metadata new_meta = meta->at(continue_ids);
+    for (auto &info: new_meta.infos) {
+        // !NOTE(hogura|20241007): 
+        // 1. no chunked prefill, directly prefill -> decode;
+        // 2. no attn replica, first_attn_id = 0
+        if (info.prefill_pos != -1) {
+            info.prefill_pos = -1;
+            info.first_attn_id = 0;
+        }
+    }
+
+    // Step 3. send batches
+    // TODO(hogura|20241007): attention id control
+    _send_once(TensorBatch{
+        tensor_slice(buf, meta, continue_ids, /*on_gpu=*/ false),
+        std::make_shared<Metadata>(new_meta)
+    });
+
+    // Step 4. sample tokens & marked finished
+    for (int i: continue_ids) {
+        auto &info = meta->infos[i];
+        int token = sample(tensor_at(buf, meta, i), meta);
+        if (check_finished(token, info.req_id)) {
+            finished_seqs.insert(info.req_id);
+        }
+        // TODO(hogura|20241007): send the generated tokens back to master node
+    }
+}
+
+int Sampler::sample(uintptr_t buf, metadata_t meta) {
+    // TODO(hogura|20241007): implement a real sampling function
+    return 233;
+}
+
+bool Sampler::check_finished(int token, int req_id) {
+    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= MAX_OUTPUT_LEN;
+}
+
+Tokenizer::Tokenizer(int device_id, std::vector<Channel_t> channels):
+    MuExpertDispatcher({}, device_id, channels, {}) {
+
+}
+
+void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {
+    req_count ++;
+    // TODO(hogura|20241007): set the first attn
+    auto meta_t = std::make_shared<Metadata>(Metadata {
+        shape, 
+        "fp16", 
+        /*layer_id=*/ 0, 
+        { (TokenMetadata) {
+            req_count, 
+            /*exp_id=*/ -1, 
+            /*first_attn_id=*/ 0, 
+            /*prefill_pos=*/ 0} },
+        /*prompt_lens=*/ {}
+    });
+    this->put(TensorBatch {buf, meta_t});
+}
