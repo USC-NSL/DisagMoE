@@ -87,11 +87,9 @@ void ZmqChannel::instantiate() {
         this->mq = global_mq[this->local];
         return;
     }
-    this->ctx = zmq::context_t(
-        this->is_sender ? this->channels.size() : 1
-    );
+    this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
-        &this->ctx, 
+        this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
     global_mq[this->local] = this->mq;
@@ -100,31 +98,31 @@ void ZmqChannel::instantiate() {
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
     if (is_embedding_node(this->local))
         return (void*) data;
-    size_t size = metadata.num_elements() * metadata.get_datatype_size();
-    void* buf;
+    size_t size = metadata.num_element() * metadata.get_datatype_size();
+    uintptr_t buf;
     if (!to_gpu) {
-        buf = !dst ? std::malloc(size) : void*(dst);
+        buf = !dst ? (uintptr_t) std::malloc(size) : dst;
         // TODO(hogura|20241007): overlap this memcpy
-        cudaMemcpy(buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyDeviceToHost);
+        cudaMemcpy((void*) buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyDeviceToHost);
     } else {
-        buf = !dst ? alloc_cuda_tensor(meta.num_elements(), this->local) : void*(dst);
-        cudaMemcpy(buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyHostToDevice);
+        buf = !dst ? alloc_cuda_tensor(metadata.num_element(), this->local) : dst;
+        cudaMemcpy((void*) buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyHostToDevice);
     }
-    return buf;
+    return (void*) buf;
 }
 
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
-    this->mq.send(zmq::buffer(buf, metadata.num_elements() * metadata.get_datatype_size()));
+    this->mq->send(zmq::buffer(buf, metadata.num_element() * metadata.get_datatype_size()));
     std::free(buf);
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
-    size_t size = metadata.num_elements() * metadata.get_datatype_size();
+    size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);
-    auto err = this->mq.recv(msg, zmq::recv_flags::none);
+    auto err = this->mq->recv(msg, zmq::recv_flags::none);
     
-    this->_tensor_copy(msg.data(), metadata, /*to_gpu=*/ true, data);
+    this->_tensor_copy((uintptr_t) msg.data(), metadata, /*to_gpu=*/ true, data);
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

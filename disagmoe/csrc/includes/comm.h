@@ -80,7 +80,7 @@ protected:
     bool is_sender;
     char device_id_str[3];
 
-    void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t* dst = 0);
+    void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender);
