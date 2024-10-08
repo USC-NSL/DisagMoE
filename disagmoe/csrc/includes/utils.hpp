@@ -118,9 +118,9 @@ inline void* convert_to_nccl_uid(char* bytes) {
 }
 
 
-inline std::string get_zmq_addr(int device_id) {
+inline std::string get_zmq_addr(int device_id, bool is_gpu = true) {
     char ip[256];
-    sprintf(ip, "tcp://127.0.0.1:%d\0", ZMQ_PORT_BASE + device_id);
+    sprintf(ip, "tcp://127.0.0.1:%d\0", (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE) + device_id);
     return std::string(ip);
 }
 

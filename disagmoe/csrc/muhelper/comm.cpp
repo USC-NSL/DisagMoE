@@ -93,6 +93,11 @@ void ZmqChannel::instantiate() {
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
     global_mq[this->local] = this->mq;
+    if (is_sender) {
+        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false));
+    } else {
+        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false));
+    }
 }
 
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
@@ -131,6 +136,11 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
         party_local, party_other, id
     );
     // TODO(hogura|20240927): recycle the ncclUniqueId (raw).
+    return channel;
+}
+
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender) {
+    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender);
     return channel;
 }
 

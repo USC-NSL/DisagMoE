@@ -61,6 +61,16 @@ struct Metadata {
     std::vector<TokenMetadata> infos;
     std::map<int, int> prompt_lens;
 
+    // Metadata() {}
+    // Metadata(std::vector<size_t> shape, 
+    //          std::string dtype,
+    //          int layer_id,
+    //          std::vector<TokenMetadata> infos,
+    //          std::map<int, int> prompt_lens = {}): 
+    //             shape(shape), dtype(dtype), layer_id(layer_id), 
+    //             infos(infos), prompt_lens(prompt_lens) 
+    //         {}
+
     inline size_t num_element() const {
         size_t res = 1;
         for (size_t s: this->shape)

@@ -154,6 +154,10 @@ int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
     return this->attn_channel[layer_id];
 }
 
+void MuExpertDispatcher::debug_put(TensorBatch batch) {
+    _send_once(batch);
+}
+
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
     LOG(DEBUG) << "expert sending a batch" << LEND;
     auto meta = batch.metadata;

@@ -93,6 +93,7 @@ public:
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender);
 
 void* get_nccl_unique_id();
 

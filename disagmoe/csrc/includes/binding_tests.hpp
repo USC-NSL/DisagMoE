@@ -3,6 +3,8 @@
 #include "comm.h"
 #include "logging.h"
 #include "scheduler.h"
+#include "embedding.h"
+#include "constants.h"
 
 #include <thread>
 #include <memory>
@@ -209,11 +211,12 @@ void test_scheduler() {
     std::vector<TokenMetadata> infos(n);
     for (int i = 0; i < n; i ++)
         infos[i].req_id = i;
-    auto meta0 = Metadata{
+    auto meta0 = Metadata {
         /*shape=*/ {bs, hs},
         "fp16",
         /*layer_id=*/ 0,
-        infos
+        infos,
+        {}
     };
 
     auto meta1 = meta0; meta1.layer_id = 1;
@@ -245,4 +248,37 @@ void test_scheduler() {
     LOG(INFO) << "batch1:" << *(batch1.metadata) << "\n" << "batch2: " << *(batch2.metadata) << LEND;
 
     exit(0);    
+}
+
+std::pair<Channel_t, Channel_t> init_zmq_channel(int s, int r) {
+    auto c1 = create_zmq_channel(s, r, 1);
+    auto c2 = create_zmq_channel(r, s, 0);
+
+    auto t1 = std::thread([&]{ c1->instantiate(); }), t2 = std::thread([&]{ c2->instantiate(); });
+    t1.join(); t2.join();
+    return std::make_pair(c1, c2);
+}
+
+void test_sampler() {
+    auto pr = init_zmq_channel(0, SAMPLER_DEV_ID);
+    auto c_sender = pr.first, c_recver = pr.second;
+    auto sampler = Sampler(SAMPLER_DEV_ID, {c_recver}, {});
+    MuExpertDispatcher sender({0}, 0, {c_sender}, {ChannelInfo{{0}, {0}}});
+
+    size_t n = 1;
+    size_t hs = 4;
+
+    uintptr_t buf = alloc_cuda_tensor(n * hs, 0);
+    auto metadata = Metadata {
+        /*shape=*/ std::vector<size_t>({n, hs}),
+        /*dtype=*/ "fp16",
+        /*layer_id=*/ 0,
+        /*infos=*/ std::vector<TokenMetadata>({ TokenMetadata {0, -1, 0, -1} }),
+    };
+    auto meta = std::make_shared<Metadata>(metadata);
+
+    sampler.start();
+    sender.start();
+
+    sender.debug_put(TensorBatch {buf, meta});
 }
