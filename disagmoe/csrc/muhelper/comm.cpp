@@ -3,6 +3,7 @@
 #include "utils.hpp"
 
 #include <iomanip>
+#include <mutex>
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream): 
     Channel::Channel(party_local, party_other), comm_id(comm_id) 
@@ -81,10 +82,13 @@ ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender):
     }
 
 std::map<int, mq_t> ZmqChannel::global_mq = {};
+std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
+    std::lock_guard<std::mutex> guard(global_mutex);
     if (global_mq.find(this->local) != global_mq.end()) {
         this->mq = global_mq[this->local];
+        LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
         return;
     }
     this->ctx = zmq::context_t(1);
@@ -93,6 +97,12 @@ void ZmqChannel::instantiate() {
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
     global_mq[this->local] = this->mq;
+    if (is_sender) {
+        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false));
+    } else {
+        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false));
+    }
+    LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
 }
 
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
@@ -112,8 +122,10 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
 }
 
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
+    LOG(INFO) << "ZmqChannel sending " << metadata << LEND;
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     this->mq->send(zmq::buffer(buf, metadata.num_element() * metadata.get_datatype_size()));
+    LOG(INFO) << "ZmqChannel sent" << LEND;
     std::free(buf);
 }
 
@@ -131,6 +143,11 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
         party_local, party_other, id
     );
     // TODO(hogura|20240927): recycle the ncclUniqueId (raw).
+    return channel;
+}
+
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender) {
+    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender);
     return channel;
 }
 

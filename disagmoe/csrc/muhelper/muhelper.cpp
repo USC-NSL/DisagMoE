@@ -65,6 +65,7 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     auto data = cerealize(std::make_shared<Metadata>(meta));
+    LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -138,15 +139,15 @@ MuExpertDispatcher::MuExpertDispatcher(
         max_layer = std::max(i, max_layer);
     this->attn_channel = std::vector<int>(max_layer + 1, -1);
 
-    if (channels.size() == channel_infos.size()) {
-        for (size_t i = 0; i < channels.size(); i ++) {
-            // TODO(hogura|20240930): currently, only support #attn_replica=1
-            assert(channel_infos[i].attn_layer_ids.size() <= 1);
-            this->attn_channel[
-                channel_infos[i].attn_layer_ids[0]
-            ] = i;
-        }
+    for (size_t i = 0; i < channels.size(); i ++) {
+        // TODO(hogura|20240930): currently, only support #attn_replica=1
+        assert(channel_infos[i].attn_layer_ids.size() <= 1);
+        this->attn_channel[
+            channel_infos[i].attn_layer_ids[0]
+        ] = i;
     }
+
+    LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
@@ -154,8 +155,12 @@ int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
     return this->attn_channel[layer_id];
 }
 
+void MuExpertDispatcher::debug_put(TensorBatch batch) {
+    _send_once(batch);
+}
+
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
-    LOG(DEBUG) << "expert sending a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
     std::vector<int> chans;
@@ -163,7 +168,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         chans.push_back(_get_attn_channel(info.req_id, meta->layer_id));
     }
 
-    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans);
+    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
+        /*on_gpu=*/ !is_embedding_node(device_id));
     LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &[channel, sub_batch]: batches) {
@@ -173,7 +179,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             *sub_batch.metadata
         );
     }
-    LOG(DEBUG) << "expert sent a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
@@ -235,9 +241,27 @@ void MuPool::run() {
 
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
-        auto tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
-        LOG(DEBUG) << "calling NCCL recv from " << peer_id << " metadata= " << *metadata << LEND;
+        uintptr_t tensor_buf = 0;
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // Use ZMQ Channel
+            tensor_buf = (uintptr_t) std::malloc(
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        } else {
+            // Use NCCL Channel
+            tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
+        }
+
+        LOG(DEBUG) << "calling channel recv from " << peer_id << ", " << *metadata << LEND;
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
+
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // !NOTE(hogura|20241007): incurs a CPU -> GPU sync here
+            tensor_buf = alloc_copy_tensor(
+                tensor_buf, 
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        }
 
         int lid = this->inner_layer_id[metadata->layer_id];
 

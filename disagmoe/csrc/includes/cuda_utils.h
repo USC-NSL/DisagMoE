@@ -41,4 +41,11 @@ inline uintptr_t alloc_cuda_tensor(int count, int device_id) {
     return (uintptr_t) (data);
 }
 
+inline uintptr_t alloc_copy_tensor(uintptr_t buf, int size) {
+    void* data;
+    CUDACHECK(cudaMalloc(&data, size));
+    CUDACHECK(cudaMemcpy(data, (void*) buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
+    return (uintptr_t) data;
+}
+
 // TODO(hogura|20241001): add allocAsync

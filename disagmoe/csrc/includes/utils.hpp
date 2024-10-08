@@ -75,7 +75,8 @@ template<class T, class T_COMP = std::less<T>>
 inline std::vector<std::pair<T, TensorBatch>> group_by(
     uintptr_t buf, 
     const Metadata &metadata,
-    const std::vector<T> &keys) {
+    const std::vector<T> &keys,
+    bool on_gpu = true) {
 
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
@@ -95,7 +96,7 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
     for (auto &[key, grouped_ids]: ids) {
         LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
         auto sliced_meta = metadata.at(grouped_ids); 
-        auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids);
+        auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
         results.push_back(std::make_pair(
             key, 
             (TensorBatch) {
@@ -118,15 +119,15 @@ inline void* convert_to_nccl_uid(char* bytes) {
 }
 
 
-inline std::string get_zmq_addr(int device_id) {
+inline std::string get_zmq_addr(int device_id, bool is_gpu = true) {
     char ip[256];
-    sprintf(ip, "tcp://127.0.0.1:%d\0", ZMQ_PORT_BASE + device_id);
+    sprintf(ip, "tcp://127.0.0.1:%d\0", (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE) + device_id);
     return std::string(ip);
 }
 
 
 inline bool is_embedding_node(int device_id) {
-    return device_id / 8 >= 100;
+    return device_id == TOKENIZER_DEV_ID || device_id == SAMPLER_DEV_ID;
 }
 
 

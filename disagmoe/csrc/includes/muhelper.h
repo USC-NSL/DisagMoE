@@ -86,6 +86,8 @@ public:
                        int device_id, 
                        std::vector<Channel_t> channels={},
                        std::vector<ChannelInfo> channel_infos={});
+    
+    void debug_put(TensorBatch batch);
 };
 
 class MuPool: public MuHelper {
