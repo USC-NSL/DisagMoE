@@ -8,14 +8,21 @@
 
 Sampler::Sampler(int device_id, 
                 std::vector<Channel_t> in_channels, 
-                std::vector<Channel_t> out_channels):
-    MuExpertDispatcher({}, device_id, out_channels) {
+                std::vector<Channel_t> out_channels,
+                std::vector<ChannelInfo> out_channel_infos):
+    MuExpertDispatcher(
+        /*layer_ids=*/ {0}, 
+        device_id, 
+        out_channels, 
+        out_channel_infos
+    ) {
+        
         ctx = zmq::context_t(in_channels.size());
         recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
 
         for (auto &_: out_channels) {
-            auto c = zmq::context_t(1);
-            send_mqs.push_back(zmq::socket_t(c, zmq::socket_type::push));
+            send_ctxs.push_back(zmq::context_t(1));
+            send_mqs.push_back(zmq::socket_t(*send_ctxs.rbegin(), zmq::socket_type::push));
         }
         this->out_channels = out_channels;
 
@@ -29,14 +36,18 @@ Sampler::Sampler(int device_id,
             assert(this->peer_channels[id].get() == nullptr);
             this->peer_channels[ in_channels[i]->get_peer_id() ] = in_channels[i];
         }
+        LOG(INFO) << "inited sampler" << LEND;
     }
 
 void Sampler::run() {
+    this->recv_mq.bind(get_zmq_addr(device_id));
     while (!this->end_flag) {
+        LOG(DEBUG) << "sampler receiving msg ..." << LEND;
         std::vector<zmq::message_t> recv_msgs;
         zmq::recv_result_t result =
             zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
         
+        LOG(DEBUG) << "sampler got msg !!!" << LEND;
         assert(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
@@ -54,6 +65,8 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 }
 
 void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
+    LOG(DEBUG) << "processing batch" << LEND;
+
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
 
@@ -80,6 +93,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
     }
 
     // Step 2. update metadata
+    meta->layer_id = 0;
     Metadata new_meta = meta->at(continue_ids);
     for (auto &info: new_meta.infos) {
         // !NOTE(hogura|20241007): 
@@ -93,6 +107,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
 
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
+    LOG(DEBUG) << "sampler send once" << LEND;
     _send_once(TensorBatch{
         tensor_slice(buf, meta, continue_ids, /*on_gpu=*/ false),
         std::make_shared<Metadata>(new_meta)
@@ -107,6 +122,8 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
+
+    LOG(INFO) << "sampler processed one batch" << LEND;
 }
 
 int Sampler::sample(uintptr_t buf, metadata_t meta) {

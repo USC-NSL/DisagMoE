@@ -13,7 +13,7 @@ protected:
     zmq::context_t ctx;
     zmq::socket_t recv_mq;
 
-    zmq::context_t send_ctx;
+    std::vector<zmq::context_t> send_ctxs;
     std::vector<zmq::socket_t> send_mqs;
 
     // batch processing info
@@ -33,7 +33,8 @@ protected:
 public:
     Sampler(int device_id, 
             std::vector<Channel_t> in_channels, 
-            std::vector<Channel_t> out_channels);
+            std::vector<Channel_t> out_channels,
+            std::vector<ChannelInfo> out_channel_infos);
 };
 
 class Tokenizer: public MuExpertDispatcher {

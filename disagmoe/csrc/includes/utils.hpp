@@ -75,7 +75,8 @@ template<class T, class T_COMP = std::less<T>>
 inline std::vector<std::pair<T, TensorBatch>> group_by(
     uintptr_t buf, 
     const Metadata &metadata,
-    const std::vector<T> &keys) {
+    const std::vector<T> &keys,
+    bool on_gpu = true) {
 
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
@@ -95,7 +96,7 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
     for (auto &[key, grouped_ids]: ids) {
         LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
         auto sliced_meta = metadata.at(grouped_ids); 
-        auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids);
+        auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
         results.push_back(std::make_pair(
             key, 
             (TensorBatch) {

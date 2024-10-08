@@ -8,6 +8,7 @@
 
 #include <thread>
 #include <memory>
+#include <cstdlib>
 
 void test_nccl_p2p(Channel_t c1, uintptr_t p1, Channel_t c2, uintptr_t p2, const Metadata& metadata) {
     auto t1 = std::thread([&]{c1->send(p1, metadata);});
@@ -261,9 +262,19 @@ std::pair<Channel_t, Channel_t> init_zmq_channel(int s, int r) {
 
 void test_sampler() {
     auto pr = init_zmq_channel(0, SAMPLER_DEV_ID);
+    auto pr2 = init_zmq_channel(SAMPLER_DEV_ID, 1); // dummy channel
+    
+    LOG(INFO) << "got all channels" << LEND;
+
+    std::vector<ChannelInfo> chan_info = {ChannelInfo(std::vector<int>(), {0})};
     auto c_sender = pr.first, c_recver = pr.second;
-    auto sampler = Sampler(SAMPLER_DEV_ID, {c_recver}, {});
+    auto sampler = Sampler(SAMPLER_DEV_ID, 
+        std::vector<Channel_t>({c_recver}), 
+        std::vector<Channel_t>({pr2.first}), 
+        chan_info);
     MuExpertDispatcher sender({0}, 0, {c_sender}, {ChannelInfo{{0}, {0}}});
+
+    LOG(INFO) << "got all workers" << LEND;
 
     size_t n = 1;
     size_t hs = 4;
@@ -280,5 +291,10 @@ void test_sampler() {
     sampler.start();
     sender.start();
 
+    LOG(INFO) << "started workers" << LEND;
+
     sender.debug_put(TensorBatch {buf, meta});
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    LOG(INFO) << "end tests" << LEND;
+    exit(0);
 }

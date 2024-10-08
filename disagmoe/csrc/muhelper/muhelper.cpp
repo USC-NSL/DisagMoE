@@ -138,15 +138,15 @@ MuExpertDispatcher::MuExpertDispatcher(
         max_layer = std::max(i, max_layer);
     this->attn_channel = std::vector<int>(max_layer + 1, -1);
 
-    if (channels.size() == channel_infos.size()) {
-        for (size_t i = 0; i < channels.size(); i ++) {
-            // TODO(hogura|20240930): currently, only support #attn_replica=1
-            assert(channel_infos[i].attn_layer_ids.size() <= 1);
-            this->attn_channel[
-                channel_infos[i].attn_layer_ids[0]
-            ] = i;
-        }
+    for (size_t i = 0; i < channels.size(); i ++) {
+        // TODO(hogura|20240930): currently, only support #attn_replica=1
+        assert(channel_infos[i].attn_layer_ids.size() <= 1);
+        this->attn_channel[
+            channel_infos[i].attn_layer_ids[0]
+        ] = i;
     }
+
+    LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
@@ -159,7 +159,7 @@ void MuExpertDispatcher::debug_put(TensorBatch batch) {
 }
 
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
-    LOG(DEBUG) << "expert sending a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
     std::vector<int> chans;
@@ -167,7 +167,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         chans.push_back(_get_attn_channel(info.req_id, meta->layer_id));
     }
 
-    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans);
+    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
+        /*on_gpu=*/ !is_embedding_node(device_id));
     LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &[channel, sub_batch]: batches) {
@@ -177,7 +178,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             *sub_batch.metadata
         );
     }
-    LOG(DEBUG) << "expert sent a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
