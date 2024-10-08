@@ -260,7 +260,7 @@ std::pair<Channel_t, Channel_t> init_zmq_channel(int s, int r) {
     return std::make_pair(c1, c2);
 }
 
-void test_sampler() {
+void test_sampler_recv() {
     auto pr = init_zmq_channel(0, SAMPLER_DEV_ID);
     auto pr2 = init_zmq_channel(SAMPLER_DEV_ID, 1); // dummy channel
     
@@ -296,5 +296,51 @@ void test_sampler() {
     sender.debug_put(TensorBatch {buf, meta});
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     LOG(INFO) << "end tests" << LEND;
+    exit(0);
+}
+
+void test_sampler_send() {
+    auto pr = init_zmq_channel(SAMPLER_DEV_ID, 0);
+    auto pr2 = init_zmq_channel(1, SAMPLER_DEV_ID); // dummy channel
+    
+    LOG(INFO) << "got all channels" << LEND;
+
+    std::vector<ChannelInfo> chan_info = {ChannelInfo(std::vector<int>(), {0})};
+    auto c_sender = pr.first, c_recver = pr.second;
+    auto sampler = Sampler(SAMPLER_DEV_ID, 
+        std::vector<Channel_t>({pr2.first}),
+        std::vector<Channel_t>({c_sender}),  
+        chan_info);
+    MuPool recver({0}, 0, {c_recver}, true);
+
+    LOG(INFO) << "got all workers" << LEND;
+
+    size_t n = 1;
+    size_t hs = 4;
+
+    uintptr_t buf = (uintptr_t) std::malloc(n * hs);
+    auto metadata = Metadata {
+        /*shape=*/ std::vector<size_t>({n, hs}),
+        /*dtype=*/ "fp16",
+        /*layer_id=*/ 0,
+        /*infos=*/ std::vector<TokenMetadata>({ TokenMetadata {0, -1, 0, -1} }),
+    };
+    auto meta = std::make_shared<Metadata>(metadata);
+
+    sampler.start();
+    recver.start();
+
+    sampler.process_batch(buf, meta);
+
+    LOG(INFO) << "started workers" << LEND;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    auto res = recver.fetch_largest_batch();
+
+    LOG(INFO) << "fetched " << res.size() << " batch" << LEND;
+
+    LOG(INFO) << "end tests" << LEND;
+
     exit(0);
 }

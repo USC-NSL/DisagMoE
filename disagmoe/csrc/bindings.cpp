@@ -77,5 +77,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("test_attn_dispatcher", &test_attn_dispatcher);
     m.def("test_expert_dispatcher", &test_expert_dispatcher);
     m.def("test_scheduler", &test_scheduler);
-    m.def("test_sampler", &test_sampler);
+    m.def("test_sampler_recv", &test_sampler_recv);
+    m.def("test_sampler_send", &test_sampler_send);
 }

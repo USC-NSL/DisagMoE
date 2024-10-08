@@ -12,9 +12,9 @@ const int ZMQ_CPU_PORT_BASE = 25000;
 #endif
 
 #ifndef SAMPLER_DEV_ID
-#define SAMPLER_DEV_ID 801
+#define SAMPLER_DEV_ID 81
 #endif
 
 #ifndef TOKENIZER_DEV_ID
-#define TOKENIZER_DEV_ID 802
+#define TOKENIZER_DEV_ID 82
 #endif

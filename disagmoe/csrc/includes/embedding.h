@@ -24,17 +24,17 @@ protected:
 
     int _get_attn_channel(int req_id, int layer_id) override;
 
-    void process_batch(uintptr_t data, metadata_t meta);
-
-    int sample(uintptr_t buf, metadata_t meta);
-
-    bool check_finished(int token, int req_id);
-
 public:
     Sampler(int device_id, 
             std::vector<Channel_t> in_channels, 
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
+
+    void process_batch(uintptr_t data, metadata_t meta);
+
+    int sample(uintptr_t buf, metadata_t meta);
+
+    bool check_finished(int token, int req_id);
 };
 
 class Tokenizer: public MuExpertDispatcher {

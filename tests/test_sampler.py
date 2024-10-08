@@ -1,3 +1,4 @@
 from disagmoe_c import *
 
-test_sampler()
+# test_sampler_recv()
+test_sampler_send()

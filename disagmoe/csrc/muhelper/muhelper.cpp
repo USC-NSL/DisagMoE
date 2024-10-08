@@ -65,6 +65,7 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     auto data = cerealize(std::make_shared<Metadata>(meta));
+    LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -240,9 +241,27 @@ void MuPool::run() {
 
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
-        auto tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
-        LOG(DEBUG) << "calling NCCL recv from " << peer_id << " metadata= " << *metadata << LEND;
+        uintptr_t tensor_buf = 0;
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // Use ZMQ Channel
+            tensor_buf = (uintptr_t) std::malloc(
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        } else {
+            // Use NCCL Channel
+            tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
+        }
+
+        LOG(DEBUG) << "calling channel recv from " << peer_id << ", " << *metadata << LEND;
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
+
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // !NOTE(hogura|20241007): incurs a CPU -> GPU sync here
+            tensor_buf = alloc_copy_tensor(
+                tensor_buf, 
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        }
 
         int lid = this->inner_layer_id[metadata->layer_id];
 

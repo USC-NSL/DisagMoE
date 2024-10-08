@@ -127,7 +127,7 @@ inline std::string get_zmq_addr(int device_id, bool is_gpu = true) {
 
 
 inline bool is_embedding_node(int device_id) {
-    return device_id / 8 >= 100;
+    return device_id == TOKENIZER_DEV_ID || device_id == SAMPLER_DEV_ID;
 }
 
 
