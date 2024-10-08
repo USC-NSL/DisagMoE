@@ -10,6 +10,7 @@ from disagmoe.frontend.datatypes import ChannelInfo
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
+from disagmoe.utils.constants import *
 
 class Controller:
     
@@ -21,6 +22,8 @@ class Controller:
         self.workers = []
         self.device_ids = []
         self._logger = get_logger("controller")
+        self.sampler_worker = None
+        self.tokenizer_worker = None
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -30,10 +33,13 @@ class Controller:
         device_count = {}
         node_ids = {}
         
+        embedding_ids = [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+        
         for bundle_id, bundle in enumerate(pg.bundle_specs):
             if not bundle.get("GPU", 0):
-                # TODO(hogura|20241003): sampler/tokenizer worker
-                continue
+                n_cpus, n_gpus = 1, 0
+            else:
+                n_cpus, n_gpus = 0, self.n_gpu_per_worker
             
             ray_scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg,
@@ -41,11 +47,20 @@ class Controller:
                 placement_group_bundle_index=bundle_id,
             )
             worker = ray.remote(
-                num_cpus=0,
-                num_gpus=self.n_gpu_per_worker,
+                num_cpus=n_cpus,
+                num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
-                runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
+                # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
             )(Engine).remote()
+            
+            if n_cpus != 0:
+                if self.tokenizer_worker is None:
+                    self.tokenizer_worker = worker
+                    worker.set_device_id.remote(TOKENIZER_DEV_ID)
+                else:
+                    self.sampler_worker = worker
+                    worker.set_device_id.remote(SAMPLER_DEV_ID)
+                continue
             
             worker_ip = ray.get(worker.get_node_ip.remote())
             cur_device_on_worker = device_count.get(worker_ip, 0)
@@ -96,7 +111,10 @@ class Controller:
                 ],
                 nccl_ids=nccl_ids[device_id],
             )
-                for worker, device_id in zip(self.workers, self.device_ids)
+                for worker, device_id in zip(
+                    self.workers + [self.sampler_worker], 
+                    self.device_ids + [SAMPLER_DEV_ID]
+                )
         ]
         self._logger.info("launched all tasks")
         ray.get(tasks)

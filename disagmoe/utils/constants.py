@@ -1,2 +1,5 @@
 GiB = 1 << 30
 MiB = 1 << 20
+
+SAMPLER_DEV_ID = 81
+TOKENIZER_DEV_ID = 82

@@ -3,6 +3,7 @@
 #include "muhelper.h"
 
 #include <set>
+#include <memory>
 
 class Sampler: public MuExpertDispatcher {
 protected:
@@ -45,3 +46,6 @@ public:
     Tokenizer(int device_id, std::vector<Channel_t> channels);
     void put_request(uintptr_t buf, std::vector<size_t> shape);
 };
+
+typedef std::shared_ptr<Sampler> Sampler_t;
+typedef std::shared_ptr<Tokenizer> Tokenizer_t;

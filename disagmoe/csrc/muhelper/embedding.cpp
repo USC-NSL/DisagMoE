@@ -20,12 +20,6 @@ Sampler::Sampler(int device_id,
         ctx = zmq::context_t(in_channels.size());
         recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
 
-        // for (auto &_: out_channels) {
-        //     send_ctxs.push_back(zmq::context_t(1));
-        //     send_mqs.push_back(zmq::socket_t(*send_ctxs.rbegin(), zmq::socket_type::push));
-        // }
-        // this->out_channels = out_channels;
-
         // copied from MuPool
         int max_peer_id = 0;
         for (auto c: in_channels)
@@ -43,7 +37,7 @@ void Sampler::run() {
     this->recv_mq.bind(get_zmq_addr(device_id));
     for (int i = 0; i < this->channels.size(); i ++)
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
-        
+
     while (!this->end_flag) {
         LOG(DEBUG) << "sampler receiving msg ..." << LEND;
         std::vector<zmq::message_t> recv_msgs;

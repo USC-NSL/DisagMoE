@@ -1,8 +1,9 @@
 from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher
+from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer
 from disagmoe.frontend.datatypes import Metadata, ChannelInfo
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip
+from disagmoe.utils.constants import *
 
 from typing import Optional, List, Dict
 from threading import Thread
@@ -90,3 +91,40 @@ class Engine:
         
     def get_node_ip(self) -> str:
         return get_ip()
+
+class SamplerEngine(Engine):
+    
+    def __init__(self):
+        super().__init__(None, None, None, SAMPLER_DEV_ID)
+        self.sampler: Sampler = None
+        
+    def init_core(self, 
+                  layer_ids: List[int], 
+                  in_device_ids: List[int], 
+                  out_device_ids: List[int], 
+                  out_channel_infos: List[ChannelInfo], 
+                  nccl_ids: Dict[int, int]):
+        self.sampler = init_sampler(
+            self.device_id,
+            in_device_ids,
+            out_device_ids,
+            out_channel_infos
+        )
+        self._logger.info("inited sampler")
+        
+    def start(self):
+        self.sampler.start()
+        
+class TokenizerEngine(Engine):
+    
+    def __init__(self):
+        super().__init__(None, None, None, TOKENIZER_DEV_ID)
+        self.tokenizer: Tokenizer = None
+        
+    def put_request(self, tokens: List[int]):
+        # TODO(hogura|20241008): add a py-tokenizer here
+        # may require GPU?
+        pass
+    
+    def start(self):
+        self.tokenizer.start()
