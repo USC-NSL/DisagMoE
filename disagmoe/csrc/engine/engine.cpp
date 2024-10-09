@@ -95,6 +95,15 @@ void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher) {
     dispatcher->start();
 }
 
+#define INSTANTIATE_CHANNELS(threads, _channels) {  \
+    for (auto &chan: _channels)                     \
+        threads.push_back(std::thread(              \
+            [&](Channel_t c) {                      \
+                c->instantiate();                   \
+            }, chan                                 \
+        ));                                         \
+}
+
 Sampler_t init_sampler(
     int local,
     const std::vector<int> &in_device_ids,
@@ -103,10 +112,18 @@ Sampler_t init_sampler(
 ) {
     std::vector<Channel_t> in_channels;
     std::vector<Channel_t> out_channels;
+    std::vector<std::thread> threads;
+
     for (int i: in_device_ids)
         in_channels.push_back(std::make_shared<ZmqChannel>(local, i, false));
     for (int i: out_device_ids)
         out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true));
+    INSTANTIATE_CHANNELS(threads, in_channels);
+    INSTANTIATE_CHANNELS(threads, out_channels);
+
+    for (auto &t: threads)
+        t.join();
+
     Sampler_t sampler = std::make_shared<Sampler>(
         local, in_channels, out_channels, out_channel_infos
     );
@@ -119,8 +136,15 @@ Tokenizer_t init_tokenizer(
     const std::vector<ChannelInfo> &out_channel_infos
 ) {
     std::vector<Channel_t> out_channels;
+    std::vector<std::thread> threads;
+
     for (int i: out_device_ids)
         out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true));
+    INSTANTIATE_CHANNELS(threads, out_channels);
+    
+    for (auto &t: threads)
+        t.join();
+
     Tokenizer_t tokenizer = std::make_shared<Tokenizer>(
         local, out_channels, out_channel_infos
     );

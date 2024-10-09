@@ -24,7 +24,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
                               const std::vector<int> &ids,
                               bool on_gpu = true) {
     // TODO(hogura|20241001): rewrite this function as a cuda kernel for better performance
-    LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
+    // LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
 
     size_t count_per_token = metadata.num_element() / metadata.num_tokens();
     size_t size_per_token = count_per_token * metadata.get_datatype_size();
@@ -33,7 +33,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
     if (on_gpu) {
         int device;
         CUDACHECK(cudaGetDevice(&device));
-        LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
+        // LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
         dst = alloc_cuda_tensor(ids.size() * count_per_token, device);
 
         for (size_t i = 0; i < ids.size(); i ++) {
@@ -60,7 +60,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
         dst = (uintptr_t) buf;
     }
 
-    LOG(DEBUG) << "copied " << ids.size() << " tokens." << LEND;
+    // LOG(DEBUG) << "copied " << ids.size() << " tokens." << LEND;
     return dst;
 }
 
@@ -81,7 +81,7 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
 
-    LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
+    // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
 
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
@@ -94,7 +94,7 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
 
     std::vector<std::pair<T, TensorBatch>> results;
     for (auto &[key, grouped_ids]: ids) {
-        LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
+        // LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
         auto sliced_meta = metadata.at(grouped_ids); 
         auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
         results.push_back(std::make_pair(
