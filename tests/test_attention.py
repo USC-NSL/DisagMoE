@@ -51,7 +51,7 @@ max_seq_len = 1024
 block_size = 32
 
 cache_conf = CacheConfig(block_size, 0.8, 2, "auto")
-cache = make_kv_cache(2**10, num_heads, head_size, block_size)
+cache = make_kv_cache(2**10, num_kv_heads, head_size, block_size)
 
 attn = MoEAttention(hidden_size, num_heads, num_kv_heads, num_experts, cache_config=cache_conf)
 
