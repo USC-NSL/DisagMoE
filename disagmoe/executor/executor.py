@@ -45,7 +45,7 @@ class AttnExecutor(Executor):
     
     def _make_kv_cache(self, num_blocks, block_size, num_heads, head_size):
         data_type = self.model_config.dtype
-        self.cache = torch.zeros((num_blocks, block_size, num_heads, head_size), dtype=data_type)
+        self.cache = torch.zeros((2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
 
     @override
     def execute(self,
