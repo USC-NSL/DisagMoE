@@ -5,36 +5,8 @@ from typing import Union
 import random
 from vllm.attention.backends.flash_attn import FlashAttentionBackend, FlashAttentionMetadata
 from torch.nn.utils.rnn import pad_sequence
-def make_kv_cache(num_blocks: int,
-                  num_heads: int,
-                  head_size: int,
-                  block_size: int,
-                  device: Union[torch.device, str] = None,
-                  default_val: float = 0.0) -> torch.Tensor:
-    '''
-    Create a fake KV cache.
-
-    Arguments:
-
-    * num_blocks: number of blocks in the KV cache
-    * num_heads: number of attention heads
-    * head_size: head dimension
-    * block_size: number of offsets within a block
-    * device: CPU or CUDA device
-    * default_val: initialization value for KV cache elements
-
-    Returns:
-
-    * kv_cache: 2 x num_blocks x (block_size * num_heads * head_size)
-    '''
-    if device == None:
-        device = torch.get_default_device()
-        
-    kv_cache = torch.rand(
-        (2, num_blocks, block_size, num_heads, head_size)).to(device)
-    if default_val is not None:
-        kv_cache[:, :, :] = default_val
-    return kv_cache
+from disagmoe.config import ModelConfig
+from disagmoe.executor import AttnExecutor, ExpertsExecutor
 
 
 
@@ -47,13 +19,17 @@ head_size = hidden_size // num_heads
 num_kv_heads = 8
 num_experts = 8
 max_seq_len = 1024
-
+intermediate_size = 4 * hidden_size
 block_size = 32
 
-cache_conf = CacheConfig(block_size, 0.8, 2, "auto")
-cache = make_kv_cache(2**10, num_kv_heads, head_size, block_size)
+model_config = ModelConfig(hidden_size, num_heads, num_kv_heads, num_experts, intermediate_size, torch.bfloat16)
 
-attn = MoEAttention(hidden_size, num_heads, num_kv_heads, num_experts, cache_config=cache_conf)
+cache_conf = CacheConfig(block_size, 0.8, 2, "auto")
+cache_conf.num_gpu_blocks = 2 ** 10
+
+attn = AttnExecutor(model_config, cache_conf)
+
+moe = ExpertsExecutor(model_config)
 
 def make_seqlens(lens):
     seqlen = [0]
@@ -114,6 +90,17 @@ def make_mix_mapping(seq_lens, query_lens, num_prefill, num_decode):
     slots_table = torch.tensor(slots_table, dtype=torch.long)
     return block_table, slots_table
 
+def batch_sizes_from_expert_ids(exp_ids: torch.Tensor):
+    
+    exp_ids.reshape(-1)
+    num_tokens = exp_ids.size(0)
+    
+    counts = [0] * model_config.num_experts
+    for id in exp_ids:
+        counts[id] += 1
+        
+    return torch.tensor(counts, device="cpu")
+
 def test_prefill():
     num_prefills = 8
     lens = [random.randint(32, b=127) for _ in range(num_prefills)]
@@ -144,7 +131,9 @@ def test_prefill():
     )
     inputs = torch.randn((num_prefill_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    attn.forward(positions, inputs, cache, meta)
+    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
+    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+    outputs = moe.execute(hidden_states, batch_sizes)
     print(f">>> prefill test passed")
     
 
@@ -174,7 +163,9 @@ def test_decode():
     )
     inputs = torch.randn((num_decode_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    attn.forward(positions, inputs, cache, meta)
+    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
+    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+    outputs = moe.execute(hidden_states, batch_sizes)
     print(f">>> decode test passed")
     
 
@@ -210,7 +201,9 @@ def test_prefill_decode():
     )
     inputs = torch.randn((num_decode_tokens + num_prefill_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    attn.forward(positions, inputs, cache, meta)
+    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
+    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+    outputs = moe.execute(hidden_states, batch_sizes)
     print(f">>> chunked_prefill test passed")
     
 test_prefill()
