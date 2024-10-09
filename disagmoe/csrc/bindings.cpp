@@ -31,9 +31,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("put", &MuDispatcher::put);
 
     py::class_<Tokenizer, std::shared_ptr<Tokenizer>>(m, "Tokenizer")
-        .def("put_request", &Tokenizer::put_request);
+        .def("put_request", &Tokenizer::put_request)
+        .def("start", &Tokenizer::start);
 
-    py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler");
+    py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
+        .def("start", &Sampler::start);
 
     py::class_<TensorBatch>(m, "TensorBatch")
         .def(py::init<>())
@@ -68,6 +70,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("instantiate_channels", &instantiate_channels);
     m.def("init_engine", &init_engine);
     m.def("start_engine", &start_engine);
+    m.def("init_sampler", &init_sampler);
+    m.def("init_tokenizer", &init_tokenizer);
 
     /********
         Test functions

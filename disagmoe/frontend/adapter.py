@@ -21,3 +21,11 @@ class Tokenizer:
     
     def put_request(self, tensor_buf: int, shape: Tuple[int]):
         ...
+        
+    def start():
+        ...
+        
+class Sampler:
+    
+    def start():
+        ...

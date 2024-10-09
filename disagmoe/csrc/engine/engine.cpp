@@ -30,13 +30,22 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
 
     for (auto i: in_device_ids)
         channels[i] = nullptr;
-    for (auto i: out_device_ids)
+    for (auto i: out_device_ids) {
+        assert(!is_embedding_node(i) || channels.find(i) == channels.end());
         channels[i] = nullptr;
+    }
     std::vector<std::thread> threads;
     for (auto &[peer_id, channel]: channels) {
-        channel = create_channel(local_id, peer_id, 
-            convert_to_nccl_uid((char*) nccl_ids.at(peer_id).c_str())
-        );
+        if (!is_embedding_node(peer_id))
+            channel = create_channel(local_id, peer_id, 
+                convert_to_nccl_uid((char*) nccl_ids.at(peer_id).c_str())
+            );
+        else
+            channel = create_zmq_channel(
+                local_id, peer_id, 
+                // tokenizer -> (attn/expert); expert -> sampler; sampler -> attn
+                /*is_sender=*/ is_tokenizer(peer_id) ? false : !is_attn
+            );
         LOG(DEBUG) << local_id << " created a thread" << LEND;
         threads.push_back(std::thread(
             [&](Channel_t channel) { 
@@ -84,4 +93,60 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
 void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher) {
     scheduler->start();
     dispatcher->start();
+}
+
+#define INSTANTIATE_CHANNELS(threads, _channels) {  \
+    for (auto &chan: _channels)                     \
+        threads.push_back(std::thread(              \
+            [&](Channel_t c) {                      \
+                c->instantiate();                   \
+            }, chan                                 \
+        ));                                         \
+}
+
+Sampler_t init_sampler(
+    int local,
+    const std::vector<int> &in_device_ids,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos
+) {
+    std::vector<Channel_t> in_channels;
+    std::vector<Channel_t> out_channels;
+    std::vector<std::thread> threads;
+
+    for (int i: in_device_ids)
+        in_channels.push_back(std::make_shared<ZmqChannel>(local, i, false));
+    for (int i: out_device_ids)
+        out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true));
+    INSTANTIATE_CHANNELS(threads, in_channels);
+    INSTANTIATE_CHANNELS(threads, out_channels);
+
+    for (auto &t: threads)
+        t.join();
+
+    Sampler_t sampler = std::make_shared<Sampler>(
+        local, in_channels, out_channels, out_channel_infos
+    );
+    return sampler;
+}
+
+Tokenizer_t init_tokenizer(
+    int local,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos
+) {
+    std::vector<Channel_t> out_channels;
+    std::vector<std::thread> threads;
+
+    for (int i: out_device_ids)
+        out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true));
+    INSTANTIATE_CHANNELS(threads, out_channels);
+    
+    for (auto &t: threads)
+        t.join();
+
+    Tokenizer_t tokenizer = std::make_shared<Tokenizer>(
+        local, out_channels, out_channel_infos
+    );
+    return tokenizer;
 }

@@ -5,11 +5,14 @@ import ray.runtime_env
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
-from disagmoe.frontend.engine import Engine
+from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine
 from disagmoe.frontend.datatypes import ChannelInfo
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
+from disagmoe.utils.constants import *
+
+from typing import List, Dict
 
 class Controller:
     
@@ -21,6 +24,8 @@ class Controller:
         self.workers = []
         self.device_ids = []
         self._logger = get_logger("controller")
+        self.sampler_worker = None
+        self.tokenizer_worker = None
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -30,22 +35,37 @@ class Controller:
         device_count = {}
         node_ids = {}
         
+        embedding_ids = [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+        
         for bundle_id, bundle in enumerate(pg.bundle_specs):
             if not bundle.get("GPU", 0):
-                # TODO(hogura|20241003): sampler/tokenizer worker
-                continue
+                n_cpus, n_gpus = 1, 0
+            else:
+                n_cpus, n_gpus = 0, self.n_gpu_per_worker
             
             ray_scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg,
                 placement_group_capture_child_tasks=True,
                 placement_group_bundle_index=bundle_id,
             )
+            worker_cls = Engine
+            if n_cpus != 0:
+                worker_cls = TokenizerEngine if self.tokenizer_worker is None else SamplerEngine
             worker = ray.remote(
-                num_cpus=0,
-                num_gpus=self.n_gpu_per_worker,
+                num_cpus=n_cpus,
+                num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
-                runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
-            )(Engine).remote()
+                # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
+            )(worker_cls).remote()
+            
+            if n_cpus != 0:
+                if self.tokenizer_worker is None:
+                    self.tokenizer_worker = worker
+                    worker.set_device_id.remote(TOKENIZER_DEV_ID)
+                else:
+                    self.sampler_worker = worker
+                    worker.set_device_id.remote(SAMPLER_DEV_ID)
+                continue
             
             worker_ip = ray.get(worker.get_node_ip.remote())
             cur_device_on_worker = device_count.get(worker_ip, 0)
@@ -71,7 +91,7 @@ class Controller:
                     prs[p] = get_nccl_unique_id()
                 nccl_ids[i][j] = prs[p]
                 nccl_ids[j][i] = prs[p]
-        self._logger.info(f"nccl_ids {nccl_ids}")
+        # self._logger.info(f"nccl_ids {nccl_ids}")
         return nccl_ids
     
     def init_engine(self, model_place: ModelPlacement):
@@ -94,15 +114,23 @@ class Controller:
                     )
                         for out in model_place.out_device_ids.get(device_id, [])
                 ],
-                nccl_ids=nccl_ids[device_id],
+                nccl_ids=nccl_ids.get(device_id, {}),
             )
-                for worker, device_id in zip(self.workers, self.device_ids)
+                for worker, device_id in zip(
+                    self.workers + [self.sampler_worker, self.tokenizer_worker], 
+                    self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+                )
         ]
         self._logger.info("launched all tasks")
         ray.get(tasks)
         
-    def start_engine(self):
-        ray.get([worker.start.remote() for worker in self.workers])
+    def start_engine(self, non_blocking: bool = True):
+        tasks = [worker.start.remote() for worker in self.workers + [self.sampler_worker, self.tokenizer_worker]]
+        if not non_blocking:
+            ray.get(tasks)
+            
+    def put_request(self, tokens: List[int]):
+        self.tokenizer_worker.put_request.remote(tokens)
 
 controller: Controller
 

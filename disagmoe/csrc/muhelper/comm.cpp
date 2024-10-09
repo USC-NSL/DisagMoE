@@ -12,10 +12,12 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         #ifndef D_ENABLE_RAY
         CUDACHECK(cudaSetDevice(this->local));
         #endif
-        if (stream == nullptr) {
-            CUDACHECK(cudaStreamCreate(&this->stream));
-        } else {
-            this->stream = stream;
+        if (!is_embedding_node(party_local)) {
+            if (stream == nullptr) {
+                CUDACHECK(cudaStreamCreate(&this->stream));
+            } else {
+                this->stream = stream;
+            }
         }
     }
 
@@ -85,6 +87,8 @@ std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
+    // !FIXME(hogura|20241009): this type of sharing mq may have issues.
+    LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
     std::lock_guard<std::mutex> guard(global_mutex);
     if (global_mq.find(this->local) != global_mq.end()) {
         this->mq = global_mq[this->local];
@@ -113,28 +117,36 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
     if (!to_gpu) {
         buf = !dst ? (uintptr_t) std::malloc(size) : dst;
         // TODO(hogura|20241007): overlap this memcpy
-        cudaMemcpy((void*) buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyDeviceToHost);
+        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
+            cudaMemcpyKind::cudaMemcpyDeviceToHost));
     } else {
         buf = !dst ? alloc_cuda_tensor(metadata.num_element(), this->local) : dst;
-        cudaMemcpy((void*) buf, (void*) data, size, cudaMemcpyKind::cudaMemcpyHostToDevice);
+        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
+            cudaMemcpyKind::cudaMemcpyHostToDevice));
     }
     return (void*) buf;
 }
 
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
-    LOG(INFO) << "ZmqChannel sending " << metadata << LEND;
+    LOG(INFO) << local << "ZmqChannel sending " << metadata << LEND;
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
-    this->mq->send(zmq::buffer(buf, metadata.num_element() * metadata.get_datatype_size()));
-    LOG(INFO) << "ZmqChannel sent" << LEND;
+    size_t size = metadata.num_element() * metadata.get_datatype_size();
+    size = 1;
+    this->mq->send(zmq::buffer(buf, size));
+    LOG(INFO) << local << "ZmqChannel sent" << LEND;
     std::free(buf);
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
+    LOG(INFO) << local << "ZmqChannel recving " << metadata << LEND;
     size_t size = metadata.num_element() * metadata.get_datatype_size();
+    size = 1;
     zmq::message_t msg(size);
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
+    LOG(INFO) << local << "ZmqChannel recved, now copying data" << LEND;
     
-    this->_tensor_copy((uintptr_t) msg.data(), metadata, /*to_gpu=*/ true, data);
+    this->_tensor_copy((uintptr_t) msg.data(), metadata, /*to_gpu=*/ !is_embedding_node(local), data);
+    LOG(INFO) << local << "ZmqChannel recv ended" << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
