@@ -12,10 +12,12 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         #ifndef D_ENABLE_RAY
         CUDACHECK(cudaSetDevice(this->local));
         #endif
-        if (stream == nullptr) {
-            CUDACHECK(cudaStreamCreate(&this->stream));
-        } else {
-            this->stream = stream;
+        if (!is_embedding_node(party_local)) {
+            if (stream == nullptr) {
+                CUDACHECK(cudaStreamCreate(&this->stream));
+            } else {
+                this->stream = stream;
+            }
         }
     }
 

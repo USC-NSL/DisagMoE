@@ -132,8 +132,14 @@ bool Sampler::check_finished(int token, int req_id) {
     return token == EOS_TOKEN_ID || this->output_lens[req_id] >= MAX_OUTPUT_LEN;
 }
 
-Tokenizer::Tokenizer(int device_id, std::vector<Channel_t> channels):
-    MuExpertDispatcher({}, device_id, channels, {}) {
+void Sampler::start() {
+    MuExpertDispatcher::start();
+}
+
+Tokenizer::Tokenizer(int device_id, 
+              std::vector<Channel_t> channels, 
+              std::vector<ChannelInfo> out_channel_infos):
+    MuExpertDispatcher({}, device_id, channels, out_channel_infos) {
 
 }
 
@@ -152,4 +158,8 @@ void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {
         /*prompt_lens=*/ {}
     });
     this->put(TensorBatch {buf, meta_t});
+}
+
+void Tokenizer::start() {
+    MuExpertDispatcher::start();
 }

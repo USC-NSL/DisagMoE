@@ -36,6 +36,8 @@ public:
     int sample(uintptr_t buf, metadata_t meta);
 
     bool check_finished(int token, int req_id);
+
+    void start();
 };
 
 class Tokenizer: public MuExpertDispatcher {
@@ -43,8 +45,13 @@ protected:
     int req_count;
 
 public:
-    Tokenizer(int device_id, std::vector<Channel_t> channels);
+    Tokenizer(int device_id, 
+              std::vector<Channel_t> channels, 
+              std::vector<ChannelInfo> out_channel_infos);
+
     void put_request(uintptr_t buf, std::vector<size_t> shape);
+
+    void start();
 };
 
 typedef std::shared_ptr<Sampler> Sampler_t;

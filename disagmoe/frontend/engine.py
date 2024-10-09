@@ -1,3 +1,5 @@
+import torch
+
 from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer
 from disagmoe.frontend.datatypes import Metadata, ChannelInfo
@@ -8,7 +10,10 @@ from disagmoe.utils.constants import *
 from typing import Optional, List, Dict
 from threading import Thread
 
-from disagmoe_c import init_engine, start_engine, ChannelInfo as ChannelInfo_C
+from torch import Tensor
+
+from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
+                        ChannelInfo as ChannelInfo_C)
 
 class Engine:
 
@@ -40,7 +45,7 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
-        self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos, nccl_ids}")
+        self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
         self.scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
@@ -64,8 +69,9 @@ class Engine:
         self.is_attn = is_attn
 
     def loop(self):
+        self._logger.info("starting engine loop")
         while not self.end_flag:
-            self.scheduler.wait_for_new_requests()
+            self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()
             
             meta: Metadata = batch_info.metadata
@@ -108,7 +114,8 @@ class SamplerEngine(Engine):
             self.device_id,
             in_device_ids,
             out_device_ids,
-            out_channel_infos
+            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
+                for info in out_channel_infos],
         )
         self._logger.info("inited sampler")
         
@@ -120,11 +127,33 @@ class TokenizerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
+        self.hidden_size = 16
         
     def put_request(self, tokens: List[int]):
+        # TODO(hogura|20241008): only #prefill = 1 now
+        assert len(tokens) == 1
+        shape = (len(tokens), self.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        # may require GPU?
-        pass
+        x = Tensor(size=shape).type(torch.float16)
+        self._logger.info("tokenizer put 1 request")
+        self.tokenizer.put_request(x.data_ptr(), shape)
+    
+    def set_tokenizer_config(self, hidden_size: int):
+        self.hidden_size = hidden_size
+    
+    def init_core(self, 
+                  layer_ids: List[int], 
+                  in_device_ids: List[int], 
+                  out_device_ids: List[int], 
+                  out_channel_infos: List[ChannelInfo], 
+                  nccl_ids: Dict[int, int]):
+        self.tokenizer = init_tokenizer(
+            self.device_id,
+            out_device_ids,
+            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
+                for info in out_channel_infos],
+        )
+        self._logger.info("inited tokenizer")
     
     def start(self):
         self.tokenizer.start()

@@ -19,14 +19,16 @@ mp = ModelPlacement(
     tokenizer = tokenizer,
     sampler = sampler,
     in_device_ids = {
-        0: [sampler],
+        0: [sampler, tokenizer],
         1: [0],
         sampler: [1],
+        tokenizer: [],
     },
     out_device_ids = {
         0: [1],
         1: [sampler],
         sampler: [0],
+        tokenizer: [0],
     }
 )
 
@@ -37,3 +39,8 @@ print("engine inited")
 master.start_engine()
 
 print("engine started")
+
+master.put_request([1])
+
+while True:
+    pass

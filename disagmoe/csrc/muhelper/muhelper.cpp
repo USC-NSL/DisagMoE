@@ -142,6 +142,8 @@ MuExpertDispatcher::MuExpertDispatcher(
     for (size_t i = 0; i < channels.size(); i ++) {
         // TODO(hogura|20240930): currently, only support #attn_replica=1
         assert(channel_infos[i].attn_layer_ids.size() <= 1);
+        if (channel_infos[i].attn_layer_ids.empty()) // a sampler channel
+            continue;
         this->attn_channel[
             channel_infos[i].attn_layer_ids[0]
         ] = i;

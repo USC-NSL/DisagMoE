@@ -25,3 +25,9 @@ Sampler_t init_sampler(
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos
 );
+
+Tokenizer_t init_tokenizer(
+    int device_id,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos
+);

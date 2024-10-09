@@ -70,6 +70,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("instantiate_channels", &instantiate_channels);
     m.def("init_engine", &init_engine);
     m.def("start_engine", &start_engine);
+    m.def("init_sampler", &init_sampler);
+    m.def("init_tokenizer", &init_tokenizer);
 
     /********
         Test functions
