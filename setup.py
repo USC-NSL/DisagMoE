@@ -38,7 +38,7 @@ ext_modules = [
             CUDA_LIBRARY_DIR,
         ],
         libraries=["cudart", "nccl", "zmq"],
-        extra_compile_args=["-lstdc++", "-O0", "-g"],
+        extra_compile_args=["-lstdc++", "-O0", "-g", "-fsanitize=address"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),
         ],

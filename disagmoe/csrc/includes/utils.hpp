@@ -81,7 +81,7 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
 
-    // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
+    LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
     assert(keys.size() == metadata.infos.size());
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
@@ -93,16 +93,21 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     }
 
     std::vector<std::tuple<T, uintptr_t, Metadata>> results;
+    results.clear();
     for (auto &[key, grouped_ids]: ids) {
-        // LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
-        Metadata sliced_meta = metadata.at(grouped_ids); 
+        LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
+        Metadata sliced_meta = std::move(metadata.at(grouped_ids));
         auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
+	    LOG(DEBUG) << " Finished a slice" << LEND;
         results.push_back(std::make_tuple(
             key, 
             sliced_tensor, 
             sliced_meta
         ));
+        LOG(DEBUG) << " results.push_back" << LEND;
     }
+
+    LOG(DEBUG) << " Returning results" << LEND;
 
     return results;
 }
