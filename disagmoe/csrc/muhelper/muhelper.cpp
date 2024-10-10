@@ -104,9 +104,12 @@ MuAttnDispatcher::MuAttnDispatcher(
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
     LOG(DEBUG) << "sending a batch." << LEND;
+    LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
+               << " info size: " << batch.metadata->infos.size() << LEND;
 
     int n = batch.metadata->shape[0];
     for (int i = 0; i < n;) {
+        LOG(DEBUG) << "handling " << i << " metadata, with: " << batch.metadata->infos[i] << LEND;
         int j = i + 1;
         int eid = batch.metadata->infos[i].exp_id;
         while (j < n && batch.metadata->infos[j].exp_id == eid)
@@ -174,11 +177,12 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         /*on_gpu=*/ !is_embedding_node(device_id));
     LOG(DEBUG) << "grouped channels" << LEND;
 
-    for (auto &[channel, sub_batch]: batches) {
+    for (auto &sub_batch: batches) {
+        auto &channel = std::get<0>(sub_batch);
         this->_send_batch(
             channel,
-            sub_batch.data,
-            *sub_batch.metadata
+            std::get<1>(sub_batch),
+            std::get<2>(sub_batch)
         );
     }
     LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
@@ -244,26 +248,27 @@ void MuPool::run() {
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
         uintptr_t tensor_buf = 0;
-        if (metadata->layer_id == 0 && this->is_attn) {
-            // Use ZMQ Channel
-            tensor_buf = (uintptr_t) std::malloc(
-                metadata->num_element() * metadata->get_datatype_size()
-            );
-        } else {
-            // Use NCCL Channel
-            tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
-        }
+        // if (metadata->layer_id == 0 && this->is_attn) {
+        //     // Use ZMQ Channel
+        //     tensor_buf = (uintptr_t) std::malloc(
+        //         metadata->num_element() * metadata->get_datatype_size()
+        //     );
+        // } else {
+        //     // Use NCCL Channel
+        //     tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
+        // }
+        tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
 
         LOG(DEBUG) << "calling channel recv from " << peer_id << ", " << *metadata << LEND;
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
 
-        if (metadata->layer_id == 0 && this->is_attn) {
-            // !NOTE(hogura|20241007): incurs a CPU -> GPU sync here
-            tensor_buf = alloc_copy_tensor(
-                tensor_buf, 
-                metadata->num_element() * metadata->get_datatype_size()
-            );
-        }
+        // if (metadata->layer_id == 0 && this->is_attn) {
+        //     // !NOTE(hogura|20241007): incurs a CPU -> GPU sync here
+        //     tensor_buf = alloc_copy_tensor(
+        //         tensor_buf, 
+        //         metadata->num_element() * metadata->get_datatype_size()
+        //     );
+        // }
 
         int lid = this->inner_layer_id[metadata->layer_id];
 
@@ -313,7 +318,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
         LOG(INFO) << "No available batch" << LEND;
         return {};
     }
-    LOG(INFO) << "Fetched " << id << " layer" << LEND;
+    LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
 
     std::vector<TensorBatch> result;
     {

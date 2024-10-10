@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "nccl.h"
+#include "logging.h"
 
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
@@ -61,6 +62,10 @@ struct Metadata {
     std::vector<TokenMetadata> infos;
     std::map<int, int> prompt_lens;
 
+    ~Metadata() {
+	LOG(DEBUG) << " destructing a metadata:" << (*this) << LEND;
+    }
+
     // Metadata() {}
     // Metadata(std::vector<size_t> shape, 
     //          std::string dtype,
@@ -105,8 +110,10 @@ struct Metadata {
         auto shape = this->shape;
         shape[0] = ids.size();
         auto infos = std::vector<TokenMetadata>(ids.size());
-        for (size_t i = 0; i < ids.size(); i ++)
+        for (size_t i = 0; i < ids.size(); i ++) {
+            assert(ids[i] < this->infos.size());
             infos[i] = this->infos[ids[i]];
+        }
         return Metadata{
             shape, this->dtype, this->layer_id, infos, this->prompt_lens
         };
@@ -148,7 +155,7 @@ struct Metadata {
         std::vector<size_t> shape = metas[0]->shape;
         auto dtype = metas[0]->dtype;
         auto layer_id = metas[0]->layer_id;
-        std::vector<TokenMetadata> infos;
+        std::vector<TokenMetadata> infos = metas[0]->infos;
         std::map<int, int> prompt_lens;
 
         for (size_t i = 1; i < metas.size(); i ++) {

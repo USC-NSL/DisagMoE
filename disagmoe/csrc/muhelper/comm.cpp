@@ -89,18 +89,18 @@ std::mutex global_mutex;
 void ZmqChannel::instantiate() {
     // !FIXME(hogura|20241009): this type of sharing mq may have issues.
     LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
-    std::lock_guard<std::mutex> guard(global_mutex);
-    if (global_mq.find(this->local) != global_mq.end()) {
-        this->mq = global_mq[this->local];
-        LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
-        return;
-    }
+    // std::lock_guard<std::mutex> guard(global_mutex);
+    // if (global_mq.find(this->local) != global_mq.end()) {
+    //     this->mq = global_mq[this->local];
+    //     LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
+    //     return;
+    // }
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
-    global_mq[this->local] = this->mq;
+    // global_mq[this->local] = this->mq;
     if (is_sender) {
         this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false));
     } else {
@@ -131,20 +131,21 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     LOG(INFO) << local << "ZmqChannel sending " << metadata << LEND;
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     size_t size = metadata.num_element() * metadata.get_datatype_size();
-    size = 1;
+    print_buf(buf, size);
     this->mq->send(zmq::buffer(buf, size));
     LOG(INFO) << local << "ZmqChannel sent" << LEND;
-    std::free(buf);
+    // !FIXME(hogura|20241009): may have memory leakage
+    if (data != (uintptr_t) buf)
+        std::free(buf);
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
     LOG(INFO) << local << "ZmqChannel recving " << metadata << LEND;
     size_t size = metadata.num_element() * metadata.get_datatype_size();
-    size = 1;
     zmq::message_t msg(size);
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
     LOG(INFO) << local << "ZmqChannel recved, now copying data" << LEND;
-    
+    print_buf(msg.data(), size);
     this->_tensor_copy((uintptr_t) msg.data(), metadata, /*to_gpu=*/ !is_embedding_node(local), data);
     LOG(INFO) << local << "ZmqChannel recv ended" << LEND;
 }

@@ -2,7 +2,7 @@ import torch
 
 from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer
-from disagmoe.frontend.datatypes import Metadata, ChannelInfo
+from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip
 from disagmoe.utils.constants import *
@@ -13,7 +13,8 @@ from threading import Thread
 from torch import Tensor
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
-                        ChannelInfo as ChannelInfo_C)
+                        ChannelInfo as ChannelInfo_C,
+                        TensorBatch as CTensorBatch)
 
 class Engine:
 
@@ -67,6 +68,7 @@ class Engine:
         
     def set_is_attn(self, is_attn: bool):
         self.is_attn = is_attn
+        self.executor = AttnExecutor() if is_attn else FFNExecutor()
 
     def loop(self):
         self._logger.info("starting engine loop")
@@ -80,17 +82,20 @@ class Engine:
             output = self.executor.forward(tensor)
             if isinstance(self.executor, FFNExecutor):
                 meta.step_layer()
-                meta.update_exp_ids([-1] * meta.num_tokens, required_sort=False)
+                meta.update_exp_ids([-1] * meta.shape[0], False)
             else:
                 # 1. gate func, dummy sleep
                 # TODO
                 # 2. permute memory layout & prepare metadata
                 
                 # TODO
-                new_exp_ids = [0] * meta.num_tokens
-                meta.update_exp_ids(new_exp_ids, required_sort=True)
+                new_exp_ids = [0] * meta.shape[0]
+                meta.update_exp_ids(new_exp_ids, True)
             
-            self.dispatcher.put(output.data_ptr(), meta)
+            batch: TensorBatch = CTensorBatch()
+            batch.data = tensor.data_ptr()
+            batch.metadata = meta
+            self.dispatcher.put(batch)
     
     def terminate(self):
         self.end_flag = True
@@ -134,7 +139,7 @@ class TokenizerEngine(Engine):
         assert len(tokens) == 1
         shape = (len(tokens), self.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = Tensor(size=shape).type(torch.float16)
+        x = torch.ones(size=shape).type(torch.float16)
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x.data_ptr(), shape)
     
