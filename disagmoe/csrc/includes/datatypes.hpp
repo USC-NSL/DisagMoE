@@ -186,3 +186,35 @@ struct TensorBatch {
     uintptr_t data;
     metadata_t metadata;
 };
+
+
+struct BatchMetadata {
+    int layer_id;
+    std::vector<size_t> shape;
+    std::string dtype;
+
+    int num_prefill_seqs;
+    int num_prefill_tokens;
+
+    int num_decode_tokens; // equals to num_decode_seqs as each decode seq has query length of 1
+
+    std::vector<int> seq_ids; // per seq, length of (num_prefill_seqs + num_decode_tokens)
+
+    /*
+    |----------seq_len----------|
+    | last chunk  | this chunk  |
+    |-------------|-------------|
+    |-context_len-|
+                  |--query_len--|
+
+    context = seq - query
+    */
+
+    std::vector<int> prefill_seq_len; // per perfill seq, length of (num_prefill_seqs)
+    std::vector<int> prefill_query_len; // per perfill seq, length of (num_prefill_seqs)
+
+    std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
+
+    // place holder for first attention id.
+    // std::vector<uint8_t> first_attn_ids; 
+}
