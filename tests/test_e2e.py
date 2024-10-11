@@ -42,7 +42,7 @@ master.start_engine()
 
 print("engine started")
 
-time.sleep(2)
+input()
 
 master.put_request([1])
 
