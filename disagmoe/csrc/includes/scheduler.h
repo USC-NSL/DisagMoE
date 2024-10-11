@@ -9,7 +9,7 @@
 
 class Scheduler;
 
-typedef std::shared_ptr<Scheduler> Scheduler_t;
+typedef std::shared_ptr<Scheduler> scheduler_t;
 
 class Scheduler {
 protected:
@@ -22,7 +22,7 @@ protected:
 public:
     Scheduler(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
 
-    static Scheduler_t build(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
+    static scheduler_t build(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
 
     TensorBatch merge(std::vector<TensorBatch> batches);
 
@@ -39,4 +39,20 @@ protected:
 
 public:
     LargestScheduler(MuPool_t pool, std::vector<int> layer_ids);
+};
+
+
+typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
+
+class AttentionScheduler: {
+
+protected:
+    std::vector<BatchTensor> _schedule() override;
+
+public:
+
+    AttentionScheduler(MuPool_t pool, std::vector<int> layer_ids);
+
+    BatchTensor merge(const std::vector<BatchTensor>& batches);
+
 };

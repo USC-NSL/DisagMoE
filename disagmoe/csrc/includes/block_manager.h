@@ -4,7 +4,7 @@
 #include <vector>
 #include <unordered_map>
 
-using block_list_t = std::vector<int>;
+typedef std::vector<int> block_list_t;
 
 class BlockManager {
 

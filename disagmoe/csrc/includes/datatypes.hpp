@@ -188,6 +188,11 @@ struct TensorBatch {
 };
 
 
+struct BatchTensor {
+    uintptr_t data;
+    BatchMetadata metadata;
+}
+
 struct BatchMetadata {
     int layer_id;
     std::vector<size_t> shape;
@@ -217,4 +222,53 @@ struct BatchMetadata {
 
     // place holder for first attention id.
     // std::vector<uint8_t> first_attn_ids; 
+
+    int prefill_data_size() {
+        return num_prefill_tokens * shape[1] * 2; // assume only bf16 or fp16
+    }
+
+    int decode_data_size() {
+        return num_decode_tokens * shape[1] * 2; // assume only bf16 or fp16
+    }
+
+    static BatchMetadata merge(const std::vector<BatchMetadata>& batches) {
+        int n = batches.size();
+        int new_prefills_seqs = 0;
+        int new_prefill_tokens = 0;
+        int new_decode_tokens = 0;
+
+        std::vector<int> new_seq_ids{};
+        std::vector<int> new_prefill_seq_len{};
+        std::vector<int> new_prefill_query_len{};
+
+        for (auto &batch: batches) {
+            new_prefills_seqs += batch.num_prefill_seqs;
+            new_prefill_tokens += batch.num_prefill_tokens;
+            new_decode_tokens += batch.num_decode_tokens;
+
+            for (int i = 0; i < batch.num_prefill_seqs; i++) {
+                new_seq_ids.emplace_back(batch.seq_ids[i]);
+                new_prefill_seq_len.emplace_back(batch.prefill_seq_len[i]);
+                new_prefill_query_len.emplace_back(batch.prefill_query_len[i]);
+            }
+        }
+
+        for (auto &batch: batches) {
+            for (int i = batch.num_prefill_seqs; i < batch.num_prefill_seqs + batch.num_decode_tokens; i++) {
+                new_seq_ids.emplace_back(batch.seq_ids[i]);
+            }
+        }
+
+        return BatchMetadata {
+            batches[0].layer_id,
+            batches[0].shape,
+            batch[0].dtype,
+            new_prefills_seqs;
+            new_prefill_tokens;
+            new_decode_tokens;
+            new_seq_ids;
+            new_prefill_seq_len;
+            new_prefill_query_len;
+        }
+    }
 }
