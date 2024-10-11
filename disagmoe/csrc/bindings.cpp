@@ -90,4 +90,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("test_scheduler", &test_scheduler);
     m.def("test_sampler_recv", &test_sampler_recv);
     m.def("test_sampler_send", &test_sampler_send);
+    m.def("test_tensor_address", [](uintptr_t data) {
+        
+    });
 }

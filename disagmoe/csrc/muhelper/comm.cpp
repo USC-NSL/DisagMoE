@@ -135,8 +135,8 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     this->mq->send(zmq::buffer(buf, size));
     LOG(INFO) << local << "ZmqChannel sent" << LEND;
     // !FIXME(hogura|20241009): may have memory leakage
-    if (data != (uintptr_t) buf)
-        std::free(buf);
+    // if (data != (uintptr_t) buf)
+    //     std::free(buf);
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {

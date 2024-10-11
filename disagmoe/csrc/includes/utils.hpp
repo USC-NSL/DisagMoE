@@ -39,6 +39,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
         for (size_t i = 0; i < ids.size(); i ++) {
             int id = ids[i];
             // TODO(hogura|20241001): replace cudaMemcpy to cudaMemcpyAsync
+            // !FIXME(hogura|20241010): the selection method here may have row-/col- wise issue.
             CUDACHECK(cudaMemcpy(
                 (void*) (dst + i * size_per_token), 
                 (void*) (src + id * size_per_token), 
@@ -47,7 +48,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
             ));
         }
     } else {
-        void* buf = std::malloc(ids.size() * count_per_token);
+        void* buf = std::malloc(ids.size() * size_per_token);
         // TODO(hogura|20241007): use `omp parallel for` to accelerate
         for (int i = 0; i < ids.size(); i ++) {
             int id = ids[i];

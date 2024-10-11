@@ -34,6 +34,9 @@ class Engine:
             self._logger = get_logger(f"engine{device_id}")
             
         self.loop_thread = Thread(target=self.loop)
+        
+        # !TODO(hogura|20241011): remove the frozen tensors
+        self._frozen_tensors: List[torch.Tensor] = []
 
     def init_core(
             self,
@@ -92,6 +95,7 @@ class Engine:
                 new_exp_ids = [0] * meta.shape[0]
                 meta.update_exp_ids(new_exp_ids, True)
             
+            self._frozen_tensors.append(tensor)
             batch: TensorBatch = CTensorBatch()
             batch.data = tensor.data_ptr()
             batch.metadata = meta
@@ -142,6 +146,7 @@ class TokenizerEngine(Engine):
         x = torch.ones(size=shape).type(torch.float16)
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x.data_ptr(), shape)
+        self._frozen_tensors.append(x)
     
     def set_tokenizer_config(self, hidden_size: int):
         self.hidden_size = hidden_size
