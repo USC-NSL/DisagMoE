@@ -24,8 +24,6 @@ public:
 
     static scheduler_t build(MuPool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
 
-    TensorBatch merge(std::vector<TensorBatch> batches);
-
     TensorBatch schedule();
 
     void wait_for_new_requests();
@@ -42,17 +40,17 @@ public:
 };
 
 
-typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
+// typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
 
-class AttentionScheduler: {
+// class AttentionScheduler: {
 
-protected:
-    std::vector<BatchTensor> _schedule() override;
+// protected:
+//     std::vector<BatchTensor> _schedule() override;
 
-public:
+// public:
 
-    AttentionScheduler(MuPool_t pool, std::vector<int> layer_ids);
+//     AttentionScheduler(MuPool_t pool, std::vector<int> layer_ids);
 
-    BatchTensor merge(const std::vector<BatchTensor>& batches);
+//     BatchTensor merge(const std::vector<BatchTensor>& batches);
 
-};
+// };

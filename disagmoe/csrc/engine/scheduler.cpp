@@ -22,37 +22,13 @@ Scheduler::Scheduler(MuPool_t pool, std::vector<int> layer_ids, std::string poli
     
 }
 
-TensorBatch Scheduler::merge(std::vector<TensorBatch> batches) {
-    std::vector<metadata_t> metas(batches.size());
-    for (size_t i = 0; i < batches.size(); i ++)
-        metas[i] = batches[i].metadata;
-    auto meta = Metadata::concat(metas);
-
-    auto dtype = meta->get_datatype_size();
-    
-    uintptr_t buf = alloc_cuda_tensor(
-        meta->num_element(), 
-        this->pool->get_device_id()
-    );
-    
-    uintptr_t ptr = buf;
-    for (auto batch: batches) {
-        auto size = batch.metadata->num_element() * dtype;
-        cudaMemcpy((void*) ptr, (void*) batch.data, size, 
-            cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-        ptr += size;
-    }
-
-    return TensorBatch {ptr, meta};
-}
-
 void Scheduler::start() {
     this->pool->start();
 }
 
 TensorBatch Scheduler::schedule() {
     auto batches = this->_schedule();
-    auto batch = this->merge(batches);
+    auto batch = TensorBatch::merge(batches);
     return batch;
 }
 

@@ -267,6 +267,24 @@ void MuPool::run() {
 
         // TODO: separate sequences into waiting queue and running queue
         int lid = this->inner_layer_id[metadata->layer_id];
+
+        // sync prefill sequences
+        /*
+
+        completed_sequences = fill(batch)
+        flash_attn_metadata = concat(completed_sequences, decode_tokens from batch)
+
+
+        1. split batch to prefill and decode tokens
+        2. use prefill tokens to compose prefill sequence (sync for prefill sequences) (memcpy, custom kernel)
+        3. if a prefill sequence is complete, check if this sequence exists in block table
+        4. if not, add them to waiting queue; else add to corresponding running queue with decoding tokens (memcpy)
+
+        waiting_queue, each element is a sequence
+
+        running_queue[layers]
+
+        */
         
         {
             std::lock_guard<std::mutex> lock(this->layer_mutex[lid]);

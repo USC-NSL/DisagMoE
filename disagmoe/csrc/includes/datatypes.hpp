@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "nccl.h"
+#include "cuda_utils.h"
 
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
@@ -143,7 +144,7 @@ struct Metadata {
         return out;
     }
 
-    static metadata_t concat(const std::vector<metadata_t> &metas) {
+    static metadata_t merge(const std::vector<metadata_t> &metas) {
         assert(metas.size() > 0);
         std::vector<size_t> shape = metas[0]->shape;
         auto dtype = metas[0]->dtype;
@@ -185,15 +186,35 @@ struct Metadata {
 struct TensorBatch {
     uintptr_t data;
     metadata_t metadata;
+
+    static TensorBatch merge(const std::vector<TensorBatch>& batches) {
+        std::vector<metadata_t> metas(batches.size());
+        for (size_t i = 0; i < batches.size(); i ++) {
+            metas[i] = batches[i].metadata;
+        }
+        auto meta = Metadata::merge(metas);
+
+        auto dtype = meta->get_datatype_size();
+        
+        uintptr_t buf = alloc_cuda_tensor(meta->num_element(), 0);
+        
+        uintptr_t ptr = buf;
+        for (auto &batch: batches) {
+            auto size = batch.metadata->num_element() * dtype;
+            cudaMemcpy((void*) ptr, (void*) batch.data, size, 
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            ptr += size;
+        }
+
+        return TensorBatch {buf, meta};
+    }
 };
 
+struct AttentionBatchMetadata;
 
-struct BatchTensor {
-    uintptr_t data;
-    BatchMetadata metadata;
-}
+typedef std::shared_ptr<AttentionBatchMetadata> attn_metadata_t;
 
-struct BatchMetadata {
+struct AttentionBatchMetadata {
     int layer_id;
     std::vector<size_t> shape;
     std::string dtype;
@@ -231,8 +252,7 @@ struct BatchMetadata {
         return num_decode_tokens * shape[1] * 2; // assume only bf16 or fp16
     }
 
-    static BatchMetadata merge(const std::vector<BatchMetadata>& batches) {
-        int n = batches.size();
+    static attn_metadata_t merge(const std::vector<attn_metadata_t>& batches) {
         int new_prefills_seqs = 0;
         int new_prefill_tokens = 0;
         int new_decode_tokens = 0;
@@ -242,33 +262,71 @@ struct BatchMetadata {
         std::vector<int> new_prefill_query_len{};
 
         for (auto &batch: batches) {
-            new_prefills_seqs += batch.num_prefill_seqs;
-            new_prefill_tokens += batch.num_prefill_tokens;
-            new_decode_tokens += batch.num_decode_tokens;
+            new_prefills_seqs += batch->num_prefill_seqs;
+            new_prefill_tokens += batch->num_prefill_tokens;
+            new_decode_tokens += batch->num_decode_tokens;
 
-            for (int i = 0; i < batch.num_prefill_seqs; i++) {
-                new_seq_ids.emplace_back(batch.seq_ids[i]);
-                new_prefill_seq_len.emplace_back(batch.prefill_seq_len[i]);
-                new_prefill_query_len.emplace_back(batch.prefill_query_len[i]);
+            for (int i = 0; i < batch->num_prefill_seqs; i++) {
+                new_seq_ids.emplace_back(batch->seq_ids[i]);
+                new_prefill_seq_len.emplace_back(batch->prefill_seq_len[i]);
+                new_prefill_query_len.emplace_back(batch->prefill_query_len[i]);
             }
         }
 
         for (auto &batch: batches) {
-            for (int i = batch.num_prefill_seqs; i < batch.num_prefill_seqs + batch.num_decode_tokens; i++) {
-                new_seq_ids.emplace_back(batch.seq_ids[i]);
+            for (int i = batch->num_prefill_seqs; i < batch->num_prefill_seqs + batch->num_decode_tokens; i++) {
+                new_seq_ids.emplace_back(batch->seq_ids[i]);
             }
         }
 
-        return BatchMetadata {
-            batches[0].layer_id,
-            batches[0].shape,
-            batch[0].dtype,
-            new_prefills_seqs;
-            new_prefill_tokens;
-            new_decode_tokens;
-            new_seq_ids;
-            new_prefill_seq_len;
-            new_prefill_query_len;
-        }
+        return std::make_shared<AttentionBatchMetadata> (
+            AttentionBatchMetadata {
+                batches[0]->layer_id,
+                batches[0]->shape,
+                batches[0]->dtype,
+                new_prefills_seqs,
+                new_prefill_tokens,
+                new_decode_tokens,
+                new_seq_ids,
+                new_prefill_seq_len,
+                new_prefill_query_len
+            }
+        );
     }
-}
+};
+
+
+struct AttentionBatch {
+    uintptr_t data;
+    attn_metadata_t metadata;
+
+    static AttentionBatch merge(const std::vector<AttentionBatch>& batches) {
+        std::vector<attn_metadata_t> metas(batches.size());
+        for (size_t i = 0; i < batches.size(); i ++) {
+            metas[i] = batches[i].metadata;
+        }
+        auto meta = AttentionBatchMetadata::merge(metas);
+
+        int prefill_data_size = meta->prefill_data_size();
+        int decode_data_size = meta->decode_data_size();
+        
+        uintptr_t buf = alloc_cuda_tensor(prefill_data_size + decode_data_size, 0);
+        
+        void* prefill_ptr = (void *)buf;
+        void* decode_ptr = prefill_ptr + prefill_data_size;
+
+        for (auto &batch: batches) {
+            int prefill_copy_size = batch.metadata->prefill_data_size();
+            int decode_copy_size = batch.metadata->decode_data_size();
+            cudaMemcpy(prefill_ptr, (void *)batch.data, prefill_copy_size, 
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+
+            cudaMemcpy(decode_ptr, (void *)batch.data + prefill_copy_size, decode_copy_size,
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            prefill_ptr += prefill_copy_size;
+            decode_ptr += decode_copy_size;
+        }
+
+        return AttentionBatch {buf, meta};
+    }
+};

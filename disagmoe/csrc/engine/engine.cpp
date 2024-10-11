@@ -10,7 +10,7 @@
 #include <ctime>
 #include <map>
 
-std::pair<Scheduler_t, MuDispatcher_t> init_engine(
+std::pair<scheduler_t, MuDispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
     const std::vector<int> &layer_ids,
@@ -83,14 +83,14 @@ std::pair<Scheduler_t, MuDispatcher_t> init_engine(
     LOG(DEBUG) << local_id << " init scheduler" << LEND;
     // init scheduler
     // TODO(hogura|20241003): add scheduler init config here
-    Scheduler_t scheduler = std::make_shared<LargestScheduler>(pool, layer_ids);
+    scheduler_t scheduler = std::make_shared<LargestScheduler>(pool, layer_ids);
 
     LOG(DEBUG) << local_id << " inited scheduler" << LEND;
 
     return std::make_pair(scheduler, dispatcher);
 }
 
-void start_engine(Scheduler_t scheduler, MuDispatcher_t dispatcher) {
+void start_engine(scheduler_t scheduler, MuDispatcher_t dispatcher) {
     scheduler->start();
     dispatcher->start();
 }

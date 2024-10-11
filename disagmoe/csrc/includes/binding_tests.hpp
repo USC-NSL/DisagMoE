@@ -197,7 +197,7 @@ void test_scheduler() {
     MuExpertDispatcher sender0({0}, 0, {c0}, {ChannelInfo{{0}, {0}}});
     MuExpertDispatcher sender1({1}, 1, {c1}, {ChannelInfo{{0}, {1}}});
     MuPool_t recver = std::make_shared<MuPool>(std::vector<int>({0, 1}), 2, std::vector<Channel_t>({r1, r2}), false);
-    Scheduler_t scheduler = Scheduler::build(recver, {2}, "largest");
+    scheduler_t scheduler = Scheduler::build(recver, {2}, "largest");
 
     recver->start();
     sender0.start();
