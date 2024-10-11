@@ -117,6 +117,15 @@ public:
 
     void wait_for_new_requests();
 
+/* 
+
+for attention, consider waiting sequences,
+
+1.first layer consider add waiting seqs, count(can_alloc())
+
+2. later layers pick largest running batch, use token number
+
+*/
     std::vector<TensorBatch> fetch_largest_batch();
 };
 

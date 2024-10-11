@@ -265,8 +265,9 @@ void MuPool::run() {
             );
         }
 
+        // TODO: separate sequences into waiting queue and running queue
         int lid = this->inner_layer_id[metadata->layer_id];
-
+        
         {
             std::lock_guard<std::mutex> lock(this->layer_mutex[lid]);
             this->data_queue[lid].push_back((TensorBatch) {
