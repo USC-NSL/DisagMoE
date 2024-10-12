@@ -150,16 +150,20 @@ struct Metadata {
         auto dtype = metas[0]->dtype;
         auto layer_id = metas[0]->layer_id;
 
-        // TODO(optimize): This function can be optimized by reserve vector slots for new infos
-        std::vector<TokenMetadata> infos;
+        int total_tokens = 0;
+        for (auto &meta: metas) {
+            total_tokens += meta->num_tokens();
+        }
+        shape[0] = total_tokens;
+        std::vector<TokenMetadata> infos{};
+        infos.reserve(total_tokens);
         std::map<int, int> prompt_lens;
 
         for (size_t i = 1; i < metas.size(); i ++) {
             auto meta = metas[i];
-            shape[0] += meta->shape[0];
-            for (auto info: meta->infos)
+            for (auto &info: meta->infos)
                 infos.push_back(info);
-            for (auto [k, v]: meta->prompt_lens)
+            for (auto &[k, v]: meta->prompt_lens)
                 prompt_lens[k] = v;
         }
 
