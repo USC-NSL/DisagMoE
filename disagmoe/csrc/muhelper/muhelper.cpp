@@ -299,7 +299,7 @@ void MuPool::run() {
         {
             std::lock_guard<std::mutex> lock(this->request_mutex);
             // TODO(hogura|20240930): should modify this `1` with `metadata.num_tokens`
-            this->cur_request_count += 1;
+            this->cur_request_count += metadata->num_tokens();
             this->request_cv.notify_all();
         }
     }
@@ -317,28 +317,34 @@ void MuPool::wait_for_new_requests() {
     LOG(INFO) << "MuPool got new requests." << LEND;
 }
 
+// the batch_mutex must be used outside this function
 int MuPool::tokens_in_layer(int lid) {
-    // TODO
-    return 0;
+    auto &q = this->data_queue[lid];
+    int total_tokens = 0;
+    for (auto &d: q) {
+        total_tokens += d.metadata->num_tokens();
+    }
+    return total_tokens;
 }
 
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     // TODO(hogura|20240930): only considering decode first
     LOG(INFO) << "fetching largest batch" << LEND;
+
     int id = -1;
+    size_t max_batch_size = 0;
 
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-        size_t max_batch_size = 0;
         for (size_t i = 0; i < this->data_queue.size(); i ++) {
-            if (max_batch_size < this->data_queue[i].size()) {
-                max_batch_size = this->data_queue[i].size();
+            int tokens_cur_layer = this->tokens_in_layer(i);
+            if (max_batch_size < tokens_cur_layer) {
+                max_batch_size = tokens_cur_layer;
                 id = i;
             }
         }
     }
-    
     
     if (id == -1) {
         LOG(INFO) << "No available batch" << LEND;
@@ -350,13 +356,13 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-        result = this->data_queue[id];
+        result = std::move(this->data_queue[id]);
         this->data_queue[id].clear();
     }
 
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
-        this->cur_request_count -= result.size();
+        this->cur_request_count -= max_batch_size;
         assert(this->cur_request_count >= 0);
     }
 
@@ -512,6 +518,7 @@ void MuAttentionPool::run() {
     }
 }
 
+// the batch_mutex must be used outside this function
 int MuAttentionPool::tokens_in_layer(int lid) {
     auto &q = this->attn_data_queue[lid];
     int num_tokens = 0;
