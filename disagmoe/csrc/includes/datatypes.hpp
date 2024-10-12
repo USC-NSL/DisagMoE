@@ -149,6 +149,8 @@ struct Metadata {
         std::vector<size_t> shape = metas[0]->shape;
         auto dtype = metas[0]->dtype;
         auto layer_id = metas[0]->layer_id;
+
+        // TODO(optimize): This function can be optimized by reserve vector slots for new infos
         std::vector<TokenMetadata> infos;
         std::map<int, int> prompt_lens;
 

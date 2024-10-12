@@ -4,6 +4,7 @@
 #include <mutex>
 #include <queue>
 #include <ctime>
+#include <utility>
 
 #include "datatypes.hpp"
 #include "muhelper.h"
@@ -197,16 +198,15 @@ MuPool::MuPool(
     is_attn(is_attn),
     ctx(channels.size()),
     mq(ctx, zmq::socket_type::pull) {
-
+    
+    int num_layers = layer_ids.size();
     int max_layer_id = 0;
     for (auto id: layer_ids)
         max_layer_id = std::max(max_layer_id, id);
     this->inner_layer_id = std::vector<int>(max_layer_id + 1);
-    this->data_queue = std::vector<std::vector<TensorBatch>>(layer_ids.size());
-    for (size_t i = 0; i < layer_ids.size(); i ++)
+    this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers);
+    for (size_t i = 0; i < num_layers; i ++)
         this->inner_layer_id[layer_ids[i]] = i;
-
-    this->layer_mutex = std::vector<std::mutex>(this->data_queue.size());
 
     this->cur_request_count = 0;
 
@@ -219,6 +219,8 @@ MuPool::MuPool(
         assert(this->peer_channels[id].get() == nullptr);
         this->peer_channels[ channels[i]->get_peer_id() ] = channels[i];
     }
+
+    this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
 }
 
 void MuPool::run() {
@@ -287,7 +289,7 @@ void MuPool::run() {
         */
         
         {
-            std::lock_guard<std::mutex> lock(this->layer_mutex[lid]);
+            std::lock_guard<std::mutex> lock(this->batch_mutex);
             this->data_queue[lid].push_back((TensorBatch) {
                 tensor_buf,
                 metadata
@@ -315,18 +317,28 @@ void MuPool::wait_for_new_requests() {
     LOG(INFO) << "MuPool got new requests." << LEND;
 }
 
+int MuPool::tokens_in_layer(int lid) {
+    // TODO
+    return 0;
+}
+
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     // TODO(hogura|20240930): only considering decode first
     LOG(INFO) << "fetching largest batch" << LEND;
-    size_t max_batch_size = 0;
     int id = -1;
-    for (size_t i = 0; i < this->data_queue.size(); i ++) {
-        std::lock_guard<std::mutex> lock(this->layer_mutex[i]);
-        if (max_batch_size < this->data_queue[i].size()) {
-            max_batch_size = this->data_queue[i].size();
-            id = i;
+
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+        size_t max_batch_size = 0;
+        for (size_t i = 0; i < this->data_queue.size(); i ++) {
+            if (max_batch_size < this->data_queue[i].size()) {
+                max_batch_size = this->data_queue[i].size();
+                id = i;
+            }
         }
     }
+    
     
     if (id == -1) {
         LOG(INFO) << "No available batch" << LEND;
@@ -336,7 +348,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
     std::vector<TensorBatch> result;
     {
-        std::lock_guard<std::mutex> lock(this->layer_mutex[id]);
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
 
         result = this->data_queue[id];
         this->data_queue[id].clear();
@@ -345,6 +357,210 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
         this->cur_request_count -= result.size();
+        assert(this->cur_request_count >= 0);
+    }
+
+    return result;
+}
+
+
+MuAttentionPool::MuAttentionPool(
+    std::vector<int> layer_ids, 
+    int device_id,
+    std::vector<Channel_t> channels
+): MuPool(layer_ids, device_id, channels) {
+    int num_layers = layer_ids.size();
+    this->is_attn = false;
+    this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
+}
+
+AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t meta) {
+    // for a simple case we consider prefill sequences can only have 1 token,
+    // so all sequences in tensor are complete and can be scheduled immediately
+
+    // TODO: deal with incomplete prefill sequences
+
+    auto shape = meta->shape;
+    auto dtype = meta->dtype;
+    int layer_id = meta->layer_id;
+
+    auto& token_infos = meta->infos;
+
+    int num_tokens = token_infos.size();
+
+    int num_prefill_seqs = 0;
+    int num_prefill_tokens = 0;
+    int num_decode_tokens = 0;
+
+    std::vector<int> seq_ids{};
+    std::vector<int> prefill_seq_len{};
+    std::vector<int> prefill_query_len{};
+
+    for (auto &info: token_infos) {
+        if (info.prefill_pos != -1) {
+            num_prefill_tokens ++;
+            num_prefill_seqs ++;
+        } else {
+            num_decode_tokens ++;
+        }
+        int seq_id = info.req_id;
+        seq_ids.emplace_back(seq_id);
+        prefill_seq_len.emplace_back(1);
+        prefill_query_len.emplace_back(1);
+    }
+
+    auto attn_meta = std::make_shared<AttentionBatchMetadata> (AttentionBatchMetadata {
+        layer_id, shape, dtype,
+        num_prefill_seqs,
+        num_prefill_tokens,
+        num_decode_tokens,
+        seq_ids,
+        prefill_seq_len,
+        prefill_query_len
+    });
+
+    return AttentionBatch {data_ptr, attn_meta};
+}
+
+void MuAttentionPool::run() {
+    if (this->channels.empty()) {
+        LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
+        return;
+    }
+    this->mq.bind(get_zmq_addr(this->device_id));
+
+    auto last = clock();
+    auto start = last;
+
+    while (!this->end_flag) {
+        LOG(DEBUG) << "fetching a msg ..." << LEND;
+        
+        std::vector<zmq::message_t> recv_msgs;
+        zmq::recv_result_t result =
+            zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
+            
+        LOG(DEBUG) << "got a msg!" << LEND;
+        assert(*result == 2);
+
+        int peer_id = std::stoi(recv_msgs[0].to_string());
+        auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        uintptr_t tensor_buf = 0;
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // Use ZMQ Channel
+            tensor_buf = (uintptr_t) std::malloc(
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        } else {
+            // Use NCCL Channel
+            tensor_buf = alloc_cuda_tensor(metadata->num_element(), this->device_id);
+        }
+
+        LOG(DEBUG) << "calling channel recv from " << peer_id << ", " << *metadata << LEND;
+        this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
+
+        if (metadata->layer_id == 0 && this->is_attn) {
+            // !NOTE(hogura|20241007): incurs a CPU -> GPU sync here
+            tensor_buf = alloc_copy_tensor(
+                tensor_buf, 
+                metadata->num_element() * metadata->get_datatype_size()
+            );
+        }
+
+        // TODO: separate sequences into waiting queue and running queue
+        int lid = this->inner_layer_id[metadata->layer_id];
+
+        // sync prefill sequences
+        /*
+
+        completed_sequences = fill(batch)
+        flash_attn_metadata = concat(completed_sequences, decode_tokens from batch)
+
+
+        1. split batch to prefill and decode tokens
+        2. use prefill tokens to compose prefill sequence (sync for prefill sequences) (memcpy, custom kernel)
+        3. if a prefill sequence is complete, check if this sequence exists in block table
+        4. if not, add them to waiting queue; else add to corresponding running queue with decoding tokens (memcpy)
+
+        waiting_queue, each element is a sequence
+
+        running_queue[layers]
+
+        */            
+        
+        auto attn_batch = pack_attn_batch(tensor_buf, metadata);
+        int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
+        
+        {
+            std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+            int &tokens_cur_layer = this->tokens_per_layer_[lid];
+            tokens_cur_layer += batched_tokens;
+            if (tokens_cur_layer > this->largest_batch_size_) {
+                this->largest_batch_size_ = tokens_cur_layer;
+                this->largest_batch_layer_id_ = lid;
+            }
+
+            this->attn_data_queue[lid].push_back(attn_batch);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(this->request_mutex);
+            // TODO(hogura|20240930): should modify this `1` with `metadata.num_tokens`
+            this->cur_request_count += batched_tokens;
+            this->request_cv.notify_all();
+        }
+    }
+}
+
+int MuAttentionPool::tokens_in_layer(int lid) {
+    auto &q = this->attn_data_queue[lid];
+    int num_tokens = 0;
+    for (auto &d: q) {
+        num_tokens += d.metadata->num_prefill_tokens + d.metadata->num_decode_tokens;
+    }
+    return num_tokens;
+}
+
+std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
+    // TODO(hogura|20240930): only considering decode first
+
+    LOG(INFO) << "fetching largest batch" << LEND;
+    int layer_id = -1;
+    int batched_tokens = 0;
+    std::vector<AttentionBatch> result{};
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+        layer_id = this->largest_batch_layer_id_;
+        batched_tokens = this->largest_batch_size_;
+
+        if (layer_id == -1) {
+            LOG(INFO) << "No available batch" << LEND;
+            return {};
+        }
+
+        LOG(INFO) << "Fetched " << layer_id << " layer" << LEND;
+
+        result = std::move(this->attn_data_queue[layer_id]);
+        this->attn_data_queue[layer_id].clear();
+
+        int num_layers = this->layer_ids.size();
+
+        this->largest_batch_size_ = 0;
+        this->largest_batch_layer_id_ = -1;
+        for (int i = 0; i < num_layers; i++) {
+            int num_tokens = tokens_in_layer(i);
+            if (num_tokens > this->largest_batch_size_) {
+                this->largest_batch_size_ = num_tokens;
+                this->largest_batch_layer_id_ = i;
+            }
+        }
+
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(this->request_mutex);
+        this->cur_request_count -= batched_tokens;
         assert(this->cur_request_count >= 0);
     }
 
