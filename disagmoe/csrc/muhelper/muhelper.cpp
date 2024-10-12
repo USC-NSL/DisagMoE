@@ -287,6 +287,7 @@ void MuPool::run() {
         running_queue[layers]
 
         */
+        int num_tokens = metadata->num_tokens();
         
         {
             std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -294,12 +295,19 @@ void MuPool::run() {
                 tensor_buf,
                 metadata
             });
+            int &tokens_cur_layer = this->tokens_per_layer_[lid];
+            tokens_cur_layer += num_tokens;
+            if (tokens_cur_layer > this->largest_batch_size_) {
+                this->largest_batch_size_ = tokens_cur_layer;
+                this->largest_batch_layer_id_ = lid;
+            }
+
         }
 
         {
             std::lock_guard<std::mutex> lock(this->request_mutex);
             // TODO(hogura|20240930): should modify this `1` with `metadata.num_tokens`
-            this->cur_request_count += metadata->num_tokens();
+            this->cur_request_count += num_tokens;
             this->request_cv.notify_all();
         }
     }
@@ -332,24 +340,33 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     LOG(INFO) << "fetching largest batch" << LEND;
 
     int id = -1;
-    size_t max_batch_size = 0;
+    int max_batch_size = 0;
 
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-        for (size_t i = 0; i < this->data_queue.size(); i ++) {
+        id = this->largest_batch_layer_id_;
+
+        if (id == -1) {
+            LOG(INFO) << "No available batch" << LEND;
+            return {};
+        }
+
+        max_batch_size = this->largest_batch_size_;
+
+        this->largest_batch_layer_id_ = -1;
+        this->largest_batch_size_ = 0;
+
+        for (int i = 0; i < this->data_queue.size(); i ++) {
             int tokens_cur_layer = this->tokens_in_layer(i);
             if (max_batch_size < tokens_cur_layer) {
-                max_batch_size = tokens_cur_layer;
-                id = i;
+                this->largest_batch_size_ = tokens_cur_layer;
+                this->largest_batch_layer_id_ = i;
             }
         }
     }
     
-    if (id == -1) {
-        LOG(INFO) << "No available batch" << LEND;
-        return {};
-    }
+
     LOG(INFO) << "Fetched " << id << " layer" << LEND;
 
     std::vector<TensorBatch> result;
@@ -539,14 +556,13 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
 
         layer_id = this->largest_batch_layer_id_;
-        batched_tokens = this->largest_batch_size_;
 
         if (layer_id == -1) {
             LOG(INFO) << "No available batch" << LEND;
             return {};
         }
-
-        LOG(INFO) << "Fetched " << layer_id << " layer" << LEND;
+        
+        batched_tokens = this->largest_batch_size_;
 
         result = std::move(this->attn_data_queue[layer_id]);
         this->attn_data_queue[layer_id].clear();
@@ -562,8 +578,9 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
                 this->largest_batch_layer_id_ = i;
             }
         }
-
     }
+
+    LOG(INFO) << "Fetched " << layer_id << " layer" << LEND;
 
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
