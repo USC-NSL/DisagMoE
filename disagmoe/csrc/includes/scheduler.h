@@ -42,7 +42,7 @@ protected:
     std::vector<int> layer_ids;
     std::string policy;
 
-    // virtual std::vector<TensorBatch> _schedule() = 0;
+    std::vector<AttentionBatch> _schedule();
 
 public:
     AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
