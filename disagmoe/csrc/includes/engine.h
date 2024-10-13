@@ -7,7 +7,7 @@
 #include "embedding.h"
 #include "comm.h"
 
-std::pair<scheduler_t, MuDispatcher_t> init_engine(
+std::pair<scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
     const std::vector<int> &layer_ids,
@@ -17,7 +17,7 @@ std::pair<scheduler_t, MuDispatcher_t> init_engine(
     std::map<int, std::string> &nccl_ids
 );
 
-void start_engine(scheduler_t scheduler, MuDispatcher_t dispatcher);
+void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher);
 
 Sampler_t init_sampler(
     int device_id,

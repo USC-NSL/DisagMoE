@@ -3,27 +3,32 @@
 
 #include <exception>
 #include <vector>
+#include <string>
 
-scheduler_t Scheduler::build(MuPool_t pool, std::vector<int> layer_ids, std::string policy) {
+scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
-        return std::make_shared<LargestScheduler>(pool, layer_ids);
+        return std::make_shared<Scheduler>(pool, layer_ids);
     } else {
         throw std::runtime_error(policy + " schedule not implemented.");
     }
 }
 
-LargestScheduler::LargestScheduler(MuPool_t pool, std::vector<int> layer_ids):
-    Scheduler(pool, layer_ids, "largest") {
 
-}
+// LargestScheduler::LargestScheduler(mu_pool_t pool, std::vector<int> layer_ids): {
+//     Scheduler(pool, layer_ids, "largest");
+// }
 
-Scheduler::Scheduler(MuPool_t pool, std::vector<int> layer_ids, std::string policy): 
+Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
     pool(pool), layer_ids(layer_ids), policy(policy) {
     
 }
 
 void Scheduler::start() {
     this->pool->start();
+}
+
+std::vector<TensorBatch> Scheduler::_schedule() {
+    return pool->fetch_largest_batch();
 }
 
 TensorBatch Scheduler::schedule() {
@@ -36,6 +41,3 @@ void Scheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
 
-std::vector<TensorBatch> LargestScheduler::_schedule() {
-    return pool->fetch_largest_batch();
-}

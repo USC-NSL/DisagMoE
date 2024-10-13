@@ -10,7 +10,7 @@
 #include <ctime>
 #include <map>
 
-std::pair<scheduler_t, MuDispatcher_t> init_engine(
+std::pair<scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
     const std::vector<int> &layer_ids,
@@ -67,8 +67,8 @@ std::pair<scheduler_t, MuDispatcher_t> init_engine(
     
     // init dispatcher & pool
     LOG(DEBUG) << local_id << " " << "init dispatcher & pool" << LEND;
-    MuPool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
-    MuDispatcher_t dispatcher;
+    mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
+    mu_dispatcher_t dispatcher;
     if (is_attn) {
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, out_channels);
     }
@@ -83,14 +83,14 @@ std::pair<scheduler_t, MuDispatcher_t> init_engine(
     LOG(DEBUG) << local_id << " init scheduler" << LEND;
     // init scheduler
     // TODO(hogura|20241003): add scheduler init config here
-    scheduler_t scheduler = std::make_shared<LargestScheduler>(pool, layer_ids);
+    scheduler_t scheduler = Scheduler::build(pool, layer_ids, "largest");
 
     LOG(DEBUG) << local_id << " inited scheduler" << LEND;
 
     return std::make_pair(scheduler, dispatcher);
 }
 
-void start_engine(scheduler_t scheduler, MuDispatcher_t dispatcher) {
+void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher) {
     scheduler->start();
     dispatcher->start();
 }

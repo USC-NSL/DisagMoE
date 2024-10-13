@@ -137,8 +137,8 @@ for attention, consider waiting sequences,
     std::vector<TensorBatch> fetch_largest_batch();
 };
 
-typedef std::shared_ptr<MuPool> MuPool_t;
-typedef std::shared_ptr<MuDispatcher> MuDispatcher_t;
+typedef std::shared_ptr<MuPool> mu_pool_t;
+typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
 
 class MuAttentionPool: public MuPool {
 
@@ -161,3 +161,5 @@ public:
     void run() override;
 
 };
+
+typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
