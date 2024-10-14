@@ -37,8 +37,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
         .def("start", &Sampler::start);
 
-    py::class_<TensorBatch>(m, "TensorBatch")
-        .def(py::init<>())
+    REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
         .def_readwrite("metadata", &TensorBatch::metadata);
 
@@ -51,7 +50,15 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     REGISTER_STRUCT(TokenMetadata);
 
-    REGISTER_STRUCT(Metadata, std::vector<size_t>);
+    py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
+        .def(py::init<std::vector<size_t>>())
+        .def_readwrite("shape", &Metadata::shape)
+        .def_readwrite("dtype", &Metadata::dtype)
+        .def_readwrite("layer_id", &Metadata::layer_id)
+        .def_readwrite("infos", &Metadata::infos) 
+        .def_readwrite("prompt_lens", &Metadata::prompt_lens)
+        .def("step_layer", &Metadata::step_layer)
+        .def("update_exp_ids", &Metadata::update_exp_ids);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)
@@ -83,4 +90,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("test_scheduler", &test_scheduler);
     m.def("test_sampler_recv", &test_sampler_recv);
     m.def("test_sampler_send", &test_sampler_send);
+    m.def("test_tensor_address", [](uintptr_t data) {
+        
+    });
 }

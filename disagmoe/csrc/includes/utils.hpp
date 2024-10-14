@@ -39,6 +39,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
         for (size_t i = 0; i < ids.size(); i ++) {
             int id = ids[i];
             // TODO(hogura|20241001): replace cudaMemcpy to cudaMemcpyAsync
+            // !FIXME(hogura|20241010): the selection method here may have row-/col- wise issue.
             CUDACHECK(cudaMemcpy(
                 (void*) (dst + i * size_per_token), 
                 (void*) (src + id * size_per_token), 
@@ -47,7 +48,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
             ));
         }
     } else {
-        void* buf = std::malloc(ids.size() * count_per_token);
+        void* buf = std::malloc(ids.size() * size_per_token);
         // TODO(hogura|20241007): use `omp parallel for` to accelerate
         for (int i = 0; i < ids.size(); i ++) {
             int id = ids[i];
@@ -72,7 +73,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
 }
 
 template<class T, class T_COMP = std::less<T>>
-inline std::vector<std::pair<T, TensorBatch>> group_by(
+inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     uintptr_t buf, 
     const Metadata &metadata,
     const std::vector<T> &keys,
@@ -81,8 +82,8 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
 
-    // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
-
+    LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
+    assert(keys.size() == metadata.infos.size());
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
         if (iter == ids.end()) {
@@ -92,19 +93,22 @@ inline std::vector<std::pair<T, TensorBatch>> group_by(
         }
     }
 
-    std::vector<std::pair<T, TensorBatch>> results;
+    std::vector<std::tuple<T, uintptr_t, Metadata>> results;
+    results.clear();
     for (auto &[key, grouped_ids]: ids) {
-        // LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
-        auto sliced_meta = metadata.at(grouped_ids); 
+        LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
+        Metadata sliced_meta = std::move(metadata.at(grouped_ids));
         auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
-        results.push_back(std::make_pair(
+	    LOG(DEBUG) << " Finished a slice" << LEND;
+        results.push_back(std::make_tuple(
             key, 
-            (TensorBatch) {
-                sliced_tensor, 
-                std::make_shared<Metadata>(sliced_meta)
-            }
+            sliced_tensor, 
+            sliced_meta
         ));
+        LOG(DEBUG) << " results.push_back" << LEND;
     }
+
+    LOG(DEBUG) << " Returning results" << LEND;
 
     return results;
 }
@@ -153,5 +157,14 @@ metadata_t static decerealize(char* buf, size_t n) {
     cereal::BinaryInputArchive iarchive(ss);
     Metadata result;
     iarchive(result);
+    LOG(WARNING) << "after decerealize, got metadata: " << result << LEND;
     return std::make_shared<Metadata>(result);
+}
+
+static void print_buf(void* buf, size_t n) {
+    std::cerr << std::showbase << std::internal << std::setfill('0');
+    uint8_t* data = (uint8_t*) buf;
+    for (int i = 0; i < n; i ++)
+        std::cerr << std::hex << std::setw(4) << data[i] << std::dec;
+    std::cerr << std::endl;
 }
