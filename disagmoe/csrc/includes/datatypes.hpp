@@ -159,7 +159,7 @@ struct Metadata {
         infos.reserve(total_tokens);
         std::map<int, int> prompt_lens;
 
-        for (size_t i = 1; i < metas.size(); i ++) {
+        for (size_t i = 0; i < metas.size(); i ++) {
             auto meta = metas[i];
             for (auto &info: meta->infos)
                 infos.push_back(info);
