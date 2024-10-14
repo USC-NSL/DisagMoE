@@ -1,5 +1,6 @@
 #include "scheduler.h"
 #include "utils.hpp"
+#include "block_manager.h"
 
 #include <exception>
 #include <vector>
@@ -81,3 +82,23 @@ void AttentionScheduler::wait_for_new_requests() {
 }
 
 
+block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, block_manager_t block_manager) {
+    // It should be ensured that every seq in batch has been alocated cache blocks
+    // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
+    auto meta = batch.metadata;
+    block_table_t block_table{};
+    int n = meta->num_prefill_seqs; // decode seqs are already allocated in previous steps
+    for (int i = 0; i < n; i++) {
+        block_list_t list{};
+        int id = meta->seq_ids[i];
+        int seq_len = meta->prefill_seq_len[i];
+        if (block_manager->has_seq_block_list(id)) {
+            list = block_manager->get_seq_block_list(id);
+        } else {
+            // after implementing waitqueue, we should allocate it in wait_queue
+            list = block_manager->allocate(id, seq_len);
+        }
+        block_table.emplace_back(list);
+    }
+    return block_table;
+}

@@ -60,6 +60,10 @@ int BlockManager::num_free_blocks() {
     return free_blocks_.size();
 }
 
+bool BlockManager::has_seq_block_list(const int &seq_id) {
+    return block_tables_.find(seq_id) != block_tables_.end();
+}
+
 block_list_t BlockManager::get_seq_block_list(const int &seq_id) {
     return block_tables_[seq_id];
 }

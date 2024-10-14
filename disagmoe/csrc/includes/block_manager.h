@@ -38,6 +38,10 @@ public:
     int num_free_blocks();
 
     block_list_t get_seq_block_list(const int& seq_id);
+
+    bool has_seq_block_list(const int &seq_id);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
+
+typedef std::vector<block_list_t> block_table_t;
