@@ -3,8 +3,9 @@
 #include <queue>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 
-typedef std::vector<int> block_list_t;
+typedef std::shared_ptr<std::vector<int>> block_list_t;
 
 class BlockManager {
 
@@ -28,7 +29,7 @@ public:
 
     block_list_t allocate(const int &seq_id, const int &seq_len);
 
-    void free(const block_list_t& block_list);
+    void free(const int &seq_id);
 
     bool can_append();
 
@@ -38,3 +39,5 @@ public:
 
     block_list_t get_seq_block_list(const int& seq_id);
 };
+
+typedef std::shared_ptr<BlockManager> block_manager_t;

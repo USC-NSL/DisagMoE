@@ -2,6 +2,7 @@
 #include <vector>
 #include <queue>
 #include <cassert>
+#include <memory>
 
 BlockManager::BlockManager(const int &block_size, const int &num_blocks, const int &reserved_blocks) {
     num_blocks_ = num_blocks;
@@ -22,19 +23,22 @@ block_list_t BlockManager::allocate(const int &seq_id, const int &seq_len) {
     assert (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     assert (free_blocks_.size() >= blocks_needed + reserved_blocks);
-    block_list_t block_list{};
+    block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
     for (int i = 0; i < blocks_needed; i++) {
-        block_list.emplace_back(free_blocks_.front());
+        (*block_list)[i] = free_blocks_.front();
         free_blocks_.pop();
     }
     block_tables_[seq_id] = block_list;
     return block_list;
 }
 
-void BlockManager::free(const block_list_t& block_list) {
-    for (auto &x: block_list) {
+void BlockManager::free(const int &seq_id) {
+    auto it = block_tables_.find(seq_id);
+    auto block_list = it->second;
+    for (auto &x: (*block_list)) {
         free_blocks_.push(x);
     }
+    block_tables_.erase(it);
 }
 
 block_list_t BlockManager::append_block(const int& seq_id) {
@@ -44,7 +48,7 @@ block_list_t BlockManager::append_block(const int& seq_id) {
 
     auto seq_block_list = block_tables_.find(seq_id);
     assert (seq_block_list != block_tables_.end());
-    seq_block_list->second.emplace_back(block_to_append);
+    seq_block_list->second->emplace_back(block_to_append);
     return seq_block_list->second;
 }
 
