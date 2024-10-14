@@ -5,6 +5,7 @@
 #include <queue>
 #include <condition_variable>
 
+#include "datatypes.hpp"
 #include "comm.h"
 #include "zmq.hpp"
 
@@ -101,11 +102,18 @@ protected:
 
     std::vector<std::vector<TensorBatch>> data_queue;
     std::vector<int> inner_layer_id;
-    std::vector<std::mutex> layer_mutex;
 
     std::mutex request_mutex;
+    std::mutex batch_mutex;
+
     std::condition_variable request_cv;
     int cur_request_count;
+
+    int largest_batch_size_{0};
+    int largest_batch_layer_id_{-1};
+    std::vector<int> tokens_per_layer_;
+
+    virtual int tokens_in_layer(int lid);
 
 public:
     MuPool(std::vector<int> layer_ids,
@@ -117,8 +125,41 @@ public:
 
     void wait_for_new_requests();
 
+/* 
+
+for attention, consider waiting sequences,
+
+1.first layer consider add waiting seqs, count(can_alloc())
+
+2. later layers pick largest running batch, use token number
+
+*/
     std::vector<TensorBatch> fetch_largest_batch();
 };
 
-typedef std::shared_ptr<MuPool> MuPool_t;
-typedef std::shared_ptr<MuDispatcher> MuDispatcher_t;
+typedef std::shared_ptr<MuPool> mu_pool_t;
+typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
+class MuAttentionPool: public MuPool {
+
+private:
+
+    std::vector<std::vector<AttentionBatch>> attn_data_queue;
+
+    AttentionBatch pack_attn_batch(uintptr_t, metadata_t);
+
+    int tokens_in_layer(int lid) override;
+
+public:
+
+    MuAttentionPool(std::vector<int> layer_ids,
+           int device_id,
+           std::vector<Channel_t> channels);
+
+    std::vector<AttentionBatch> fetch_largest_batch();
+
+    void run() override;
+
+};
+
+typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
