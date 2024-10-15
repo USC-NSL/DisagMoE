@@ -1,14 +1,18 @@
 import torch
-
 from torch import Tensor
-from time import sleep
+
 from typing import override
+from time import sleep
 from enum import Enum
-from disagmoe.models.attention import MoEAttention
-from disagmoe.config import ModelConfig
+
 from vllm.config import CacheConfig
 from vllm.attention import AttentionMetadata
+
+from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts
+from disagmoe.config import ModelConfig
+
+
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -20,6 +24,10 @@ class Executor:
     
     def execute(self, x: Tensor) -> Tensor:
         raise NotImplementedError()
+    
+    def forward(self, x: Tensor) -> Tensor:
+        # NOTE(hogura|20241014): a dummy forward
+        return x + 1
 
 class AttnExecutor(Executor):
 

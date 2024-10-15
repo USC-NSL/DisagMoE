@@ -140,7 +140,7 @@ Tokenizer::Tokenizer(int device_id,
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos):
     MuExpertDispatcher({}, device_id, channels, out_channel_infos) {
-
+    req_count = 0;
 }
 
 void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {

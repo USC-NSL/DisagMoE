@@ -1,13 +1,14 @@
 import torch
 
-from disagmoe.executor.executor import Executor, FFNExecutor, AttnExecutor
+from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
+                                        ModelConfig, CacheConfig)
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer
-from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch
+from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch, AttentionBatchMetadata
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip
 from disagmoe.utils.constants import *
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Callable, Tuple
 from threading import Thread
 
 from torch import Tensor
@@ -24,6 +25,7 @@ class Engine:
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
         self.scheduler: Scheduler = scheduler
+        self.a_scheduler: Scheduler = scheduler
         self.executor: Executor = executor
         self.dispatcher: MuDispatcher = dispatcher
         self.device_id = device_id
@@ -37,6 +39,7 @@ class Engine:
         
         # !TODO(hogura|20241011): remove the frozen tensors
         self._frozen_tensors: List[torch.Tensor] = []
+        self._process_batch: Callable
 
     def init_core(
             self,
@@ -50,7 +53,7 @@ class Engine:
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
-        self.scheduler, self.dispatcher = init_engine(
+        self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
             layer_ids,
@@ -62,7 +65,10 @@ class Engine:
         )
         
     def start(self):
-        start_engine(self.scheduler, self.dispatcher)
+        start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
+        if self.scheduler == None:
+            # NOTE(hogura|20241014): mocking the scheduler
+            self.scheduler = self.a_scheduler
         self.loop_thread.start()
 
     def set_device_id(self, device_id: int):
@@ -71,35 +77,71 @@ class Engine:
         
     def set_is_attn(self, is_attn: bool):
         self.is_attn = is_attn
-        self.executor = AttnExecutor() if is_attn else FFNExecutor()
+        model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
+                                                 num_heads=16, 
+                                                 num_kv_heads=8, 
+                                                 num_experts=1, 
+                                                 intermediate_size=4 * HIDDEN_SIZE,
+                                                 dtype=torch.bfloat16)
+        cache_config = CacheConfig(32, 0.8, 2, "auto")
+        cache_config.num_gpu_blocks = 2 ** 10
+        self.executor = AttnExecutor(model_config, cache_config) if is_attn else \
+                        ExpertsExecutor(model_config)
+        
+        self._process_batch = self.process_batch_attn if is_attn else self.process_batch_expert
+
+    def process_batch_attn(self, 
+                           meta: AttentionBatchMetadata, 
+                           tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        assert isinstance(self.executor, AttnExecutor)
+        
+        # TODO(hogura|20241014): fill the real positions
+        positions = torch.zeros([meta.shape[0]]).type(torch.bfloat16).cuda()
+        
+        # TODO(hogura|20241014): replcae the dummy forward with execute
+        output = self.executor.forward(tensor)
+        # output = self.executor.execute(positions, tensor, meta)
+        
+        new_exp_ids = [0] * meta.shape[0]
+        
+        new_meta = meta.to_metadata()
+        new_meta.update_exp_ids(new_exp_ids, True)
+        
+        return output, new_meta
+    
+    def process_batch_expert(self, 
+                             meta: Metadata, 
+                             tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        assert isinstance(self.executor, ExpertsExecutor)
+        
+        # TODO(hogura|20241014): replcae the dummy forward with execute
+        output = self.executor.forward(tensor)
+        
+        meta.step_layer()
+        meta.update_exp_ids([-1] * meta.shape[0], False)
+        
+        return output, meta
+
+    def post_process(self, output: Tensor, meta: Metadata) -> None:
+        self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
+        batch: TensorBatch = CTensorBatch()
+        batch.data = output.data_ptr()
+        batch.metadata = meta
+        self.dispatcher.put(batch)
 
     def loop(self):
-        self._logger.info("starting engine loop")
+        self._logger.info("starting expert engine loop")
         while not self.end_flag:
-            self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
+            # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()
+            if not batch_info.data:
+                continue
             
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)
             
-            output = self.executor.forward(tensor)
-            if isinstance(self.executor, FFNExecutor):
-                meta.step_layer()
-                meta.update_exp_ids([-1] * meta.shape[0], False)
-            else:
-                # 1. gate func, dummy sleep
-                # TODO
-                # 2. permute memory layout & prepare metadata
-                
-                # TODO
-                new_exp_ids = [0] * meta.shape[0]
-                meta.update_exp_ids(new_exp_ids, True)
-            
-            self._frozen_tensors.append(tensor)
-            batch: TensorBatch = CTensorBatch()
-            batch.data = tensor.data_ptr()
-            batch.metadata = meta
-            self.dispatcher.put(batch)
+            output, meta = self._process_batch(meta, tensor)
+            self.post_process(output, meta)
     
     def terminate(self):
         self.end_flag = True

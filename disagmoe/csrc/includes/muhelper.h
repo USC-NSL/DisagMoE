@@ -78,6 +78,7 @@ class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<int> attn_channel;
+    int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
@@ -115,6 +116,10 @@ protected:
 
     virtual int tokens_in_layer(int lid);
 
+    void recv_metadata(int &peer_id, metadata_t &meta);
+    void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
+    virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta);
+
 public:
     MuPool(std::vector<int> layer_ids,
            int device_id,
@@ -125,15 +130,15 @@ public:
 
     void wait_for_new_requests();
 
-/* 
+    /* 
 
-for attention, consider waiting sequences,
+    for attention, consider waiting sequences,
 
-1.first layer consider add waiting seqs, count(can_alloc())
+    1.first layer consider add waiting seqs, count(can_alloc())
 
-2. later layers pick largest running batch, use token number
+    2. later layers pick largest running batch, use token number
 
-*/
+    */
     std::vector<TensorBatch> fetch_largest_batch();
 };
 
@@ -150,6 +155,8 @@ private:
 
     int tokens_in_layer(int lid) override;
 
+    void process_batch(uintptr_t &tensor_buf, metadata_t &meta) override;
+
 public:
 
     MuAttentionPool(std::vector<int> layer_ids,
@@ -157,8 +164,6 @@ public:
            std::vector<Channel_t> channels);
 
     std::vector<AttentionBatch> fetch_largest_batch();
-
-    void run() override;
 
 };
 

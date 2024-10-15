@@ -36,3 +36,22 @@ class Metadata:
 class TensorBatch:
     data: int       # pointer
     metadata: int # pointer
+
+@dataclass
+class AttentionBatchMetadata:
+    layer_id: int
+    shape: List[int]
+    dtype: str
+    
+    num_prefill_seqs: int
+    num_prefill_tokens: int
+    num_decode_tokens: int
+    seq_ids: List[int]
+    
+    prefill_seq_len: List[int]
+    prefill_query_len: List[int]
+    
+    expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
+    
+    def to_metadata() -> Metadata:
+        ...

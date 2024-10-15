@@ -27,6 +27,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("schedule", &Scheduler::schedule);
 
+    py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
+        .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
+        .def("schedule", &AttentionScheduler::schedule);
+
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);
 
@@ -49,6 +53,17 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
 
     REGISTER_STRUCT(TokenMetadata);
+
+    REGISTER_STRUCT(AttentionBatch)
+        .def_readwrite("data", &AttentionBatch::data)
+        .def_readwrite("metadata", &AttentionBatch::metadata);
+
+    py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
+        .def(py::init<>())
+        .def_readwrite("shape", &AttentionBatchMetadata::shape)
+        .def_readwrite("dtype", &AttentionBatchMetadata::dtype)
+        .def_readwrite("layer_id", &AttentionBatchMetadata::layer_id)
+        .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
         .def(py::init<std::vector<size_t>>())
