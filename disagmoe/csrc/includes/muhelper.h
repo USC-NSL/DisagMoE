@@ -115,6 +115,10 @@ protected:
 
     virtual int tokens_in_layer(int lid);
 
+    void recv_metadata(int &peer_id, metadata_t &meta);
+    void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
+    virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta);
+
 public:
     MuPool(std::vector<int> layer_ids,
            int device_id,
@@ -125,15 +129,15 @@ public:
 
     void wait_for_new_requests();
 
-/* 
+    /* 
 
-for attention, consider waiting sequences,
+    for attention, consider waiting sequences,
 
-1.first layer consider add waiting seqs, count(can_alloc())
+    1.first layer consider add waiting seqs, count(can_alloc())
 
-2. later layers pick largest running batch, use token number
+    2. later layers pick largest running batch, use token number
 
-*/
+    */
     std::vector<TensorBatch> fetch_largest_batch();
 };
 
@@ -149,6 +153,8 @@ private:
     AttentionBatch pack_attn_batch(uintptr_t, metadata_t);
 
     int tokens_in_layer(int lid) override;
+
+    void process_batch(uintptr_t &tensor_buf, metadata_t &meta) override;
 
 public:
 

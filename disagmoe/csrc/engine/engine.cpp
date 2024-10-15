@@ -10,23 +10,26 @@
 #include <ctime>
 #include <map>
 
-std::pair<scheduler_t, mu_dispatcher_t> init_engine(
-    int local_id, 
+void init_channels(
+    int local_id,
     bool is_attn,
-    const std::vector<int> &layer_ids,
+    std::vector<Channel_t> &in_channels,
+    std::vector<Channel_t> &out_channels,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    // const std::vector<std::shared_ptr<ChannelInfo>> &out_channel_infos,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::string> &nccl_ids) {
+    std::map<int, std::string> &nccl_ids
+) {
+
+    LOG(DEBUG) << local_id << " " << "init channels" << LEND;
+
     int n_in = in_device_ids.size();
     int n_out = out_device_ids.size();
 
-    // init channels
-    LOG(DEBUG) << local_id << " " << "init channels" << LEND;
+    in_channels.resize(n_in);
+    out_channels.resize(n_out);
+
     std::map<int, Channel_t> channels;
-    std::vector<Channel_t> in_channels(n_in);
-    std::vector<Channel_t> out_channels(n_out);
 
     for (auto i: in_device_ids)
         channels[i] = nullptr;
@@ -64,34 +67,53 @@ std::pair<scheduler_t, mu_dispatcher_t> init_engine(
         in_channels[i] = channels[ in_device_ids[i] ];
     for (int i = 0; i < n_out; i ++)    
         out_channels[i] = channels[ out_device_ids[i] ];
+}
+
+std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
+    int local_id, 
+    bool is_attn,
+    const std::vector<int> &layer_ids,
+    const std::vector<int> &in_device_ids,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos,
+    std::map<int, std::string> &nccl_ids) {
+
+    std::vector<Channel_t> in_channels, out_channels;
+    init_channels(local_id, is_attn, in_channels, out_channels, 
+        in_device_ids, out_device_ids, out_channel_infos, nccl_ids);
     
-    // init dispatcher & pool
-    LOG(DEBUG) << local_id << " " << "init dispatcher & pool" << LEND;
-    mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
+    // init dispatcher
+    LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t dispatcher;
     if (is_attn) {
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, out_channels);
     }
     else {
-        // std::vector<ChannelInfo> _out_channel_infos;
-        // for (auto info: out_channel_infos)
-        //     _out_channel_infos.push_back(*info);
-        // dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, out_channels, _out_channel_infos);
         dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, out_channels, out_channel_infos);
     }
     
-    LOG(DEBUG) << local_id << " init scheduler" << LEND;
     // init scheduler
-    // TODO(hogura|20241003): add scheduler init config here
-    scheduler_t scheduler = Scheduler::build(pool, layer_ids, "largest");
+    LOG(DEBUG) << local_id << " init scheduler" << LEND;
+    scheduler_t scheduler;
+    attn_scheduler_t attn_scheduler;
 
-    LOG(DEBUG) << local_id << " inited scheduler" << LEND;
+    if (is_attn) {
+        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels);
+        attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
+    }
+    else {
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
+        scheduler = Scheduler::build(pool, layer_ids, "largest");
+    }
 
-    return std::make_pair(scheduler, dispatcher);
+    return std::make_tuple(scheduler, attn_scheduler, dispatcher);
 }
 
-void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher) {
-    scheduler->start();
+void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher) {
+    if (scheduler.get() != nullptr)
+        scheduler->start();
+    if (attn_scheduler.get() != nullptr)
+        attn_scheduler->start();
     dispatcher->start();
 }
 

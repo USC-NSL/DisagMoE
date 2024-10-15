@@ -15,10 +15,6 @@ scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::st
 }
 
 
-// LargestScheduler::LargestScheduler(mu_pool_t pool, std::vector<int> layer_ids): {
-//     Scheduler(pool, layer_ids, "largest");
-// }
-
 Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
     pool(pool), layer_ids(layer_ids), policy(policy) {
     
@@ -52,10 +48,6 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
     }
 }
 
-
-// LargestScheduler::LargestScheduler(mu_pool_t pool, std::vector<int> layer_ids): {
-//     Scheduler(pool, layer_ids, "largest");
-// }
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
     pool(pool), layer_ids(layer_ids), policy(policy) {

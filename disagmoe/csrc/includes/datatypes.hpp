@@ -306,6 +306,36 @@ struct AttentionBatchMetadata {
             }
         );
     }
+
+    metadata_t to_metadata() {
+        auto shape = this->shape;
+        auto dtype = this->dtype;
+        auto layer_id = this->layer_id;
+        std::vector<TokenMetadata> infos;
+        
+        for (int i = 0; i < num_prefill_seqs; i ++) {
+            // TODO(hogura|20241014): modify to chunked prefill
+            for (int j = 0; j < prefill_seq_len[i]; j ++)
+                infos.emplace_back(TokenMetadata {
+                    seq_ids[i],
+                    /*exp_id=*/ -1,
+                    /*first_attn_id=*/ 0,   // TODO(hogura|20241014): add attention replica
+                    /*prefill_pos=*/ j
+                });
+        }
+
+        for (int i = 0; i < num_decode_tokens; i ++)
+            infos.emplace_back(TokenMetadata{
+                seq_ids[num_prefill_seqs + i],
+                /*exp_id=*/ -1,
+                /*first_attn_id=*/ 0,
+                /*prefill_pos=*/ -1
+            });
+        
+        return std::make_shared<Metadata>(Metadata {
+            shape, dtype, layer_id, infos, {}
+        });
+    }
 };
 
 
