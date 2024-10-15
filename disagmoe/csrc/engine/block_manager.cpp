@@ -67,3 +67,25 @@ bool BlockManager::has_seq_block_list(const int &seq_id) {
 block_list_t BlockManager::get_seq_block_list(const int &seq_id) {
     return block_tables_[seq_id];
 }
+
+void BlockManager::append_token(int seq_id, int num_tokens) {
+    assert (num_tokens >= 1);
+    assert (has_seq_block_list(seq_id));
+
+    int &cursor = slot_cursors_[seq_id];
+    while (num_tokens > 0) {
+        int chunk = std::min(num_tokens, block_size_ - cursor);
+        if (!chunk) {
+            append_block(seq_id);
+            cursor = 0;
+            continue;
+        }
+        slot_cursors_[seq_id] += chunk;
+        num_tokens -= chunk;
+    }
+}
+
+int BlockManager::get_slot_id(int seq_id) {
+    assert (slot_cursors_.find(seq_id) != slot_cursors_.end());
+    return slot_cursors_[seq_id];
+}

@@ -73,11 +73,9 @@ void AttentionScheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
 
-
-block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, block_manager_t block_manager) {
+block_table_t AttentionScheduler::prepare_block_table(attn_metadata_t meta, block_manager_t block_manager) {
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
-    auto meta = batch.metadata;
     block_table_t block_table{};
     int n = meta->num_prefill_seqs; // decode seqs are already allocated in previous steps
     for (int i = 0; i < n; i++) {
@@ -93,4 +91,8 @@ block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, bloc
         block_table.emplace_back(list);
     }
     return block_table;
+}
+
+block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, block_manager_t block_manager) {
+    return prepare_block_table(batch.metadata, block_manager);
 }

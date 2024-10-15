@@ -102,8 +102,8 @@ class Engine:
         positions = torch.zeros([meta.shape[0]]).type(torch.bfloat16).cuda()
         
         # TODO(hogura|20241014): replcae the dummy forward with execute
-        output = self.executor.forward(tensor)
-        # output = self.executor.execute(positions, tensor, meta)
+        # output = self.executor.forward(tensor)
+        output = self.executor.execute(positions, tensor, meta)
         
         new_exp_ids = [0] * meta.shape[0]
         
