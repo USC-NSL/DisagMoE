@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 
-from typing import override
+from typing import override, Tuple
 from time import sleep
 from enum import Enum
 
@@ -59,7 +59,7 @@ class AttnExecutor(Executor):
     def execute(self,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: AttentionMetadata) -> Tensor:
+                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor]:
         outputs, topk_experts = self.operator.forward(
             positions, 
             hidden_states, 

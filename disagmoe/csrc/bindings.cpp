@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "muhelper.h"
 #include "datatypes.hpp"
+#include "block_manager.h"
 
 #include "binding_helper.h"
 #include "binding_tests.hpp"
@@ -63,6 +64,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("shape", &AttentionBatchMetadata::shape)
         .def_readwrite("dtype", &AttentionBatchMetadata::dtype)
         .def_readwrite("layer_id", &AttentionBatchMetadata::layer_id)
+        .def_readwrite("seq_ids", &AttentionBatchMetadata::seq_ids)
+        .def_readwrite("num_prefill_tokens", &AttentionBatchMetadata::num_prefill_tokens)
+        .def_readwrite("num_prefill_seqs", &AttentionBatchMetadata::num_prefill_seqs)
+        .def_readwrite("num_decode_tokens", &AttentionBatchMetadata::num_decode_tokens)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
@@ -80,6 +85,19 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("send", &NcclChannel::send)
         .def("recv", &NcclChannel::recv)
         .def("instantiate", &NcclChannel::instantiate);
+
+    py::class_<BlockManager, std::shared_ptr<BlockManager>>(m, "BlockManager")
+        .def(py::init<int, int, int>())
+        .def("can_allocate", &BlockManager::can_allocate)
+        .def("allocate", &BlockManager::allocate)
+        .def("free", &BlockManager::free)
+        .def("can_append", &BlockManager::can_append)
+        .def("append_block", &BlockManager::append_block)
+        .def("num_free_blocks", &BlockManager::num_free_blocks)
+        .def("get_seq_block_list", &BlockManager::get_seq_block_list)
+        .def("has_seq_block_list", &BlockManager::has_seq_block_list)
+        .def("append_token", &BlockManager::append_token)
+        .def("get_slot_id", &BlockManager::get_slot_id);
 
     // static function calls
     m.def("create_channel", &create_channel);
