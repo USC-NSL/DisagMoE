@@ -73,7 +73,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("infos", &Metadata::infos) 
         .def_readwrite("prompt_lens", &Metadata::prompt_lens)
         .def("step_layer", &Metadata::step_layer)
-        .def("update_exp_ids", &Metadata::update_exp_ids);
+        .def("update_exp_ids", &Metadata::update_exp_ids)
+        .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)

@@ -125,6 +125,14 @@ struct Metadata {
         return sizeof(this);
     }
 
+    std::vector<int> get_expert_batch_sizes(int n_expert) {
+        assert(n_expert > 0);
+        std::vector<int> batches(n_expert, 0);
+        for (auto &info: infos)
+            batches[info.exp_id] += 1;
+        return batches;
+    }
+
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
         out << "Metadata{";
         {

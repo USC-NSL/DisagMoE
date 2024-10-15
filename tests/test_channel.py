@@ -2,8 +2,9 @@ import torch
 from disagmoe_c import *
 import threading
 from functools import partial
+from disagmoe.utils.utils import get_nccl_unique_id as get_uid
 
-uid = get_nccl_unique_id()
+uid = get_uid()
 
 c1 = create_channel(0, 1, uid)
 c2 = create_channel(1, 0, uid)

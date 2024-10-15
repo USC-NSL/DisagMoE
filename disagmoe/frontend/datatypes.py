@@ -31,6 +31,9 @@ class Metadata:
                        new_exp_ids: List[int], 
                        required_sort: bool = True) -> None:
         ...
+        
+    def get_expert_batch_sizes(self, n_epxert: int) -> List[int]:
+        ...
 
 @dataclass
 class TensorBatch:

@@ -63,6 +63,7 @@ class Engine:
                 for info in out_channel_infos],
             nccl_ids
         )
+        torch.set_default_dtype(torch.bfloat16)
         
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
@@ -76,19 +77,21 @@ class Engine:
         self._logger = get_logger(f"engine{device_id}")
         
     def set_is_attn(self, is_attn: bool):
+        # TODO(hogura|20241014): upgrade this function to `setup_engine`
         self.is_attn = is_attn
         model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
-                                                 num_heads=16, 
-                                                 num_kv_heads=8, 
-                                                 num_experts=1, 
-                                                 intermediate_size=4 * HIDDEN_SIZE,
-                                                 dtype=torch.bfloat16)
+                                    num_heads=16, 
+                                    num_kv_heads=8, 
+                                    num_experts=N_EXPERTS, 
+                                    intermediate_size=INTERMEDIATE_SIZE,
+                                    dtype=torch.bfloat16)
         cache_config = CacheConfig(32, 0.8, 2, "auto")
         cache_config.num_gpu_blocks = 2 ** 10
         self.executor = AttnExecutor(model_config, cache_config) if is_attn else \
                         ExpertsExecutor(model_config)
         
-        self._process_batch = self.process_batch_attn if is_attn else self.process_batch_expert
+        self._process_batch = self.process_batch_attn if is_attn \
+            else self.process_batch_expert
 
     def process_batch_attn(self, 
                            meta: AttentionBatchMetadata, 
@@ -114,8 +117,10 @@ class Engine:
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        # TODO(hogura|20241014): replcae the dummy forward with execute
-        output = self.executor.forward(tensor)
+        batch_sizes = torch.LongTensor(
+            meta.get_expert_batch_sizes(N_EXPERTS)
+        ).cpu() # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+        output = self.executor.execute(tensor, batch_sizes)
         
         meta.step_layer()
         meta.update_exp_ids([-1] * meta.shape[0], False)
@@ -178,7 +183,7 @@ class TokenizerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
-        self.hidden_size = 16
+        self.hidden_size = HIDDEN_SIZE
         
     def put_request(self, tokens: List[int]):
         # TODO(hogura|20241008): only #prefill = 1 now

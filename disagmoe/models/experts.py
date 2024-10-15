@@ -24,13 +24,14 @@ class MoEExperts(torch.nn.Module):
         
     def create_weights(self, params_dtype: torch.dtype = None):
         if params_dtype == None:
-            params_dtype = torch.get_default_dtype()
+            # FIXME(hogura|20241014): maybe use torch.get_default_dtype
+            params_dtype = torch.bfloat16
             
         # Fused gate_up_proj (column parallel)
         self.w1_weight = torch.nn.Parameter(torch.randn(self.num_experts,
                                                     self.hidden_size,
                                                     self.intermediate_size,
-                                                    dtype=params_dtype),
+                                                    dtype=params_dtype).cuda(),
                                         requires_grad=False)
         self.register_parameter("w1_weight", self.w1_weight)
 
@@ -38,7 +39,7 @@ class MoEExperts(torch.nn.Module):
         self.w2_weight = torch.nn.Parameter(torch.randn(self.num_experts,
                                                     self.intermediate_size,
                                                     self.hidden_size,
-                                                    dtype=params_dtype),
+                                                    dtype=params_dtype).cuda(),
                                         requires_grad=False)
         self.register_parameter("w2_weight", self.w2_weight)
         
