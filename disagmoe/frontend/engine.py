@@ -132,8 +132,10 @@ class Engine:
     def loop(self):
         self._logger.info("starting expert engine loop")
         while not self.end_flag:
-            self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
+            # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()
+            if not batch_info.data:
+                continue
             
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)

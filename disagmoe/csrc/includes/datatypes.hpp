@@ -63,10 +63,6 @@ struct Metadata {
     std::vector<TokenMetadata> infos;
     std::map<int, int> prompt_lens;
 
-    ~Metadata() {
-	LOG(DEBUG) << " destructing a metadata:" << (*this) << LEND;
-    }
-
     // Metadata() {}
     // Metadata(std::vector<size_t> shape, 
     //          std::string dtype,
@@ -201,6 +197,10 @@ struct TensorBatch {
     metadata_t metadata;
 
     static TensorBatch merge(const std::vector<TensorBatch>& batches) {
+        if (batches.empty()) {
+            return TensorBatch {0};
+        }
+
         std::vector<metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
@@ -312,6 +312,11 @@ struct AttentionBatchMetadata {
         auto dtype = this->dtype;
         auto layer_id = this->layer_id;
         std::vector<TokenMetadata> infos;
+
+        LOG(INFO) << "To metadata, seq_ids: ";
+        for (int i = 0; i < num_prefill_seqs + num_decode_tokens; i ++)
+            std::cout << seq_ids[i] << " ";
+        std::cout << LEND;
         
         for (int i = 0; i < num_prefill_seqs; i ++) {
             // TODO(hogura|20241014): modify to chunked prefill
@@ -344,6 +349,9 @@ struct AttentionBatch {
     attn_metadata_t metadata;
 
     static AttentionBatch merge(const std::vector<AttentionBatch>& batches) {
+        if (batches.empty()) {
+            return AttentionBatch {0};
+        }
         std::vector<attn_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;

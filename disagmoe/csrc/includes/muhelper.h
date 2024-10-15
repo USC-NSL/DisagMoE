@@ -78,6 +78,7 @@ class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<int> attn_channel;
+    int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
@@ -163,8 +164,6 @@ public:
            std::vector<Channel_t> channels);
 
     std::vector<AttentionBatch> fetch_largest_batch();
-
-    void run() override;
 
 };
 
