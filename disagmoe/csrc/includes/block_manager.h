@@ -35,7 +35,7 @@ public:
 
     bool can_append();
 
-    block_list_t append_block(const int& seq_id);
+    void append_block(const int& seq_id);
 
     int num_free_blocks();
 

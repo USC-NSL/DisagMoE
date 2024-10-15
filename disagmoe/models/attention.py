@@ -30,6 +30,7 @@ class MoEAttention(nn.Module):
         rope_theta: float = 10000,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        params_dtype: Optional[torch.dtype] = None,
         prefix: str = "",
     ) -> None:
         super().__init__()
@@ -59,6 +60,9 @@ class MoEAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         
+        if params_dtype is None:
+            params_dtype = torch.get_default_dtype()
+        
         # (shaoyuw): must invoke initialize_model_parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -68,6 +72,7 @@ class MoEAttention(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
+            params_dtype=params_dtype,
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
@@ -75,6 +80,7 @@ class MoEAttention(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
+            params_dtype=params_dtype,
         )
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -95,7 +101,7 @@ class MoEAttention(nn.Module):
         self.gate = ReplicatedLinear(hidden_size,
                                      num_experts,
                                      bias=False,
-                                     params_dtype=torch.get_default_dtype(),
+                                     params_dtype=params_dtype,
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
 

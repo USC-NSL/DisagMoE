@@ -1,0 +1,37 @@
+from disagmoe.frontend.engine import Engine, AttentionBatchMetadata, FlashAttentionMetadata
+from disagmoe.utils.constants import *
+
+from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
+
+import torch
+
+torch.set_default_device("cuda:0")
+torch.set_default_dtype(torch.bfloat16)
+
+engine = Engine()
+
+engine.set_device_id(0)
+engine.set_is_attn(True)
+engine.init_core([0], [], [], [], {})
+engine.scheduler = engine.a_scheduler
+
+meta: AttentionBatchMetadata = AttentionBatchMetadata_C()
+meta.layer_id = 0
+meta.shape = [1, HIDDEN_SIZE]
+meta.dtype = "fp16"
+meta.num_prefill_seqs = 1
+meta.num_prefill_tokens = 1
+meta.num_decode_tokens = 0
+meta.seq_ids = [0]
+meta.prefill_seq_len = [1]
+meta.prefill_query_len = [1]
+meta.expert_ids = [0]
+
+tensor, new_meta = engine.process_batch_attn(
+    meta,
+    torch.Tensor(size=(1, HIDDEN_SIZE)).type(torch.bfloat16).cuda(),
+    mocking=True
+)
+
+print(tensor)
+print(new_meta)

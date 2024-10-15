@@ -41,7 +41,7 @@ void BlockManager::free(const int &seq_id) {
     block_tables_.erase(it);
 }
 
-block_list_t BlockManager::append_block(const int& seq_id) {
+void BlockManager::append_block(const int& seq_id) {
     assert (free_blocks_.size() > 0);
     int block_to_append = free_blocks_.front();
     free_blocks_.pop();
@@ -49,7 +49,6 @@ block_list_t BlockManager::append_block(const int& seq_id) {
     auto seq_block_list = block_tables_.find(seq_id);
     assert (seq_block_list != block_tables_.end());
     seq_block_list->second->emplace_back(block_to_append);
-    return seq_block_list->second;
 }
 
 bool BlockManager::can_append() {
