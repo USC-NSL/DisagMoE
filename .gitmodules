@@ -1,3 +1,7 @@
 [submodule "third_party/cereal"]
     path = third_party/cereal
     url = git@github.com:USCiLab/cereal.git
+
+[submodule "third_party/nvtx"]
+    path = third_party/nvtx
+    url = git@github.com:NVIDIA/NVTX.git

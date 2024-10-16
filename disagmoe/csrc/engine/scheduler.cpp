@@ -1,6 +1,7 @@
 #include "scheduler.h"
 #include "utils.hpp"
 #include "block_manager.h"
+#include "cuda_utils.h"
 
 #include <exception>
 #include <vector>
@@ -29,6 +30,8 @@ std::vector<TensorBatch> Scheduler::_schedule() {
 }
 
 TensorBatch Scheduler::schedule() {
+    tx_range _{"Scheduler::schedule"};
+
     auto batches = this->_schedule();
     auto batch = TensorBatch::merge(batches);
     return batch;
@@ -63,6 +66,8 @@ std::vector<AttentionBatch> AttentionScheduler::_schedule() {
 }
 
 AttentionBatch AttentionScheduler::schedule() {
+    tx_range _{"AttentionScheduler::schedule"};
+    
     auto batches = this->_schedule();
     // maybe moving merge to mu_pool results in less memory copy
     auto batch = AttentionBatch::merge(batches);
@@ -75,6 +80,7 @@ void AttentionScheduler::wait_for_new_requests() {
 
 std::vector<std::vector<int>> AttentionScheduler::prepare_block_table_by_meta(
     attn_metadata_t meta, block_manager_t block_manager) {
+    AUTO_TX_RANGE;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
     std::vector<std::vector<int>> block_table{};

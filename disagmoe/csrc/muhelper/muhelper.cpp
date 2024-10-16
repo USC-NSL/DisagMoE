@@ -12,6 +12,7 @@
 #include "utils.hpp"
 #include "logging.h"
 #include "constants.h"
+#include "cuda_utils.h"
 
 #include "zmq.hpp"
 #include "zmq_addon.hpp"
@@ -65,6 +66,8 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
+    tx_range _{"MuDispatcher::_send_batch"};
+
     auto data = cerealize(std::make_shared<Metadata>(meta));
     // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
@@ -104,6 +107,7 @@ MuAttnDispatcher::MuAttnDispatcher(
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
+    tx_range _{"MuAttnDispatcher::_send_once"};
     // LOG(DEBUG) << "sending a batch." << LEND;
     // LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
     //            << " info size: " << batch.metadata->infos.size() << LEND;
@@ -169,6 +173,8 @@ void MuExpertDispatcher::debug_put(TensorBatch batch) {
 }
 
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
+    tx_range _{"MuExpertDispatcher::_send_once"};
+
     // LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;

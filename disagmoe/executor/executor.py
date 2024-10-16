@@ -11,6 +11,7 @@ from vllm.attention import AttentionMetadata
 from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts
 from disagmoe.config import ModelConfig
+from disagmoe.utils.utils import nvtx_range
 
 
 class ExecutorType(Enum):
@@ -56,6 +57,7 @@ class AttnExecutor(Executor):
         self.cache = torch.zeros((2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
 
     @override
+    @nvtx_range("AttnExecutor.execute")
     def execute(self,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
@@ -80,6 +82,7 @@ class ExpertsExecutor(Executor):
         )
 
     @override
+    @nvtx_range("ExpertsExecutor.execute")
     def execute(self, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
         outputs = self.opertor.forward(hidden_states, batch_sizes)
         return outputs

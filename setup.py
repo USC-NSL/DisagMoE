@@ -37,7 +37,8 @@ ext_modules = [
             CUDA_INCLUDE_DIR,
             "third_party/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
             "third_party/cereal/include",
-            "/usr/local/nccl2/include"
+            "/usr/local/nccl2/include",
+            "third_party/NVTX/c/include",
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,

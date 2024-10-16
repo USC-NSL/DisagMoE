@@ -10,6 +10,13 @@ pip install -r requirements.txt
 pip install .
 ```
 
+## Third party
+See `.gitmodules`.
+
+* cereal
+* cppzmq/libzmq
+* NVTX
+
 ## Tests
 
 ```bash

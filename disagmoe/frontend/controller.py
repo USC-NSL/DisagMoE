@@ -55,6 +55,9 @@ class Controller:
                 num_cpus=n_cpus,
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
+                runtime_env={
+                    "nsight": "default"
+                }
                 # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
             )(worker_cls).remote()
             

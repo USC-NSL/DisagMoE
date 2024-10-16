@@ -6,6 +6,8 @@
 #include <cassert>
 #include <memory>
 
+#include "cuda_utils.h"
+
 BlockManager::BlockManager(const int &block_size, const int &num_blocks, const int &reserved_blocks) {
     num_blocks_ = num_blocks;
     reserved_blocks_ = reserved_blocks;
@@ -78,6 +80,8 @@ block_list_t BlockManager::get_seq_block_list(const int &seq_id) {
 }
 
 void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
+    tx_range _{"BlockManager::append_tokens"};
+
     assert (num_tokens >= 1);
     assert (has_seq_block_list(seq_id));
 

@@ -5,7 +5,7 @@ from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch, AttentionBatchMetadata
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import tensor_as_buf, get_ip
+from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
 
 from vllm.attention import AttentionMetadata
@@ -107,13 +107,11 @@ class Engine:
             self.executor = ExpertsExecutor(model_config)    
             self._process_batch = self.process_batch_expert
 
-    def process_batch_attn(self, 
-                           meta: AttentionBatchMetadata, 
-                           tensor: Tensor,
-                           mocking: bool = False) -> Tuple[Tensor, Metadata]:
-        assert isinstance(self.executor, AttnExecutor)
-        
-        self._logger.debug(f"process batch AttentionBatchMetadata: {meta}")
+    @nvtx_range("engine.pack_flash_attn_metadata")
+    def _pack_flash_attn_metadata(
+            self,
+            meta: AttentionBatchMetadata
+        ) -> FlashAttentionMetadata:
         
         # First append blocks for each seqeunce
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
@@ -128,9 +126,7 @@ class Engine:
         
         self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
         
-        # TODO(hogura|20241014): fill the real positions
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
-        positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
         assert self.block_mgr is not None and meta is not None
         block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
@@ -165,7 +161,7 @@ class Engine:
                 seqlen.append(seqlen[-1] + l)
             return torch.IntTensor(seqlen).cuda()
         
-        attn_meta = FlashAttentionMetadata(
+        return FlashAttentionMetadata(
             meta.num_prefill_seqs,
             meta.num_prefill_tokens,
             meta.num_decode_tokens,
@@ -184,6 +180,20 @@ class Engine:
             block_tables=block_table,
             use_cuda_graph=False,
         )
+
+    @nvtx_range("engine.process_batch_attn")
+    def process_batch_attn(self, 
+                           meta: AttentionBatchMetadata, 
+                           tensor: Tensor,
+                           mocking: bool = False) -> Tuple[Tensor, Metadata]:
+        assert isinstance(self.executor, AttnExecutor)
+        
+        self._logger.debug(f"process batch AttentionBatchMetadata: {meta}")
+        
+        # TODO(hogura|20241014): fill the real positions
+        positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
+        
+        attn_meta = self._pack_flash_attn_metadata(meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
@@ -199,6 +209,7 @@ class Engine:
         
         return hiddens, new_meta
     
+    @nvtx_range("engine.process_batch_expert")
     def process_batch_expert(self, 
                              meta: Metadata, 
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
@@ -214,6 +225,7 @@ class Engine:
         
         return output, meta
 
+    @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
         self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
         batch: TensorBatch = TensorBatch_C()
