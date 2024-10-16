@@ -1,4 +1,6 @@
 #include "block_manager.h"
+#include "logging.h"
+
 #include <vector>
 #include <queue>
 #include <cassert>
@@ -20,8 +22,13 @@ bool BlockManager::can_allocate(const int &seq_len) {
 }
 
 block_list_t BlockManager::allocate(const int &seq_id, const int &seq_len) {
+    LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
+
     assert (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
+    
+    LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
+
     assert (free_blocks_.size() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
     for (int i = 0; i < blocks_needed; i++) {
@@ -29,6 +36,9 @@ block_list_t BlockManager::allocate(const int &seq_id, const int &seq_len) {
         free_blocks_.pop();
     }
     block_tables_[seq_id] = block_list;
+
+    LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
+
     return block_list;
 }
 
@@ -72,7 +82,8 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     assert (has_seq_block_list(seq_id));
 
     int remain_slots = block_size_ - context_len % block_size_; 
-    if (num_tokens > remain_slots) {
+    // NOTE(hogura|20241015): here use >= instead of >, otherwise no blocks available at block_size_.
+    if (num_tokens >= remain_slots) {
         int blocks_to_add = (num_tokens - remain_slots - 1) / block_size_ + 1;
         assert (free_blocks_.size() > blocks_to_add);
         auto seq_block_list = block_tables_.find(seq_id);

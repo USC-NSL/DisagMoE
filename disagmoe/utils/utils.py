@@ -12,7 +12,7 @@ def tensor_as_buf(buf: int, shape: List[int], dtype = torch.bfloat16) -> Tensor:
     # TODO(hogura|20241003): change c_int16 to a dynamic type
     data = ctypes.cast(buf, ctypes.POINTER(ctypes.c_int16))
     tensor = torch.frombuffer(data, dtype=dtype)
-    print("received tensor:", tensor)
+    # print("received tensor:", tensor)
     return torch.ones(shape, dtype=dtype).cuda()
     # return tensor.view(*shape)
     
