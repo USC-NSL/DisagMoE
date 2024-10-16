@@ -67,26 +67,20 @@ block_list_t BlockManager::get_seq_block_list(const int &seq_id) {
     return block_tables_[seq_id];
 }
 
-void BlockManager::append_token(int seq_id, int num_tokens) {
+void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     assert (num_tokens >= 1);
     assert (has_seq_block_list(seq_id));
 
-    int &cursor = slot_cursors_[seq_id];
-    while (num_tokens > 0) {
-        int chunk = std::min(num_tokens, block_size_ - cursor);
-        if (!chunk) {
-            append_block(seq_id);
-            cursor = 0;
-            continue;
+    int remain_slots = block_size_ - context_len % block_size_; 
+    if (num_tokens > remain_slots) {
+        int blocks_to_add = (num_tokens - remain_slots - 1) / block_size_ + 1;
+        assert (free_blocks_.size() > blocks_to_add);
+        auto seq_block_list = block_tables_.find(seq_id);
+        while (blocks_to_add > 0) {
+            int block_to_append = free_blocks_.front();
+            free_blocks_.pop();
+            seq_block_list->second->emplace_back(block_to_append);
+            blocks_to_add --;
         }
-        slot_cursors_[seq_id] += chunk;
-        num_tokens -= chunk;
     }
-}
-
-int BlockManager::get_slot_id(int seq_id) {
-    assert (slot_cursors_.find(seq_id) != slot_cursors_.end());
-    // TODO(shaoyuw|20241015)
-    // NOTE(hogura|20241015): the slot id in vllm starts from 1, so +1
-    return slot_cursors_[seq_id] + (*block_tables_[seq_id]->rbegin() * block_size_) + 1;
 }
