@@ -27,7 +27,7 @@ public:
 
     bool can_allocate(const int &seq_len);
 
-    block_list_t allocate(const int &seq_id, const int &seq_len);
+    void allocate(const int &seq_id, const int &seq_len);
 
     void free(const int &seq_id);
 

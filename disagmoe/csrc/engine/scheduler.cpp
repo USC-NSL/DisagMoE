@@ -86,15 +86,9 @@ std::vector<std::vector<int>> AttentionScheduler::prepare_block_table_by_meta(
     std::vector<std::vector<int>> block_table{};
     int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
     for (int i = 0; i < n; i++) {
-        block_list_t list{};
         int id = meta->seq_ids[i];
-        if (block_manager->has_seq_block_list(id)) {
-            list = block_manager->get_seq_block_list(id);
-        } else {
-            // after implementing waitqueue, we should allocate it in wait_queue
-            int seq_len = meta->prefill_seq_len[i];
-            list = block_manager->allocate(id, seq_len);
-        }
+        assert (block_manager->has_seq_block_list(id));
+        block_list_t list = block_manager->get_seq_block_list(id);
         block_table.emplace_back(*list);
     }
     return block_table;

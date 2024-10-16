@@ -112,17 +112,19 @@ class Engine:
             self,
             meta: AttentionBatchMetadata
         ) -> FlashAttentionMetadata:
-        
         # First append blocks for each seqeunce
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
-            self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
+            if seq_id not in self.decode_seq_lens:
+                self.block_mgr.allocate(seq_id, meta.prefill_seq_len[i])
+            else:
+                self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
             self.decode_seq_lens[seq_id] = meta.prefill_seq_len[i]
         
         for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
             assert seq_id in self.decode_seq_lens, f"seq {seq_id} should no be in decoding phase"
-            decode_seq_len = self.decode_seq_lens.get(seq_id) + 1
+            decode_seq_len = self.decode_seq_lens.get(seq_id)
             self.block_mgr.append_tokens(seq_id, decode_seq_len, 1)
-            self.decode_seq_lens[seq_id] = decode_seq_len
+            self.decode_seq_lens[seq_id] = decode_seq_len + 1
         
         self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
         
@@ -145,8 +147,8 @@ class Engine:
                 
         # decode tokens
         for i in range(meta.num_prefill_tokens, tokens_in_batch):
-            seq_len = self.decode_seq_lens[meta.seq_ids[i]]
-            block_id, id_in_block = seq_len // BLOCK_SIZE, seq_len % BLOCK_SIZE
+            last_idx = self.decode_seq_lens[meta.seq_ids[i]] - 1
+            block_id, id_in_block = last_idx // BLOCK_SIZE, last_idx % BLOCK_SIZE
             slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
             slot_idx += 1
             
