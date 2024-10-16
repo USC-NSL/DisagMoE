@@ -71,6 +71,41 @@ def test_prefill():
 
     print(tensor)
     print(new_meta)
+
+def test_decode():
+    meta.layer_id = 0
+    meta.shape = [1, HIDDEN_SIZE]
+    meta.dtype = "fp16"
+    meta.num_prefill_seqs = 1
+    meta.num_prefill_tokens = 1
+    meta.num_decode_tokens = 0
+    meta.seq_ids = [0]
+    meta.prefill_seq_len = [1]
+    meta.prefill_query_len = [1]
+    meta.expert_ids = [0]
     
+    _, _ = engine.process_batch_attn(
+        meta,
+        torch.Tensor(size=meta.shape).type(torch.bfloat16).cuda(),
+        mocking=True
+    )
+    
+    meta.num_prefill_seqs = 0
+    meta.num_prefill_tokens = 0
+    meta.num_decode_tokens = 1
+    meta.prefill_seq_len = []
+    meta.prefill_query_len = []
+    
+    for i in range(33):
+        print("decoding token", i)
+        _, _ = engine.process_batch_attn(
+            meta,
+            torch.Tensor(size=meta.shape).type(torch.bfloat16).cuda(),
+            mocking=True
+        )
+    
+    print("passed")
+
 # test_prefill()
-test_mixed_batch()
+# test_mixed_batch()
+test_decode()

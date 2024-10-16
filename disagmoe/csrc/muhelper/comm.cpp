@@ -128,24 +128,24 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
 }
 
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
-    LOG(DEBUG) << local << "ZmqChannel sending " << metadata << LEND;
+    // LOG(DEBUG) << local << "ZmqChannel sending " << metadata << LEND;
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     this->mq->send(zmq::buffer(buf, size));
-    LOG(DEBUG) << local << "ZmqChannel sent" << LEND;
+    // LOG(DEBUG) << local << "ZmqChannel sent" << LEND;
     // !FIXME(hogura|20241009): may have memory leakage
     // if (data != (uintptr_t) buf)
     //     std::free(buf);
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
-    LOG(DEBUG) << local << "ZmqChannel recving " << metadata << LEND;
+    // LOG(DEBUG) << local << "ZmqChannel recving " << metadata << LEND;
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
     this->_tensor_copy((uintptr_t) msg.data(), metadata, 
         /*to_gpu=*/ !is_embedding_node(local), data);
-    LOG(DEBUG) << local << "ZmqChannel recv ended" << LEND;
+    // LOG(DEBUG) << local << "ZmqChannel recv ended" << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

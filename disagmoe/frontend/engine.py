@@ -72,7 +72,6 @@ class Engine:
                 for info in out_channel_infos],
             nccl_ids
         )
-        torch.set_default_dtype(torch.bfloat16)
         
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
@@ -86,6 +85,9 @@ class Engine:
         self._logger = get_logger(f"engine{device_id}")
         
     def set_is_attn(self, is_attn: bool):
+        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_device("cuda:0")
+        
         # TODO(hogura|20241014): upgrade this function to `setup_engine`
         self.is_attn = is_attn
         model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
@@ -111,6 +113,8 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
+        self._logger.debug(f"process batch AttentionBatchMetadata: {meta}")
+        
         # First append blocks for each seqeunce
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
             self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
@@ -122,10 +126,13 @@ class Engine:
             self.block_mgr.append_tokens(seq_id, decode_seq_len, 1)
             self.decode_seq_lens[seq_id] = decode_seq_len
         
+        self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
+        
         # TODO(hogura|20241014): fill the real positions
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
+        assert self.block_mgr is not None and meta is not None
         block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
         
         tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
@@ -142,7 +149,7 @@ class Engine:
                 
         # decode tokens
         for i in range(meta.num_prefill_tokens, tokens_in_batch):
-            seq_len = meta.seq_ids[i]
+            seq_len = self.decode_seq_lens[meta.seq_ids[i]]
             block_id, id_in_block = seq_len // BLOCK_SIZE, seq_len % BLOCK_SIZE
             slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
             slot_idx += 1
@@ -151,6 +158,8 @@ class Engine:
         block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
         
         def make_seqlens(lens):
+            if not lens:
+                return None
             seqlen = [0]
             for l in lens:
                 seqlen.append(seqlen[-1] + l)
@@ -163,8 +172,8 @@ class Engine:
             slot_mapping.cuda(),
             seq_lens=meta.prefill_seq_len + decode_seq_lens,
             seq_lens_tensor=torch.IntTensor(meta.prefill_seq_len + decode_seq_lens).cuda(),
-            max_query_len=max(meta.prefill_query_len),
-            max_prefill_seq_len=max(meta.prefill_seq_len),
+            max_query_len=max(meta.prefill_query_len + [0]),
+            max_prefill_seq_len=max(meta.prefill_seq_len + [0]),
             max_decode_seq_len=max(decode_seq_lens + [0]),
             query_start_loc=make_seqlens(meta.prefill_query_len),
             seq_start_loc=make_seqlens(meta.prefill_seq_len + decode_seq_lens),
@@ -178,6 +187,7 @@ class Engine:
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
+        expert_ids = expert_ids.view((meta.shape[0],))
         
         # TODO(hogura|20241015): test & update the experts
         if not mocking:
@@ -186,7 +196,6 @@ class Engine:
             new_meta.update_exp_ids(new_exp_ids, True)
         else:
             new_meta = meta
-        
         
         return hiddens, new_meta
     

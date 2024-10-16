@@ -66,7 +66,7 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     auto data = cerealize(std::make_shared<Metadata>(meta));
-    LOG(DEBUG) << "sending batch to channel " << cid << LEND;
+    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -104,13 +104,13 @@ MuAttnDispatcher::MuAttnDispatcher(
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
-    LOG(DEBUG) << "sending a batch." << LEND;
-    LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
-               << " info size: " << batch.metadata->infos.size() << LEND;
+    // LOG(DEBUG) << "sending a batch." << LEND;
+    // LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
+    //            << " info size: " << batch.metadata->infos.size() << LEND;
 
     int n = batch.metadata->shape[0];
     for (int i = 0; i < n;) {
-        LOG(DEBUG) << "handling " << i << " metadata, with: " << batch.metadata->infos[i] << LEND;
+        // LOG(DEBUG) << "handling " << i << " metadata, with: " << batch.metadata->infos[i] << LEND;
         int j = i + 1;
         int eid = batch.metadata->infos[i].exp_id;
         while (j < n && batch.metadata->infos[j].exp_id == eid)
@@ -125,7 +125,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         i = j;
     }
 
-    LOG(DEBUG) << "sent a batch." << LEND;
+    // LOG(DEBUG) << "sent a batch." << LEND;
 }
 
 /*
@@ -169,7 +169,7 @@ void MuExpertDispatcher::debug_put(TensorBatch batch) {
 }
 
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
-    LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
+    // LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
     std::vector<int> chans;
@@ -189,7 +189,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             std::get<2>(sub_batch)
         );
     }
-    LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
+    // LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
@@ -231,13 +231,13 @@ MuPool::MuPool(
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
-    LOG(DEBUG) << "fetching a msg ..." << LEND;
+    // LOG(DEBUG) << "fetching a msg ..." << LEND;
         
     std::vector<zmq::message_t> recv_msgs;
     zmq::recv_result_t result =
     zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
         
-    LOG(DEBUG) << "got a msg!" << LEND;
+    // LOG(DEBUG) << "got a msg!" << LEND;
     assert(*result == 2);
 
     peer_id = std::stoi(recv_msgs[0].to_string());
@@ -516,7 +516,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
         }
     }
 
-    LOG(INFO) << "Fetched " << layer_id << " layer" << LEND;
+    LOG(DEBUG) << "Fetched " << layer_id << " layer" << LEND;
 
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
