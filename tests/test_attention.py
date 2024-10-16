@@ -143,7 +143,7 @@ def test_prefill():
         use_cuda_graph=False,
     )
     inputs = torch.randn((num_prefill_tokens, hidden_size))
-    positions = torch.zeros_like(inputs, dtype=torch.long)
+    positions = torch.zeros(inputs.shape[0], dtype=torch.long)
     attn.forward(positions, inputs, cache, meta)
     print(f">>> prefill test passed")
     
@@ -173,7 +173,7 @@ def test_decode():
         use_cuda_graph=False,
     )
     inputs = torch.randn((num_decode_tokens, hidden_size))
-    positions = torch.zeros_like(inputs, dtype=torch.long)
+    positions = torch.zeros(inputs.shape[0], dtype=torch.long)
     attn.forward(positions, inputs, cache, meta)
     print(f">>> decode test passed")
     
@@ -209,7 +209,7 @@ def test_prefill_decode():
         use_cuda_graph=False,
     )
     inputs = torch.randn((num_decode_tokens + num_prefill_tokens, hidden_size))
-    positions = torch.zeros_like(inputs, dtype=torch.long)
+    positions = torch.zeros(inputs.shape[0], dtype=torch.long)
     attn.forward(positions, inputs, cache, meta)
     print(f">>> chunked_prefill test passed")
     

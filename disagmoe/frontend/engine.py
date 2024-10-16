@@ -111,10 +111,6 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
-        # TODO(hogura|20241014): fill the real positions
-        decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
-        positions = torch.zeros_like(tensor, dtype=torch.long).cuda()
-        
         # First append blocks for each seqeunce
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
             self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
@@ -126,15 +122,15 @@ class Engine:
             self.block_mgr.append_tokens(seq_id, decode_seq_len, 1)
             self.decode_seq_lens[seq_id] = decode_seq_len
         
+        # TODO(hogura|20241014): fill the real positions
+        decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
+        positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
+        
         block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
-        block_table = [torch.IntTensor(block_list).cuda() for block_list in block_table]
-        block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
         
         tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
-        
         slot_mapping = torch.empty(tokens_in_batch, dtype=torch.long, device="cpu")
         slot_idx = 0
-        
         # prefill tokens
         for i in range(meta.num_prefill_seqs):
             q_len = meta.prefill_query_len[i]
@@ -151,6 +147,9 @@ class Engine:
             slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
             slot_idx += 1
             
+        block_table = [torch.IntTensor(block_list).cuda() for block_list in block_table]
+        block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
+        
         def make_seqlens(lens):
             seqlen = [0]
             for l in lens:
