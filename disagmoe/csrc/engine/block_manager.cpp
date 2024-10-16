@@ -22,7 +22,7 @@ bool BlockManager::can_allocate(const int &seq_len) {
 block_list_t BlockManager::allocate(const int &seq_id, const int &seq_len) {
     assert (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
-    assert (free_blocks_.size() >= blocks_needed + reserved_blocks);
+    assert (free_blocks_.size() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
     for (int i = 0; i < blocks_needed; i++) {
         (*block_list)[i] = free_blocks_.front();
@@ -86,5 +86,7 @@ void BlockManager::append_token(int seq_id, int num_tokens) {
 
 int BlockManager::get_slot_id(int seq_id) {
     assert (slot_cursors_.find(seq_id) != slot_cursors_.end());
-    return slot_cursors_[seq_id];
+    // TODO(shaoyuw|20241015)
+    // NOTE(hogura|20241015): the slot id in vllm starts from 1, so +1
+    return slot_cursors_[seq_id] + (*block_tables_[seq_id]->rbegin() * block_size_) + 1;
 }
