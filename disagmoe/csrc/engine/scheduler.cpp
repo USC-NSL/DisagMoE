@@ -73,13 +73,14 @@ void AttentionScheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
 
-
-block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, block_manager_t block_manager) {
+std::vector<std::vector<int>> AttentionScheduler::prepare_block_table_by_meta(attn_metadata_t meta, block_manager_t block_manager) {
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
-    auto meta = batch.metadata;
-    block_table_t block_table{};
-    int n = meta->num_prefill_seqs; // decode seqs are already allocated in previous steps
+    for (int i = 0; i < meta->seq_ids.size(); i ++)
+        printf("%d ", meta->seq_ids[i]);
+    puts("");
+    std::vector<std::vector<int>> block_table{};
+    int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
     for (int i = 0; i < n; i++) {
         block_list_t list{};
         int id = meta->seq_ids[i];
@@ -90,7 +91,12 @@ block_table_t AttentionScheduler::prepare_block_table(AttentionBatch batch, bloc
             // after implementing waitqueue, we should allocate it in wait_queue
             list = block_manager->allocate(id, seq_len);
         }
-        block_table.emplace_back(list);
+        block_table.emplace_back(*list);
     }
+    printf("%u\n", block_table.size());
     return block_table;
+}
+
+std::vector<std::vector<int>> AttentionScheduler::prepare_block_table(AttentionBatch batch, block_manager_t block_manager) {
+    return prepare_block_table_by_meta(batch.metadata, block_manager);
 }

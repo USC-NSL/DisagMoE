@@ -2,20 +2,25 @@ import torch
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer
+from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch, AttentionBatchMetadata
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip
 from disagmoe.utils.constants import *
 
+from vllm.attention import AttentionMetadata
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+
 from typing import Optional, List, Dict, Union, Callable, Tuple
 from threading import Thread
 
 from torch import Tensor
+from torch.nn.utils.rnn import pad_sequence
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
                         ChannelInfo as ChannelInfo_C,
-                        TensorBatch as CTensorBatch)
+                        TensorBatch as TensorBatch_C,
+                        BlockManager as BlockManager_C)
 
 class Engine:
 
@@ -40,6 +45,10 @@ class Engine:
         # !TODO(hogura|20241011): remove the frozen tensors
         self._frozen_tensors: List[torch.Tensor] = []
         self._process_batch: Callable
+        
+        self.block_mgr: BlockManager = None
+        
+        self.decode_seq_lens = {}
 
     def init_core(
             self,
@@ -85,32 +94,81 @@ class Engine:
                                     num_experts=N_EXPERTS, 
                                     intermediate_size=INTERMEDIATE_SIZE,
                                     dtype=torch.bfloat16)
-        cache_config = CacheConfig(32, 0.8, 2, "auto")
+        cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto")
         cache_config.num_gpu_blocks = 2 ** 10
-        self.executor = AttnExecutor(model_config, cache_config) if is_attn else \
-                        ExpertsExecutor(model_config)
         
-        self._process_batch = self.process_batch_attn if is_attn \
-            else self.process_batch_expert
+        if is_attn:
+            self.executor = AttnExecutor(model_config, cache_config)
+            self._process_batch = self.process_batch_attn
+            self.block_mgr = BlockManager_C(BLOCK_SIZE, NUM_BLOCKS, RESERVED_BLOCKS)
+        else:
+            self.executor = ExpertsExecutor(model_config)    
+            self._process_batch = self.process_batch_expert
 
     def process_batch_attn(self, 
                            meta: AttentionBatchMetadata, 
-                           tensor: Tensor) -> Tuple[Tensor, Metadata]:
+                           tensor: Tensor,
+                           mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
         # TODO(hogura|20241014): fill the real positions
-        positions = torch.zeros([meta.shape[0]]).type(torch.bfloat16).cuda()
+        decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
+        positions = torch.zeros_like(tensor, dtype=torch.long).cuda()
         
-        # TODO(hogura|20241014): replcae the dummy forward with execute
-        output = self.executor.forward(tensor)
-        # output = self.executor.execute(positions, tensor, meta)
+        block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
+        block_table = [torch.IntTensor(block_list).cuda() for block_list in block_table]
+        block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
         
-        new_exp_ids = [0] * meta.shape[0]
+        slot_table_list = [self.block_mgr.get_slot_id(i) for i in meta.seq_ids]
+        slot_table = torch.LongTensor(slot_table_list).cuda()
         
-        new_meta = meta.to_metadata()
-        new_meta.update_exp_ids(new_exp_ids, True)
+        def make_seqlens(lens):
+            seqlen = [0]
+            for l in lens:
+                seqlen.append(seqlen[-1] + l)
+            return torch.IntTensor(seqlen).cuda()
         
-        return output, new_meta
+        attn_meta = FlashAttentionMetadata(
+            meta.num_prefill_seqs,
+            meta.num_prefill_tokens,
+            meta.num_decode_tokens,
+            slot_table,
+            seq_lens=meta.prefill_seq_len + decode_seq_lens,
+            seq_lens_tensor=torch.IntTensor(meta.prefill_seq_len + decode_seq_lens).cuda(),
+            max_query_len=max(meta.prefill_query_len),
+            max_prefill_seq_len=max(meta.prefill_seq_len),
+            max_decode_seq_len=max(decode_seq_lens + [0]),
+            query_start_loc=make_seqlens(meta.prefill_query_len),
+            seq_start_loc=make_seqlens(meta.prefill_seq_len + decode_seq_lens),
+            context_lens_tensor= \
+                [seq_len - que_len for seq_len, que_len in \
+                    zip(meta.prefill_seq_len, meta.prefill_query_len)] + \
+                [seq_len for seq_len in decode_seq_lens],   # TODO: check if `seq_len` or `seq_len - 1`
+            block_tables=block_table,
+            use_cuda_graph=False,
+        )
+        
+        # TODO(hogura|20241015): only top-1 expert currently
+        hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
+        
+        # TODO(hogura|20241015): test & update the experts
+        if not mocking:
+            new_exp_ids = expert_ids.tolist()
+            new_meta = meta.to_metadata()
+            new_meta.update_exp_ids(new_exp_ids, True)
+        else:
+            new_meta = meta
+        
+        for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
+            self.block_mgr.append_token(seq_id, meta.prefill_query_len[i])
+        
+        # post process for decode lengths
+        for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
+            # !FIXME(hogura|20241015): check if initially setting 0 len is correct
+            self.decode_seq_lens[seq_id] = self.decode_seq_lens.get(seq_id, 0) + 1
+            self.block_mgr.append_token(seq_id, 1)
+        
+        return hiddens, new_meta
     
     def process_batch_expert(self, 
                              meta: Metadata, 
@@ -129,7 +187,7 @@ class Engine:
 
     def post_process(self, output: Tensor, meta: Metadata) -> None:
         self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
-        batch: TensorBatch = CTensorBatch()
+        batch: TensorBatch = TensorBatch_C()
         batch.data = output.data_ptr()
         batch.metadata = meta
         self.dispatcher.put(batch)
@@ -190,7 +248,7 @@ class TokenizerEngine(Engine):
         assert len(tokens) == 1
         shape = (len(tokens), self.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.ones(size=shape).type(torch.float16)
+        x = torch.ones(size=shape).type(torch.bfloat16)
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x.data_ptr(), shape)
         self._frozen_tensors.append(x)

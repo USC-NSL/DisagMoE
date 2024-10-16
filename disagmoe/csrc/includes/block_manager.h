@@ -21,6 +21,8 @@ private:
 
     std::unordered_map<int , block_list_t> block_tables_{};
 
+    std::unordered_map<int, int> slot_cursors_{};
+
 public:
 
     BlockManager(const int &block_size, const int &num_blocks, const int &reserved_blocks);
@@ -33,13 +35,17 @@ public:
 
     bool can_append();
 
-    block_list_t append_block(const int& seq_id);
+    void append_block(const int& seq_id);
 
     int num_free_blocks();
 
     block_list_t get_seq_block_list(const int& seq_id);
 
     bool has_seq_block_list(const int &seq_id);
+
+    void append_token(int seq_id, int num_tokens = 1);
+
+    int get_slot_id(int seq_id);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
