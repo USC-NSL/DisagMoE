@@ -59,8 +59,6 @@ class BlockManager:
     def has_seq_block_list(seq_id: int) -> bool:
         ...
         
-    def append_token(seq_id: int, num_tokens: int = 1) -> None:
+    def append_tokens(seq_id: int, context_len: int, num_tokens: int) -> None:
         ...
         
-    def get_slot_id(seq_id: int) -> int:
-        ...

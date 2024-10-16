@@ -111,16 +111,44 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
+        # First append blocks for each seqeunce
+        for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
+            self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
+            self.decode_seq_lens[seq_id] = meta.prefill_seq_len[i]
+        
+        for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
+            assert seq_id in self.decode_seq_lens, f"seq {seq_id} should no be in decoding phase"
+            decode_seq_len = self.decode_seq_lens.get(seq_id) + 1
+            self.block_mgr.append_tokens(seq_id, decode_seq_len, 1)
+            self.decode_seq_lens[seq_id] = decode_seq_len
+        
         # TODO(hogura|20241014): fill the real positions
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
-        positions = torch.zeros_like(tensor, dtype=torch.long).cuda()
+        positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
         block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
+        
+        tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
+        slot_mapping = torch.empty(tokens_in_batch, dtype=torch.long, device="cpu")
+        slot_idx = 0
+        # prefill tokens
+        for i in range(meta.num_prefill_seqs):
+            q_len = meta.prefill_query_len[i]
+            seq_len = meta.prefill_seq_len[i]
+            for idx in range(seq_len - q_len, seq_len):
+                block_id, id_in_block = idx // BLOCK_SIZE, idx % BLOCK_SIZE
+                slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
+                slot_idx += 1
+                
+        # decode tokens
+        for i in range(meta.num_prefill_tokens, tokens_in_batch):
+            seq_len = meta.seq_ids[i]
+            block_id, id_in_block = seq_len // BLOCK_SIZE, seq_len % BLOCK_SIZE
+            slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
+            slot_idx += 1
+            
         block_table = [torch.IntTensor(block_list).cuda() for block_list in block_table]
         block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
-        
-        slot_table_list = [self.block_mgr.get_slot_id(i) for i in meta.seq_ids]
-        slot_table = torch.LongTensor(slot_table_list).cuda()
         
         def make_seqlens(lens):
             seqlen = [0]
@@ -132,7 +160,7 @@ class Engine:
             meta.num_prefill_seqs,
             meta.num_prefill_tokens,
             meta.num_decode_tokens,
-            slot_table,
+            slot_mapping.cuda(),
             seq_lens=meta.prefill_seq_len + decode_seq_lens,
             seq_lens_tensor=torch.IntTensor(meta.prefill_seq_len + decode_seq_lens).cuda(),
             max_query_len=max(meta.prefill_query_len),
@@ -143,7 +171,7 @@ class Engine:
             context_lens_tensor= \
                 [seq_len - que_len for seq_len, que_len in \
                     zip(meta.prefill_seq_len, meta.prefill_query_len)] + \
-                [seq_len for seq_len in decode_seq_lens],   # TODO: check if `seq_len` or `seq_len - 1`
+                [seq_len - 1 for seq_len in decode_seq_lens],
             block_tables=block_table,
             use_cuda_graph=False,
         )
@@ -159,14 +187,6 @@ class Engine:
         else:
             new_meta = meta
         
-        for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
-            self.block_mgr.append_token(seq_id, meta.prefill_query_len[i])
-        
-        # post process for decode lengths
-        for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
-            # !FIXME(hogura|20241015): check if initially setting 0 len is correct
-            self.decode_seq_lens[seq_id] = self.decode_seq_lens.get(seq_id, 0) + 1
-            self.block_mgr.append_token(seq_id, 1)
         
         return hiddens, new_meta
     
