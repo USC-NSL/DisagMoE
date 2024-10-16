@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <exception>
+
 const int ZMQ_PORT_BASE = 24000;
 const int ZMQ_CPU_PORT_BASE = 25000;
 
@@ -18,3 +21,7 @@ const int ZMQ_CPU_PORT_BASE = 25000;
 #ifndef TOKENIZER_DEV_ID
 #define TOKENIZER_DEV_ID 82
 #endif
+
+#define ASSERT(condition) do {if (!(condition)) { \
+    throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
+}} while(0)

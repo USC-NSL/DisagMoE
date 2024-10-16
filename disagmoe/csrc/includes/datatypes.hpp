@@ -5,12 +5,12 @@
 #include <string>
 #include <map>
 #include <memory>
-#include <cassert>
 #include <algorithm>
 
 #include "nccl.h"
 #include "cuda_utils.h"
 #include "logging.h"
+#include "constants.h"
 
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
@@ -108,7 +108,7 @@ struct Metadata {
         shape[0] = ids.size();
         auto infos = std::vector<TokenMetadata>(ids.size());
         for (size_t i = 0; i < ids.size(); i ++) {
-            assert(ids[i] < this->infos.size());
+            ASSERT (ids[i] < this->infos.size());
             infos[i] = this->infos[ids[i]];
         }
         return Metadata{
@@ -126,7 +126,7 @@ struct Metadata {
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
-        assert(n_expert > 0);
+        ASSERT(n_expert > 0);
         std::vector<int> batches(n_expert, 0);
         for (auto &info: infos)
             batches[info.exp_id] += 1;
@@ -156,7 +156,7 @@ struct Metadata {
     }
 
     static metadata_t merge(const std::vector<metadata_t> &metas) {
-        assert(metas.size() > 0);
+        ASSERT(metas.size() > 0);
         std::vector<size_t> shape = metas[0]->shape;
         auto dtype = metas[0]->dtype;
         auto layer_id = metas[0]->layer_id;
@@ -188,7 +188,7 @@ struct Metadata {
     }
 
     void update_exp_ids(const std::vector<int> &new_exp_ids, bool required_sort) {
-        assert(new_exp_ids.size() == infos.size());
+        ASSERT(new_exp_ids.size() == infos.size());
         for (int i = 0; i < infos.size(); i ++) {
             infos[i].exp_id = new_exp_ids[i];
         }

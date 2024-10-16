@@ -3,8 +3,8 @@
 #include "cuda_runtime.h"
 #include "nccl.h"
 #include "nvtx3/nvtx3.hpp"
+#include "constants.h"
 
-#include <assert.h>
 #include <cstdlib>
 #include <cstdio>
 
@@ -30,7 +30,7 @@
 
 
 inline uintptr_t alloc_cuda_tensor(int count, int device_id) {
-    assert(count > 0);
+    ASSERT (count > 0);
     // FIXME(hogura|20241001): replace float with half float
     void* data;
     #ifndef D_ENABLE_RAY

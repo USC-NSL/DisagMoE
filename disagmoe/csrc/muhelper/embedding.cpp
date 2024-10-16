@@ -27,7 +27,7 @@ Sampler::Sampler(int device_id,
         this->peer_channels = std::vector<Channel_t>(max_peer_id + 1);
         for (size_t i = 0; i < in_channels.size(); i ++) {
             int id = in_channels[i]->get_peer_id();
-            assert(this->peer_channels[id].get() == nullptr);
+            ASSERT(this->peer_channels[id].get() == nullptr);
             this->peer_channels[ in_channels[i]->get_peer_id() ] = in_channels[i];
         }
         LOG(INFO) << "inited sampler" << LEND;
@@ -45,7 +45,7 @@ void Sampler::run() {
             zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
         
         LOG(DEBUG) << "sampler got msg !!!" << LEND;
-        assert(*result == 2);
+        ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
         auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());

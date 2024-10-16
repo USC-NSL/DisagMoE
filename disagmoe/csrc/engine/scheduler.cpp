@@ -87,7 +87,7 @@ std::vector<std::vector<int>> AttentionScheduler::prepare_block_table_by_meta(
     int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
     for (int i = 0; i < n; i++) {
         int id = meta->seq_ids[i];
-        assert (block_manager->has_seq_block_list(id));
+        ASSERT (block_manager->has_seq_block_list(id));
         block_list_t list = block_manager->get_seq_block_list(id);
         block_table.emplace_back(*list);
     }
