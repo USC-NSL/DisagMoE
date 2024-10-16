@@ -7,6 +7,7 @@ from disagmoe.utils.logger import get_logger
 
 from torch import Tensor
 from typing import List, Tuple, Dict
+from contextlib import contextmanager
 
 def tensor_as_buf(buf: int, shape: List[int], dtype = torch.bfloat16) -> Tensor:
     # TODO(hogura|20241003): change c_int16 to a dynamic type
@@ -69,3 +70,23 @@ def get_ip():
         " `HOST_IP`.",
         stacklevel=2)
     return "0.0.0.0"
+
+
+@contextmanager
+def nvtx_range(msg, *args, **kwargs):
+    """ 
+    From vLLM: https://github.com/vllm-project/vllm/blob/7abba39ee64c1e2c84f48d7c38b2cd1c24bb0ebb/vllm/spec_decode/util.py#L238
+    Context manager / decorator that pushes an NVTX range at the beginning
+    of its scope, and pops it at the end. If extra arguments are given,
+    they are passed as arguments to msg.format().
+
+    If running with cuda graphs, you must enable nsys cuda graph profiling.
+
+    Arguments:
+        msg (string): message to associate with the range
+    """
+    torch.cuda.nvtx.range_push(msg.format(*args, **kwargs))
+    try:
+        yield
+    finally:
+        torch.cuda.nvtx.range_pop()

@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 import torch
+
 @dataclass
-class ModelConfig:
-    
+class ModelConfig:    
     hidden_size: int
     num_heads: int
     num_kv_heads: int

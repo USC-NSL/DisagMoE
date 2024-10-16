@@ -2,6 +2,7 @@
 
 #include "cuda_runtime.h"
 #include "nccl.h"
+#include "nvtx3/nvtx3.hpp"
 
 #include <assert.h>
 #include <cstdlib>
@@ -13,9 +14,9 @@
   if (err != cudaSuccess) {                         \
     printf("Failed: Cuda error %s:%d '%s'\n",       \
         __FILE__,__LINE__,cudaGetErrorString(err)); \
+    exit(EXIT_FAILURE);                             \
   }                                                 \
 } while(0)
-    // exit(EXIT_FAILURE);                             \
 
 
 #define NCCLCHECK(cmd) do {                         \
@@ -23,9 +24,9 @@
   if (res != ncclSuccess) {                         \
     printf("Failed, NCCL error %s:%d '%s'\n",       \
         __FILE__,__LINE__,ncclGetErrorString(res)); \
+    exit(EXIT_FAILURE);                             \
   }                                                 \
 } while(0)
-    // exit(EXIT_FAILURE);                             \
 
 
 inline uintptr_t alloc_cuda_tensor(int count, int device_id) {
@@ -45,5 +46,9 @@ inline uintptr_t alloc_copy_tensor(uintptr_t buf, int size) {
     CUDACHECK(cudaMemcpy(data, (void*) buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
     return (uintptr_t) data;
 }
+
+using tx_range = nvtx3::scoped_range;
+
+#define AUTO_TX_RANGE tx_range __{__FUNCTION__}
 
 // TODO(hogura|20241001): add allocAsync
