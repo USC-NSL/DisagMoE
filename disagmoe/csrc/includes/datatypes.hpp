@@ -224,6 +224,7 @@ struct TensorBatch {
             auto size = batch.metadata->num_element() * dtype;
             cudaMemcpy((void*) ptr, (void*) batch.data, size, 
                 cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            free_cuda_tensor((void *) batch.data);
             ptr += size;
         }
 
@@ -384,6 +385,7 @@ struct AttentionBatch {
                 cudaMemcpyKind::cudaMemcpyDeviceToDevice);
             prefill_ptr += prefill_copy_size;
             decode_ptr += decode_copy_size;
+            free_cuda_tensor((void *) batch.data);
         }
 
         return AttentionBatch {buf, meta};
