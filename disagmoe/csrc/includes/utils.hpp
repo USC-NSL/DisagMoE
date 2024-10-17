@@ -4,6 +4,7 @@
 #include <sstream>
 #include <vector>
 #include <map>
+#include <iomanip>
 
 #include "datatypes.hpp"
 #include "cuda_utils.h"
@@ -83,7 +84,7 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     ids.clear();
 
     // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
-    assert(keys.size() == metadata.infos.size());
+    assert (keys.size() == metadata.infos.size());
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
         if (iter == ids.end()) {

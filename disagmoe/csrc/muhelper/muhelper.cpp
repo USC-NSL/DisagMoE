@@ -120,7 +120,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         while (j < n && batch.metadata->infos[j].exp_id == eid)
             j ++;
         auto buf = tensor_at(batch.data, *batch.metadata, i);
-        assert(eid >= 0);
+        ASSERT(eid >= 0);
         this->_send_batch(
             eid,
             buf,
@@ -151,7 +151,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 
     for (size_t i = 0; i < channels.size(); i ++) {
         // TODO(hogura|20240930): currently, only support #attn_replica=1
-        assert(channel_infos[i].attn_layer_ids.size() <= 1);
+        ASSERT(channel_infos[i].attn_layer_ids.size() <= 1);
         if (channel_infos[i].attn_layer_ids.empty()) {// a sampler channel 
             this->sampler_channel_id = i;
             continue;
@@ -229,7 +229,7 @@ MuPool::MuPool(
     this->peer_channels = std::vector<Channel_t>(max_peer_id + 1);
     for (size_t i = 0; i < channels.size(); i ++) {
         int id = channels[i]->get_peer_id();
-        assert(this->peer_channels[id].get() == nullptr);
+        ASSERT(this->peer_channels[id].get() == nullptr);
         this->peer_channels[ channels[i]->get_peer_id() ] = channels[i];
     }
 
@@ -244,7 +244,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
     zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
         
     // LOG(DEBUG) << "got a msg!" << LEND;
-    assert(*result == 2);
+    ASSERT(*result == 2);
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
@@ -389,7 +389,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
         this->cur_request_count -= max_batch_size;
-        assert(this->cur_request_count >= 0);
+        ASSERT(this->cur_request_count >= 0);
     }
 
     return result;
@@ -527,7 +527,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
     {
         std::lock_guard<std::mutex> lock(this->request_mutex);
         this->cur_request_count -= batched_tokens;
-        assert(this->cur_request_count >= 0);
+        ASSERT(this->cur_request_count >= 0);
     }
 
     return result;

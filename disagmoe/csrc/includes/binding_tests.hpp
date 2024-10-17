@@ -5,6 +5,7 @@
 #include "scheduler.h"
 #include "embedding.h"
 #include "constants.h"
+#include "utils.hpp"
 
 #include <thread>
 #include <memory>
@@ -97,14 +98,14 @@ void test_attn_dispatcher() {
     puts("first fetch");
     auto res = recver.fetch_largest_batch();
     printf("fetched size: %u\n", res.size());
-    assert(res.size() == 1);
+    ASSERT(res.size() == 1);
     std::cout << *res[0].metadata << std::endl;
 
     recver.wait_for_new_requests();
     puts("second fetch");
     res = recver.fetch_largest_batch();
     printf("fetched size: %u\n", res.size());
-    assert(res.size() == 1);
+    ASSERT(res.size() == 1);
     std::cout << *res[0].metadata << std::endl;
 
     puts("passed");

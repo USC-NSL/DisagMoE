@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdexcept>
-#include <cassert>
 #include <cstdlib>
 #include <memory>
 #include <thread>

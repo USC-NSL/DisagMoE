@@ -62,3 +62,6 @@ class BlockManager:
     def append_tokens(seq_id: int, context_len: int, num_tokens: int) -> None:
         ...
         
+    def allocate(seq_id: int, seq_len: int) -> None:
+        ...
+        

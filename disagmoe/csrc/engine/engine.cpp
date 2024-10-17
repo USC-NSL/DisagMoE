@@ -34,7 +34,7 @@ void init_channels(
     for (auto i: in_device_ids)
         channels[i] = nullptr;
     for (auto i: out_device_ids) {
-        assert(!is_embedding_node(i) || channels.find(i) == channels.end());
+        ASSERT(!is_embedding_node(i) || channels.find(i) == channels.end());
         channels[i] = nullptr;
     }
     std::vector<std::thread> threads;

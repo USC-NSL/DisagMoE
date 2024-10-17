@@ -89,6 +89,7 @@ def test_decode():
         torch.Tensor(size=meta.shape).type(torch.bfloat16).cuda(),
         mocking=True
     )
+    print("finish prefill")
     
     meta.num_prefill_seqs = 0
     meta.num_prefill_tokens = 0
@@ -97,7 +98,7 @@ def test_decode():
     meta.prefill_query_len = []
     
     for i in range(33):
-        print("decoding token", i)
+        print("decoding token", i+1)
         _, _ = engine.process_batch_attn(
             meta,
             torch.Tensor(size=meta.shape).type(torch.bfloat16).cuda(),
