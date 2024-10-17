@@ -47,6 +47,10 @@ inline uintptr_t alloc_copy_tensor(uintptr_t buf, int size) {
     return (uintptr_t) data;
 }
 
+inline void free_cuda_tensor(void *ptr) {
+    CUDACHECK(cudaFree(ptr));
+}
+
 using tx_range = nvtx3::scoped_range;
 
 #define AUTO_TX_RANGE tx_range __{__FUNCTION__}
