@@ -35,6 +35,9 @@ edges = [
     (3, 0),
 ]
 
+for edge in edges:
+    mp.add(edge[0], edge[1])
+
 master.init_engine(mp)
 
 print("engine inited")
