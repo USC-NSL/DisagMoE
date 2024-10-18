@@ -49,6 +49,7 @@ ext_modules = [
         extra_compile_args=["-lstdc++", "-O0", "-g"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),
+            ("D_ENABLE_NVTX", "1"),
         ],
         language='c++',
     ),
