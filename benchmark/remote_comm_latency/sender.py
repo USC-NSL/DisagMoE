@@ -37,7 +37,7 @@ def nccl_sender(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("remote_sender")
+            on_trace_ready=tensorboard_trace_handler("remote_nccl_sender")
     ) as prof:
         for i in range(iterations):
             # dist.barrier()
@@ -52,7 +52,7 @@ def nccl_sender(world_size, rank):
             
     elapse = total_elapse / iterations * (10**6)
     
-    print(f"NCCL sender Latency: {elapse} us")
+    print(f"NCCL sender Latency: {elapse:.1f} us")
 
 
 def zmq_send(world_size, rank):
@@ -111,7 +111,7 @@ def cpp_nccl_send(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("remote_cpp_sender")
+            on_trace_ready=tensorboard_trace_handler("remote_cpp_nccl_sender")
     ) as prof:
         for i in range(iterations):
             torch.cuda.synchronize(device)
@@ -126,7 +126,7 @@ def cpp_nccl_send(world_size, rank):
             prof.step()
         
         
-    print(f"sender {elapse / iterations * (10 ** 6):.1f} us")
+    print(f"cpp_nccl sender {elapse / iterations * (10 ** 6):.1f} us")
     
 
 def zmq_nccl_send(world_size, rank):
