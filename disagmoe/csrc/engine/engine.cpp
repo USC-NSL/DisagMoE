@@ -86,7 +86,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t dispatcher;
     if (is_attn) {
-        dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, out_channels);
+        dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, out_channels, out_channel_infos);
     }
     else {
         dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, out_channels, out_channel_infos);

@@ -2,7 +2,6 @@
 
 #include "cuda_runtime.h"
 #include "nccl.h"
-#include "nvtx3/nvtx3.hpp"
 #include "constants.h"
 
 #include <cstdlib>
@@ -51,8 +50,20 @@ inline void free_cuda_tensor(void *ptr) {
     CUDACHECK(cudaFree(ptr));
 }
 
+#ifdef D_ENABLE_NVTX
+
+#include "nvtx3/nvtx3.hpp"
+
 using tx_range = nvtx3::scoped_range;
 
 #define AUTO_TX_RANGE tx_range __{__FUNCTION__}
+
+#else
+
+using tx_range = std::string;
+
+#define AUTO_TX_RANGE
+
+#endif
 
 // TODO(hogura|20241001): add allocAsync
