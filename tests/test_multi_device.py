@@ -20,6 +20,8 @@ mp = ModelPlacement(
     },
     tokenizer = tokenizer,
     sampler = sampler,
+    in_device_ids = {},
+    out_device_ids = {},
 )
 
 edges = [
