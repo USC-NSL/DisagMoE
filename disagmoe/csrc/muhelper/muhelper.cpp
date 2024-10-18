@@ -156,9 +156,10 @@ MuExpertDispatcher::MuExpertDispatcher(
             this->sampler_channel_id = i;
             continue;
         }
-        this->attn_channel[
-            channel_infos[i].attn_layer_ids[0]
-        ] = i;
+        for (int j: channel_infos[i].attn_layer_ids) {
+            ASSERT(!this->attn_channel[j]);
+            this->attn_channel[j] = i;
+        }
     }
 
     LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
@@ -275,6 +276,12 @@ void MuPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta) {
     */
     int lid = this->inner_layer_id[meta->layer_id];
     int num_tokens = meta->num_tokens();
+
+    // {
+    //     std::lock_guard<std::mutex> lock(this->request_mutex);
+    //     this->cur_request_count += num_tokens;
+    //     this->request_cv.notify_all();
+    // }
     
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -289,12 +296,6 @@ void MuPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta) {
             this->largest_batch_layer_id_ = lid;
         }
 
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(this->request_mutex);
-        this->cur_request_count += num_tokens;
-        this->request_cv.notify_all();
     }
 }
 
@@ -386,11 +387,11 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
         this->data_queue[id].clear();
     }
 
-    {
-        std::lock_guard<std::mutex> lock(this->request_mutex);
-        this->cur_request_count -= max_batch_size;
-        ASSERT(this->cur_request_count >= 0);
-    }
+    // {
+    //     std::lock_guard<std::mutex> lock(this->request_mutex);
+    //     this->cur_request_count -= max_batch_size;
+    //     ASSERT(this->cur_request_count >= 0);
+    // }
 
     return result;
 }
@@ -456,6 +457,13 @@ void MuAttentionPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta) {
     int lid = this->inner_layer_id[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor_buf, meta);
     int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
+
+    // {
+    //     std::lock_guard<std::mutex> lock(this->request_mutex);
+    //     this->cur_request_count += batched_tokens;
+    //     this->request_cv.notify_all();
+    //     LOG(WARNING) << "add cur_request_count:" << cur_request_count << " " << batched_tokens << LEND;
+    // }
     
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -468,12 +476,6 @@ void MuAttentionPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta) {
         }
 
         this->attn_data_queue[lid].push_back(attn_batch);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(this->request_mutex);
-        this->cur_request_count += batched_tokens;
-        this->request_cv.notify_all();
     }
 }
 
@@ -522,13 +524,15 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
         }
     }
 
-    LOG(DEBUG) << "Fetched " << layer_id << " layer" << LEND;
+    LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
 
-    {
-        std::lock_guard<std::mutex> lock(this->request_mutex);
-        this->cur_request_count -= batched_tokens;
-        ASSERT(this->cur_request_count >= 0);
-    }
+    // {
+    //     std::lock_guard<std::mutex> lock(this->request_mutex);
+    //     LOG(WARNING) << "del cur_request_count:" << cur_request_count << " " << batched_tokens << LEND;
+    //     this->cur_request_count -= batched_tokens;
+    //     LOG(DEBUG) << "cur request count: " << cur_request_count << LEND;
+    //     ASSERT(this->cur_request_count >= 0);
+    // }
 
     return result;
 }

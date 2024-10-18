@@ -108,7 +108,7 @@ protected:
     std::mutex batch_mutex;
 
     std::condition_variable request_cv;
-    int cur_request_count;
+    int cur_request_count{0};
 
     int largest_batch_size_{0};
     int largest_batch_layer_id_{-1};

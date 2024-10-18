@@ -169,6 +169,7 @@ cython_debug/
 # others
 traces/
 playground/
+third_party/
 
 # reports
 *.nsys-rep

@@ -322,10 +322,10 @@ struct AttentionBatchMetadata {
         auto layer_id = this->layer_id;
         std::vector<TokenMetadata> infos;
 
-        LOG(INFO) << "To metadata, seq_ids: ";
-        for (int i = 0; i < num_prefill_seqs + num_decode_tokens; i ++)
-            std::cout << seq_ids[i] << " ";
-        std::cout << LEND;
+        // LOG(INFO) << "To metadata, seq_ids: ";
+        // for (int i = 0; i < num_prefill_seqs + num_decode_tokens; i ++)
+        //     std::cout << seq_ids[i] << " ";
+        // std::cout << LEND;
         
         for (int i = 0; i < num_prefill_seqs; i ++) {
             // TODO(hogura|20241014): modify to chunked prefill
