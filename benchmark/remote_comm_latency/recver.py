@@ -39,7 +39,7 @@ def nccl_recver(rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("recver")
+            on_trace_ready=tensorboard_trace_handler("remote_recver")
     ) as prof:
         for i in range(iterations):
             # dist.barrier()
@@ -75,7 +75,7 @@ def zmq_recv(rank):
             elapse += recv_time - start
             rec.append(recv_time)
         # print(f"recver {rec}")
-        print(f"recver {elapse / iterations * (10 ** 6):.1f} us")
+        print(f"zmq recver {elapse / iterations * (10 ** 6):.1f} us")
         
     dist.barrier()
     run(10)
@@ -111,7 +111,7 @@ def cpp_nccl_recv(rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("cpp_recver")
+            on_trace_ready=tensorboard_trace_handler("remote_cpp_recver")
     ) as prof:
         for i in range(iterations):
             torch.cuda.synchronize(device)
