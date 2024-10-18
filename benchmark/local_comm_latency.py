@@ -347,12 +347,11 @@ def test_latency(funcs):
     for p in procs:
         p.join()
         
-# test_latency(nccl_funcs)
+test_latency(nccl_funcs)
 
-# test_latency(zmq_funcs)
-
+test_latency(zmq_funcs)
 
 # cpp_nccl should not define enable_ray
-# test_latency(cpp_nccl_funcs)
+test_latency(cpp_nccl_funcs)
 
 test_latency(zmq_nccl_funcs)
