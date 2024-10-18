@@ -101,9 +101,21 @@ void MuDispatcher::put(const TensorBatch &batch) {
 MuAttnDispatcher::MuAttnDispatcher(
     std::vector<int> layer_ids, 
     int device_id, 
-    std::vector<Channel_t> channels): 
+    std::vector<Channel_t> channels,
+    const std::vector<ChannelInfo> &out_channel_infos): 
         MuDispatcher(layer_ids, device_id, channels) {
-    
+    int max_layer_id = 0;
+    for (auto &info: out_channel_infos)
+        max_layer_id = std::max(max_layer_id, range_max(info.expert_ids));
+    exp_channels.resize(max_layer_id + 1);
+
+    for (int i = 0; i < channels.size(); i ++) {
+        for (auto exp_id: out_channel_infos[i].expert_ids) {
+            // TODO(hogura|20241017): #exp replica == 1
+            ASSERT(exp_channels[exp_id].get() == nullptr);
+            exp_channels[exp_id] = channels[i];
+        }
+    }
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
@@ -151,7 +163,6 @@ MuExpertDispatcher::MuExpertDispatcher(
 
     for (size_t i = 0; i < channels.size(); i ++) {
         // TODO(hogura|20240930): currently, only support #attn_replica=1
-        ASSERT(channel_infos[i].attn_layer_ids.size() <= 1);
         if (channel_infos[i].attn_layer_ids.empty()) {// a sampler channel 
             this->sampler_channel_id = i;
             continue;
@@ -166,6 +177,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
+    LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
     return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id] : sampler_channel_id;
 }
 
@@ -358,19 +370,6 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
             // LOG(INFO) << "No available batch" << LEND;
             return {};
         }
-
-        max_batch_size = this->largest_batch_size_;
-
-        this->largest_batch_layer_id_ = -1;
-        this->largest_batch_size_ = 0;
-
-        for (int i = 0; i < this->data_queue.size(); i ++) {
-            int tokens_cur_layer = this->tokens_in_layer(i);
-            if (max_batch_size < tokens_cur_layer) {
-                this->largest_batch_size_ = tokens_cur_layer;
-                this->largest_batch_layer_id_ = i;
-            }
-        }
     }
     
     if (id == -1) {
@@ -385,6 +384,21 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
         result = std::move(this->data_queue[id]);
         this->data_queue[id].clear();
+
+        max_batch_size = this->largest_batch_size_;
+
+        tokens_per_layer_[id] = 0;
+
+        this->largest_batch_layer_id_ = -1;
+        this->largest_batch_size_ = 0;
+
+        for (int i = 0; i < this->data_queue.size(); i ++) {
+            int tokens_cur_layer = tokens_per_layer_[i];
+            if (max_batch_size < tokens_cur_layer) {
+                this->largest_batch_size_ = tokens_cur_layer;
+                this->largest_batch_layer_id_ = i;
+            }
+        }
     }
 
     // {
@@ -485,6 +499,9 @@ int MuAttentionPool::tokens_in_layer(int lid) {
     int num_tokens = 0;
     for (auto &d: q) {
         num_tokens += d.metadata->num_prefill_tokens + d.metadata->num_decode_tokens;
+        LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
+            << d.metadata->num_prefill_tokens << " " 
+            << d.metadata->num_decode_tokens << LEND;
     }
     return num_tokens;
 }
@@ -510,13 +527,14 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
 
         result = std::move(this->attn_data_queue[layer_id]);
         this->attn_data_queue[layer_id].clear();
+        this->tokens_per_layer_[layer_id] = 0;
 
         int num_layers = this->layer_ids.size();
 
         this->largest_batch_size_ = 0;
         this->largest_batch_layer_id_ = -1;
         for (int i = 0; i < num_layers; i++) {
-            int num_tokens = tokens_in_layer(i);
+            int num_tokens = this->tokens_per_layer_[i];
             if (num_tokens > this->largest_batch_size_) {
                 this->largest_batch_size_ = num_tokens;
                 this->largest_batch_layer_id_ = i;

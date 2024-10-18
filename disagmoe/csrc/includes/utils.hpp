@@ -167,3 +167,11 @@ static void print_buf(void* buf, size_t n) {
         std::cerr << std::hex << std::setw(4) << data[i] << std::dec;
     std::cerr << std::endl;
 }
+
+template<class T> 
+inline T range_max(const std::vector<T> &a) {
+    T res{0};
+    for (auto v: a)
+        res = std::max(v, res);
+    return res;
+}

@@ -13,22 +13,22 @@ sampler = SAMPLER_DEV_ID
 
 mp = ModelPlacement(
     attn = {
-        0: [0, 1],
+        0: [0, 1, 2],
     },
     expert = {
-        1: [(0, 0), (1, 0)],
+        1: [(0, 0), (1, 0), (2, 0)],
     },
     tokenizer = tokenizer,
     sampler = sampler,
     in_device_ids = {
-        0: [sampler, tokenizer],
+        0: [sampler, tokenizer, 1],
         1: [0],
         sampler: [1],
         tokenizer: [],
     },
     out_device_ids = {
         0: [1],
-        1: [sampler],
+        1: [0, sampler],
         sampler: [0],
         tokenizer: [0],
     }

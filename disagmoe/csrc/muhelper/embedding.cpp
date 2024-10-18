@@ -62,7 +62,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 }
 
 void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
-    LOG(DEBUG) << "processing batch" << LEND;
+    LOG(DEBUG) << "processing batch:" << *meta << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
@@ -104,7 +104,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
 
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
-    LOG(DEBUG) << "sampler send once" << LEND;
+    LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
     _send_once(TensorBatch{
         tensor_slice(buf, meta, continue_ids, /*on_gpu=*/ false),
         std::make_shared<Metadata>(new_meta)
