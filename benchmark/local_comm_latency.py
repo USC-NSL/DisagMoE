@@ -40,7 +40,7 @@ def nccl_sender(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("sender")
+            on_trace_ready=tensorboard_trace_handler("nccl_sender")
     ) as prof:
         for i in range(iterations):
             # dist.barrier()
@@ -55,7 +55,7 @@ def nccl_sender(world_size, rank):
             
     elapse = total_elapse / iterations * (10**6)
     
-    print(f"NCCL sender Latency: {elapse} us")
+    print(f"NCCL sender Latency: {elapse:.1f} us")
 
     
 def nccl_recver(world_size, rank):
@@ -82,7 +82,7 @@ def nccl_recver(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("recver")
+            on_trace_ready=tensorboard_trace_handler("nccl_recver")
     ) as prof:
         for i in range(iterations):
             # dist.barrier()
@@ -99,7 +99,7 @@ def nccl_recver(world_size, rank):
             prof.step()
     
     elapse = total_elapse / iterations * (10**6)
-    print(f"NCCL recver Latency: {elapse} us")
+    print(f"NCCL recver Latency: {elapse:.1f} us")
 
     
 
@@ -126,7 +126,7 @@ def zmq_send(world_size, rank):
             rec.append(send_time)
             
         # print(f"sender {rec}")
-        print(f"sender {elapse / iterations * (10 ** 6):.1f} us")
+        print(f"zmq sender {elapse / iterations * (10 ** 6):.1f} us")
     
     run(20)
         
@@ -154,7 +154,7 @@ def zmq_recv(world_size, rank):
             elapse += recv_time - start
             rec.append(recv_time)
         # print(f"recver {rec}")
-        print(f"recver {elapse / iterations * (10 ** 6):.1f} us")
+        print(f"zmq recver {elapse / iterations * (10 ** 6):.1f} us")
         
     run(20)
 
@@ -188,7 +188,7 @@ def cpp_nccl_send(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("cpp_sender")
+            on_trace_ready=tensorboard_trace_handler("cpp_nccl_sender")
     ) as prof:
         for i in range(iterations):
             torch.cuda.synchronize(device)
@@ -203,7 +203,7 @@ def cpp_nccl_send(world_size, rank):
             prof.step()
         
         
-    print(f"sender {elapse / iterations * (10 ** 6):.1f} us")
+    print(f"cpp_nccl sender {elapse / iterations * (10 ** 6):.1f} us")
     
 
 def cpp_nccl_recv(world_size, rank):
@@ -230,7 +230,7 @@ def cpp_nccl_recv(world_size, rank):
                 warmup=3,
                 active=15
             ),
-            on_trace_ready=tensorboard_trace_handler("cpp_recver")
+            on_trace_ready=tensorboard_trace_handler("cpp_nccl_recver")
     ) as prof:
         for i in range(iterations):
             torch.cuda.synchronize(device)
@@ -244,7 +244,7 @@ def cpp_nccl_recv(world_size, rank):
             elapse += end - start
             prof.step()
     
-    print(f"recver {elapse / iterations * (10 ** 6):.1f} us")
+    print(f"cpp_nccl recver {elapse / iterations * (10 ** 6):.1f} us")
 
 
 def zmq_nccl_send(world_size, rank):
@@ -347,12 +347,11 @@ def test_latency(funcs):
     for p in procs:
         p.join()
         
-# test_latency(nccl_funcs)
+test_latency(nccl_funcs)
 
 # test_latency(zmq_funcs)
 
-
 # cpp_nccl should not define enable_ray
-# test_latency(cpp_nccl_funcs)
+test_latency(cpp_nccl_funcs)
 
 test_latency(zmq_nccl_funcs)
