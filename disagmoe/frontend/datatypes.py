@@ -29,7 +29,7 @@ class Metadata:
 
     def update_exp_ids(self, 
                        new_exp_ids: List[int], 
-                       required_sort: bool = True) -> None:
+                       exp_mappings: List[int]) -> None:
         ...
         
     def get_expert_batch_sizes(self, n_epxert: int) -> List[int]:

@@ -11,11 +11,11 @@ sampler = SAMPLER_DEV_ID
 
 mp = ModelPlacement(
     attn = {
-        0: [0, 1],
+        0: [0, 1, 2],
     },
     expert = {
-        1: [(0, 0), (1, 0)],
-        2: [(0, 1), (1, 1)],
+        1: [(0, 0), (1, 0), (2, 0)],
+        2: [(0, 1), (1, 1), (2, 1)],
     },
     tokenizer = tokenizer,
     sampler = sampler,

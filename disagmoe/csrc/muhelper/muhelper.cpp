@@ -67,9 +67,9 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
+    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
 
     auto data = cerealize(std::make_shared<Metadata>(meta));
-    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -109,14 +109,15 @@ MuAttnDispatcher::MuAttnDispatcher(
     int max_layer_id = 0;
     for (auto &info: out_channel_infos)
         max_layer_id = std::max(max_layer_id, range_max(info.expert_ids).first);
-    exp_channels.resize(_encode(max_layer_id, N_EXPERTS));
+    LOG(INFO) << "max_layer_id " << max_layer_id << LEND;
+    exp_channels.resize(_encode(max_layer_id, N_EXPERTS), 0);
 
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             // TODO(hogura|20241017): #exp replica == 1
             int id = _encode(exp_id.first, exp_id.second);
-            ASSERT(exp_channels[id].get() == nullptr);
-            exp_channels[id] = channels[i];
+            ASSERT(exp_channels[id] == 0);
+            exp_channels[id] = i;
         }
     }
 }
@@ -142,7 +143,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         if (i == 0 && j == n) {
             // a faster path
             this->_send_batch(
-                _encode(lid, ep_rank),
+                this->exp_channels[_encode(lid, ep_rank)],
                 batch.data,
                 *batch.metadata
             );
@@ -151,7 +152,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
 
         auto buf = tensor_at(batch.data, *batch.metadata, i);
         this->_send_batch(
-            _encode(lid, ep_rank),
+            this->exp_channels[_encode(lid, ep_rank)],
             buf,
             batch.metadata->slice(i, j)
         );
