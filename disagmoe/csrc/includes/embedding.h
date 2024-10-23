@@ -19,7 +19,10 @@ protected:
 
     // batch processing info
     std::set<int> finished_seqs;
+    std::map<int, SloStat> slo_stats;
     std::map<int, int> output_lens;
+
+    std::mutex result_lock;
 
     void run() override;
 
@@ -38,6 +41,8 @@ public:
     bool check_finished(int token, int req_id);
 
     void start();
+
+    std::map<int, SloStat> get_slo_stats(int n_request);
 };
 
 class Tokenizer: public MuExpertDispatcher {

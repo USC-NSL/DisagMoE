@@ -1,8 +1,8 @@
 import torch
 
-from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata
+from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata, SloStat
 
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 
 class Scheduler:
 
@@ -25,12 +25,15 @@ class Tokenizer:
     def put_request(self, tensor_buf: int, shape: Tuple[int]):
         ...
         
-    def start():
+    def start(self):
         ...
         
 class Sampler:
     
-    def start():
+    def start(self):
+        ...
+        
+    def get_slo_stats(self, n_request: int) -> Dict[int, SloStat]:
         ...
         
 class BlockManager:

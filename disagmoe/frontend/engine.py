@@ -3,7 +3,8 @@ import torch
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
-from disagmoe.frontend.datatypes import Metadata, ChannelInfo, TensorBatch, AttentionBatchMetadata
+from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
+                                         AttentionBatchMetadata, SloStat)
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
@@ -279,6 +280,20 @@ class SamplerEngine(Engine):
     def start(self):
         self.sampler.start()
         
+    def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
+        result = self.sampler.get_slo_stats(n_request)
+        while len(result) == 0:
+            # NOTE(hogura|20241022): get_slo_stats will return len=0 until #request==n_reqquest
+            result = self.sampler.get_slo_stats(n_request)
+        new_res = {
+            k: SloStat(
+                stat.t_prefill,
+                stat.t_decode,
+                stat.t_tokens,
+            ) for k, stat in result.items()
+        }
+        return new_res
+        
 class TokenizerEngine(Engine):
     
     def __init__(self):
@@ -295,6 +310,10 @@ class TokenizerEngine(Engine):
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x.data_ptr(), shape)
         self._frozen_tensors.append(x)
+    
+    def gen_n_request(self, n_request: int):
+        for i in range(n_request):
+            self.put_request([i])
     
     def set_tokenizer_config(self, hidden_size: int):
         self.hidden_size = hidden_size

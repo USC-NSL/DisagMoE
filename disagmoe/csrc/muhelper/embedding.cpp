@@ -6,6 +6,8 @@
 #include "zmq.hpp"
 #include "zmq_addon.hpp"
 
+#include <thread>
+
 Sampler::Sampler(int device_id, 
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
@@ -62,6 +64,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 }
 
 void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
+    std::lock_guard<std::mutex> _(this->result_lock);
     LOG(DEBUG) << "processing batch:" << *meta << LEND;
 
     // Step 1. select finished & unfinished batches
@@ -77,6 +80,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
             if (finished_seqs.find(rid) == finished_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
+                slo_stats[rid] = SloStat {clock(), 0, {}};
             }
             else {
                 // Finished, end.
@@ -86,6 +90,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
         } else {
             // at prefill phase
             continue_ids.push_back(i);
+            slo_stats[rid].t_tokens.push_back(clock());
         }
     }
 
@@ -116,11 +121,19 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
         int token = sample(tensor_at(buf, meta, i), meta);
         if (check_finished(token, info.req_id)) {
             finished_seqs.insert(info.req_id);
+            slo_stats[info.req_id].t_decode = clock();
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
     LOG(INFO) << "sampler processed one batch" << LEND;
+}
+
+std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    if (slo_stats.size() < n_request)
+        return {};
+    return slo_stats;
 }
 
 int Sampler::sample(uintptr_t buf, metadata_t meta) {

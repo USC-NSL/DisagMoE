@@ -6,7 +6,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine
-from disagmoe.frontend.datatypes import ChannelInfo
+from disagmoe.frontend.datatypes import ChannelInfo, SloStat
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
@@ -134,6 +134,13 @@ class Controller:
             
     def put_request(self, tokens: List[int]):
         self.tokenizer_worker.put_request.remote(tokens)
+        
+    def put_multi_request(self, n_request: int):
+        self.tokenizer_worker.gen_n_request.remote(n_request)
+        
+    def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
+        results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
+        return results
 
 controller: Controller
 

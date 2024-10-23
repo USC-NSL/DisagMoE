@@ -46,9 +46,10 @@ master.start_engine()
 
 print("engine started")
 
-time.sleep(2)
+n = 1
 
-master.put_request([1])
+master.put_multi_request(n)
 
-while True:
-    pass
+stats = master.wait_for_requests(n)
+
+print(">>> Slo Stats:", stats)

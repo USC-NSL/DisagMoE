@@ -58,3 +58,9 @@ class AttentionBatchMetadata:
     
     def to_metadata() -> Metadata:
         ...
+        
+@dataclass
+class SloStat:
+    t_prefill: int
+    t_decode: int
+    t_tokens: List[int]
