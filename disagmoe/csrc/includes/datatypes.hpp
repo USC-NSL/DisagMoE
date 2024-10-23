@@ -35,18 +35,17 @@ struct ChannelInfo {
 struct TokenMetadata {
     int req_id;
     int exp_id;
-    int first_attn_id;
     int prefill_pos;
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(req_id, exp_id, first_attn_id, prefill_pos);
+        archive(req_id, exp_id, prefill_pos);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenMetadata& token) {
         out << "TokenMetadata{req_id=" << token.req_id << ", "
             << "exp_id=" << token.exp_id << ", "
-            << "first_attn_id=" << token.first_attn_id << ", "
+            // << "first_attn_id=" << token.first_attn_id << ", "
             << "prefill_pos=" << token.prefill_pos << "}";
         return out;
     }
@@ -61,7 +60,10 @@ struct Metadata {
     std::string dtype;
 
     int layer_id;
-    std::vector<TokenMetadata> infos;
+    std::vector<int> req_ids;
+    std::vector<int> exp_ids;
+    // std::vector<int> first_attn_ids;
+    std::vector<int> prefill_poss;
     std::map<int, int> prompt_lens;
 
     // Metadata() {}
@@ -96,30 +98,33 @@ struct Metadata {
     inline Metadata slice(int l, int r) {
         auto shape = this->shape;
         shape[0] = r - l;
-        auto infos = std::vector<TokenMetadata>(
-            this->infos.begin() + l, 
-            this->infos.begin() + r);
         return Metadata{
-            shape, this->dtype, this->layer_id, infos, this->prompt_lens
+            shape, this->dtype, this->layer_id, 
+            slice(req_ids, l, r), 
+            slice(exp_ids, l, r),
+            slice(prefill_poss, l, r),
+            this->prompt_lens
         };
     }
 
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        auto infos = std::vector<TokenMetadata>(ids.size());
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0]), prefill_poss_(shape[0]);
         for (size_t i = 0; i < ids.size(); i ++) {
-            ASSERT (ids[i] < this->infos.size());
-            infos[i] = this->infos[ids[i]];
+            ASSERT (ids[i] < this->req_ids.size());
+            req_ids_[i] = req_ids[ids[i]];
+            exp_ids_[i] = exp_ids[ids[i]];
+            prefill_poss[i] = prefill_poss[ids[i]];
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, infos, this->prompt_lens
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_, this->prompt_lens
         };
     }
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, infos, prompt_lens);
+        archive(shape, dtype, layer_id, req_ids_, exp_ids_, prefill_poss_, prompt_lens);
     }
 
     size_t size() {
@@ -129,9 +134,13 @@ struct Metadata {
     std::vector<int> get_expert_batch_sizes(int n_expert) {
         ASSERT(n_expert > 0);
         std::vector<int> batches(n_expert, 0);
-        for (auto &info: infos)
-            batches[info.exp_id] += 1;
+        for (int eid: exp_ids)
+            batches[eid] += 1;
         return batches;
+    }
+
+    TokenMetadata info_at(int i) {
+        return TokenMetadata {req_ids[i], exp_ids[i], prefill_poss[i]};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
@@ -145,10 +154,10 @@ struct Metadata {
             out << "layer_id=" << meta.layer_id << ", ";
 
             out << "infos={";
-            if (meta.infos.size() > 0) {
-                out << meta.infos[0];
-                for (size_t i = 1; i < meta.infos.size(); i ++)
-                    out << ", " << meta.infos[i];
+            if (meta.req_ids.size() > 0) {
+                out << info_at(0);
+                for (size_t i = 1; i < meta.req_ids.size(); i ++)
+                    out << ", " << info_at(i);
             }
             out << "}";
         }
@@ -167,20 +176,25 @@ struct Metadata {
             total_tokens += meta->num_tokens();
         }
         shape[0] = total_tokens;
-        std::vector<TokenMetadata> infos{};
-        infos.reserve(total_tokens);
+        std::vector<int> req_ids, exp_ids, prefill_poss;
+        
+        req_ids.reserve(total_tokens);
+        exp_ids.reserve(total_tokens);
+        prefill_poss.reserve(total_tokens);
+
         std::map<int, int> prompt_lens;
 
         for (size_t i = 0; i < metas.size(); i ++) {
             auto meta = metas[i];
-            for (auto &info: meta->infos)
-                infos.push_back(info);
+            extend(req_ids, meta->req_ids);
+            extend(exp_ids, meta->exp_ids);
+            extend(prefill_poss, meta->prefill_poss);
             for (auto &[k, v]: meta->prompt_lens)
                 prompt_lens[k] = v;
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, infos, prompt_lens
+            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, prompt_lens
         });
     }
 
@@ -188,16 +202,15 @@ struct Metadata {
         this->layer_id ++;
     }
 
-    void update_exp_ids(const std::vector<int> &new_exp_ids, bool required_sort) {
-        ASSERT(new_exp_ids.size() == infos.size());
-        for (int i = 0; i < infos.size(); i ++) {
-            infos[i].exp_id = new_exp_ids[i];
-        }
-        if (required_sort)
-            std::sort(infos.begin(), infos.end(),
-                [](const TokenMetadata &l, const TokenMetadata &r) {
-                    return l.exp_id < r.exp_id;
-                });
+    void update_exp_ids(const std::vector<int> &new_exp_ids,
+                        const std::vector<int> &exp_mappings) {
+        exp_ids = new_exp_ids;
+        std::vector<int> tmp(new_exp_ids.size());
+        // if (required_sort)
+        //     std::sort(infos.begin(), infos.end(),
+        //         [](const TokenMetadata &l, const TokenMetadata &r) {
+        //             return l.exp_id < r.exp_id;
+        //         });
     }
 };
 

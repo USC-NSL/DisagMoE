@@ -175,3 +175,17 @@ inline T range_max(const std::vector<T> &a) {
         res = std::max(v, res);
     return res;
 }
+
+template<class T>
+inline std::vector<T> slice(const std::vector<T> &a, int l, int r) {
+    std::vector<T> res;
+    for (int i = l; i < r; i ++)    
+        res.emplace_back(std::move(a[i]));
+    return std::move(res);
+}
+
+template<class T>
+inline void extend(std::vector<T> &a, const std::vector<T> &other) {
+    for (const T &v: other)
+        a.emplace_back(v);
+}
