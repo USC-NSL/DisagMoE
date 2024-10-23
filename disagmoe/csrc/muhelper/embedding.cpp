@@ -70,17 +70,16 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
 
-    for (int i = 0; i < meta->infos.size(); i ++) {
-        auto &info = meta->infos[i];
-        int rid = info.req_id;
+    for (int i = 0; i < meta->req_ids.size(); i ++) {
+        int rid = meta->req_ids[i];
         output_lens[rid] ++;
 
-        if (info.prefill_pos == -1) {
+        if (meta->prefill_poss[i] == -1) {
             // at decode phase
             if (finished_seqs.find(rid) == finished_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
-                slo_stats[rid] = SloStat {clock(), 0, {}};
+                slo_stats[rid].t_tokens.push_back(clock());
             }
             else {
                 // Finished, end.
@@ -89,21 +88,21 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
             }
         } else {
             // at prefill phase
+            ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid].t_tokens.push_back(clock());
+            slo_stats[rid] = SloStat {clock(), 0, {}};
         }
     }
 
     // Step 2. update metadata
     meta->layer_id = 0;
     Metadata new_meta = meta->at(continue_ids);
-    for (auto &info: new_meta.infos) {
+    for (int i = 0; i < new_meta.req_ids.size(); i ++) {
         // !NOTE(hogura|20241007): 
         // 1. no chunked prefill, directly prefill -> decode;
         // 2. no attn replica, first_attn_id = 0
-        if (info.prefill_pos != -1) {
-            info.prefill_pos = -1;
-            info.first_attn_id = 0;
+        if (new_meta.prefill_poss[i] != -1) {
+            new_meta.prefill_poss[i] = -1;
         }
     }
 
@@ -117,11 +116,11 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
 
     // Step 4. sample tokens & marked finished
     for (int i: continue_ids) {
-        auto &info = meta->infos[i];
+        int req_id = meta->req_ids[i];
         int token = sample(tensor_at(buf, meta, i), meta);
-        if (check_finished(token, info.req_id)) {
-            finished_seqs.insert(info.req_id);
-            slo_stats[info.req_id].t_decode = clock();
+        if (check_finished(token, req_id)) {
+            finished_seqs.insert(req_id);
+            slo_stats[req_id].t_decode = clock();
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
@@ -131,7 +130,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
 
 std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    if (slo_stats.size() < n_request)
+    if (finished_seqs.size() < n_request)
         return {};
     return slo_stats;
 }
@@ -163,14 +162,12 @@ void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {
         shape, 
         "fp16", 
         /*layer_id=*/ 0, 
-        { (TokenMetadata) {
-            req_count, 
-            /*exp_id=*/ -1, 
-            /*first_attn_id=*/ 0, 
-            /*prefill_pos=*/ 0} },
+        /*req_id=*/ {req_count},
+        /*exp_ids=*/ {-1},
+        /*prefill_pos=*/ {0},
         /*prompt_lens=*/ {}
     });
-    this->put(TensorBatch {buf, meta_t});
+    this->put(TensorBatch {buf, meta_t}, 0);
 }
 
 void Tokenizer::start() {

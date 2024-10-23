@@ -23,7 +23,7 @@ class ModelPlacement:
     
     def expert_ids_at(self, device_id: int):
         if device_id in self.expert:
-            return [e[0] for e in self.expert[device_id]]
+            return [e for e in self.expert[device_id]]
         else:
             return []
         

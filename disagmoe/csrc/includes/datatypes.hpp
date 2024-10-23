@@ -17,12 +17,32 @@
 #include <cereal/types/string.hpp>
 #include <cereal/types/map.hpp>
 
+
+template<class T>
+inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
+    std::vector<T> res;
+    for (int i = l; i < r; i ++)    
+        res.emplace_back(std::move(a[i]));
+    return res;
+}
+
+
+template<class T>
+inline void extend(std::vector<T> &a, const std::vector<T> &other) {
+    for (const T &v: other)
+        a.emplace_back(v);
+}
+
+// first == layer_id, second == expert_id
+#define ExpertId std::pair<int, int>
+
+
 struct ChannelInfo {
-    std::vector<int> expert_ids;
+    std::vector<ExpertId> expert_ids;
     std::vector<int> attn_layer_ids;
 
     ChannelInfo() {}
-    ChannelInfo(const std::vector<int> &expert_ids,
+    ChannelInfo(const std::vector<ExpertId> &expert_ids,
                 const std::vector<int> &attn_layer_ids):
                 expert_ids(expert_ids), attn_layer_ids(attn_layer_ids) 
     {}
@@ -66,16 +86,6 @@ struct Metadata {
     std::vector<int> prefill_poss;
     std::map<int, int> prompt_lens;
 
-    // Metadata() {}
-    // Metadata(std::vector<size_t> shape, 
-    //          std::string dtype,
-    //          int layer_id,
-    //          std::vector<TokenMetadata> infos,
-    //          std::map<int, int> prompt_lens = {}): 
-    //             shape(shape), dtype(dtype), layer_id(layer_id), 
-    //             infos(infos), prompt_lens(prompt_lens) 
-    //         {}
-
     inline size_t num_element() const {
         size_t res = 1;
         for (size_t s: this->shape)
@@ -100,9 +110,9 @@ struct Metadata {
         shape[0] = r - l;
         return Metadata{
             shape, this->dtype, this->layer_id, 
-            slice(req_ids, l, r), 
-            slice(exp_ids, l, r),
-            slice(prefill_poss, l, r),
+            slice_vector(req_ids, l, r), 
+            slice_vector(exp_ids, l, r),
+            slice_vector(prefill_poss, l, r),
             this->prompt_lens
         };
     }
@@ -115,7 +125,7 @@ struct Metadata {
             ASSERT (ids[i] < this->req_ids.size());
             req_ids_[i] = req_ids[ids[i]];
             exp_ids_[i] = exp_ids[ids[i]];
-            prefill_poss[i] = prefill_poss[ids[i]];
+            prefill_poss_[i] = prefill_poss[ids[i]];
         }
         return Metadata{
             shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_, this->prompt_lens
@@ -124,7 +134,7 @@ struct Metadata {
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids_, exp_ids_, prefill_poss_, prompt_lens);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, prompt_lens);
     }
 
     size_t size() {
@@ -139,7 +149,7 @@ struct Metadata {
         return batches;
     }
 
-    TokenMetadata info_at(int i) {
+    TokenMetadata info_at(int i) const {
         return TokenMetadata {req_ids[i], exp_ids[i], prefill_poss[i]};
     }
 
@@ -155,9 +165,9 @@ struct Metadata {
 
             out << "infos={";
             if (meta.req_ids.size() > 0) {
-                out << info_at(0);
+                out << meta.info_at(0);
                 for (size_t i = 1; i < meta.req_ids.size(); i ++)
-                    out << ", " << info_at(i);
+                    out << ", " << meta.info_at(i);
             }
             out << "}";
         }
@@ -205,12 +215,19 @@ struct Metadata {
     void update_exp_ids(const std::vector<int> &new_exp_ids,
                         const std::vector<int> &exp_mappings) {
         exp_ids = new_exp_ids;
+        if (new_exp_ids.empty())
+            return;
+        ASSERT (new_exp_ids.size() == exp_mappings.size());
         std::vector<int> tmp(new_exp_ids.size());
-        // if (required_sort)
-        //     std::sort(infos.begin(), infos.end(),
-        //         [](const TokenMetadata &l, const TokenMetadata &r) {
-        //             return l.exp_id < r.exp_id;
-        //         });
+        #define MOVE(a) { \
+            for (int i = 0; i < exp_mappings.size(); i ++) { \
+                int j = exp_mappings[i];    \
+                tmp[j] = a[i];              \
+            }                               \
+            a = tmp;                        \
+        }
+        MOVE(req_ids);
+        MOVE(prefill_poss);
     }
 };
 
@@ -334,7 +351,8 @@ struct AttentionBatchMetadata {
         auto shape = this->shape;
         auto dtype = this->dtype;
         auto layer_id = this->layer_id;
-        std::vector<TokenMetadata> infos;
+        std::vector<int> req_ids_;
+        std::vector<int> prefill_poss_;
 
         // LOG(INFO) << "To metadata, seq_ids: ";
         // for (int i = 0; i < num_prefill_seqs + num_decode_tokens; i ++)
@@ -343,25 +361,20 @@ struct AttentionBatchMetadata {
         
         for (int i = 0; i < num_prefill_seqs; i ++) {
             // TODO(hogura|20241014): modify to chunked prefill
-            for (int j = 0; j < prefill_seq_len[i]; j ++)
-                infos.emplace_back(TokenMetadata {
-                    seq_ids[i],
-                    /*exp_id=*/ -1,
-                    /*first_attn_id=*/ 0,   // TODO(hogura|20241014): add attention replica
-                    /*prefill_pos=*/ j
-                });
+            for (int j = 0; j < prefill_seq_len[i]; j ++) {
+                req_ids_.push_back(seq_ids[i]);
+                prefill_poss_.push_back(j);
+                // TODO(hogura|20241014): add attention replica
+            }
         }
 
-        for (int i = 0; i < num_decode_tokens; i ++)
-            infos.emplace_back(TokenMetadata{
-                seq_ids[num_prefill_seqs + i],
-                /*exp_id=*/ -1,
-                /*first_attn_id=*/ 0,
-                /*prefill_pos=*/ -1
-            });
+        for (int i = 0; i < num_decode_tokens; i ++) {
+            req_ids_.push_back(seq_ids[num_prefill_seqs + i]);
+            prefill_poss_.push_back(-1);
+        }
         
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, infos, {}
+            shape, dtype, layer_id, req_ids_, {}, prefill_poss_, {}
         });
     }
 };

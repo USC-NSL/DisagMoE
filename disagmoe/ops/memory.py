@@ -40,13 +40,15 @@ def get_mappings_from_exp_ids(exp_ids: torch.Tensor, num_experts: int):
         
     return mappings, exp_cnt
 
-def permute_tokens(tokens: torch.Tensor, exp_ids: torch.Tensor, num_experts: int) -> torch.Tensor:
+def permute_tokens(tokens: torch.Tensor, 
+                   exp_ids: torch.Tensor, 
+                   mappings: torch.Tensor,
+                   exp_cnt: torch.Tensor) -> torch.Tensor:
     # permute tokens according to its expert id
     assert len(tokens.shape) == 2 # [num_tokens, hidden_size]
     assert len(exp_ids.shape) == 1 # [num_tokens]
     num_tokens, hiddens_size = tokens.shape
     permuted_tokens = torch.empty_like(tokens)
-    mappings, exp_cnt = get_mappings_from_exp_ids(exp_ids, num_experts)
     
     print(f"token mapping by expert id: {mappings}")
     
@@ -58,7 +60,7 @@ def permute_tokens(tokens: torch.Tensor, exp_ids: torch.Tensor, num_experts: int
         hiddens_size,
         BLOCK_SIZE=128
     )
-    return permuted_tokens, exp_cnt
+    return permuted_tokens
     
     
     

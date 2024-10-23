@@ -84,7 +84,7 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     ids.clear();
 
     // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
-    assert (keys.size() == metadata.infos.size());
+    assert (keys.size() == metadata.req_ids.size());
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
         if (iter == ids.end()) {
@@ -170,22 +170,9 @@ static void print_buf(void* buf, size_t n) {
 
 template<class T> 
 inline T range_max(const std::vector<T> &a) {
-    T res{0};
+    T res;
+    memset(&res, 0, sizeof(res));
     for (auto v: a)
         res = std::max(v, res);
     return res;
-}
-
-template<class T>
-inline std::vector<T> slice(const std::vector<T> &a, int l, int r) {
-    std::vector<T> res;
-    for (int i = l; i < r; i ++)    
-        res.emplace_back(std::move(a[i]));
-    return std::move(res);
-}
-
-template<class T>
-inline void extend(std::vector<T> &a, const std::vector<T> &other) {
-    for (const T &v: other)
-        a.emplace_back(v);
 }

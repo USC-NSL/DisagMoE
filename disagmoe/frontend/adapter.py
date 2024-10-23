@@ -17,7 +17,7 @@ class Scheduler:
 
 class MuDispatcher:
         
-    def put(self, tensor: int, meta):
+    def put(self, batch: TensorBatch, rank: int):
         ...
 
 class Tokenizer:

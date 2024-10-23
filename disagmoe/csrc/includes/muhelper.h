@@ -42,7 +42,7 @@ class MuDispatcher: public MuHelper {
 protected:
     char device_id_str[3];
 
-    std::queue<TensorBatch> send_queue;
+    std::queue<std::pair<TensorBatch, int>> send_queue;
     std::mutex mtx;
     std::condition_variable cv;
 
@@ -59,7 +59,7 @@ protected:
 public:
     MuDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels);
 
-    void put(const TensorBatch &batch);
+    void put(const TensorBatch &batch, int rank = 0);
 };
 
 
@@ -69,6 +69,8 @@ protected:
     std::vector<Channel_t> exp_channels;
 
     void _send_once(TensorBatch batch) override;
+
+    int _encode(int exp_layer_id, int exp_id) const;
 
 public:
     MuAttnDispatcher(std::vector<int> layer_ids, 
