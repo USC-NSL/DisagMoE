@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <algorithm>
+#include <ctime>
 
 #include "nccl.h"
 #include "cuda_utils.h"
@@ -390,4 +391,11 @@ struct AttentionBatch {
 
         return AttentionBatch {buf, meta};
     }
+};
+
+struct SloStat {
+    clock_t t_prefill;  // time to all finished prefill tokens
+    clock_t t_decode;   // time to all finished decode tokens
+
+    std::vector<clock_t> t_tokens;
 };

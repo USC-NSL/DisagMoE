@@ -41,7 +41,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("start", &Tokenizer::start);
 
     py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
-        .def("start", &Sampler::start);
+        .def("start", &Sampler::start)
+        .def("get_slo_stats", &Sampler::get_slo_stats);
 
     REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
@@ -59,6 +60,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_STRUCT(AttentionBatch)
         .def_readwrite("data", &AttentionBatch::data)
         .def_readwrite("metadata", &AttentionBatch::metadata);
+
+    REGISTER_STRUCT(SloStat)
+        .def_readwrite("t_prefill", &SloStat::t_prefill)
+        .def_readwrite("t_decode", &SloStat::t_decode)
+        .def_readwrite("t_tokens", &SloStat::t_tokens);
 
     py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
         .def(py::init<>())
