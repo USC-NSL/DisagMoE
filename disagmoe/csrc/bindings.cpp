@@ -49,7 +49,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("metadata", &TensorBatch::metadata);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
-        .def(py::init<const std::vector<int> &, const std::vector<int> &>())
+        .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &>())
         .def_readwrite("expert_ids", &ChannelInfo::expert_ids)
         .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
 
@@ -85,7 +85,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("shape", &Metadata::shape)
         .def_readwrite("dtype", &Metadata::dtype)
         .def_readwrite("layer_id", &Metadata::layer_id)
-        .def_readwrite("infos", &Metadata::infos) 
+        // .def_readwrite("infos", &Metadata::infos) 
         .def_readwrite("prompt_lens", &Metadata::prompt_lens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
@@ -127,13 +127,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         Test functions
     ********/
     m.def("test_nccl_p2p", &test_nccl_p2p);
-    m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
-    m.def("test_attn_dispatcher", &test_attn_dispatcher);
-    m.def("test_expert_dispatcher", &test_expert_dispatcher);
-    m.def("test_scheduler", &test_scheduler);
-    m.def("test_sampler_recv", &test_sampler_recv);
-    m.def("test_sampler_send", &test_sampler_send);
-    m.def("test_tensor_address", [](uintptr_t data) {
-        
-    });
+    // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
+    // m.def("test_attn_dispatcher", &test_attn_dispatcher);
+    // m.def("test_expert_dispatcher", &test_expert_dispatcher);
+    // m.def("test_scheduler", &test_scheduler);
+    // m.def("test_sampler_recv", &test_sampler_recv);
+    // m.def("test_sampler_send", &test_sampler_send);
 }

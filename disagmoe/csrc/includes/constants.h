@@ -10,6 +10,10 @@ const int ZMQ_CPU_PORT_BASE = 25000;
 #define MAX_OUTPUT_LEN 64
 #endif
 
+#ifndef N_EXPERTS
+#define N_EXPERTS 2
+#endif
+
 #ifndef EOS_TOKEN_ID
 #define EOS_TOKEN_ID 2
 #endif

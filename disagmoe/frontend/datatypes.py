@@ -1,9 +1,9 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 @dataclass
 class ChannelInfo:
-    expert_ids: List[int]
+    expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
     
     def is_sampler_channel(self) -> bool:
@@ -29,7 +29,7 @@ class Metadata:
 
     def update_exp_ids(self, 
                        new_exp_ids: List[int], 
-                       required_sort: bool = True) -> None:
+                       exp_mappings: List[int]) -> None:
         ...
         
     def get_expert_batch_sizes(self, n_epxert: int) -> List[int]:

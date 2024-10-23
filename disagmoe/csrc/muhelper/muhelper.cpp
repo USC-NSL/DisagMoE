@@ -67,9 +67,9 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vecto
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
+    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
 
     auto data = cerealize(std::make_shared<Metadata>(meta));
-    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
     this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
     this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
     this->channels[cid]->send(buf, meta);
@@ -82,15 +82,17 @@ void MuDispatcher::run() {
     while (!this->end_flag) {
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
-        auto batch = this->send_queue.front();
+        auto pr = this->send_queue.front();
+        auto batch = pr.first;
+        int rank = pr.second;
         this->send_queue.pop();
         this->_send_once(batch);
     }
 }
 
-void MuDispatcher::put(const TensorBatch &batch) {
+void MuDispatcher::put(const TensorBatch &batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
-    this->send_queue.push(batch);
+    this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
 }
 
@@ -106,16 +108,22 @@ MuAttnDispatcher::MuAttnDispatcher(
         MuDispatcher(layer_ids, device_id, channels) {
     int max_layer_id = 0;
     for (auto &info: out_channel_infos)
-        max_layer_id = std::max(max_layer_id, range_max(info.expert_ids));
-    exp_channels.resize(max_layer_id + 1);
+        max_layer_id = std::max(max_layer_id, range_max(info.expert_ids).first);
+    LOG(INFO) << "max_layer_id " << max_layer_id << LEND;
+    exp_channels.resize(_encode(max_layer_id, N_EXPERTS), 0);
 
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             // TODO(hogura|20241017): #exp replica == 1
-            ASSERT(exp_channels[exp_id].get() == nullptr);
-            exp_channels[exp_id] = channels[i];
+            int id = _encode(exp_id.first, exp_id.second);
+            ASSERT(exp_channels[id] == 0);
+            exp_channels[id] = i;
         }
     }
+}
+
+inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
+    return exp_layer_id * N_EXPERTS + exp_id;
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
@@ -125,16 +133,26 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
     //            << " info size: " << batch.metadata->infos.size() << LEND;
 
     int n = batch.metadata->shape[0];
+    int lid = batch.metadata->layer_id;
     for (int i = 0; i < n;) {
-        // LOG(DEBUG) << "handling " << i << " metadata, with: " << batch.metadata->infos[i] << LEND;
         int j = i + 1;
-        int eid = batch.metadata->infos[i].exp_id;
-        while (j < n && batch.metadata->infos[j].exp_id == eid)
+        int ep_rank = batch.metadata->exp_ids[i];
+        while (j < n && batch.metadata->exp_ids[j] == ep_rank)
             j ++;
+        ASSERT(ep_rank >= 0);
+        if (i == 0 && j == n) {
+            // a faster path
+            this->_send_batch(
+                this->exp_channels[_encode(lid, ep_rank)],
+                batch.data,
+                *batch.metadata
+            );
+            break;
+        }
+
         auto buf = tensor_at(batch.data, *batch.metadata, i);
-        ASSERT(eid >= 0);
         this->_send_batch(
-            eid,
+            this->exp_channels[_encode(lid, ep_rank)],
             buf,
             batch.metadata->slice(i, j)
         );
@@ -192,8 +210,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
     std::vector<int> chans;
-    for (auto &info: meta->infos) {
-        chans.push_back(_get_attn_channel(info.req_id, meta->layer_id));
+    for (int req_id: meta->req_ids) {
+        chans.push_back(_get_attn_channel(req_id, layer_id));
     }
 
     auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
@@ -430,9 +448,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t m
     auto dtype = meta->dtype;
     int layer_id = meta->layer_id;
 
-    auto& token_infos = meta->infos;
-
-    int num_tokens = token_infos.size();
+    int num_tokens = meta->req_ids.size();
 
     int num_prefill_seqs = 0;
     int num_prefill_tokens = 0;
@@ -442,14 +458,14 @@ AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t m
     std::vector<int> prefill_seq_len{};
     std::vector<int> prefill_query_len{};
 
-    for (auto &info: token_infos) {
-        if (info.prefill_pos != -1) {
+    for (int i = 0; i < meta->req_ids.size(); i ++) {
+        if (meta->prefill_poss[i] != -1) {
             num_prefill_tokens ++;
             num_prefill_seqs ++;
         } else {
             num_decode_tokens ++;
         }
-        seq_ids.emplace_back(info.req_id);
+        seq_ids.emplace_back(meta->req_ids[i]);
         prefill_seq_len.emplace_back(1);
         prefill_query_len.emplace_back(1);
     }

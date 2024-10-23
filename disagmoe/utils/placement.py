@@ -22,10 +22,7 @@ class ModelPlacement:
         return self.attn.get(device_id, [])
     
     def expert_ids_at(self, device_id: int):
-        if device_id in self.expert:
-            return [e[0] for e in self.expert[device_id]]
-        else:
-            return []
+        return self.expert.get(device_id, [])
         
     def layer_ids_at(self, device_id: int) -> List[int]:
         return list(set(

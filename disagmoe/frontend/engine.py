@@ -1,10 +1,12 @@
 import torch
+import time
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
                                          AttentionBatchMetadata, SloStat)
+from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
@@ -200,13 +202,15 @@ class Engine:
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
+        expert_ids = torch.randint(0, N_EXPERTS, (meta.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta.shape[0],))
+        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, N_EXPERTS)
+        hiddens = permute_tokens(hiddens, expert_ids, exp_mappings, exp_cnt)
         
-        # TODO(hogura|20241015): test & update the experts
         if not mocking:
             new_exp_ids = expert_ids.tolist()
             new_meta = meta.to_metadata()
-            new_meta.update_exp_ids(new_exp_ids, True)
+            new_meta.update_exp_ids(new_exp_ids, exp_mappings.tolist())
         else:
             new_meta = meta
         
@@ -224,7 +228,7 @@ class Engine:
         output = self.executor.execute(tensor, batch_sizes)
         
         meta.step_layer()
-        meta.update_exp_ids([-1] * meta.shape[0], False)
+        meta.update_exp_ids([], [])
         
         return output, meta
 
@@ -234,7 +238,7 @@ class Engine:
         batch: TensorBatch = TensorBatch_C()
         batch.data = output.data_ptr()
         batch.metadata = meta
-        self.dispatcher.put(batch)
+        self.dispatcher.put(batch, 0)
 
     def loop(self):
         self._logger.info("starting expert engine loop")
@@ -276,6 +280,7 @@ class SamplerEngine(Engine):
                 for info in out_channel_infos],
         )
         self._logger.info("inited sampler")
+        self._t_start = time.time()
         
     def start(self):
         self.sampler.start()
@@ -287,9 +292,9 @@ class SamplerEngine(Engine):
             result = self.sampler.get_slo_stats(n_request)
         new_res = {
             k: SloStat(
-                stat.t_prefill,
-                stat.t_decode,
-                stat.t_tokens,
+                stat.t_prefill / CPS - (time.time() - self._t_start),
+                (stat.t_decode - stat.t_prefill) / CPS,
+                [(x - y) / CPS for x, y in zip(stat.t_tokens[1:], stat.t_tokens[:-1])],
             ) for k, stat in result.items()
         }
         return new_res
