@@ -67,6 +67,7 @@ class MuAttnDispatcher: public MuDispatcher {
 
 protected:
     std::vector<int> exp_channels;
+    int max_exp_id;
 
     void _send_once(TensorBatch batch) override;
 

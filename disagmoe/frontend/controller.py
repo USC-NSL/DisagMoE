@@ -1,18 +1,19 @@
 import ray
-import os
-
 import ray.runtime_env
+import torch
+
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
-from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine
+from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
+from disagmoe.config import CacheConfig, ModelConfig
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 class Controller:
     
@@ -56,7 +57,7 @@ class Controller:
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
-                    "nsight": "default"
+                    # "nsight": "default"
                 }
                 # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
             )(worker_cls).remote()
@@ -97,13 +98,39 @@ class Controller:
         # self._logger.info(f"nccl_ids {nccl_ids}")
         return nccl_ids
     
-    def init_engine(self, model_place: ModelPlacement):
+    def init_engine(self, 
+                    model_place: ModelPlacement, 
+                    model_config: Optional[ModelConfig] = None,
+                    cache_config: Optional[CacheConfig] = None):
+        if not model_config:
+            model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
+                                        num_heads=16, 
+                                        num_kv_heads=8, 
+                                        num_experts=N_EXPERTS, 
+                                        intermediate_size=INTERMEDIATE_SIZE,
+                                        dtype=torch.bfloat16)
+        if not cache_config:
+            cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
+                                       num_gpu_blocks=NUM_BLOCKS, 
+                                       num_reserved_blocks=RESERVED_BLOCKS)
         nccl_ids = self._get_nccl_ids(model_place)
         ray.get([
-            worker.set_is_attn.remote(
-                len(model_place.attn_ids_at(device_id)) > 0
+            worker.setup_engine.remote(
+                EngineType.ATTENTION if len(model_place.attn_ids_at(device_id)) > 0 else EngineType.EXPERT,
+                model_config=model_config,
+                cache_config=cache_config,
             )
                 for worker, device_id in zip(self.workers, self.device_ids)
+        ])
+        ray.get([
+            worker.setup_engine.remote(
+                worker_type,
+                model_config=model_config
+            )
+                for worker, worker_type in zip(
+                    [self.tokenizer_worker, self.sampler_worker],
+                    [EngineType.TOKENIZER, EngineType.SAMPLER]
+                )
         ])
         tasks = [
             worker.init_core.remote(
@@ -128,7 +155,8 @@ class Controller:
         ray.get(tasks)
         
     def start_engine(self, non_blocking: bool = True):
-        tasks = [worker.start.remote() for worker in self.workers + [self.sampler_worker, self.tokenizer_worker]]
+        tasks = [worker.start.remote() for worker in self.workers + \
+                    [self.sampler_worker, self.tokenizer_worker]]
         if not non_blocking:
             ray.get(tasks)
             

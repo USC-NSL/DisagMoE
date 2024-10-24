@@ -11,7 +11,7 @@ torch.set_default_dtype(torch.bfloat16)
 engine = Engine()
 
 engine.set_device_id(0)
-engine.set_is_attn(True)
+engine.setup_engine(True)
 engine.init_core([0], [], [], [], {})
 engine.scheduler = engine.a_scheduler
 
