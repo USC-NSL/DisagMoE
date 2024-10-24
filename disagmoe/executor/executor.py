@@ -5,12 +5,11 @@ from typing import override, Tuple
 from time import sleep
 from enum import Enum
 
-from vllm.config import CacheConfig
 from vllm.attention import AttentionMetadata
 
 from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts
-from disagmoe.config import ModelConfig
+from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.utils.utils import nvtx_range
 
 

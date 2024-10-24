@@ -1,5 +1,6 @@
 import torch
 import time
+import enum
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
@@ -25,6 +26,12 @@ from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C)
 
+class EngineType(enum.Enum):
+    ATTENTION = enum.auto()
+    EXPERT = enum.auto()
+    TOKENIZER = enum.auto()
+    SAMPLER = enum.auto()
+
 class Engine:
 
     def __init__(self, 
@@ -38,7 +45,8 @@ class Engine:
         self.dispatcher: MuDispatcher = dispatcher
         self.device_id = device_id
         self.end_flag = False
-        self.is_attn = False
+        self.engine_type: EngineType = None
+        self.model_config: ModelConfig = None
         
         if device_id is not None:
             self._logger = get_logger(f"engine{device_id}")
@@ -52,6 +60,10 @@ class Engine:
         self.block_mgr: BlockManager = None
         
         self.decode_seq_lens = {}
+
+    @property
+    def is_attn(self):
+        return self.engine_type == EngineType.ATTENTION
 
     def init_core(
             self,
@@ -87,27 +99,25 @@ class Engine:
         self.device_id = device_id
         self._logger = get_logger(f"engine{device_id}")
         
-    def set_is_attn(self, is_attn: bool):
+    def setup_engine(self, 
+                     engine_type: EngineType,
+                     model_config: ModelConfig,
+                     cache_config: CacheConfig = None):
         torch.set_default_dtype(torch.bfloat16)
-        torch.set_default_device("cuda:0")
-        
-        # TODO(hogura|20241014): upgrade this function to `setup_engine`
-        self.is_attn = is_attn
-        model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
-                                    num_heads=16, 
-                                    num_kv_heads=8, 
-                                    num_experts=N_EXPERTS, 
-                                    intermediate_size=INTERMEDIATE_SIZE,
-                                    dtype=torch.bfloat16)
-        cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto")
-        cache_config.num_gpu_blocks = 2 ** 10
-        
-        if is_attn:
+        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
+            torch.set_default_device("cuda:0")
+            
+        self.engine_type = engine_type
+        self.model_config = model_config
+        if engine_type == EngineType.ATTENTION:
             self.executor = AttnExecutor(model_config, cache_config)
             self._process_batch = self.process_batch_attn
-            self.block_mgr = BlockManager_C(BLOCK_SIZE, NUM_BLOCKS, RESERVED_BLOCKS)
-        else:
-            self.executor = ExpertsExecutor(model_config)    
+            self.block_mgr = BlockManager_C(
+                cache_config.block_size, 
+                cache_config.num_gpu_blocks, 
+                cache_config.num_reserved_blocks)
+        elif engine_type == EngineType.EXPERT:
+            self.executor = ExpertsExecutor(model_config)
             self._process_batch = self.process_batch_expert
 
     @nvtx_range("engine.pack_flash_attn_metadata")
@@ -304,25 +314,21 @@ class TokenizerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
-        self.hidden_size = HIDDEN_SIZE
         
     def put_request(self, tokens: List[int]):
         # TODO(hogura|20241008): only #prefill = 1 now
         assert len(tokens) == 1
-        shape = (len(tokens), self.hidden_size)
+        shape = (len(tokens), self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.ones(size=shape).type(torch.bfloat16)
+        x = torch.ones(size=shape).type(self.model_config.dtype)
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x.data_ptr(), shape)
         self._frozen_tensors.append(x)
-    
+        
     def gen_n_request(self, n_request: int):
         for i in range(n_request):
             self.put_request([i])
-    
-    def set_tokenizer_config(self, hidden_size: int):
-        self.hidden_size = hidden_size
-    
+        
     def init_core(self, 
                   layer_ids: List[int], 
                   in_device_ids: List[int], 

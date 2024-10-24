@@ -1,8 +1,10 @@
 from disagmoe.frontend.controller import init_controller
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.constants import *
+from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
 
 import time
+import torch
 
 master = init_controller(1, 3)
 
@@ -38,7 +40,12 @@ edges = [
 for edge in edges:
     mp.add_edge(edge[0], edge[1])
 
-master.init_engine(mp)
+model_config = duo_expert_mixtral
+cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
+                            num_gpu_blocks=NUM_BLOCKS, 
+                            num_reserved_blocks=RESERVED_BLOCKS)
+
+master.init_engine(mp, model_config, cache_config)
 
 print("engine inited")
 
