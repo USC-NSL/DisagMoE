@@ -1,5 +1,6 @@
 import torch
 import time
+import os
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
@@ -52,6 +53,29 @@ class Engine:
         self.block_mgr: BlockManager = None
         
         self.decode_seq_lens = {}
+        self.profiler = None
+        
+    def start_profile(self):
+        assert self.device_id is not None, "Engine should be assigned with a device before profiling"
+        
+        if profile_dir := os.environ["DMOE_PROFILE_DIR"]:
+            print(f"enable profiler, results stored at {profile_dir}")
+        
+            self.profiler = torch.profiler.profile(
+                    activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA,
+                    ],
+                    # with_stack=True,
+                    on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                        dir_name=profile_dir, 
+                        worker_name=f"engine-{self.device_id}",
+                        use_gzip=True,))
+            self.profiler.start()
+    
+    def stop_profile(self):
+        assert self.profiler is not None
+        self.profiler.stop()
 
     def init_core(
             self,
