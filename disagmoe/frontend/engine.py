@@ -242,7 +242,7 @@ class Engine:
         attn_meta = self._pack_flash_attn_metadata(meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
-        hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
+        hiddens, expert_ids = self.executor.execute(meta.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta.shape[0],))
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
@@ -266,7 +266,7 @@ class Engine:
         batch_sizes = torch.LongTensor(
             meta.get_expert_batch_sizes(self.model_config.num_experts)
         ).cpu() # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
-        output = self.executor.execute(tensor, batch_sizes)
+        output = self.executor.execute(meta.layer_id, tensor, batch_sizes)
         
         meta.step_layer()
         meta.update_exp_ids([], [])

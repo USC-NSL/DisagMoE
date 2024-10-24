@@ -51,6 +51,8 @@ print("engine inited")
 
 master.start_engine()
 
+master.start_profile()
+
 print("engine started")
 
 n = 1
@@ -59,4 +61,5 @@ master.put_multi_request(n)
 
 stats = master.wait_for_requests(n)
 
+master.stop_workers()
 print(">>> Slo Stats:", stats)
