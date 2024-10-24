@@ -50,6 +50,8 @@ protected:
     std::vector<zmq::context_t> peer_ctx;
     std::vector<zmq::socket_t> peer_mq;
 
+    ParallelConfig cfg;
+
     virtual void _send_once(TensorBatch batch) = 0;
 
     void _send_batch(int cid, uintptr_t buf, const Metadata& meta);
@@ -57,7 +59,10 @@ protected:
     void run() override;
 
 public:
-    MuDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels);
+    MuDispatcher(std::vector<int> layer_ids, 
+                 int device_id, 
+                 ParallelConfig cfg, 
+                 std::vector<Channel_t> channels);
 
     void put(const TensorBatch &batch, int rank = 0);
 };
@@ -73,9 +78,12 @@ protected:
 
     int _encode(int exp_layer_id, int exp_id) const;
 
+    int _get_rank(int exp_id) const;
+
 public:
     MuAttnDispatcher(std::vector<int> layer_ids, 
                      int device_id, 
+                     ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
 };
@@ -92,6 +100,7 @@ protected:
 public:
     MuExpertDispatcher(std::vector<int> layer_ids, 
                        int device_id, 
+                       ParallelConfig cfg,
                        std::vector<Channel_t> channels={},
                        std::vector<ChannelInfo> channel_infos={});
     

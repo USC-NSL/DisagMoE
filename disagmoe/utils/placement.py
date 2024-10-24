@@ -1,9 +1,14 @@
 from disagmoe.utils.constants import *
 from disagmoe.utils.utils import Counter
+from disagmoe.config import ModelConfig
 
 from typing import Dict, Tuple, Optional, Union, List, override
 from dataclasses import dataclass
 
+@dataclass
+class ParallelConfig:
+    tp: int = 1
+    ep: int = 1
 
 @dataclass
 class ModelPlacement:
@@ -17,6 +22,17 @@ class ModelPlacement:
     
     in_device_ids: Dict[int, List[int]]
     out_device_ids: Dict[int, List[int]]
+    
+    def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
+        if device_id not in self.expert:
+            # attention worker
+            return 0
+        ids = self.expert[device_id]
+        ranks = []
+        for layer_id, expert_id in ids:
+            ranks.append(expert_id // num_expert_per_rank)
+        assert len(set(ranks)) == 1
+        return ranks[0]
     
     def attn_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])
@@ -38,16 +54,6 @@ class ModelPlacement:
         if start not in self.in_device_ids[end]:
             self.in_device_ids[end].append(start)
             self.out_device_ids[start].append(end)
-    
-        
-@dataclass
-class ModelConfig:
-    n_layer: int = 16
-    n_local_expert: int = 8
-    n_expert_per_token: int = 1
-    
-    mem_attn = 1 * GiB
-    mem_expert = 100 * MiB
 
 
 @dataclass
@@ -78,7 +84,7 @@ class SinglePlacement(PlacementBase):
     
     @override
     def solve(self) -> ModelPlacement:
-        n_layer, n_expert = self.model_config.n_layer, self.model_config.n_local_expert
+        n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
         n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
         
         # 1 attn, n_expert experts
@@ -121,7 +127,7 @@ class InterleavePlacement(PlacementBase):
     
     @override
     def solve(self) -> ModelPlacement:
-        n_layer, n_expert = self.model_config.n_layer, self.model_config.n_local_expert
+        n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
         n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
         # use one node for tokenizer & sampler
 

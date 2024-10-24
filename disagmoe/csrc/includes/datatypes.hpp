@@ -425,3 +425,12 @@ struct SloStat {
 
     std::vector<clock_t> t_tokens;
 };
+
+struct ParallelConfig {
+    int tp = 1;
+    int ep = 1;
+    int n_exp_per_rank = 1;
+
+    ParallelConfig(int tp, int ep, int n_exp_per_rank): 
+        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank) {}
+};

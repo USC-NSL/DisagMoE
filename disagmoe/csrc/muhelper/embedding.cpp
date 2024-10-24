@@ -15,6 +15,7 @@ Sampler::Sampler(int device_id,
     MuExpertDispatcher(
         /*layer_ids=*/ {0}, 
         device_id, 
+        ParallelConfig(1, 1, 1),
         out_channels, 
         out_channel_infos
     ) {
@@ -151,7 +152,7 @@ void Sampler::start() {
 Tokenizer::Tokenizer(int device_id, 
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos):
-    MuExpertDispatcher({}, device_id, channels, out_channel_infos) {
+    MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, 1), channels, out_channel_infos) {
     req_count = 0;
 }
 

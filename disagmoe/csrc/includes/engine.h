@@ -14,7 +14,8 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::string> &nccl_ids
+    std::map<int, std::string> &nccl_ids,
+    ParallelConfig cfg
 );
 
 void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);

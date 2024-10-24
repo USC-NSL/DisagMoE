@@ -57,6 +57,12 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     REGISTER_STRUCT(TokenMetadata);
 
+    py::class_<ParallelConfig>(m, "ParallelConfig")
+        .def(py::init<int, int, int>())
+        .def_readwrite("tp", &ParallelConfig::tp)
+        .def_readwrite("ep", &ParallelConfig::ep)
+        .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank);
+
     REGISTER_STRUCT(AttentionBatch)
         .def_readwrite("data", &AttentionBatch::data)
         .def_readwrite("metadata", &AttentionBatch::metadata);
@@ -85,7 +91,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("shape", &Metadata::shape)
         .def_readwrite("dtype", &Metadata::dtype)
         .def_readwrite("layer_id", &Metadata::layer_id)
-        // .def_readwrite("infos", &Metadata::infos) 
+        .def_readwrite("req_ids", &Metadata::req_ids)
+        .def_readwrite("exp_ids", &Metadata::exp_ids)
+        .def_readwrite("prefill_poss", &Metadata::prefill_poss)
         .def_readwrite("prompt_lens", &Metadata::prompt_lens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)

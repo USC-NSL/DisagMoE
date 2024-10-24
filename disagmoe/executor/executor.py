@@ -87,7 +87,7 @@ class ExpertsExecutor(Executor):
             MoEExperts(
                 self.model_config.hidden_size, 
                 self.model_config.intermediate_size,
-                self.model_config.num_experts,
+                self.model_config.num_experts_per_rank,
             ) for _ in range(self.num_layers)
         ]
 
