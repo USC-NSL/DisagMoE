@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 import vllm
 import torch
@@ -8,11 +8,13 @@ import vllm.config
 @dataclass
 class ModelConfig:    
     hidden_size: int
+    num_layers: int
     num_heads: int
     num_kv_heads: int
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
+    layer_ids: List[int]
     
     
 class CacheConfig(vllm.config.CacheConfig):
@@ -39,18 +41,22 @@ class CacheConfig(vllm.config.CacheConfig):
 
 mixtral_config = ModelConfig(
     hidden_size = 4096,
+    num_layers= 32,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 8,
     intermediate_size = 14336,
-    dtype=torch.bfloat16
+    dtype=torch.bfloat16,
+    layer_ids=list(range(32))
 )
 
 duo_expert_mixtral = ModelConfig(
     hidden_size = 4096,
+    num_layers=1,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 2,
     intermediate_size = 14336,
-    dtype=torch.bfloat16
+    dtype=torch.bfloat16,
+    layer_ids=[0],
 )
