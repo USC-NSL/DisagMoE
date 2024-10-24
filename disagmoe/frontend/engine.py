@@ -212,9 +212,9 @@ class Engine:
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(positions, tensor, attn_meta)
-        expert_ids = torch.randint(0, N_EXPERTS, (meta.shape[0], )) # FIXME: remove the dummy expert
+        expert_ids = torch.randint(0, self.model_config.num_experts, (meta.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta.shape[0],))
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, N_EXPERTS)
+        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, expert_ids, exp_mappings, exp_cnt)
         
         if not mocking:
@@ -233,7 +233,7 @@ class Engine:
         assert isinstance(self.executor, ExpertsExecutor)
         
         batch_sizes = torch.LongTensor(
-            meta.get_expert_batch_sizes(N_EXPERTS)
+            meta.get_expert_batch_sizes(self.model_config.num_experts)
         ).cpu() # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         output = self.executor.execute(tensor, batch_sizes)
         

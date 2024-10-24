@@ -107,14 +107,19 @@ MuAttnDispatcher::MuAttnDispatcher(
     const std::vector<ChannelInfo> &out_channel_infos): 
         MuDispatcher(layer_ids, device_id, channels) {
     int max_layer_id = 0;
-    for (auto &info: out_channel_infos)
-        max_layer_id = std::max(max_layer_id, range_max(info.expert_ids).first);
-    LOG(INFO) << "max_layer_id " << max_layer_id << LEND;
-    exp_channels.resize(_encode(max_layer_id, N_EXPERTS), 0);
+    max_exp_id = 0;
+    for (auto &info: out_channel_infos) {
+        for (auto pr: info.expert_ids) {
+            max_exp_id = std::max(max_exp_id, pr.second);
+            max_layer_id = std::max(max_layer_id, pr.first);
+        }
+    }
+    max_exp_id ++;
+    LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
+    exp_channels.resize(_encode(max_layer_id + 1, 0), 0);
 
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
-            // TODO(hogura|20241017): #exp replica == 1
             int id = _encode(exp_id.first, exp_id.second);
             ASSERT(exp_channels[id] == 0);
             exp_channels[id] = i;
@@ -123,7 +128,7 @@ MuAttnDispatcher::MuAttnDispatcher(
 }
 
 inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
-    return exp_layer_id * N_EXPERTS + exp_id;
+    return exp_layer_id * this->max_exp_id + exp_id;
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
