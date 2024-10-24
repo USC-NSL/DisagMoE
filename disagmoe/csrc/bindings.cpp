@@ -57,6 +57,12 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     REGISTER_STRUCT(TokenMetadata);
 
+    py::class_<ParallelConfig>(m, "ParallelConfig")
+        .def(py::init<int, int, int>())
+        .def_readwrite("tp", &ParallelConfig::tp)
+        .def_readwrite("ep", &ParallelConfig::ep)
+        .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank);
+
     REGISTER_STRUCT(AttentionBatch)
         .def_readwrite("data", &AttentionBatch::data)
         .def_readwrite("metadata", &AttentionBatch::metadata);

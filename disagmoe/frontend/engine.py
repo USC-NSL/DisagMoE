@@ -12,6 +12,7 @@ from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
+from disagmoe.utils.placement import ParallelConfig
 
 from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -25,7 +26,8 @@ from torch.nn.utils.rnn import pad_sequence
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
                         ChannelInfo as ChannelInfo_C,
                         TensorBatch as TensorBatch_C,
-                        BlockManager as BlockManager_C)
+                        BlockManager as BlockManager_C,
+                        ParallelConfig as ParallelConfig_C)
 
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
@@ -109,7 +111,12 @@ class Engine:
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
                 for info in out_channel_infos],
-            nccl_ids
+            nccl_ids,
+            ParallelConfig_C(
+                self.model_config.tp_size,
+                self.model_config.ep_size,
+                self.model_config.num_experts // self.model_config.ep_size,  # =n_expert_per_rank
+            )
         )
         
     def start(self):

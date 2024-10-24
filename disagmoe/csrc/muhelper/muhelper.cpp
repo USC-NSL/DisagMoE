@@ -54,10 +54,12 @@ void MuHelper::init_cuda_device() {
 
 // MuDispatcher
 
-MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels): 
+MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, 
+                           ParallelConfig cfg, std::vector<Channel_t> channels): 
     MuHelper(layer_ids, device_id, channels), 
     peer_ctx(channels.size()),
-    peer_mq(channels.size()) {
+    peer_mq(channels.size()),
+    cfg(cfg) {
     sprintf(this->device_id_str, "%d", this->device_id);
     for (int i = 0; i < channels.size(); i ++) {
         peer_ctx[i] = zmq::context_t(1);
@@ -103,9 +105,10 @@ void MuDispatcher::put(const TensorBatch &batch, int rank) {
 MuAttnDispatcher::MuAttnDispatcher(
     std::vector<int> layer_ids, 
     int device_id, 
+    ParallelConfig cfg,
     std::vector<Channel_t> channels,
     const std::vector<ChannelInfo> &out_channel_infos): 
-        MuDispatcher(layer_ids, device_id, channels) {
+        MuDispatcher(layer_ids, device_id, cfg, channels) {
     int max_layer_id = 0;
     max_exp_id = 0;
     for (auto &info: out_channel_infos) {
@@ -127,8 +130,12 @@ MuAttnDispatcher::MuAttnDispatcher(
     }
 }
 
+inline int MuAttnDispatcher::_get_rank(int exp_id) const {
+    return exp_id / cfg.n_exp_per_rank;
+}
+
 inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
-    return exp_layer_id * this->max_exp_id + exp_id;
+    return exp_layer_id * this->max_exp_id + _get_rank(exp_id);
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
@@ -141,14 +148,15 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
     int lid = batch.metadata->layer_id;
     for (int i = 0; i < n;) {
         int j = i + 1;
-        int ep_rank = batch.metadata->exp_ids[i];
-        while (j < n && batch.metadata->exp_ids[j] == ep_rank)
+        int ep_rank = _get_rank(batch.metadata->exp_ids[i]);
+        while (j < n && _get_rank(batch.metadata->exp_ids[j]) == ep_rank)
             j ++;
         ASSERT(ep_rank >= 0);
+        int cid = _encode(lid, batch.metadata->exp_ids[i]);
         if (i == 0 && j == n) {
             // a faster path
             this->_send_batch(
-                this->exp_channels[_encode(lid, ep_rank)],
+                this->exp_channels[cid],
                 batch.data,
                 *batch.metadata
             );
@@ -157,7 +165,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
 
         auto buf = tensor_at(batch.data, *batch.metadata, i);
         this->_send_batch(
-            this->exp_channels[_encode(lid, ep_rank)],
+            this->exp_channels[cid],
             buf,
             batch.metadata->slice(i, j)
         );
@@ -174,9 +182,10 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
 MuExpertDispatcher::MuExpertDispatcher(
     std::vector<int> layer_ids, 
     int device_id, 
+    ParallelConfig cfg,
     std::vector<Channel_t> channels,
     std::vector<ChannelInfo> channel_infos): 
-        MuDispatcher(layer_ids, device_id, channels),
+        MuDispatcher(layer_ids, device_id, cfg, channels),
         channel_infos(channel_infos) {
     int max_layer = -1;
     for (auto info: channel_infos)

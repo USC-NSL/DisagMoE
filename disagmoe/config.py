@@ -13,6 +13,8 @@ class ModelConfig:
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
+    ep_size: int
+    tp_size: int = 1
     
     
 class CacheConfig(vllm.config.CacheConfig):
@@ -43,7 +45,8 @@ mixtral_config = ModelConfig(
     num_kv_heads = 8,
     num_experts = 8,
     intermediate_size = 14336,
-    dtype=torch.bfloat16
+    dtype = torch.bfloat16,
+    ep_size = 8,
 )
 
 duo_expert_mixtral = ModelConfig(
@@ -52,5 +55,6 @@ duo_expert_mixtral = ModelConfig(
     num_kv_heads = 8,
     num_experts = 2,
     intermediate_size = 14336,
-    dtype=torch.bfloat16
+    dtype = torch.bfloat16,
+    ep_size = 2
 )

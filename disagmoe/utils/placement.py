@@ -4,6 +4,10 @@ from disagmoe.utils.utils import Counter
 from typing import Dict, Tuple, Optional, Union, List, override
 from dataclasses import dataclass
 
+@dataclass
+class ParallelConfig:
+    tp: int = 1
+    ep: int = 1
 
 @dataclass
 class ModelPlacement:
