@@ -11,7 +11,6 @@ def _permute_tokens_kernel(
     mapping,
     hidden_size, # int
     BLOCK_SIZE: tl.constexpr # division of hidden_size, should be tuned (default 128)
-    
 ):
     token_id = tl.program_id(axis=0)
     block_id = tl.program_id(axis=1)

@@ -15,6 +15,11 @@ class ModelConfig:
     dtype: torch.dtype
     ep_size: int
     tp_size: int = 1
+    rank: int = 0
+    
+    @property
+    def num_experts_per_rank(self):
+        return self.num_experts // self.ep_size
     
     
 class CacheConfig(vllm.config.CacheConfig):

@@ -64,6 +64,7 @@ class Engine:
         
         self.decode_seq_lens = {}
         self.profiler = None
+        self.inner_exp_rank = []
         
     def start_profile(self):
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
@@ -129,11 +130,12 @@ class Engine:
     def set_device_id(self, device_id: int):
         self.device_id = device_id
         self._logger = get_logger(f"engine{device_id}")
-        
+
     def setup_engine(self, 
                      engine_type: EngineType,
                      model_config: ModelConfig,
-                     cache_config: CacheConfig = None):
+                     cache_config: CacheConfig = None,
+                     rank: int = 0):
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
@@ -150,6 +152,10 @@ class Engine:
         elif engine_type == EngineType.EXPERT:
             self.executor = ExpertsExecutor(model_config)
             self._process_batch = self.process_batch_expert
+            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+            self.inner_exp_rank = [0 for _ in range(model_config.num_experts_per_rank)]
+            for i in range(model_config.num_experts_per_rank):
+                self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -263,9 +269,16 @@ class Engine:
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
+        expert_ids = torch.LongTensor(meta.exp_ids, device="cpu")
+        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        tensor = permute_tokens(tensor, expert_ids, exp_mappings, exp_cnt)
+        meta.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
+        
+        batch_sizes = meta.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.LongTensor(
-            meta.get_expert_batch_sizes(self.model_config.num_experts)
-        ).cpu() # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            [batch_sizes[i] for i in self.inner_exp_rank],
+            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+        )
         output = self.executor.execute(tensor, batch_sizes)
         
         meta.step_layer()

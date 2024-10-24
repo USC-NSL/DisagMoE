@@ -21,7 +21,10 @@ class Metadata:
     shape: List[int]
     dtype: str
     layer_id: int
-    infos: List[TokenMetadata]
+    # infos: List[TokenMetadata]
+    req_ids: List[int]
+    exp_ids: List[int]
+    prefill_poss: List[int]
     prompt_lens: Dict[int, int]
 
     def step_layer(self) -> None:
