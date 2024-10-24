@@ -51,7 +51,7 @@ print("engine inited")
 
 master.start_engine()
 
-master.stop_profile()
+master.start_profile()
 
 print("engine started")
 

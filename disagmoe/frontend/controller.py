@@ -1,6 +1,7 @@
 import ray
 import ray.runtime_env
 import torch
+import os
 
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -53,14 +54,15 @@ class Controller:
             worker_cls = Engine
             if n_cpus != 0:
                 worker_cls = TokenizerEngine if self.tokenizer_worker is None else SamplerEngine
+                
             worker = ray.remote(
                 num_cpus=n_cpus,
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
+                    "env_vars": {"DMOE_PROFILE_DIR": os.environ["DMOE_PROFILE_DIR"]},
                     # "nsight": "default"
-                }
-                # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
+                },
             )(worker_cls).remote()
             
             if n_cpus != 0:
