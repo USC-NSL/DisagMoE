@@ -14,9 +14,9 @@ class ModelConfig:
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
+    layer_ids: List[int]
     ep_size: int
     tp_size: int = 1
-    layer_ids: List[int] = []
     rank: int = 0
     
     @property
