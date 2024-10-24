@@ -1,6 +1,7 @@
 import ray
 import ray.runtime_env
 import torch
+import os
 
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -27,6 +28,7 @@ class Controller:
         self._logger = get_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
+        self.profile = False
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -52,14 +54,15 @@ class Controller:
             worker_cls = Engine
             if n_cpus != 0:
                 worker_cls = TokenizerEngine if self.tokenizer_worker is None else SamplerEngine
+                
             worker = ray.remote(
                 num_cpus=n_cpus,
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
+                    "env_vars": {"DMOE_PROFILE_DIR": os.environ["DMOE_PROFILE_DIR"]},
                     # "nsight": "default"
-                }
-                # runtime_env={"env_vars": {k: v for k, v in os.environ.items()}},
+                },
             )(worker_cls).remote()
             
             if n_cpus != 0:
@@ -103,6 +106,7 @@ class Controller:
                     model_config: Optional[ModelConfig] = None,
                     cache_config: Optional[CacheConfig] = None):
         if not model_config:
+            # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
                                         num_heads=16, 
                                         num_kv_heads=8, 
@@ -169,6 +173,22 @@ class Controller:
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
         return results
+    
+    def stop_workers(self):
+        self.stop_profile()
+        tasks = [worker.terminate.remote() for worker in self.workers]
+        ray.get(tasks)
+        
+    def start_profile(self):
+        self.profile = True
+        tasks = [worker.start_profile.remote() for worker in self.workers]
+        ray.get(tasks)
+        
+    def stop_profile(self):
+        if not self.profile:
+            return
+        tasks = [worker.stop_profile.remote() for worker in self.workers]
+        ray.get(tasks)
 
 controller: Controller
 
