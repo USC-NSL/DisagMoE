@@ -11,7 +11,7 @@ const int ZMQ_CPU_PORT_BASE = 25000;
 #endif
 
 #ifndef N_EXPERTS
-#define N_EXPERTS 2
+#define N_EXPERTS 8
 #endif
 
 #ifndef EOS_TOKEN_ID
