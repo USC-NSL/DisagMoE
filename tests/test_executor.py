@@ -8,12 +8,11 @@ from torch.nn.utils.rnn import pad_sequence
 from disagmoe.config import ModelConfig
 from disagmoe.executor import AttnExecutor, ExpertsExecutor
 
-
-
 torch.set_default_device("cuda:0")
 torch.set_default_dtype(torch.bfloat16)
 
 hidden_size = 1024
+num_layers = 4
 num_heads = 16
 head_size = hidden_size // num_heads
 num_kv_heads = 8
@@ -22,7 +21,14 @@ max_seq_len = 1024
 intermediate_size = 4 * hidden_size
 block_size = 32
 
-model_config = ModelConfig(hidden_size, num_heads, num_kv_heads, num_experts, intermediate_size, torch.bfloat16)
+model_config = ModelConfig(hidden_size,
+                           num_layers,
+                           num_heads,
+                           num_kv_heads, 
+                           num_experts,
+                           intermediate_size,
+                           torch.bfloat16,
+                           layer_ids=list(range(4)))
 
 cache_conf = CacheConfig(block_size, 0.8, 2, "auto")
 cache_conf.num_gpu_blocks = 2 ** 10
@@ -131,9 +137,10 @@ def test_prefill():
     )
     inputs = torch.randn((num_prefill_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
-    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
-    outputs = moe.execute(hidden_states, batch_sizes)
+    for i in model_config.layer_ids:
+        hidden_states, exp_ids = attn.execute(i, positions, inputs, meta)
+        batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+        outputs = moe.execute(i, hidden_states, batch_sizes)
     print(f">>> prefill test passed")
     
 
@@ -163,9 +170,10 @@ def test_decode():
     )
     inputs = torch.randn((num_decode_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
-    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
-    outputs = moe.execute(hidden_states, batch_sizes)
+    for i in model_config.layer_ids:
+        hidden_states, exp_ids = attn.execute(i, positions, inputs, meta)
+        batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+        outputs = moe.execute(i, hidden_states, batch_sizes)
     print(f">>> decode test passed")
     
 
@@ -201,9 +209,10 @@ def test_prefill_decode():
     )
     inputs = torch.randn((num_decode_tokens + num_prefill_tokens, hidden_size))
     positions = torch.zeros_like(inputs, dtype=torch.long)
-    hidden_states, exp_ids = attn.execute(positions, inputs, meta)
-    batch_sizes = batch_sizes_from_expert_ids(exp_ids)
-    outputs = moe.execute(hidden_states, batch_sizes)
+    for i in model_config.layer_ids:
+        hidden_states, exp_ids = attn.execute(i, positions, inputs, meta)
+        batch_sizes = batch_sizes_from_expert_ids(exp_ids)
+        outputs = moe.execute(i, hidden_states, batch_sizes)
     print(f">>> chunked_prefill test passed")
     
 test_prefill()
