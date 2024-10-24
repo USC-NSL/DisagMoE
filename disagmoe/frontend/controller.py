@@ -60,7 +60,7 @@ class Controller:
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
-                    "env_vars": {"DMOE_PROFILE_DIR": os.environ["DMOE_PROFILE_DIR"]},
+                    "env_vars": {"DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", "")},
                     # "nsight": "default"
                 },
             )(worker_cls).remote()

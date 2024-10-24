@@ -85,8 +85,10 @@ class Engine:
             self.profiler.start()
     
     def stop_profile(self):
-        assert self.profiler is not None
-        self.profiler.stop()
+        assert self.profiler is not None or \
+            os.environ.get("DMOE_PROFILE_DIR", "") == ""
+        if os.environ.get("DMOE_PROFILE_DIR", "") != "":
+            self.profiler.stop()
 
     @property
     def is_attn(self):
