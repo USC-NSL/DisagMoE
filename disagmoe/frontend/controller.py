@@ -27,6 +27,7 @@ class Controller:
         self._logger = get_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
+        self.profile = False
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -103,6 +104,7 @@ class Controller:
                     model_config: Optional[ModelConfig] = None,
                     cache_config: Optional[CacheConfig] = None):
         if not model_config:
+            # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
                                         num_heads=16, 
                                         num_kv_heads=8, 
@@ -169,6 +171,22 @@ class Controller:
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
         return results
+    
+    def stop_workers(self):
+        self.stop_profile()
+        tasks = [worker.terminate.remote() for worker in self.workers]
+        ray.get(tasks)
+        
+    def start_profile(self):
+        self.profile = True
+        tasks = [worker.start_profile.remote() for worker in self.workers]
+        ray.get(tasks)
+        
+    def stop_profile(self):
+        if not self.profile:
+            return
+        tasks = [worker.stop_profile.remote() for worker in self.workers]
+        ray.get(tasks)
 
 controller: Controller
 

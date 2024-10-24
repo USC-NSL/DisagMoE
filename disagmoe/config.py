@@ -52,11 +52,11 @@ mixtral_config = ModelConfig(
 
 duo_expert_mixtral = ModelConfig(
     hidden_size = 4096,
-    num_layers=1,
+    num_layers=3,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 2,
     intermediate_size = 14336,
     dtype=torch.bfloat16,
-    layer_ids=[0],
+    layer_ids=list(range(3)),
 )
