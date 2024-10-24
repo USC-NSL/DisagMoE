@@ -14,6 +14,8 @@ engine.set_device_id(0)
 engine.setup_engine(True)
 engine.init_core([0], [], [], [], {})
 engine.scheduler = engine.a_scheduler
+
+engine.start_profile()
  
 meta: AttentionBatchMetadata = AttentionBatchMetadata_C()
 
@@ -110,3 +112,5 @@ def test_decode():
 # test_prefill()
 # test_mixed_batch()
 test_decode()
+
+engine.stop_profile()
