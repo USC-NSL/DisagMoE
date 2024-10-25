@@ -129,13 +129,21 @@ class InterleavePlacement(PlacementBase):
     def solve(self) -> ModelPlacement:
         n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
         n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
-        # use one node for tokenizer & sampler
-
-        n_group = n_node * n_gpu // (1 + n_expert)
+        
+        # tokenizer & sampler do not use GPU.
+        assert n_node * n_gpu % (self.model_config.ep_size + 1) == 0
+        n_group = n_node * n_gpu // (self.model_config.ep_size + 1)
 
         node_iter = Counter()
-        attn_devs = tuple(next(node_iter) for _ in range(n_group))
-        exp_devs = tuple(tuple(next(node_iter) for _ in range(n_expert)) for i in range(n_group))
+        attn_devs = []
+        exp_devs = []
+        for i in range(n_group):
+            attn_devs.append(next(node_iter))
+            layer_exp_devs = []
+            for j in range(self.model_config.ep_size):
+                exp_dev = next(node_iter)
+                layer_exp_devs.extend([exp_dev] * self.model_config.num_experts_per_rank)
+            exp_devs.append(layer_exp_devs)
         tokenizer = self.cluster_config.id_tokenizer
         sampler = self.cluster_config.id_sampler
         

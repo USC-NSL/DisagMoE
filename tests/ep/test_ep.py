@@ -1,48 +1,26 @@
 from disagmoe.frontend.controller import init_controller
-from disagmoe.utils.placement import ModelPlacement
+from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
 
 import time
 import torch
 
-master = init_controller(1, 3)
-
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
 
-mp = ModelPlacement(
-    attn = {
-        0: [0],
-    },
-    expert = {
-        1: [(0, 0)],
-        2: [(0, 1)],
-    },
-    tokenizer = tokenizer,
-    sampler = sampler,
-    in_device_ids = {},
-    out_device_ids = {},
-)
+cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
+                               id_tokenizer=tokenizer, 
+                               id_sampler=sampler)
 
-edges = [
-    (tokenizer, 0),
-    (0, 1),
-    (0, 2),
-    (1, sampler),
-    (2, sampler),
-    
-    (sampler, 0),
-    (1, 0),
-    (2, 0),
-]
-
-for edge in edges:
-    mp.add_edge(edge[0], edge[1])
+master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
 model_config = duo_expert_mixtral
 model_config.ep_size = 2
-model_config.num_layer = 1
+model_config.num_layer = 3
+
+mp = get_model_placement(model_config, cluster_config, "interleave")
+
 cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                             num_gpu_blocks=NUM_BLOCKS, 
                             num_reserved_blocks=RESERVED_BLOCKS)
@@ -57,7 +35,7 @@ master.start_profile()
 
 print("engine started")
 
-n = 16
+n = 1
 
 master.put_multi_request(n)
 

@@ -14,7 +14,6 @@ class ModelConfig:
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
-    layer_ids: List[int]
     ep_size: int
     tp_size: int = 1
     rank: int = 0
@@ -22,6 +21,10 @@ class ModelConfig:
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size
+    
+    @property
+    def layer_ids(self):
+        return list(range(self.num_layers))
     
     
 class CacheConfig(vllm.config.CacheConfig):
@@ -55,7 +58,6 @@ mixtral_config = ModelConfig(
     intermediate_size = 14336,
     dtype = torch.bfloat16,
     ep_size = 8,
-    layer_ids = list(range(32)),
 )
 
 duo_expert_mixtral = ModelConfig(
@@ -67,5 +69,4 @@ duo_expert_mixtral = ModelConfig(
     intermediate_size = 14336,
     dtype = torch.bfloat16,
     ep_size = 2,
-    layer_ids = list(range(3)),
 )
