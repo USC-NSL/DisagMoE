@@ -13,11 +13,11 @@ sampler = SAMPLER_DEV_ID
 
 mp = ModelPlacement(
     attn = {
-        0: [0, 1, 2],
+        0: [0],
     },
     expert = {
-        1: [(0, 0), (1, 0), (2, 0)],
-        2: [(0, 1), (1, 1), (2, 1)],
+        1: [(0, 0)],
+        2: [(0, 1)],
     },
     tokenizer = tokenizer,
     sampler = sampler,
@@ -42,6 +42,7 @@ for edge in edges:
 
 model_config = duo_expert_mixtral
 model_config.ep_size = 2
+model_config.num_layer = 1
 cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                             num_gpu_blocks=NUM_BLOCKS, 
                             num_reserved_blocks=RESERVED_BLOCKS)
@@ -56,7 +57,7 @@ master.start_profile()
 
 print("engine started")
 
-n = 1
+n = 16
 
 master.put_multi_request(n)
 
