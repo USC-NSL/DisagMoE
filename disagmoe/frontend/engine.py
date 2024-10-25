@@ -165,6 +165,7 @@ class Engine:
             meta: AttentionBatchMetadata
         ) -> FlashAttentionMetadata:
         # First append blocks for each seqeunce
+        print("AttentionBatchMetadata", meta.shape, meta.num_decode_tokens, meta.num_prefill_tokens)
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
             if seq_id not in self.decode_seq_lens:
                 self.block_mgr.allocate(seq_id, meta.prefill_seq_len[i])
@@ -248,6 +249,7 @@ class Engine:
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
         attn_meta = self._pack_flash_attn_metadata(meta)
+        print(tensor.shape, attn_meta.num_prefill_tokens, attn_meta.num_decode_tokens, attn_meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta.layer_id, positions, tensor, attn_meta)

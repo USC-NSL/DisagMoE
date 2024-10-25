@@ -331,11 +331,14 @@ struct AttentionBatchMetadata {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
             }
         }
+        auto new_shape = batches[0]->shape;
+        for (int i = 1; i < batches.size(); i ++)
+            new_shape[0] += batches[i]->shape[0];
 
         return std::make_shared<AttentionBatchMetadata> (
             AttentionBatchMetadata {
                 batches[0]->layer_id,
-                batches[0]->shape,
+                new_shape,
                 batches[0]->dtype,
                 new_prefills_seqs,
                 new_prefill_tokens,
