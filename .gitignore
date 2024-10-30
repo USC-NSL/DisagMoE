@@ -173,3 +173,4 @@ third_party/
 
 # reports
 *.nsys-rep
+reports/

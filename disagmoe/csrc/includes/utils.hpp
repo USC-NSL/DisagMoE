@@ -13,7 +13,7 @@
 #include "nccl.h"
 
 inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {
-    return buf + i * metadata.num_element() / metadata.num_tokens();
+    return buf + i * metadata.num_element() / metadata.num_tokens() * metadata.get_datatype_size();
 }
 
 inline uintptr_t tensor_at(uintptr_t buf, metadata_t metadata, int i) {
