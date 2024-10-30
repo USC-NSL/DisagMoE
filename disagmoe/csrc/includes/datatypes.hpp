@@ -98,7 +98,7 @@ struct Metadata {
     }
 
     inline ncclDataType_t get_nccl_datatype() const {
-        return ncclFloat16;
+        return ncclBfloat16;
     }
 
     inline size_t get_datatype_size() const {
@@ -215,19 +215,47 @@ struct Metadata {
     void update_exp_ids(const std::vector<int> &new_exp_ids,
                         const std::vector<int> &exp_mappings) {
         exp_ids = new_exp_ids;
-        if (new_exp_ids.empty())
+        permute_token_infos(exp_mappings);
+    }
+
+    void permute_token_infos(const std::vector<int> &exp_mappings) {
+        if (exp_mappings.empty())
             return;
-        ASSERT (new_exp_ids.size() == exp_mappings.size());
-        std::vector<int> tmp(new_exp_ids.size());
+        ASSERT (req_ids.size() == exp_mappings.size());
+        std::vector<int> tmp(exp_mappings.size());
         #define MOVE(a) { \
-            for (int i = 0; i < exp_mappings.size(); i ++) { \
-                int j = exp_mappings[i];    \
-                tmp[j] = a[i];              \
-            }                               \
-            a = tmp;                        \
+            for (int i = 0; i < exp_mappings.size(); i ++) {    \
+                int j = exp_mappings[i];                        \
+                ASSERT(0 <= j && j < tmp.size());               \
+                tmp[j] = a[i];                                  \
+            }                                                   \
+            a = tmp;                                            \
         }
+        MOVE(exp_ids);
         MOVE(req_ids);
         MOVE(prefill_poss);
+        #undef MOVE
+    }
+
+    std::vector<int> sort_by_prefill_order() {
+        // TODO: deal with multiple prefill tokens
+        std::vector<int> rank(req_ids.size()), mapping(req_ids.size());
+        for (int i = 0; i < req_ids.size(); i ++)
+            rank[i] = i;
+        std::sort(
+            rank.begin(), rank.end(),
+            [&](const int i, const int j) {
+                return (prefill_poss[i] < 0 || prefill_poss[j] < 0) ?
+                    prefill_poss[i] > prefill_poss[j] :
+                    (prefill_poss[i] == prefill_poss[j] ? 
+                        req_ids[i] < req_ids[j] :
+                        prefill_poss[i] < prefill_poss[j]);
+            }
+        );
+        for (int i = 0; i < req_ids.size(); i ++)
+            mapping[rank[i]] = i;
+        update_exp_ids({}, mapping);
+        return mapping;
     }
 };
 

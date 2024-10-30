@@ -118,7 +118,7 @@ class Engine:
             ParallelConfig_C(
                 self.model_config.tp_size,
                 self.model_config.ep_size,
-                self.model_config.num_experts // self.model_config.ep_size,  # =n_expert_per_rank
+                self.model_config.num_experts_per_rank,
             )
         )
         
@@ -141,6 +141,8 @@ class Engine:
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
+            stream = torch.cuda.Stream()
+            torch.cuda.set_stream(stream)
             
         self.engine_type = engine_type
         self.model_config = model_config
@@ -254,12 +256,11 @@ class Engine:
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta.shape[0],))
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-        hiddens = permute_tokens(hiddens, expert_ids, exp_mappings, exp_cnt)
+        hiddens = permute_tokens(hiddens, exp_mappings)
         
         if not mocking:
-            new_exp_ids = expert_ids.tolist()
             new_meta = meta.to_metadata()
-            new_meta.update_exp_ids(new_exp_ids, exp_mappings.tolist())
+            new_meta.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
         else:
             new_meta = meta
         
@@ -273,18 +274,20 @@ class Engine:
         
         expert_ids = torch.LongTensor(meta.exp_ids, device="cpu")
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-        tensor = permute_tokens(tensor, expert_ids, exp_mappings, exp_cnt)
-        meta.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
+        permuted_tensor = permute_tokens(tensor, exp_mappings)
+        meta.permute_token_infos(exp_mappings.tolist())
         
         batch_sizes = meta.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.LongTensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
-        output = self.executor.execute(meta.layer_id, tensor, batch_sizes)
-        
+        output = self.executor.execute(meta.layer_id, permuted_tensor, batch_sizes)
+        # 2. permute tokens back to <prefill><decode> order
+        new_mapping = meta.sort_by_prefill_order()
+        output = permute_tokens(output, torch.LongTensor(new_mapping, device="cpu"))
+        meta.update_exp_ids([], new_mapping)
         meta.step_layer()
-        meta.update_exp_ids([], [])
         
         return output, meta
 

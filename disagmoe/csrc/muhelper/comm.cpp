@@ -137,7 +137,7 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
-    tx_range _{"ZmqChannel::send"};
+    tx_range _{"ZmqChannel::recv"};
 
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);

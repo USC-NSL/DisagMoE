@@ -119,12 +119,11 @@ MuAttnDispatcher::MuAttnDispatcher(
     }
     max_exp_id ++;
     LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
-    exp_channels.resize(_encode(max_layer_id + 1, 0), 0);
+    exp_channels.resize(_encode(max_layer_id + 1, 0), -1);
 
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
-            ASSERT(exp_channels[id] == 0);
             exp_channels[id] = i;
         }
     }

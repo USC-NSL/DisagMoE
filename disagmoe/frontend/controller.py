@@ -60,8 +60,13 @@ class Controller:
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
-                    "env_vars": {"DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", "")},
-                    # "nsight": "default"
+                    "env_vars": {
+                        "DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", ""),
+                        "CUDA_LAUNCH_BLOCKING": os.environ.get("CUDA_LAUNCH_BLOCKING", "0"),
+                        "NCCL_DEBUG": os.environ.get("NCCL_DEBUG", ""),
+                        "NCCL_LAUNCH_MODE": os.environ.get("NCCL_LAUNCH_MODE", "")
+                    },
+                    "nsight": "default"
                 },
             )(worker_cls).remote()
             
