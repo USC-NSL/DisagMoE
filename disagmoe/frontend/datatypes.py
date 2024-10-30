@@ -37,6 +37,12 @@ class Metadata:
         
     def get_expert_batch_sizes(self, n_epxert: int) -> List[int]:
         ...
+    
+    def permute_token_infos(exp_mappings: List[int]) -> None:
+        ...
+
+    def sort_by_prefill_order(self) -> List[int]:
+        ...
 
 @dataclass
 class TensorBatch:

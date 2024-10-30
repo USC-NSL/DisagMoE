@@ -60,8 +60,13 @@ class Controller:
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
-                    "env_vars": {"DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", "")},
-                    # "nsight": "default"
+                    "env_vars": {
+                        "DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", ""),
+                        "CUDA_LAUNCH_BLOCKING": os.environ.get("CUDA_LAUNCH_BLOCKING", "0"),
+                        "NCCL_DEBUG": os.environ.get("NCCL_DEBUG", ""),
+                        "NCCL_LAUNCH_MODE": os.environ.get("NCCL_LAUNCH_MODE", "")
+                    },
+                    "nsight": "default"
                 },
             )(worker_cls).remote()
             
@@ -95,9 +100,13 @@ class Controller:
             for j in js:
                 p = tuple(sorted((i, j)))
                 if p not in prs:
-                    prs[p] = get_nccl_unique_id()
-                nccl_ids[i][j] = prs[p]
-                nccl_ids[j][i] = prs[p]
+                    prs[p] = get_nccl_unique_id(), get_nccl_unique_id()
+                    cur_pr = prs[p]
+                else:
+                    # NOTE(hogura|20241030): swap to adapt in_channel & out_channel, see `init_channels` in engine.cpp
+                    uid1, uid2 = prs[p]
+                    cur_pr = uid2, uid1
+                nccl_ids[i][j] = cur_pr
         # self._logger.info(f"nccl_ids {nccl_ids}")
         return nccl_ids
     

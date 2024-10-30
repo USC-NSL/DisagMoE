@@ -16,8 +16,9 @@ cluster_config = ClusterConfig(n_node=1, n_gpu=3,
 master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
 model_config = duo_expert_mixtral
+model_config.num_layer = 4
 model_config.ep_size = 2
-model_config.num_layer = 3
+model_config.num_experts = 2
 
 mp = get_model_placement(model_config, cluster_config, "interleave")
 
@@ -35,7 +36,7 @@ master.start_profile()
 
 print("engine started")
 
-n = 1
+n = 8
 
 master.put_multi_request(n)
 
