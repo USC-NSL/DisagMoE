@@ -286,7 +286,7 @@ class Engine:
         # 2. permute tokens back to <prefill><decode> order
         new_mapping = meta.sort_by_prefill_order()
         output = permute_tokens(output, torch.LongTensor(new_mapping, device="cpu"))
-        meta.update_exp_ids([], new_mapping)
+        meta.update_exp_ids([], [])
         meta.step_layer()
         
         return output, meta
