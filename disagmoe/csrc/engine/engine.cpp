@@ -18,7 +18,7 @@ void init_channels(
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::string> &nccl_ids
+    std::map<int, std::pair<std::string, std::string>> &nccl_ids
 ) {
 
     LOG(DEBUG) << local_id << " " << "init channels" << LEND;
@@ -29,20 +29,28 @@ void init_channels(
     in_channels.resize(n_in);
     out_channels.resize(n_out);
 
-    std::map<int, Channel_t> channels;
+    #define LocalChannel std::pair<int, bool>
+    #define m_id first
+    #define m_is_in_channel second
+    #define D_IN_CHANNEL 0
+    #define D_OUT_CHANNEL 1
+    std::map<LocalChannel, Channel_t> channels;
 
     for (auto i: in_device_ids)
-        channels[i] = nullptr;
+        channels[LocalChannel(i, D_IN_CHANNEL)] = nullptr;
     for (auto i: out_device_ids) {
-        ASSERT(!is_embedding_node(i) || channels.find(i) == channels.end());
-        channels[i] = nullptr;
+        ASSERT(!is_embedding_node(i) || channels.find(LocalChannel(i, D_OUT_CHANNEL)) == channels.end());
+        channels[LocalChannel(i, D_OUT_CHANNEL)] = nullptr;
     }
     std::vector<std::thread> threads;
-    for (auto &[peer_id, channel]: channels) {
-        if (!is_embedding_node(peer_id))
+    for (auto &[local_channel, channel]: channels) {
+        int peer_id = local_channel.m_id;
+        if (!is_embedding_node(peer_id)) {
+            auto nccl_id = local_channel.m_is_in_channel ? nccl_ids.at(peer_id).first : nccl_ids.at(peer_id).second;
             channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_ids.at(peer_id).c_str())
+                convert_to_nccl_uid((char*) nccl_id.c_str())
             );
+        }
         else
             channel = create_zmq_channel(
                 local_id, peer_id, 
@@ -54,7 +62,6 @@ void init_channels(
             [&](Channel_t channel) { 
                 LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
-                // std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }, 
             channel
         ));
@@ -64,9 +71,9 @@ void init_channels(
         t.join();
 
     for (int i = 0; i < n_in; i ++)
-        in_channels[i] = channels[ in_device_ids[i] ];
+        in_channels[i] = channels[ LocalChannel(in_device_ids[i], D_IN_CHANNEL) ];
     for (int i = 0; i < n_out; i ++)    
-        out_channels[i] = channels[ out_device_ids[i] ];
+        out_channels[i] = channels[ LocalChannel(out_device_ids[i], D_OUT_CHANNEL) ];
 }
 
 std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
@@ -76,7 +83,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::string> &nccl_ids,
+    std::map<int, std::pair<std::string, std::string>> &nccl_ids,
     ParallelConfig cfg) {
 
     std::vector<Channel_t> in_channels, out_channels;
