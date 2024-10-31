@@ -94,19 +94,17 @@ class Controller:
         print("#workers", len(self.workers))
     
     def _get_nccl_ids(self, model_place: ModelPlacement):
-        prs = {}
+        prs = set()
         nccl_ids = {k: {} for k in model_place.out_device_ids}
         for i, js in model_place.out_device_ids.items():
             for j in js:
                 p = tuple(sorted((i, j)))
-                if p not in prs:
-                    prs[p] = get_nccl_unique_id(), get_nccl_unique_id()
-                    cur_pr = prs[p]
-                else:
-                    # NOTE(hogura|20241030): swap to adapt in_channel & out_channel, see `init_channels` in engine.cpp
-                    uid1, uid2 = prs[p]
-                    cur_pr = uid2, uid1
-                nccl_ids[i][j] = cur_pr
+                if p in prs:
+                    continue
+                prs.add(p)
+                u1, u2 = get_nccl_unique_id(), get_nccl_unique_id()
+                nccl_ids[i][j] = u1, u2
+                nccl_ids[j][i] = u2, u1     # NOTE(hogura|20241030): must be reversed to match opposite side's uid
         # self._logger.info(f"nccl_ids {nccl_ids}")
         return nccl_ids
     
