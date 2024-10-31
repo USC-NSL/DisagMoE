@@ -667,6 +667,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                  head_size: int,
                  total_num_heads: int,
                  total_num_kv_heads: Optional[int] = None,
+                 tp_size: int = 1,
                  bias: bool = True,
                  skip_bias_add: bool = False,
                  params_dtype: Optional[torch.dtype] = None,
@@ -680,9 +681,6 @@ class QKVParallelLinear(ColumnParallelLinear):
         self.total_num_kv_heads = total_num_kv_heads
         # Divide the weight matrix along the last dimension.
         
-        # (shaoyuw): here we just consider TP=1
-        # tp_size = get_tensor_model_parallel_world_size()
-        tp_size = 1
         self.num_heads = divide(self.total_num_heads, tp_size)
         if tp_size >= self.total_num_kv_heads:
             self.num_kv_heads = 1
@@ -986,6 +984,8 @@ class RowParallelLinear(LinearBase):
     def __init__(self,
                  input_size: int,
                  output_size: int,
+                 tp_size: int = 1,
+                 tp_rank: int = 0,
                  bias: bool = True,
                  input_is_parallel: bool = True,
                  skip_bias_add: bool = False,
@@ -1001,11 +1001,8 @@ class RowParallelLinear(LinearBase):
 
         # Divide the weight matrix along the last dimension.
         
-        # (shaoyuw): here we just consider TP=1
-        # self.tp_rank = get_tensor_model_parallel_rank()
-        # self.tp_size = get_tensor_model_parallel_world_size()
-        self.tp_size = 1
-        self.tp_rank = 0
+        self.tp_size = tp_size
+        self.tp_rank = tp_rank
         self.input_size_per_partition = divide(input_size, self.tp_size)
         assert self.quant_method is not None
 
