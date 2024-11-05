@@ -11,9 +11,9 @@
 
 
 static void print_back_trace() {
-    void *array[16];
-    size_t size = backtrace(array, 16);
-    backtrace_symbols_fd(array, size, STDERR_FILENO);
+    // void *array[16];
+    // size_t size = backtrace(array, 16);
+    // backtrace_symbols_fd(array, size, STDERR_FILENO);
 }
 
 #define CUDACHECK(cmd) do {                             \
