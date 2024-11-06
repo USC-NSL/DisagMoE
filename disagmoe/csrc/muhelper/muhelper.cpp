@@ -291,7 +291,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
     ASSERT(*result == 2);
 
     peer_id = std::stoi(recv_msgs[0].to_string());
-    meta = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+    meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta) {
@@ -385,6 +385,20 @@ int MuPool::tokens_in_layer(int lid) {
     return total_tokens;
 }
 
+void MuPool::maintain_largest_batch() {
+    // !NOTE(hogura|20241106): when calling this function, a lock is required!
+
+    this->largest_batch_size_ = 0;
+    this->largest_batch_layer_id_ = -1;
+    for (int i = 0; i < tokens_per_layer_.size(); i++) {
+        int num_tokens = this->tokens_per_layer_[i];
+        if (num_tokens > this->largest_batch_size_) {
+            this->largest_batch_size_ = num_tokens;
+            this->largest_batch_layer_id_ = i;
+        }
+    }
+}
+
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     // TODO(hogura|20240930): only considering decode first
     // LOG(INFO) << "fetching largest batch" << LEND;
@@ -415,21 +429,10 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
         result = std::move(this->data_queue[id]);
         this->data_queue[id].clear();
-
         max_batch_size = this->largest_batch_size_;
 
         tokens_per_layer_[id] = 0;
-
-        this->largest_batch_layer_id_ = -1;
-        this->largest_batch_size_ = 0;
-
-        for (int i = 0; i < this->data_queue.size(); i ++) {
-            int tokens_cur_layer = tokens_per_layer_[i];
-            if (max_batch_size < tokens_cur_layer) {
-                this->largest_batch_size_ = tokens_cur_layer;
-                this->largest_batch_layer_id_ = i;
-            }
-        }
+        maintain_largest_batch();
     }
 
     // {
@@ -535,7 +538,7 @@ int MuAttentionPool::tokens_in_layer(int lid) {
     return num_tokens;
 }
 
-std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
+std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {
     // TODO(hogura|20240930): only considering decode first
 
     // LOG(INFO) << "fetching largest batch" << LEND;
@@ -549,6 +552,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
 
         if (layer_id == -1) {
             // LOG(INFO) << "No available batch" << LEND;
+            if (selected_layer_id)
+                *selected_layer_id = -1;
             return {};
         }
         
@@ -560,15 +565,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
 
         int num_layers = this->layer_ids.size();
 
-        this->largest_batch_size_ = 0;
-        this->largest_batch_layer_id_ = -1;
-        for (int i = 0; i < num_layers; i++) {
-            int num_tokens = this->tokens_per_layer_[i];
-            if (num_tokens > this->largest_batch_size_) {
-                this->largest_batch_size_ = num_tokens;
-                this->largest_batch_layer_id_ = i;
-            }
-        }
+        maintain_largest_batch();
     }
 
     LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
@@ -580,6 +577,41 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch() {
     //     LOG(DEBUG) << "cur request count: " << cur_request_count << LEND;
     //     ASSERT(this->cur_request_count >= 0);
     // }
+
+    if (selected_layer_id)
+        *selected_layer_id = layer_id;
+    return result;
+}
+
+std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
+    int layer_id, int num_batches) {
+
+    // wait until the data_queue has enough batches
+    for (bool flag = false; !flag;) {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+        if (this->attn_data_queue[layer_id].size() >= num_batches) {
+            flag = true;
+        }
+    }
+
+    // fetch first num_batches batches
+    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    ASSERT(layer_id >= 0 && layer_id < this->attn_data_queue.size());
+    ASSERT(num_batches > 0);
+
+    std::vector<AttentionBatch> result(
+        this->attn_data_queue[layer_id].begin(),
+        this->attn_data_queue[layer_id].begin() + num_batches
+    );
+    int num_tokens = 0;
+    for (auto &batch: result)
+        num_tokens += batch.metadata->num_prefill_tokens + batch.metadata->num_decode_tokens;
+    this->tokens_per_layer_[layer_id] -= num_tokens;
+    attn_data_queue[layer_id].erase(
+        attn_data_queue[layer_id].begin(),
+        attn_data_queue[layer_id].begin() + num_batches);
+
+    maintain_largest_batch();
 
     return result;
 }

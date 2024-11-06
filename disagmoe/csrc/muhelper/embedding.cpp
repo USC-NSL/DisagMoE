@@ -50,7 +50,7 @@ void Sampler::run() {
         LOG(DEBUG) << "sampler got msg !!!" << LEND;
         ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
-        auto metadata = decerealize((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
         auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
 
         this->peer_channels[peer_id]->recv(tensor_buf, *metadata);

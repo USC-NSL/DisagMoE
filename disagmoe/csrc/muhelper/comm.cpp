@@ -205,21 +205,27 @@ void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
 void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
     tx_range _{"NcclGroupChannel::bcast_obj"};
     if (is_root()) {
+        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
+        CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
         void* size_buf = convert_to_cuda_buffer(size);
         // first send size
         broadcast(size_buf, size_buf, sizeof(size_t), ncclUint64);
         // then send data
-        broadcast(buf, buf, size, ncclInt8);
+        broadcast(data_buf, data_buf, size, ncclInt8);
         free_cuda_tensor(size_buf);
+        free_cuda_tensor(data_buf);
     } else {
         // first recv size
         void* size_buf = (void*) alloc_cuda_tensor(1, this->local, /*size_of_item=*/ sizeof(size_t));
         broadcast(nullptr, size_buf, sizeof(size_t), ncclUint64);
         CUDACHECK(cudaMemcpy(&size, size_buf, sizeof(size_t), cudaMemcpyKind::cudaMemcpyDeviceToHost));
         // then recv data
-        buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
-        broadcast(nullptr, buf, size, ncclInt8);
+        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
+        broadcast(nullptr, data_buf, size, ncclInt8);
+        buf = std::malloc(size);
+        CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
         free_cuda_tensor(size_buf);
+        free_cuda_tensor(data_buf);
     }
 }
 
@@ -227,11 +233,9 @@ void NcclGroupChannel::send_metadata(const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::bcast_metadata"};
     ASSERT(is_root());
     std::string data = cerealize(std::make_shared<Metadata>(metadata));
-    void* buf = (void*) alloc_cuda_tensor(data.size(), this->local, /*size_of_item=*/ sizeof(char));
-    CUDACHECK(cudaMemcpy(buf, (void*) data.c_str(), data.size(), cudaMemcpyKind::cudaMemcpyHostToDevice));
+    void* buf = (void*) data.data();
     size_t size = data.size();
     bcast_obj(buf, size);
-    free_cuda_tensor(buf);
 }
 
 void NcclGroupChannel::recv_metadata(Metadata& metadata) {
@@ -240,12 +244,9 @@ void NcclGroupChannel::recv_metadata(Metadata& metadata) {
     void* buf;
     size_t size;
     bcast_obj(buf, size);
-    
-    void* data = std::malloc(size);
-    CUDACHECK(cudaMemcpy(data, buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
-    metadata = *decerealize((char*) data, size);
-    free_cuda_tensor(buf);
-    std::free(data);
+
+    metadata = *decerealize<Metadata>((char*) buf, size);
+    std::free(buf);
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

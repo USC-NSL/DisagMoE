@@ -140,6 +140,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     ********/
     m.def("test_nccl_p2p", &test_nccl_p2p);
     m.def("test_nccl_group", &test_nccl_group);
+    m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
     // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
     // m.def("test_attn_dispatcher", &test_attn_dispatcher);
     // m.def("test_expert_dispatcher", &test_expert_dispatcher);
