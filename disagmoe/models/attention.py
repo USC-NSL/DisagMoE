@@ -62,7 +62,7 @@ class MoEAttention(nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         
-        # (shaoyuw): must invoke initialize_model_parallel
+        # NOTE(shaoyuw): must invoke initialize_model_parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,

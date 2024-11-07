@@ -118,6 +118,8 @@ public:
     void send_metadata(const Metadata& metadata);
 
     void recv_metadata(Metadata& metadata);
+
+    void all_reduce(uintptr_t data, const std::vector<int> &shape);
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);

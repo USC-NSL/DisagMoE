@@ -13,12 +13,20 @@
 void init_channels(
     int local_id,
     bool is_attn,
+    // P2P Channels
     std::vector<Channel_t> &in_channels,
     std::vector<Channel_t> &out_channels,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::pair<std::string, std::string>> &nccl_ids
+    std::map<int, std::pair<std::string, std::string>> &nccl_ids,
+    // Group Channels
+    Channel_t &tensor_channel,
+    const std::vector<int> &tensor_group_device_ids,
+    const std::string &tensor_group_nccl_id,
+    Channel_t &meta_channel,
+    const std::vector<int> &meta_group_device_ids,
+    const std::string &meta_group_nccl_id
 ) {
 
     LOG(DEBUG) << local_id << " " << "init channels" << LEND;
@@ -43,6 +51,7 @@ void init_channels(
         channels[LocalChannel(i, D_OUT_CHANNEL)] = nullptr;
     }
     std::vector<std::thread> threads;
+    // Init P2P channels
     for (auto &[local_channel, channel]: channels) {
         int peer_id = local_channel.m_id;
         if (!is_embedding_node(peer_id)) {
@@ -58,7 +67,7 @@ void init_channels(
                 /*is_sender=*/ is_tokenizer(peer_id) ? false : !is_attn
             );
         LOG(DEBUG) << local_id << " created a thread" << LEND;
-        threads.push_back(std::thread(
+        threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
                 LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
@@ -66,6 +75,19 @@ void init_channels(
             channel
         ));
     }
+    // Init Group channels
+    if (tensor_group_device_ids.size() > 1) {
+        tensor_channel = create_nccl_group_channel(
+            local_id, tensor_group_device_ids, 
+            convert_to_nccl_uid((char*) tensor_group_nccl_id.c_str())
+        );
+        threads.emplace_back(std::thread(
+            [&](Channel_t channel) { 
+                channel->instantiate(); 
+            }, tensor_channel
+        ));
+    }
+
     LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
     for (auto &t: threads)
         t.join();
@@ -84,11 +106,18 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
     std::map<int, std::pair<std::string, std::string>> &nccl_ids,
-    ParallelConfig cfg) {
+    ParallelConfig cfg,
+    const std::vector<int> &tensor_group_device_ids,
+    const std::string &tensor_group_nccl_id,
+    const std::vector<int> &meta_group_device_ids,
+    const std::string &meta_group_nccl_id) {
 
     std::vector<Channel_t> in_channels, out_channels;
+    Channel_t tensor_channel, meta_channel;
     init_channels(local_id, is_attn, in_channels, out_channels, 
-        in_device_ids, out_device_ids, out_channel_infos, nccl_ids);
+        in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
+        tensor_channel, tensor_group_device_ids, tensor_group_nccl_id,
+        meta_channel, meta_group_device_ids, meta_group_nccl_id);
     
     // init dispatcher
     LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
@@ -107,7 +136,16 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
 
     if (is_attn) {
         mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels);
-        attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
+        if (cfg.tp == 1) {
+            attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
+        } else {
+            if (local_id == tensor_group_device_ids[0]) {
+                // is driver, or saying `root` in the tp group
+                attn_scheduler = std::make_shared<AttentionDriverScheduler>(pool, layer_ids, tensor_channel);
+            } else {
+                attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, tensor_channel);
+            }
+        }
     }
     else {
         mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);

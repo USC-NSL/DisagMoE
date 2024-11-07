@@ -58,6 +58,10 @@ public:
     void wait_for_new_requests();
 
     void start();
+
+    virtual std::shared_ptr<NcclGroupChannel> get_channel() {
+        return nullptr;
+    };
 };
 
 class AttentionDriverScheduler : public AttentionScheduler {
@@ -68,6 +72,8 @@ public:
     AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
 
     AttentionBatch schedule() override;
+
+    std::shared_ptr<NcclGroupChannel> get_channel() override;
 };
 
 class AttentionWorkerScheduler : public AttentionScheduler {
@@ -78,4 +84,6 @@ public:
     AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
 
     AttentionBatch schedule() override;
+
+    std::shared_ptr<NcclGroupChannel> get_channel() override;
 };

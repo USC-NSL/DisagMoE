@@ -13,6 +13,7 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
+from disagmoe.models.distributed import set_tensor_model_parallel_config
 
 from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -97,10 +98,16 @@ class Engine:
     def init_core(
             self,
             layer_ids: List[int],
+            # P2P Channels
             in_device_ids: List[int],
             out_device_ids: List[int],
             out_channel_infos: List[ChannelInfo],
-            nccl_ids: Dict[int, int]
+            nccl_ids: Dict[int, int],
+            # Group Channels
+            tensor_group_device_ids: List[int] = None,
+            tensor_group_nccl_id: int = None,
+            meta_group_device_ids: List[int] = None,
+            meta_group_nccl_id: int = None,
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
@@ -110,6 +117,7 @@ class Engine:
             self.device_id,
             self.is_attn,
             layer_ids,
+            # P2P Channels
             in_device_ids,
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
@@ -119,8 +127,15 @@ class Engine:
                 self.model_config.tp_size,
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
-            )
+            ),
+            # Group Channels
+            tensor_group_device_ids,
+            tensor_group_nccl_id,
+            meta_group_device_ids,
+            meta_group_nccl_id,
         )
+        set_tensor_model_parallel_config(self.model_config, 
+                                         self.a_scheduler.channel if self.a_scheduler is not None else None)
         
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)

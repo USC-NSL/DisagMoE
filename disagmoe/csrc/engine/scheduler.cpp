@@ -124,6 +124,10 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     return batch;
 }
 
+std::shared_ptr<NcclGroupChannel> AttentionDriverScheduler::get_channel() {
+    return chan;
+}
+
 AttentionWorkerScheduler::AttentionWorkerScheduler(
     mu_attn_pool_t pool, std::vector<int> layer_ids, 
     Channel_t chan, std::string policy): 
@@ -146,4 +150,8 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
 
     auto batch = AttentionBatch::merge(batches);
     return batch;
+}
+
+std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
+    return chan;
 }

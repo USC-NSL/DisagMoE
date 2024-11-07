@@ -12,7 +12,10 @@ class Scheduler:
     def schedule(self) -> TensorBatch:
         ...
         
-    def prepare_block_table(meta: AttentionBatchMetadata, block_mgr: "BlockManager") -> List[List[int]]:
+    def prepare_block_table(self, meta: AttentionBatchMetadata, block_mgr: "BlockManager") -> List[List[int]]:
+        ...
+        
+    def get_channel(self) -> "NcclGroupChannel":
         ...
 
 class MuDispatcher:
@@ -44,27 +47,34 @@ class BlockManager:
     # def allocate(seq_id: int, seq_len: int) -> List[int]:
     #     ...
         
-    def free(seq_id: int) -> None:
+    def free(self, seq_id: int) -> None:
         ...
         
-    def can_append() -> bool:
+    def can_append(self) -> bool:
         ...
         
-    def append_block(seq_id: int) -> None:
+    def append_block(self, seq_id: int) -> None:
         ...
         
-    def num_free_blocks() -> int:
+    def num_free_blocks(self) -> int:
         ...
     
-    def get_seq_block_list(seq_id: int) -> List[int]:
+    def get_seq_block_list(self, seq_id: int) -> List[int]:
         ...
         
-    def has_seq_block_list(seq_id: int) -> bool:
+    def has_seq_block_list(self, seq_id: int) -> bool:
         ...
         
-    def append_tokens(seq_id: int, context_len: int, num_tokens: int) -> None:
+    def append_tokens(self, seq_id: int, context_len: int, num_tokens: int) -> None:
         ...
         
-    def allocate(seq_id: int, seq_len: int) -> None:
+    def allocate(self, seq_id: int, seq_len: int) -> None:
         ...
         
+class NcclGroupChannel:
+    
+    def all_reduce(self, tensor_buf: int, shape: List[int]) -> None:
+        ...
+        
+    def all_gather(self, tensor_buf: int, shape: List[int], dim: int = -1) -> None:
+        ...

@@ -209,7 +209,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
         CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
         void* size_buf = convert_to_cuda_buffer(size);
         // first send size
-        broadcast(size_buf, size_buf, sizeof(size_t), ncclUint64);
+        broadcast(size_buf, size_buf, 1, ncclUint64);
         // then send data
         broadcast(data_buf, data_buf, size, ncclInt8);
         free_cuda_tensor(size_buf);
@@ -217,7 +217,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
     } else {
         // first recv size
         void* size_buf = (void*) alloc_cuda_tensor(1, this->local, /*size_of_item=*/ sizeof(size_t));
-        broadcast(nullptr, size_buf, sizeof(size_t), ncclUint64);
+        broadcast(nullptr, size_buf, 1, ncclUint64);
         CUDACHECK(cudaMemcpy(&size, size_buf, sizeof(size_t), cudaMemcpyKind::cudaMemcpyDeviceToHost));
         // then recv data
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
@@ -247,6 +247,23 @@ void NcclGroupChannel::recv_metadata(Metadata& metadata) {
 
     metadata = *decerealize<Metadata>((char*) buf, size);
     std::free(buf);
+}
+
+void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape) {
+    tx_range _{"NcclGroupChannel::all_reduce"};
+    void* buf = reinterpret_cast<void*>(data);
+    int count = 1;
+    for (int i: shape)
+        count *= i;
+    NCCLCHECK(ncclAllReduce(
+        buf,
+        buf,
+        count,
+        ncclBfloat16,   // !FIXME(hogura|20241106): remove this hardcode
+        ncclSum,
+        this->comm,
+        this->stream
+    ));
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
