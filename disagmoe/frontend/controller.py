@@ -13,6 +13,7 @@ from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
 from disagmoe.config import CacheConfig, ModelConfig
+from disagmoe.env import ENV_VARS
 
 from typing import List, Dict, Optional
 
@@ -60,12 +61,7 @@ class Controller:
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
-                    "env_vars": {
-                        "DMOE_PROFILE_DIR": os.environ.get("DMOE_PROFILE_DIR", ""),
-                        "CUDA_LAUNCH_BLOCKING": os.environ.get("CUDA_LAUNCH_BLOCKING", "0"),
-                        "NCCL_DEBUG": os.environ.get("NCCL_DEBUG", ""),
-                        "NCCL_LAUNCH_MODE": os.environ.get("NCCL_LAUNCH_MODE", "")
-                    },
+                    "env_vars": ENV_VARS,
                     "nsight": "default"
                 },
             )(worker_cls).remote()
