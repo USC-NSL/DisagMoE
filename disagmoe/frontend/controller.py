@@ -20,7 +20,7 @@ from typing import List, Dict, Optional
 class Controller:
     
     def __init__(self, n_node: int, n_gpu_per_node: int):
-        # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu, i.e. no TP yet.
+        # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
         self.n_gpu_per_worker = 1
@@ -102,6 +102,8 @@ class Controller:
                 nccl_ids[i][j] = u1, u2
                 nccl_ids[j][i] = u2, u1     # NOTE(hogura|20241030): must be reversed to match opposite side's uid
         # self._logger.info(f"nccl_ids {nccl_ids}")
+        for lst in model_place.device_groups.items():
+            nccl_ids[tuple(lst)] = get_nccl_unique_id()
         return nccl_ids
     
     def init_engine(self, 
@@ -153,6 +155,9 @@ class Controller:
                         for out in model_place.out_device_ids.get(device_id, [])
                 ],
                 nccl_ids=nccl_ids.get(device_id, {}),
+                tensor_group_device_ids=model_place.device_groups.get(device_id, []),
+                tensor_group_nccl_id=nccl_ids.get(
+                    tuple(model_place.device_groups.get(device_id, [])), None),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 

@@ -19,7 +19,7 @@ def get_tensor_model_parallel_rank() -> int:
 def get_tensor_model_parallel_world_size() -> int:
     return _tp_model_config.tp_size
 
-def tensor_model_paralllel_all_reduce(tensor: Tensor) -> Tensor:
+def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     if _tp_model_config.tp_size == 1:
         return tensor
     assert _channel is not None

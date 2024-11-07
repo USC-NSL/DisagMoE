@@ -20,8 +20,11 @@ class ModelPlacement:
     tokenizer: int
     sampler: int
     
+    # for the devices in a TP group, only the driver's device_id is stored in the edges
     in_device_ids: Dict[int, List[int]]
     out_device_ids: Dict[int, List[int]]
+    
+    device_groups: Dict[int, List[int]] = None
     
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         if device_id not in self.expert:
@@ -125,20 +128,38 @@ class SinglePlacement(PlacementBase):
 
 class InterleavePlacement(PlacementBase):
     
+    """
+    The structure of the placement is as follows:
+    ```
+    Tokenizer
+    (Attn_0, Attn_{n_layer // n_group}, ...), (Expert_0, Expert_{n_layer // n_group}, ...)
+    (Attn_1, Attn_{1 + n_layer // n_group}, ...), (Expert_1, Expert_{1 + n_layer // n_group}, ...)
+    ...
+    Embedding
+    ```
+    """
+    
     @override
     def solve(self) -> ModelPlacement:
         n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
         n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
+        tp_size = self.model_config.tp_size
         
         # tokenizer & sampler do not use GPU.
-        assert n_node * n_gpu % (self.model_config.ep_size + 1) == 0
-        n_group = n_node * n_gpu // (self.model_config.ep_size + 1)
+        assert n_node * n_gpu % (self.model_config.ep_size + tp_size) == 0
+        n_group = n_node * n_gpu // (self.model_config.ep_size + tp_size)
 
         node_iter = Counter()
         attn_devs = []
         exp_devs = []
+        device_groups = {}
         for i in range(n_group):
-            attn_devs.append(next(node_iter))
+            for j in range(tp_size):
+                attn_devs.append(next(node_iter))
+            if tp_size > 1:
+                devs = attn_devs[-tp_size:]
+                for dev in devs:
+                    device_groups[dev] = devs
             layer_exp_devs = []
             for j in range(self.model_config.ep_size):
                 exp_dev = next(node_iter)
@@ -154,12 +175,13 @@ class InterleavePlacement(PlacementBase):
                 expert[exp_dev] = []
         
         pg = ModelPlacement(
-            attn, expert, tokenizer, sampler, {}, {}
+            attn, expert, tokenizer, sampler, {}, {}, device_groups
         )
         
         last_experts = []
         for i in range(n_layer):
-            attn_dev = attn_devs[i % n_group]
+            # attn driver
+            attn_dev = attn_devs[i % n_group * tp_size]
             attn[attn_dev].append(i)
             if i == 0:
                 pg.add_edge(tokenizer, attn_dev)
@@ -172,6 +194,9 @@ class InterleavePlacement(PlacementBase):
                 expert[exp_dev].append((i, j))
                 pg.add_edge(attn_dev, exp_dev)
                 last_experts.append(exp_dev)
+            if tp_size > 1:
+                pass
+                
         for e in last_experts:
             pg.add_edge(e, sampler)
         
