@@ -93,7 +93,11 @@ class Controller:
         prs = set()
         nccl_ids = {k: {} for k in model_place.out_device_ids}
         for i, js in model_place.out_device_ids.items():
+            if i in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
+                continue
             for j in js:
+                if j in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
+                    continue
                 p = tuple(sorted((i, j)))
                 if p in prs:
                     continue
@@ -102,7 +106,7 @@ class Controller:
                 nccl_ids[i][j] = u1, u2
                 nccl_ids[j][i] = u2, u1     # NOTE(hogura|20241030): must be reversed to match opposite side's uid
         # self._logger.info(f"nccl_ids {nccl_ids}")
-        for lst in model_place.device_groups.items():
+        for lst in model_place.device_groups.values():
             nccl_ids[tuple(lst)] = get_nccl_unique_id()
         return nccl_ids
     
@@ -157,7 +161,7 @@ class Controller:
                 nccl_ids=nccl_ids.get(device_id, {}),
                 tensor_group_device_ids=model_place.device_groups.get(device_id, []),
                 tensor_group_nccl_id=nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), None),
+                    tuple(model_place.device_groups.get(device_id, [])), ""),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 

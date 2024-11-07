@@ -83,6 +83,7 @@ void init_channels(
         );
         threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
+                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
             }, tensor_channel
         ));

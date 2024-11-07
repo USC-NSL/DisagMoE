@@ -31,7 +31,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
         .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
         .def("prepare_block_table", &AttentionScheduler::prepare_block_table_by_meta)
-        .def("schedule", &AttentionScheduler::schedule);
+        .def("schedule", &AttentionScheduler::schedule)
+        .def("get_channel", &AttentionScheduler::get_channel);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);
@@ -54,6 +55,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
 
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
+
+    py::class_<NcclGroupChannel, std::shared_ptr<NcclGroupChannel>>(m, "NcclGroupChannel")
+        .def("all_reduce", &NcclGroupChannel::all_reduce);
 
     REGISTER_STRUCT(TokenMetadata);
 

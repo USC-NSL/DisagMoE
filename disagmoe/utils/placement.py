@@ -180,9 +180,12 @@ class InterleavePlacement(PlacementBase):
         
         last_experts = []
         for i in range(n_layer):
+            # all attn workers
+            for j in range(tp_size):
+                attn[i % n_group * tp_size + j].append(i)
+                
             # attn driver
             attn_dev = attn_devs[i % n_group * tp_size]
-            attn[attn_dev].append(i)
             if i == 0:
                 pg.add_edge(tokenizer, attn_dev)
             for e in last_experts:

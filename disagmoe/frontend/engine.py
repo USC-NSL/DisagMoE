@@ -13,7 +13,7 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.distributed import set_tensor_model_parallel_config
+from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
 
 from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -95,6 +95,9 @@ class Engine:
     def is_attn(self):
         return self.engine_type == EngineType.ATTENTION
 
+    def _is_attn(self):
+        return self.is_attn
+
     def init_core(
             self,
             layer_ids: List[int],
@@ -105,14 +108,18 @@ class Engine:
             nccl_ids: Dict[int, int],
             # Group Channels
             tensor_group_device_ids: List[int] = None,
-            tensor_group_nccl_id: int = None,
+            tensor_group_nccl_id: str = "",
             meta_group_device_ids: List[int] = None,
-            meta_group_nccl_id: int = None,
+            meta_group_nccl_id: str = "",
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
+        if meta_group_device_ids is None:
+            meta_group_device_ids = []
+        if tensor_group_device_ids is None:
+            tensor_group_device_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
@@ -134,8 +141,7 @@ class Engine:
             meta_group_device_ids,
             meta_group_nccl_id,
         )
-        set_tensor_model_parallel_config(self.model_config, 
-                                         self.a_scheduler.channel if self.a_scheduler is not None else None)
+        set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
         
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
@@ -159,6 +165,7 @@ class Engine:
             stream = torch.cuda.Stream()
             torch.cuda.set_stream(stream)
             
+        set_tensor_model_parallel_config(model_config)
         self.engine_type = engine_type
         self.model_config = model_config
         if engine_type == EngineType.ATTENTION:
@@ -175,6 +182,8 @@ class Engine:
             self.inner_exp_rank = [0 for _ in range(model_config.num_experts_per_rank)]
             for i in range(model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
+        
+        self._logger.info(f"engine setup.")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -345,7 +354,11 @@ class SamplerEngine(Engine):
                   in_device_ids: List[int], 
                   out_device_ids: List[int], 
                   out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int]):
+                  nccl_ids: Dict[int, int],
+                  tensor_group_device_ids: List[int] = None,
+                  tensor_group_nccl_id: str = "",
+                  meta_group_device_ids: List[int] = None,
+                  meta_group_nccl_id: str = ""):
         self.sampler = init_sampler(
             self.device_id,
             in_device_ids,
@@ -398,7 +411,11 @@ class TokenizerEngine(Engine):
                   in_device_ids: List[int], 
                   out_device_ids: List[int], 
                   out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int]):
+                  nccl_ids: Dict[int, int],
+                  tensor_group_device_ids: List[int] = None,
+                  tensor_group_nccl_id: str = "",
+                  meta_group_device_ids: List[int] = None,
+                  meta_group_nccl_id: str = ""):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

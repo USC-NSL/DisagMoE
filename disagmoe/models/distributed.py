@@ -8,9 +8,12 @@ from torch import Tensor
 _tp_model_config: ModelConfig = None
 _channel: NcclGroupChannel = None
 
-def set_tensor_model_parallel_config(model_config: ModelConfig, channel: NcclGroupChannel = None):
-    global _tp_model_config, _channel
+def set_tensor_model_parallel_config(model_config: ModelConfig):
+    global _tp_model_config
     _tp_model_config = model_config
+    
+def set_tensor_model_parallel_channel(channel: NcclGroupChannel):
+    global _channel
     _channel = channel
 
 def get_tensor_model_parallel_rank() -> int:
