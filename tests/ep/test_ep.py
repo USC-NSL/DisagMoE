@@ -13,16 +13,17 @@ cluster_config = ClusterConfig(n_node=1, n_gpu=6,
                                id_tokenizer=tokenizer, 
                                id_sampler=sampler)
 
-master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
-
 model_config = duo_expert_mixtral
 model_config.num_layer = 16
 model_config.ep_size = 2
 model_config.num_experts = 8
+model_config.tp_size = 1
 
 mp = get_model_placement(model_config, cluster_config, "interleave")
 
 print(mp)
+
+master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
 cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                             num_gpu_blocks=NUM_BLOCKS, 

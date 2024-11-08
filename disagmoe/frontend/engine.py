@@ -196,75 +196,49 @@ class Engine:
         ) -> FlashAttentionMetadata:
         # First append blocks for each seqeunce
         meta = AttentionBatchMetadata.from_c(meta)
-        print(meta)
-        torch.cuda.nvtx.range_push("engine.append_blocks_for_seqs")
-        st = time.time_ns()
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
-            # print("A", (time.time_ns() - st) / 1e3)
             if seq_id not in self.decode_seq_lens:
-                # print("B", (time.time_ns() - st) / 1e3)
                 self.block_mgr.allocate(seq_id, meta.prefill_seq_len[i])
             else:
-                # print("B", (time.time_ns() - st) / 1e3)
                 self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
-            # print("C", (time.time_ns() - st) / 1e3)
             w = meta.prefill_seq_len[i]
-            # print("D", (time.time_ns() - st) / 1e3)
             self.decode_seq_lens[seq_id] = w
-            # print("E", (time.time_ns() - st) / 1e3)
         
         for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
             assert seq_id in self.decode_seq_lens, f"seq {seq_id} should no be in decoding phase"
             decode_seq_len = self.decode_seq_lens.get(seq_id)
             self.block_mgr.append_tokens(seq_id, decode_seq_len, 1)
             self.decode_seq_lens[seq_id] = decode_seq_len + 1
-        torch.cuda.nvtx.range_pop()
         
         self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
         
-        torch.cuda.nvtx.range_push("engine.prepare_block_table")
         tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
         
         assert self.block_mgr is not None and meta is not None
         block_table = self.block_mgr.prepare_block_table(meta.to_c())
-        # block_table = np.array(block_table, dtype=np.int32, pin_memory=True)
         block_table_stride = len(block_table) // tokens_in_batch
-        block_table_cuda = torch.Tensor(block_table, device="cpu").type(torch.int).view(tokens_in_batch, -1).to("cuda", non_blocking=True)
-        torch.cuda.nvtx.range_pop()
+        block_table_cuda = torch.Tensor(block_table, device="cpu").type(torch.int32).view(tokens_in_batch, -1).to("cuda", non_blocking=True)
         
-        a = time.time()
-        torch.cuda.nvtx.range_push("engine.add_prefill_tokens_to_slot")
         assert len(block_table) % tokens_in_batch == 0
-        st = time.time_ns()
-        # slot_mapping = torch.empty(tokens_in_batch, dtype=torch.int, device="cpu")
-        slot_mapping = np.empty(tokens_in_batch, dtype=np.int32)
-        print((time.time_ns() - st) / 1e3)
+        slot_mapping = np.empty(tokens_in_batch, dtype=np.int64)
         slot_idx = 0
         # prefill tokens
         st = time.time_ns()
         for i in range(meta.num_prefill_seqs):
-            # print("A", (time.time_ns() - st) / 1e3)
             q_len = meta.prefill_query_len[i]
             seq_len = meta.prefill_seq_len[i]
             for idx in range(seq_len - q_len, seq_len):
-                # print("B", (time.time_ns() - st) / 1e3)
                 block_id, id_in_block = idx // BLOCK_SIZE, idx % BLOCK_SIZE
                 slot_mapping[slot_idx] = block_table[i * block_table_stride + block_id] * BLOCK_SIZE + id_in_block
                 slot_idx += 1
-                # print("C", (time.time_ns() - st) / 1e3)
-        torch.cuda.nvtx.range_pop()
-        print(time.time() - a)
-        torch.cuda.nvtx.range_push("engine.add_decode_tokens_to_slot")
         # decode tokens
         for i in range(meta.num_prefill_tokens, tokens_in_batch):
             last_idx = self.decode_seq_lens[meta.seq_ids[i]] - 1
             block_id, id_in_block = last_idx // BLOCK_SIZE, last_idx % BLOCK_SIZE
             slot_mapping[slot_idx] = block_table[i * block_table_stride + block_id] * BLOCK_SIZE + id_in_block
             slot_idx += 1
-        torch.cuda.nvtx.range_pop()
         
-        @nvtx_range("engine.make_seqlens")
         def make_seqlens(lens):
             if not lens:
                 return None

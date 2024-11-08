@@ -182,6 +182,7 @@ class InterleavePlacement(PlacementBase):
         sampler = self.cluster_config.id_sampler
         
         attn = {attn_dev: [] for attn_dev in attn_devs}
+        print(attn)
         expert = {}
         for tp in exp_devs:
             for exp_dev in tp:
@@ -193,12 +194,12 @@ class InterleavePlacement(PlacementBase):
         
         last_experts = []
         for i in range(n_layer):
-            # all attn workers
-            for j in range(tp_size):
-                attn[i % n_group * tp_size + j].append(i)
-                
             # attn driver
             attn_driver = attn_devs[i % n_group * tp_size]
+            # all attn workers
+            for j in range(tp_size):
+                attn[attn_driver + j].append(i)
+                
             if i == 0:
                 pg.add_edge(tokenizer, attn_driver)
             for e in last_experts:
