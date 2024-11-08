@@ -211,7 +211,7 @@ class Engine:
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
         
         assert self.block_mgr is not None and meta is not None
-        block_table = self.scheduler.prepare_block_table(meta, self.block_mgr)
+        block_table = self.block_mgr.prepare_block_table(meta)
         
         tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
         slot_mapping = torch.empty(tokens_in_batch, dtype=torch.long, device="cpu")
@@ -276,18 +276,7 @@ class Engine:
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
         if mocking:
-            from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
-            attn_meta = AttentionBatchMetadata_C()
-            attn_meta.layer_id = meta.layer_id
-            attn_meta.shape = meta.shape
-            attn_meta.dtype = meta.dtype
-            attn_meta.num_prefill_seqs = meta.num_prefill_seqs
-            attn_meta.num_prefill_tokens = meta.num_prefill_tokens
-            attn_meta.num_decode_tokens = meta.num_decode_tokens
-            attn_meta.seq_ids = meta.seq_ids
-            attn_meta.prefill_seq_len = meta.prefill_seq_len
-            attn_meta.prefill_query_len = meta.prefill_query_len
-            attn_meta.expert_ids = meta.expert_ids
+            attn_meta = meta.to_c()
             attn_meta = self._pack_flash_attn_metadata(attn_meta)
         else:
             attn_meta = self._pack_flash_attn_metadata(meta)

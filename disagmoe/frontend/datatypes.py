@@ -65,8 +65,23 @@ class AttentionBatchMetadata:
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
     
-    def to_metadata() -> Metadata:
+    def to_metadata(self) -> Metadata:
         ...
+        
+    def to_c(self) -> "AttentionBatchMetadata_C":
+        from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
+        attn_meta = AttentionBatchMetadata_C()
+        attn_meta.layer_id = self.layer_id
+        attn_meta.shape = self.shape
+        attn_meta.dtype = self.dtype
+        attn_meta.num_prefill_seqs = self.num_prefill_seqs
+        attn_meta.num_prefill_tokens = self.num_prefill_tokens
+        attn_meta.num_decode_tokens = self.num_decode_tokens
+        attn_meta.seq_ids = self.seq_ids
+        attn_meta.prefill_seq_len = self.prefill_seq_len
+        attn_meta.prefill_query_len = self.prefill_query_len
+        attn_meta.expert_ids = self.expert_ids
+        return attn_meta
         
 @dataclass
 class SloStat:

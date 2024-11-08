@@ -120,7 +120,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("num_free_blocks", &BlockManager::num_free_blocks)
         // .def("get_seq_block_list", &BlockManager::get_seq_block_list)
         .def("has_seq_block_list", &BlockManager::has_seq_block_list)
-        .def("append_tokens", &BlockManager::append_tokens);
+        .def("append_tokens", &BlockManager::append_tokens)
+        .def("prepare_block_table", &BlockManager::prepare_block_table);
 
     // static function calls
     m.def("create_channel", &create_channel);

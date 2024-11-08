@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <memory>
 
+#include "datatypes.hpp"
+
 typedef std::shared_ptr<std::vector<int>> block_list_t;
 
 class BlockManager {
@@ -42,6 +44,8 @@ public:
     bool has_seq_block_list(const int &seq_id);
 
     void append_tokens(int seq_id, int context_len, int num_tokens);
+
+    std::vector<std::vector<int>> prepare_block_table(attn_metadata_t meta);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;

@@ -170,10 +170,9 @@ class InterleavePlacement(PlacementBase):
         for i in range(n_group):
             for j in range(tp_size):
                 attn_devs.append(next(node_iter))
-            if tp_size > 1:
-                devs = attn_devs[-tp_size:]
-                for dev in devs:
-                    device_groups[dev] = devs
+            devs = attn_devs[-tp_size:]
+            for dev in devs:
+                device_groups[dev] = devs
             layer_exp_devs = []
             for j in range(self.model_config.ep_size):
                 exp_dev = next(node_iter)
