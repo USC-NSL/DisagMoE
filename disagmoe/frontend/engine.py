@@ -3,6 +3,8 @@ import time
 import enum
 import os
 
+import numpy as np
+
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
@@ -193,12 +195,14 @@ class Engine:
             meta: AttentionBatchMetadata
         ) -> FlashAttentionMetadata:
         # First append blocks for each seqeunce
+        meta = AttentionBatchMetadata.from_c(meta)
         for i, seq_id in enumerate(meta.seq_ids[:meta.num_prefill_seqs]):
             if seq_id not in self.decode_seq_lens:
                 self.block_mgr.allocate(seq_id, meta.prefill_seq_len[i])
             else:
                 self.block_mgr.append_tokens(seq_id, meta.prefill_seq_len[i] - meta.prefill_query_len[i], meta.prefill_query_len[i])
-            self.decode_seq_lens[seq_id] = meta.prefill_seq_len[i]
+            w = meta.prefill_seq_len[i]
+            self.decode_seq_lens[seq_id] = w
         
         for seq_id in meta.seq_ids[meta.num_prefill_seqs:]:
             assert seq_id in self.decode_seq_lens, f"seq {seq_id} should no be in decoding phase"
@@ -208,32 +212,32 @@ class Engine:
         
         self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
         
+        tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
         decode_seq_lens = [self.decode_seq_lens.get(i, 0) for i in meta.seq_ids[meta.num_prefill_seqs:]]
         
         assert self.block_mgr is not None and meta is not None
-        block_table = self.block_mgr.prepare_block_table(meta)
+        block_table = self.block_mgr.prepare_block_table(meta.to_c())
+        block_table_stride = len(block_table) // tokens_in_batch
+        block_table_cuda = torch.Tensor(block_table, device="cpu").type(torch.int32).view(tokens_in_batch, -1).to("cuda", non_blocking=True)
         
-        tokens_in_batch = meta.num_decode_tokens + meta.num_prefill_tokens
-        slot_mapping = torch.empty(tokens_in_batch, dtype=torch.long, device="cpu")
+        assert len(block_table) % tokens_in_batch == 0
+        slot_mapping = np.empty(tokens_in_batch, dtype=np.int64)
         slot_idx = 0
         # prefill tokens
+        st = time.time_ns()
         for i in range(meta.num_prefill_seqs):
             q_len = meta.prefill_query_len[i]
             seq_len = meta.prefill_seq_len[i]
             for idx in range(seq_len - q_len, seq_len):
                 block_id, id_in_block = idx // BLOCK_SIZE, idx % BLOCK_SIZE
-                slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
+                slot_mapping[slot_idx] = block_table[i * block_table_stride + block_id] * BLOCK_SIZE + id_in_block
                 slot_idx += 1
-                
         # decode tokens
         for i in range(meta.num_prefill_tokens, tokens_in_batch):
             last_idx = self.decode_seq_lens[meta.seq_ids[i]] - 1
             block_id, id_in_block = last_idx // BLOCK_SIZE, last_idx % BLOCK_SIZE
-            slot_mapping[slot_idx] = block_table[i][block_id] * BLOCK_SIZE + id_in_block
+            slot_mapping[slot_idx] = block_table[i * block_table_stride + block_id] * BLOCK_SIZE + id_in_block
             slot_idx += 1
-            
-        block_table = [torch.IntTensor(block_list).cuda() for block_list in block_table]
-        block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
         
         def make_seqlens(lens):
             if not lens:
@@ -241,13 +245,14 @@ class Engine:
             seqlen = [0]
             for l in lens:
                 seqlen.append(seqlen[-1] + l)
-            return torch.IntTensor(seqlen).cuda()
+            result = torch.IntTensor(seqlen).cuda()
+            return result
         
         return FlashAttentionMetadata(
             meta.num_prefill_seqs,
             meta.num_prefill_tokens,
             meta.num_decode_tokens,
-            slot_mapping.cuda(),
+            torch.from_numpy(slot_mapping).cuda(),
             seq_lens=meta.prefill_seq_len + decode_seq_lens,
             seq_lens_tensor=torch.IntTensor(meta.prefill_seq_len + decode_seq_lens).cuda(),
             max_query_len=max(meta.prefill_query_len + [0]),
@@ -259,7 +264,7 @@ class Engine:
                 [seq_len - que_len for seq_len, que_len in \
                     zip(meta.prefill_seq_len, meta.prefill_query_len)] + \
                 [seq_len - 1 for seq_len in decode_seq_lens],
-            block_tables=block_table,
+            block_tables=block_table_cuda,
             use_cuda_graph=False,
         )
 

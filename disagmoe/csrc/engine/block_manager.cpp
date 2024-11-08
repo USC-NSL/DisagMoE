@@ -23,6 +23,7 @@ bool BlockManager::can_allocate(const int &seq_len) {
 }
 
 void BlockManager::allocate(const int &seq_id, const int &seq_len) {
+    AUTO_TX_RANGE;
     // LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
 
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
@@ -100,17 +101,25 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     }
 }
 
-std::vector<std::vector<int>> BlockManager::prepare_block_table(attn_metadata_t meta) {
+std::vector<int> BlockManager::prepare_block_table(attn_metadata_t meta) {
     AUTO_TX_RANGE;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
-    std::vector<std::vector<int>> block_table{};
     int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
+    size_t m = 0;
     for (int i = 0; i < n; i++) {
         int id = meta->seq_ids[i];
         ASSERT (has_seq_block_list(id));
         block_list_t list = get_seq_block_list(id);
-        block_table.emplace_back(*list);
+        m = std::max(m, list->size());
     }
-    return block_table;
+    std::vector<int> result(n * m, -1);
+    for (int i = 0; i < n; i++) {
+        int id = meta->seq_ids[i];
+        block_list_t list = get_seq_block_list(id);
+        for (int j = 0; j < list->size(); j++) {
+            result[i * m + j] = (*list)[j];
+        }
+    }
+    return result;
 }

@@ -82,6 +82,21 @@ class AttentionBatchMetadata:
         attn_meta.prefill_query_len = self.prefill_query_len
         attn_meta.expert_ids = self.expert_ids
         return attn_meta
+    
+    @staticmethod
+    def from_c(meta_c: "AttentionBatchMetadata_C") -> "AttentionBatchMetadata":
+        return AttentionBatchMetadata(
+            meta_c.layer_id,
+            meta_c.shape,
+            meta_c.dtype,
+            meta_c.num_prefill_seqs,
+            meta_c.num_prefill_tokens,
+            meta_c.num_decode_tokens,
+            meta_c.seq_ids,
+            meta_c.prefill_seq_len,
+            meta_c.prefill_query_len,
+            meta_c.expert_ids
+        )
         
 @dataclass
 class SloStat:
