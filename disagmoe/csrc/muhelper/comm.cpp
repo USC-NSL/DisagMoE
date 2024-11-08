@@ -35,8 +35,6 @@ void debug_print_environ() {
 }
 
 void NcclChannel::instantiate() {
-    // debug_print_environ();
-    printf("calling nccl init (%d, %d) %d\n", this->local, this->other, this->m_rank());
     #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->local));
     #endif
@@ -46,10 +44,10 @@ void NcclChannel::instantiate() {
         this->comm_id,
         /*rank=*/ this->m_rank()
     ));
-    puts("called nccl init");
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
+    LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
@@ -60,6 +58,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -84,20 +83,12 @@ std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
-    // !FIXME(hogura|20241009): this type of sharing mq may have issues.
     LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
-    // std::lock_guard<std::mutex> guard(global_mutex);
-    // if (global_mq.find(this->local) != global_mq.end()) {
-    //     this->mq = global_mq[this->local];
-    //     LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
-    //     return;
-    // }
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
-    // global_mq[this->local] = this->mq;
     if (is_sender) {
         this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false));
     } else {
@@ -146,6 +137,135 @@ void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
         /*to_gpu=*/ !is_embedding_node(local), data);
 }
 
+NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream):
+    NcclChannel(party_local, -1, comm_id, stream), size(party_all.size()) {
+        #ifndef D_ENABLE_RAY
+        CUDACHECK(cudaSetDevice(this->local));
+        #endif
+        if (!is_embedding_node(party_local)) {
+            if (stream == nullptr) {
+                CUDACHECK(cudaStreamCreate(&this->stream));
+            } else {
+                this->stream = stream;
+            }
+        }
+        local_rank = std::find(party_all.begin(), party_all.end(), party_local) - party_all.begin();
+    }
+
+void NcclGroupChannel::instantiate() {
+    #ifndef D_ENABLE_RAY
+    CUDACHECK(cudaSetDevice(this->local));
+    #endif
+    NCCLCHECK(ncclCommInitRank(
+        &this->comm,
+        /*nranks=*/ size,
+        this->comm_id,
+        /*rank=*/ this->local_rank
+    ));
+}
+
+bool NcclGroupChannel::is_root() const {
+    return this->local_rank == root();
+}
+
+int NcclGroupChannel::root() const {
+    return 0;
+}
+
+void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type) {
+    tx_range _{"NcclGroupChannel::broadcast"};
+    NCCLCHECK(ncclBroadcast(
+        send_buf,
+        recv_buf,
+        count,
+        type,
+        root(),
+        this->comm,
+        this->stream
+    ));
+}
+
+void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
+    tx_range _{"NcclGroupChannel::send"};
+    ASSERT(is_root());
+    send_recv(data_ptr, metadata);
+}
+
+void NcclGroupChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
+    tx_range _{"NcclGroupChannel::recv"};
+    ASSERT(!is_root());
+    send_recv(data_ptr, metadata);
+}
+
+void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
+    broadcast(reinterpret_cast<void*>(data_ptr), reinterpret_cast<void*>(data_ptr), 
+        metadata.num_element(), metadata.get_nccl_datatype());
+}
+
+void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
+    tx_range _{"NcclGroupChannel::bcast_obj"};
+    if (is_root()) {
+        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
+        CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
+        void* size_buf = convert_to_cuda_buffer(size);
+        // first send size
+        broadcast(size_buf, size_buf, 1, ncclUint64);
+        // then send data
+        broadcast(data_buf, data_buf, size, ncclInt8);
+        free_cuda_tensor(size_buf);
+        free_cuda_tensor(data_buf);
+    } else {
+        // first recv size
+        void* size_buf = (void*) alloc_cuda_tensor(1, this->local, /*size_of_item=*/ sizeof(size_t));
+        broadcast(nullptr, size_buf, 1, ncclUint64);
+        CUDACHECK(cudaMemcpy(&size, size_buf, sizeof(size_t), cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        // then recv data
+        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
+        broadcast(nullptr, data_buf, size, ncclInt8);
+        buf = std::malloc(size);
+        CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        free_cuda_tensor(size_buf);
+        free_cuda_tensor(data_buf);
+    }
+}
+
+void NcclGroupChannel::send_metadata(const Metadata& metadata) {
+    tx_range _{"NcclGroupChannel::bcast_metadata"};
+    ASSERT(is_root());
+    std::string data = cerealize(std::make_shared<Metadata>(metadata));
+    void* buf = (void*) data.data();
+    size_t size = data.size();
+    bcast_obj(buf, size);
+}
+
+void NcclGroupChannel::recv_metadata(Metadata& metadata) {
+    tx_range _{"NcclGroupChannel::recv_metadata"};
+    ASSERT(!is_root());
+    void* buf;
+    size_t size;
+    bcast_obj(buf, size);
+
+    metadata = *decerealize<Metadata>((char*) buf, size);
+    std::free(buf);
+}
+
+void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape) {
+    tx_range _{"NcclGroupChannel::all_reduce"};
+    void* buf = reinterpret_cast<void*>(data);
+    int count = 1;
+    for (int i: shape)
+        count *= i;
+    NCCLCHECK(ncclAllReduce(
+        buf,
+        buf,
+        count,
+        ncclBfloat16,   // !FIXME(hogura|20241106): remove this hardcode
+        ncclSum,
+        this->comm,
+        this->stream
+    ));
+}
+
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
     ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
     auto channel = std::make_shared<NcclChannel>(
@@ -158,6 +278,28 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender) {
     auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender);
     return channel;
+}
+
+Channel_t create_nccl_group_channel(int party_local, const std::vector<int> &party_all, void *nccl_id_raw) {
+    ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
+    auto channel = std::make_shared<NcclGroupChannel>(
+        party_local, party_all, id
+    );
+    // TODO(hogura|20241103): recycle the ncclUniqueId (raw).
+    return channel;
+}
+
+std::vector<Channel_t> create_nccl_group_channels(int root, const std::vector<int> &party_all, void *nccl_id_raw) {
+    ASSERT(root == 0);
+    ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
+    std::vector<Channel_t> channels;
+    for (int party_local: party_all) {
+        channels.push_back(std::make_shared<NcclGroupChannel>(
+            party_local, party_all, id
+        ));
+    }
+    // TODO(hogura|20241103): recycle the ncclUniqueId (raw).
+    return channels;
 }
 
 void* get_nccl_unique_id() {

@@ -31,7 +31,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
         .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
         .def("prepare_block_table", &AttentionScheduler::prepare_block_table_by_meta)
-        .def("schedule", &AttentionScheduler::schedule);
+        .def("schedule", &AttentionScheduler::schedule)
+        .def("get_channel", &AttentionScheduler::get_channel);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);
@@ -54,6 +55,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
 
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
+
+    py::class_<NcclGroupChannel, std::shared_ptr<NcclGroupChannel>>(m, "NcclGroupChannel")
+        .def("all_reduce", &NcclGroupChannel::all_reduce);
 
     REGISTER_STRUCT(TokenMetadata);
 
@@ -120,6 +124,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     // static function calls
     m.def("create_channel", &create_channel);
+    m.def("create_nccl_group_channel", &create_nccl_group_channel);
+    m.def("create_nccl_group_channels", &create_nccl_group_channels);
     m.def("create_channel_py_map", [](int local, int peer, std::map<int, std::string> &uids) {
         return create_channel(local, peer, (void*) uids.at(peer).c_str());
     });
@@ -137,6 +143,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         Test functions
     ********/
     m.def("test_nccl_p2p", &test_nccl_p2p);
+    m.def("test_nccl_group", &test_nccl_group);
+    m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
     // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
     // m.def("test_attn_dispatcher", &test_attn_dispatcher);
     // m.def("test_expert_dispatcher", &test_expert_dispatcher);

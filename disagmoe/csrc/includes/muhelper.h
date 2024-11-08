@@ -155,6 +155,8 @@ public:
 
     */
     std::vector<TensorBatch> fetch_largest_batch();
+
+    void maintain_largest_batch();
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;
@@ -178,8 +180,19 @@ public:
            int device_id,
            std::vector<Channel_t> channels);
 
-    std::vector<AttentionBatch> fetch_largest_batch();
+    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
+    std::vector<AttentionBatch> fetch_batch_from(int layer_id, int num_batches);
+
+    // for debug use only
+    void __set_attn_data_queue(
+        std::vector<std::vector<AttentionBatch>> data_queue, 
+        std::vector<int> token_per_layer,
+        int largest_batch_id) {
+        this->attn_data_queue = data_queue;
+        this->tokens_per_layer_ = token_per_layer;
+        this->largest_batch_layer_id_ = largest_batch_id;
+    }
 };
 
 typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;

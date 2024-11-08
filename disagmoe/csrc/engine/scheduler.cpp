@@ -98,3 +98,60 @@ std::vector<std::vector<int>> AttentionScheduler::prepare_block_table(
     AttentionBatch batch, block_manager_t block_manager) {
     return prepare_block_table_by_meta(batch.metadata, block_manager);
 }
+
+AttentionDriverScheduler::AttentionDriverScheduler(
+    mu_attn_pool_t pool, std::vector<int> layer_ids, 
+    Channel_t chan, std::string policy): 
+    AttentionScheduler(pool, layer_ids, policy) {
+    this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
+}
+
+AttentionBatch AttentionDriverScheduler::schedule() {
+    tx_range _{"AttentionDriverScheduler::schedule"};
+    int layer_id;
+    std::vector<AttentionBatch> batches = pool->fetch_largest_batch(&layer_id);
+    if (layer_id == -1) {
+        return AttentionBatch{0};
+    }
+
+    long long schedule_result = (1ll * layer_id << 32) | batches.size();
+
+    void* buf = (void*) &schedule_result;
+    size_t size = sizeof(schedule_result);
+    chan->bcast_obj(buf, size);
+
+    auto batch = AttentionBatch::merge(batches);
+    return batch;
+}
+
+std::shared_ptr<NcclGroupChannel> AttentionDriverScheduler::get_channel() {
+    return chan;
+}
+
+AttentionWorkerScheduler::AttentionWorkerScheduler(
+    mu_attn_pool_t pool, std::vector<int> layer_ids, 
+    Channel_t chan, std::string policy): 
+    AttentionScheduler(pool, layer_ids, policy) {
+    this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
+}
+
+AttentionBatch AttentionWorkerScheduler::schedule() {
+    tx_range _{"AttentionWorkerScheduler::schedule"};
+    long long schedule_result;
+    void* buf;
+    size_t size;
+    chan->bcast_obj(buf, size);
+    schedule_result = *((long long*)buf);
+
+    int layer_id = schedule_result >> 32;
+    unsigned int num_batches = schedule_result & 0xffffffffu;
+
+    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, num_batches);
+
+    auto batch = AttentionBatch::merge(batches);
+    return batch;
+}
+
+std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
+    return chan;
+}

@@ -345,3 +345,94 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     exit(0);
 // }
+
+void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
+    auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+    auto c = static_cast<NcclGroupChannel*>(c_raw.get());
+    c->instantiate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+    
+    if (rank == 0) {
+        Metadata meta = Metadata {
+            /*shape=*/ std::vector<size_t>({1, 4}),
+            /*dtype=*/ "fp16",
+            /*layer_id=*/ 1,
+            /*req_ids=*/ std::vector<int>({2}),
+            /*exp_ids=*/ std::vector<int>({3}),
+            /*prefill_poss=*/ std::vector<int>({4}),
+            /*prompt_lens=*/ std::map<int, int>(),
+        };
+        uintptr_t buf = alloc_cuda_tensor(4, 0);
+        c->send_metadata(meta);
+        LOG(INFO) << "Send metadata." << LEND;
+        c->send(buf, meta);
+    } else {
+        Metadata meta;
+        c->recv_metadata(meta);
+        LOG(INFO) << "Got metadata: " << meta << LEND;
+        ASSERT(meta.num_element() == 4);
+        uintptr_t buf = alloc_cuda_tensor(meta.num_element(), 0);
+        c->recv(buf, meta);
+        ASSERT(meta.req_ids[0] == 2);
+        ASSERT(meta.exp_ids[0] == 3);
+        ASSERT(meta.prefill_poss[0] == 4);
+    }
+
+    LOG(INFO) << "rank " << rank << " passed" << LEND;
+}
+
+void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string uid) {
+    auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+    auto c = static_cast<NcclGroupChannel*>(c_raw.get());
+    c->instantiate();
+    LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+
+    std::vector<int> layer_ids{0, 1};
+    std::vector<Channel_t> channels{};
+    mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(
+        layer_ids,
+        rank, 
+        channels
+    );
+
+    std::vector<std::vector<AttentionBatch>> data_queue(2);
+    data_queue[0] = std::vector<AttentionBatch>{
+        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {0}, {1}, {1}, {}}
+        )},
+        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {1}, {1}, {1}, {}}
+        )},
+    };
+    data_queue[1] = std::vector<AttentionBatch>{
+        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {2}, {1}, {1}, {}}
+        )}
+    };
+    std::vector<int> token_per_layer {2, 1};
+    pool->__set_attn_data_queue(data_queue, token_per_layer, 0);
+
+    AttentionBatch result;
+
+    if (rank == 0) {
+        // driver scheduler
+        AttentionDriverScheduler scheduler(pool, layer_ids, c_raw);
+        result = scheduler.schedule();
+    } else {
+        // worker scheduler
+        AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw);
+        result = scheduler.schedule();
+    }
+
+    ASSERT(result.metadata.get() != nullptr);
+    auto &seq_ids = result.metadata->seq_ids;
+
+    for (int i: seq_ids)
+        LOG(DEBUG) << "seq_id: " << i << LEND;
+
+    ASSERT(seq_ids.size() == 2);
+    ASSERT(seq_ids[0] == 0 && seq_ids[1] == 1);
+
+    LOG(INFO) << "rank " << rank << " passed" << LEND;
+}

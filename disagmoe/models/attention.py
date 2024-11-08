@@ -26,6 +26,8 @@ class MoEAttention(nn.Module):
         num_kv_heads: int,
         num_experts: int,
         top_k: int = 1,
+        tp_size: int = 1,
+        tp_rank: int = 0,
         max_position: int = 4096 * 32,
         rope_theta: float = 10000,
         cache_config: Optional[CacheConfig] = None,
@@ -35,9 +37,6 @@ class MoEAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
-        # (shaoyuw): here we just consider tp_size = 1
-        # tp_size = get_tensor_model_parallel_world_size()
-        tp_size = 1
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -63,12 +62,13 @@ class MoEAttention(nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         
-        # (shaoyuw): must invoke initialize_model_parallel
+        # NOTE(shaoyuw): must invoke initialize_model_parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
+            tp_size=tp_size,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
@@ -78,6 +78,8 @@ class MoEAttention(nn.Module):
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
+            tp_size=tp_size,
+            tp_rank=tp_rank,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
             params_dtype=params_dtype,

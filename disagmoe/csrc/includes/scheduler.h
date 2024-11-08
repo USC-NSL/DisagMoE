@@ -43,14 +43,14 @@ protected:
     std::vector<int> layer_ids;
     std::string policy;
 
-    std::vector<AttentionBatch> _schedule();
+    virtual std::vector<AttentionBatch> _schedule();
 
 public:
     AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
 
     static attn_scheduler_t build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
 
-    AttentionBatch schedule();
+    virtual AttentionBatch schedule();
 
     std::vector<std::vector<int>> prepare_block_table_by_meta(attn_metadata_t meta, block_manager_t block_manager);
     std::vector<std::vector<int>> prepare_block_table(AttentionBatch batch, block_manager_t block_manager);
@@ -58,4 +58,32 @@ public:
     void wait_for_new_requests();
 
     void start();
+
+    virtual std::shared_ptr<NcclGroupChannel> get_channel() {
+        return nullptr;
+    };
+};
+
+class AttentionDriverScheduler : public AttentionScheduler {
+protected:
+    std::shared_ptr<NcclGroupChannel> chan;
+
+public:
+    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
+
+    AttentionBatch schedule() override;
+
+    std::shared_ptr<NcclGroupChannel> get_channel() override;
+};
+
+class AttentionWorkerScheduler : public AttentionScheduler {
+protected:
+    std::shared_ptr<NcclGroupChannel> chan;
+
+public:
+    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
+
+    AttentionBatch schedule() override;
+
+    std::shared_ptr<NcclGroupChannel> get_channel() override;
 };

@@ -141,8 +141,8 @@ inline bool is_sampler(int device_id) {
     return device_id == SAMPLER_DEV_ID;
 }
 
-
-std::string static cerealize(metadata_t metadata) {
+template<class type>
+std::string static cerealize(std::shared_ptr<type> metadata) {
     // use cereal to serialize metadata
     std::stringstream ss;
     cereal::BinaryOutputArchive oarchive(ss);
@@ -150,14 +150,15 @@ std::string static cerealize(metadata_t metadata) {
     return ss.str();
 }
 
-metadata_t static decerealize(char* buf, size_t n) {
+template<class type>
+std::shared_ptr<type> static decerealize(char* buf, size_t n) {
     std::string buffer(buf, n);
     std::istringstream ss(buffer);
     cereal::BinaryInputArchive iarchive(ss);
     Metadata result;
     iarchive(result);
     // LOG(WARNING) << "after decerealize, got metadata: " << result << LEND;
-    return std::make_shared<Metadata>(result);
+    return std::make_shared<type>(result);
 }
 
 static void print_buf(void* buf, size_t n) {

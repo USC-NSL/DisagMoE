@@ -13,6 +13,7 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
+from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
 
 from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -94,22 +95,36 @@ class Engine:
     def is_attn(self):
         return self.engine_type == EngineType.ATTENTION
 
+    def _is_attn(self):
+        return self.is_attn
+
     def init_core(
             self,
             layer_ids: List[int],
+            # P2P Channels
             in_device_ids: List[int],
             out_device_ids: List[int],
             out_channel_infos: List[ChannelInfo],
-            nccl_ids: Dict[int, int]
+            nccl_ids: Dict[int, int],
+            # Group Channels
+            tensor_group_device_ids: List[int] = None,
+            tensor_group_nccl_id: str = "",
+            meta_group_device_ids: List[int] = None,
+            meta_group_nccl_id: str = "",
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
+        if meta_group_device_ids is None:
+            meta_group_device_ids = []
+        if tensor_group_device_ids is None:
+            tensor_group_device_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
             layer_ids,
+            # P2P Channels
             in_device_ids,
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
@@ -119,14 +134,22 @@ class Engine:
                 self.model_config.tp_size,
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
-            )
+            ),
+            # Group Channels
+            tensor_group_device_ids,
+            tensor_group_nccl_id,
+            meta_group_device_ids,
+            meta_group_nccl_id,
         )
+        set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+        
+    def _switch_scheduler(self):
+        if self.scheduler == None:
+            self.scheduler = self.a_scheduler
         
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
-        if self.scheduler == None:
-            # NOTE(hogura|20241014): mocking the scheduler
-            self.scheduler = self.a_scheduler
+        self._switch_scheduler()
         self.loop_thread.start()
 
     def set_device_id(self, device_id: int):
@@ -144,10 +167,11 @@ class Engine:
             stream = torch.cuda.Stream()
             torch.cuda.set_stream(stream)
             
+        set_tensor_model_parallel_config(model_config)
         self.engine_type = engine_type
         self.model_config = model_config
         if engine_type == EngineType.ATTENTION:
-            self.executor = AttnExecutor(model_config, cache_config)
+            self.executor = AttnExecutor.build(model_config, cache_config)
             self._process_batch = self.process_batch_attn
             self.block_mgr = BlockManager_C(
                 cache_config.block_size, 
@@ -160,6 +184,8 @@ class Engine:
             self.inner_exp_rank = [0 for _ in range(model_config.num_experts_per_rank)]
             for i in range(model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
+        
+        self._logger.info(f"engine setup.")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -249,7 +275,22 @@ class Engine:
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
-        attn_meta = self._pack_flash_attn_metadata(meta)
+        if mocking:
+            from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
+            attn_meta = AttentionBatchMetadata_C()
+            attn_meta.layer_id = meta.layer_id
+            attn_meta.shape = meta.shape
+            attn_meta.dtype = meta.dtype
+            attn_meta.num_prefill_seqs = meta.num_prefill_seqs
+            attn_meta.num_prefill_tokens = meta.num_prefill_tokens
+            attn_meta.num_decode_tokens = meta.num_decode_tokens
+            attn_meta.seq_ids = meta.seq_ids
+            attn_meta.prefill_seq_len = meta.prefill_seq_len
+            attn_meta.prefill_query_len = meta.prefill_query_len
+            attn_meta.expert_ids = meta.expert_ids
+            attn_meta = self._pack_flash_attn_metadata(attn_meta)
+        else:
+            attn_meta = self._pack_flash_attn_metadata(meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta.layer_id, positions, tensor, attn_meta)
@@ -330,7 +371,11 @@ class SamplerEngine(Engine):
                   in_device_ids: List[int], 
                   out_device_ids: List[int], 
                   out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int]):
+                  nccl_ids: Dict[int, int],
+                  tensor_group_device_ids: List[int] = None,
+                  tensor_group_nccl_id: str = "",
+                  meta_group_device_ids: List[int] = None,
+                  meta_group_nccl_id: str = ""):
         self.sampler = init_sampler(
             self.device_id,
             in_device_ids,
@@ -383,7 +428,11 @@ class TokenizerEngine(Engine):
                   in_device_ids: List[int], 
                   out_device_ids: List[int], 
                   out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int]):
+                  nccl_ids: Dict[int, int],
+                  tensor_group_device_ids: List[int] = None,
+                  tensor_group_nccl_id: str = "",
+                  meta_group_device_ids: List[int] = None,
+                  meta_group_nccl_id: str = ""):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

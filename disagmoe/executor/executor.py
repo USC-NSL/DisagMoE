@@ -1,4 +1,6 @@
 import torch
+import torch.distributed as dist
+
 from torch import Tensor
 
 from typing import override, Tuple
@@ -77,6 +79,13 @@ class AttnExecutor(Executor):
             attn_metadata
         )
         return outputs, topk_experts
+    
+    @staticmethod
+    def build(model_config: ModelConfig, cache_config: CacheConfig) -> "Executor":
+        if model_config.tp_size > 1:
+            return ParallelAttnExecutor(model_config, cache_config)
+        else:
+            return AttnExecutor(model_config, cache_config)
 
 class ExpertsExecutor(Executor):
 
@@ -98,3 +107,30 @@ class ExpertsExecutor(Executor):
         operator = self.operators[vid]
         outputs = operator.forward(hidden_states, batch_sizes)
         return outputs
+    
+class ParallelAttnExecutor(AttnExecutor):
+    
+    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig):
+        Executor.__init__(self, model_config)
+        self.type = ExecutorType.ATTENTION_EXEC
+        self.cache_config = cache_config
+        self.operators = [
+            MoEAttention(
+                self.model_config.hidden_size, 
+                self.model_config.num_heads, 
+                self.model_config.num_kv_heads, 
+                self.model_config.num_experts,
+                tp_size=model_config.tp_size,
+                tp_rank=model_config.rank,
+            ) for _ in range(self.num_layers)
+        ]
+        assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        assert self.cache_config.num_gpu_blocks > 0, "Should specify num gpu blocks for cache config"
+        
+        self._make_kv_cache(
+            self.num_layers,
+            self.cache_config.num_gpu_blocks,
+            self.cache_config.block_size, 
+            self.model_config.num_kv_heads, 
+            self.model_config.hidden_size // self.model_config.num_heads,
+        )
