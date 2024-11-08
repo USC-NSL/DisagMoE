@@ -132,7 +132,7 @@ class Controller:
                 EngineType.ATTENTION if len(model_place.attn_ids_at(device_id)) > 0 else EngineType.EXPERT,
                 model_config=model_config,
                 cache_config=cache_config,
-                rank=model_place.expert_rank_at(device_id, model_config.num_experts_per_rank),
+                rank=model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank),
             )
                 for worker, device_id in zip(self.workers, self.device_ids)
         ])

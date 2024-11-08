@@ -143,11 +143,13 @@ class Engine:
         )
         set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
         
+    def _switch_scheduler(self):
+        if self.scheduler == None:
+            self.scheduler = self.a_scheduler
+        
     def start(self):
         start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
-        if self.scheduler == None:
-            # NOTE(hogura|20241014): mocking the scheduler
-            self.scheduler = self.a_scheduler
+        self._switch_scheduler()
         self.loop_thread.start()
 
     def set_device_id(self, device_id: int):
@@ -169,7 +171,7 @@ class Engine:
         self.engine_type = engine_type
         self.model_config = model_config
         if engine_type == EngineType.ATTENTION:
-            self.executor = AttnExecutor(model_config, cache_config)
+            self.executor = AttnExecutor.build(model_config, cache_config)
             self._process_batch = self.process_batch_attn
             self.block_mgr = BlockManager_C(
                 cache_config.block_size, 
@@ -273,7 +275,22 @@ class Engine:
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).cuda()
         
-        attn_meta = self._pack_flash_attn_metadata(meta)
+        if mocking:
+            from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
+            attn_meta = AttentionBatchMetadata_C()
+            attn_meta.layer_id = meta.layer_id
+            attn_meta.shape = meta.shape
+            attn_meta.dtype = meta.dtype
+            attn_meta.num_prefill_seqs = meta.num_prefill_seqs
+            attn_meta.num_prefill_tokens = meta.num_prefill_tokens
+            attn_meta.num_decode_tokens = meta.num_decode_tokens
+            attn_meta.seq_ids = meta.seq_ids
+            attn_meta.prefill_seq_len = meta.prefill_seq_len
+            attn_meta.prefill_query_len = meta.prefill_query_len
+            attn_meta.expert_ids = meta.expert_ids
+            attn_meta = self._pack_flash_attn_metadata(attn_meta)
+        else:
+            attn_meta = self._pack_flash_attn_metadata(meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta.layer_id, positions, tensor, attn_meta)

@@ -79,6 +79,13 @@ class AttnExecutor(Executor):
             attn_metadata
         )
         return outputs, topk_experts
+    
+    @staticmethod
+    def build(model_config: ModelConfig, cache_config: CacheConfig) -> "Executor":
+        if model_config.tp_size > 1:
+            return ParallelAttnExecutor(model_config, cache_config)
+        else:
+            return AttnExecutor(model_config, cache_config)
 
 class ExpertsExecutor(Executor):
 
@@ -104,7 +111,7 @@ class ExpertsExecutor(Executor):
 class ParallelAttnExecutor(AttnExecutor):
     
     def __init__(self, model_config: ModelConfig, cache_config: CacheConfig):
-        super().__init__(model_config)
+        Executor.__init__(self, model_config)
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.operators = [

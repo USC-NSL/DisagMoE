@@ -27,15 +27,26 @@ class ModelPlacement:
     device_groups: Dict[int, List[int]] = None
     
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
-        if device_id not in self.expert:
-            # attention worker
-            return 0
+        assert device_id in self.expert
         ids = self.expert[device_id]
         ranks = []
         for layer_id, expert_id in ids:
             ranks.append(expert_id // num_expert_per_rank)
         assert len(set(ranks)) == 1
         return ranks[0]
+    
+    def attn_rank_at(self, device_id: int) -> int:
+        assert device_id in self.attn
+        for i, d in enumerate(self.device_groups[device_id]):
+            if d == device_id:
+                return i
+        return 0
+    
+    def rank_at(self, device_id: int, *args, **kwargs) -> int:
+        if device_id in self.expert:
+            return self.expert_rank_at(device_id, *args, **kwargs)
+        else:
+            return self.attn_rank_at(device_id)
     
     def attn_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])
