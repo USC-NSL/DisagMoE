@@ -23,38 +23,3 @@ cluster_config = ClusterConfig(
 mp = get_model_placement(model_config, cluster_config, strategy="interleave")
 
 print(mp)
-
-master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
-
-master.init_engine(mp, model_config)
-
-attn_workers = [w for w in master.workers if ray.get(w._is_attn.remote())]
-
-assert len(attn_workers) == 2
-
-w0 = attn_workers[0]
-w1 = attn_workers[1]
-
-shape = (1, model_config.hidden_size)
-tensor = torch.zeros(shape, dtype=torch.bfloat16).cuda()
-meta = AttentionBatchMetadata(
-    [0], 
-    shape,
-    "fp16",
-    1,
-    1,
-    0,
-    [0],
-    [1],
-    [1],
-    []
-)
-
-print("Processing batch")
-
-results = ray.get([
-    w0.process_batch_attn.remote(meta, tensor),
-    w1.process_batch_attn.remote(meta, tensor)
-])
-
-print(results)

@@ -57,6 +57,9 @@ class ModelPlacement:
         if start not in self.in_device_ids[end]:
             self.in_device_ids[end].append(start)
             self.out_device_ids[start].append(end)
+            
+    def is_worker_device(self, device_id: int) -> bool:
+        return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
 
 
 @dataclass
@@ -185,17 +188,17 @@ class InterleavePlacement(PlacementBase):
                 attn[i % n_group * tp_size + j].append(i)
                 
             # attn driver
-            attn_dev = attn_devs[i % n_group * tp_size]
+            attn_driver = attn_devs[i % n_group * tp_size]
             if i == 0:
-                pg.add_edge(tokenizer, attn_dev)
+                pg.add_edge(tokenizer, attn_driver)
             for e in last_experts:
-                pg.add_edge(e, attn_dev)
+                pg.add_edge(e, attn_driver)
             last_experts = []
             # NOTE(hogura|20240904): here assume ep == n_local_expert
             for j in range(n_expert):
                 exp_dev = exp_devs[i % n_group][j]
                 expert[exp_dev].append((i, j))
-                pg.add_edge(attn_dev, exp_dev)
+                pg.add_edge(attn_driver, exp_dev)
                 last_experts.append(exp_dev)
             if tp_size > 1:
                 pass
@@ -225,7 +228,10 @@ def get_model_placement(
     place: ModelPlacement = solver.solve()
     
     # add edges from sampler back to the first attn
+    # NOTE(hogura|20241107): only connect to driver when tp_size > 1
     for dev, layer_ids in place.attn.items():
+        if place.is_worker_device(dev):
+            continue
         if 0 in layer_ids:
             place.add_edge(
                 place.sampler,
