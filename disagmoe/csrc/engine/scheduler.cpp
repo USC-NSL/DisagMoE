@@ -80,18 +80,7 @@ void AttentionScheduler::wait_for_new_requests() {
 
 std::vector<std::vector<int>> AttentionScheduler::prepare_block_table_by_meta(
     attn_metadata_t meta, block_manager_t block_manager) {
-    AUTO_TX_RANGE;
-    // It should be ensured that every seq in batch has been alocated cache blocks
-    // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
-    std::vector<std::vector<int>> block_table{};
-    int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
-    for (int i = 0; i < n; i++) {
-        int id = meta->seq_ids[i];
-        ASSERT (block_manager->has_seq_block_list(id));
-        block_list_t list = block_manager->get_seq_block_list(id);
-        block_table.emplace_back(*list);
-    }
-    return block_table;
+    return block_manager->prepare_block_table(meta);
 }
 
 std::vector<std::vector<int>> AttentionScheduler::prepare_block_table(

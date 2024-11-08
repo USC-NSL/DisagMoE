@@ -23,12 +23,12 @@ bool BlockManager::can_allocate(const int &seq_len) {
 }
 
 void BlockManager::allocate(const int &seq_id, const int &seq_len) {
-    LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
+    // LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
 
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     
-    LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
+    // LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
 
     ASSERT (free_blocks_.size() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
@@ -38,7 +38,7 @@ void BlockManager::allocate(const int &seq_id, const int &seq_len) {
     }
     block_tables_[seq_id] = block_list;
 
-    LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
+    // LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
 
 }
 
@@ -98,4 +98,19 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
             blocks_to_add --;
         }
     }
+}
+
+std::vector<std::vector<int>> BlockManager::prepare_block_table(attn_metadata_t meta) {
+    AUTO_TX_RANGE;
+    // It should be ensured that every seq in batch has been alocated cache blocks
+    // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
+    std::vector<std::vector<int>> block_table{};
+    int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
+    for (int i = 0; i < n; i++) {
+        int id = meta->seq_ids[i];
+        ASSERT (has_seq_block_list(id));
+        block_list_t list = get_seq_block_list(id);
+        block_table.emplace_back(*list);
+    }
+    return block_table;
 }
