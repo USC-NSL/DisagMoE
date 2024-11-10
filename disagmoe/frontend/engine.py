@@ -110,16 +110,12 @@ class Engine:
             nccl_ids: Dict[int, int],
             # Group Channels
             tensor_group_device_ids: List[int] = None,
-            tensor_group_nccl_id: str = "",
-            meta_group_device_ids: List[int] = None,
-            meta_group_nccl_id: str = "",
+            tensor_group_nccl_id: str = ""
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
-        if meta_group_device_ids is None:
-            meta_group_device_ids = []
         if tensor_group_device_ids is None:
             tensor_group_device_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
@@ -140,8 +136,6 @@ class Engine:
             # Group Channels
             tensor_group_device_ids,
             tensor_group_nccl_id,
-            meta_group_device_ids,
-            meta_group_nccl_id,
         )
         set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
         

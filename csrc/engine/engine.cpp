@@ -10,7 +10,7 @@
 #include <ctime>
 #include <map>
 
-void init_channels(
+void init_tensor_channels(
     int local_id,
     bool is_attn,
     // P2P Channels
@@ -23,10 +23,7 @@ void init_channels(
     // Group Channels
     Channel_t &tensor_channel,
     const std::vector<int> &tensor_group_device_ids,
-    const std::string &tensor_group_nccl_id,
-    Channel_t &meta_channel,
-    const std::vector<int> &meta_group_device_ids,
-    const std::string &meta_group_nccl_id
+    const std::string &tensor_group_nccl_id
 ) {
 
     LOG(DEBUG) << local_id << " " << "init channels" << LEND;
@@ -109,16 +106,13 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     std::map<int, std::pair<std::string, std::string>> &nccl_ids,
     ParallelConfig cfg,
     const std::vector<int> &tensor_group_device_ids,
-    const std::string &tensor_group_nccl_id,
-    const std::vector<int> &meta_group_device_ids,
-    const std::string &meta_group_nccl_id) {
+    const std::string &tensor_group_nccl_id) {
 
     std::vector<Channel_t> in_channels, out_channels;
-    Channel_t tensor_channel, meta_channel;
-    init_channels(local_id, is_attn, in_channels, out_channels, 
+    Channel_t tensor_channel;
+    init_tensor_channels(local_id, is_attn, in_channels, out_channels, 
         in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
-        tensor_channel, tensor_group_device_ids, tensor_group_nccl_id,
-        meta_channel, meta_group_device_ids, meta_group_nccl_id);
+        tensor_channel, tensor_group_device_ids, tensor_group_nccl_id);
     
     // init dispatcher
     LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;

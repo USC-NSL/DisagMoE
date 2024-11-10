@@ -23,9 +23,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     ParallelConfig cfg,
     // Group Channels
     const vector<int> &tensor_group_device_ids,
-    const string &tensor_group_nccl_id,
-    const vector<int> &meta_group_device_ids,
-    const string &meta_group_nccl_id
+    const string &tensor_group_nccl_id
 );
 
 void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);
