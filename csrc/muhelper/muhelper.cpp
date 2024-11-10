@@ -55,31 +55,63 @@ void MuHelper::init_cuda_device() {
 // MuDispatcher
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, 
-                           ParallelConfig cfg, std::vector<Channel_t> channels): 
+                           ParallelConfig cfg, std::vector<Channel_t> channels,
+                           std::vector<std::vector<int>> group_device_ids,
+                           std::vector<std::string> group_nccl_ids): 
     MuHelper(layer_ids, device_id, channels), 
     peer_ctx(channels.size()),
     peer_mq(channels.size()),
-    cfg(cfg) {
+    cfg(cfg),
+    group_nccl_ids(group_nccl_ids),
+    group_device_ids(group_device_ids) {
     sprintf(this->device_id_str, "%d", this->device_id);
     for (int i = 0; i < channels.size(); i ++) {
         peer_ctx[i] = zmq::context_t(1);
         peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
     }
+    group_channels.resize(channels.size());
+    ASSERT(group_nccl_ids.size() == group_channels.size());
+}
+
+bool MuDispatcher::_is_group_channel(int cid) const {
+    return group_channels[cid].get() != nullptr;
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
 
-    auto data = cerealize(std::make_shared<Metadata>(meta));
-    this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
-    this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
-    this->channels[cid]->send(buf, meta);
+    if (!_is_group_channel(cid)) {
+        auto data = cerealize(std::make_shared<Metadata>(meta));
+        this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
+        this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
+        this->channels[cid]->send(buf, meta);
+    } else {
+        this->group_channels[cid]->send_metadata(meta);
+        this->group_channels[cid]->send(buf, meta);
+    }
 }
 
 void MuDispatcher::run() {
-    for (int i = 0; i < this->channels.size(); i ++)
+    CUDACHECK(cudaStreamCreate(&group_stream));
+    std::vector<std::thread> init_threads;
+    for (int i = 0; i < this->channels.size(); i ++) {
+        // init an mq
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
+        if (!this->group_nccl_ids[i].empty()) {
+            // is a group channel
+            group_channels[i] = std::make_shared<NcclGroupChannel>(
+                device_id, group_device_ids[i], group_nccl_ids[i], group_stream
+            );
+            init_threads.emplace_back(std::thread(
+                [&](std::shared_ptr<NcclGroupChannel> c) {
+                    c->instantiate();
+                }, group_channels[i]
+            ));
+        }
+    }
+    for (auto &t: init_threads)
+        t.join();
 
     while (!this->end_flag) {
         std::unique_lock<std::mutex> lock(this->mtx);
@@ -461,7 +493,7 @@ void MuAttentionPool::run() {
         MuPool::run();
     });
 
-    cudaStreamCreate(&group_stream);
+    CUDACHECK(cudaStreamCreate(&group_stream));
     comm = std::make_shared<NcclGroupChannel>(
         device_id, device_group_ids, nccl_id, group_stream
     );

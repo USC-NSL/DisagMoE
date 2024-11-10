@@ -50,6 +50,12 @@ protected:
     std::vector<zmq::context_t> peer_ctx;
     std::vector<zmq::socket_t> peer_mq;
 
+    // use for nccl group channels
+    std::vector<std::vector<int>> group_device_ids;
+    std::vector<std::string> group_nccl_ids;
+    std::vector<std::shared_ptr<NcclGroupChannel>> group_channels;
+    cudaStream_t group_stream;
+
     ParallelConfig cfg;
 
     virtual void _send_once(TensorBatch batch) = 0;
@@ -58,11 +64,15 @@ protected:
 
     void run() override;
 
+    bool _is_group_channel(int cid) const;
+
 public:
     MuDispatcher(std::vector<int> layer_ids, 
                  int device_id, 
                  ParallelConfig cfg, 
-                 std::vector<Channel_t> channels);
+                 std::vector<Channel_t> channels,
+                 std::vector<std::vector<int>> group_device_ids = {},
+                 std::vector<std::string> group_nccl_ids = {});
 
     void put(const TensorBatch &batch, int rank = 0);
 };
