@@ -22,6 +22,8 @@ NCCL_LIB_DIR = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(NCCL_HOME, "lib")
 def find_all_c_targets(path):
     res = []
     for root, dirs, files in os.walk(path):
+        if "build" in root:
+            continue
         for file_name in files:
             if len(file_name) > 4 and file_name[-4:] == ".cpp":
                 res.append(os.path.join(root, file_name))

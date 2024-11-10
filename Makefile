@@ -1,12 +1,19 @@
-all: install
+all: pip
 
 .PHONY: clean
 clean:
-	python setup.py clean --all
+	- python setup.py clean --all
+	- rm *.so
+	- rm -rf csrc/build
 
-.PHONY: install
-install:
+.PHONY: pip
+pip:
 	pip install -e .
+
+.PHONY: cmake
+cmake:
+	mkdir -p csrc/build
+	cd csrc/build && cmake -E .. && make -j && make install
 
 .PHONY: kill
 kill:
