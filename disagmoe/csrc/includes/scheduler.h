@@ -52,8 +52,8 @@ public:
 
     virtual AttentionBatch schedule();
 
-    std::vector<int> prepare_block_table_by_meta(attn_metadata_t meta, block_manager_t block_manager);
-    std::vector<int> prepare_block_table(AttentionBatch batch, block_manager_t block_manager);
+    // std::vector<int> prepare_block_table_by_meta(attn_metadata_t meta, block_manager_t block_manager);
+    // std::vector<int> prepare_block_table(AttentionBatch batch, block_manager_t block_manager);
 
     void wait_for_new_requests();
 

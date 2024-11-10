@@ -101,7 +101,27 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     }
 }
 
-std::vector<int> BlockManager::prepare_block_table(attn_metadata_t meta) {
+void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+    int num_prefill_seqs = meta->num_prefill_seqs;
+    int num_decode_tokens = meta->num_decode_tokens;
+    for (int i = 0; i < num_prefill_seqs; i++) {
+        int seq_id = meta->seq_ids[i];
+        if (!has_seq_block_list(seq_id)) {
+            allocate(seq_id, meta->prefill_seq_len[i]);
+        } else {
+            append_tokens(seq_id, meta->prefill_seq_len[i] - meta->prefill_query_len[i], meta->prefill_query_len[i]);
+        }
+    }
+    for (int i = 0; i < num_decode_tokens; i++) {
+        int seq_id = meta->seq_ids[num_prefill_seqs + i];
+        ASSERT (has_seq_block_list(seq_id));
+        int decode_seq_len = decode_seq_lens[i];
+        append_tokens(seq_id, decode_seq_len, 1);
+    }
+}
+
+
+std::pair<std::vector<int>, std::vector<int>> BlockManager::prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
     AUTO_TX_RANGE;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
@@ -113,13 +133,36 @@ std::vector<int> BlockManager::prepare_block_table(attn_metadata_t meta) {
         block_list_t list = get_seq_block_list(id);
         m = std::max(m, list->size());
     }
-    std::vector<int> result(n * m, -1);
+    std::vector<int> block_table_1d(n * m, -1);
     for (int i = 0; i < n; i++) {
         int id = meta->seq_ids[i];
         block_list_t list = get_seq_block_list(id);
         for (int j = 0; j < list->size(); j++) {
-            result[i * m + j] = (*list)[j];
+            block_table_1d[i * m + j] = (*list)[j];
         }
     }
-    return result;
+
+    int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
+
+    std::vector<int> slot_mapping(tokens_in_batch, -1);
+    int slot_idx = 0;
+    for (int i = 0; i < meta->num_prefill_seqs; i++) {
+        int q_len = meta->prefill_query_len[i];
+        int seq_len = meta->prefill_seq_len[i];
+        for (int idx = seq_len - q_len; idx < seq_len; idx++) {
+            int block_id = idx / block_size_;
+            int id_in_block = idx % block_size_;
+            slot_mapping[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
+            slot_idx ++;
+        }
+    }
+    for (int i = meta->num_prefill_tokens; i < tokens_in_batch; i++) {
+        int last_idx = decode_seq_lens[i - meta->num_prefill_tokens];
+        int block_id = last_idx / block_size_;
+        int id_in_block = last_idx % block_size_;
+        slot_mapping[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
+        slot_idx ++;
+    }
+
+    return std::make_pair(block_table_1d, slot_mapping);
 }
