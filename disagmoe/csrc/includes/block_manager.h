@@ -45,7 +45,9 @@ public:
 
     void append_tokens(int seq_id, int context_len, int num_tokens);
 
-    std::vector<int> prepare_block_table(attn_metadata_t meta);
+    void update_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+
+    std::pair<std::vector<int>, std::vector<int>> prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
