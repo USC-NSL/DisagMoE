@@ -504,7 +504,9 @@ void MuAttentionPool::run() {
         comm->recv_metadata(meta);
         tensor_buf = alloc_cuda_tensor(meta.num_element(), device_id);
         comm->recv(tensor_buf, meta);
-        process_batch(tensor_buf, std::make_shared<Metadata>(meta));
+
+        auto meta_t = std::make_shared<Metadata>(meta);
+        process_batch(tensor_buf, meta_t);
     }
 }
 
