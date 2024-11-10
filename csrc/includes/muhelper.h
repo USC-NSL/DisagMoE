@@ -30,7 +30,7 @@ public:
 
     void init_cuda_device();
 
-    void terminate();
+    virtual void terminate();
 
     int get_device_id();
 
@@ -132,7 +132,9 @@ protected:
     virtual int tokens_in_layer(int lid);
 
     void recv_metadata(int &peer_id, metadata_t &meta);
+
     void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
+
     virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta);
 
 public:
@@ -166,6 +168,13 @@ class MuAttentionPool: public MuPool {
 
 private:
 
+    std::vector<int> device_group_ids;
+    std::string nccl_id;
+    std::shared_ptr<NcclGroupChannel> comm;
+    cudaStream_t group_stream;
+
+    std::thread pool_thread;
+
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
     AttentionBatch pack_attn_batch(uintptr_t, metadata_t);
@@ -178,11 +187,17 @@ public:
 
     MuAttentionPool(std::vector<int> layer_ids,
            int device_id,
-           std::vector<Channel_t> channels);
+           std::vector<Channel_t> channels,
+           std::vector<int> device_group_ids = {},
+           std::string nccl_id = "");
 
     std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
     std::vector<AttentionBatch> fetch_batch_from(int layer_id, int num_batches);
+
+    void run() override;
+
+    void terminate() override;
 
     // for debug use only
     void __set_attn_data_queue(

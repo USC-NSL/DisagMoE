@@ -357,9 +357,9 @@ void MuPool::run() {
         metadata_t meta;
         uintptr_t tensor_buf;
 
-        this->recv_metadata(peer_id, meta);
-        this->recv_tensor(peer_id, tensor_buf, meta);
-        this->process_batch(tensor_buf, meta);
+        MuPool::recv_metadata(peer_id, meta);
+        MuPool::recv_tensor(peer_id, tensor_buf, meta);
+        MuPool::process_batch(tensor_buf, meta);
     }
 }
 
@@ -448,10 +448,37 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 MuAttentionPool::MuAttentionPool(
     std::vector<int> layer_ids, 
     int device_id,
-    std::vector<Channel_t> channels
-): MuPool(layer_ids, device_id, channels, true) {
+    std::vector<Channel_t> channels,
+    std::vector<int> device_group_ids,
+    std::string nccl_id
+): MuPool(layer_ids, device_id, channels, true), device_group_ids(device_group_ids), nccl_id(nccl_id) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
+}
+
+void MuAttentionPool::run() {
+    pool_thread = std::thread([&]() {
+        MuPool::run();
+    });
+
+    cudaStreamCreate(&group_stream);
+    comm = std::make_shared<NcclGroupChannel>(
+        device_id, device_group_ids, nccl_id, group_stream
+    );
+
+    while (!end_flag) {
+        Metadata meta;
+        uintptr_t tensor_buf;
+        comm->recv_metadata(meta);
+        tensor_buf = alloc_cuda_tensor(meta.num_element(), device_id);
+        comm->recv(tensor_buf, meta);
+        process_batch(tensor_buf, std::make_shared<Metadata>(meta));
+    }
+}
+
+void MuAttentionPool::terminate() {
+    MuPool::terminate();
+    pool_thread.join();
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t meta) {
