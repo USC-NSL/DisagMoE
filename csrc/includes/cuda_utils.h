@@ -22,7 +22,7 @@ static void print_back_trace() {
         printf("Failed: Cuda error %s:%d '%s'\n",       \
             __FILE__,__LINE__,cudaGetErrorString(err)); \
         print_back_trace();                             \
-        ASSERT(false);                                  \
+        exit(EXIT_FAILURE);                             \
     }                                                   \
 } while(0)
 
@@ -33,7 +33,7 @@ static void print_back_trace() {
         printf("Failed, NCCL error %s:%d '%s'\n",       \
             __FILE__,__LINE__,ncclGetErrorString(res)); \
         print_back_trace();                             \
-        ASSERT(false);                                  \
+        exit(EXIT_FAILURE);                             \
     }                                                   \
 } while(0)
 

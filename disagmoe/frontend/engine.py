@@ -331,7 +331,7 @@ class Engine:
             batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
             if not batch_info.data:
                 continue
-            
+                        
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)
             

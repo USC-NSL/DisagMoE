@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <thread>
 
 const std::string C_RESET = "\033[0m";
 const std::string C_RED = "\033[31m";
@@ -50,6 +51,7 @@ static void log(LogLevel level, const std::string& message) {
 }
 
 #define LOG(LEVEL) std::cerr << COLOR_MAP[int(LEVEL)] << "" \
+                             << "(" << std::this_thread::get_id() << ")" \
                              << " - " << __FILE__ ":" << __LINE__ \
                              << "@" << __FUNCTION__ \
                              << ">: " << C_RESET
