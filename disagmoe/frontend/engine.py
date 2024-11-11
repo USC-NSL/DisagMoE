@@ -267,6 +267,7 @@ class Engine:
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
+            meta_py = meta_c
             meta_c = meta_c.to_c()
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
@@ -282,7 +283,7 @@ class Engine:
             new_meta_c = meta_c.to_metadata()
             new_meta_c.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
         else:
-            new_meta_c = meta_c
+            new_meta_c = meta_py
         
         return hiddens, new_meta_c
     

@@ -70,7 +70,7 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id,
     for (int i = 0; i < channels.size(); i ++) {
         peer_ctx[i] = zmq::context_t(1);
         peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
-        if (is_group_channels[i]) {
+        if (_is_group_channel(i)) {
             group_channels[i] = std::dynamic_pointer_cast<NcclGroupChannel>(channels[i]);
         }
     }
