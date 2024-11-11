@@ -118,6 +118,8 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     tx_range _{"ZmqChannel::send"};
 
+    LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
+
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     this->mq->send(zmq::buffer(buf, size));
@@ -125,16 +127,22 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     // !FIXME(hogura|20241009): may have memory leakage
     // if (data != (uintptr_t) buf)
     //     std::free(buf);
+
+    LOG(DEBUG) << "ZMQ Sent." << LEND;
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
     tx_range _{"ZmqChannel::recv"};
+
+    LOG(DEBUG) << "ZMQ Recving from " << get_peer_id() << LEND;
 
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
     this->_tensor_copy((uintptr_t) msg.data(), metadata, 
         /*to_gpu=*/ !is_embedding_node(local), data);
+
+    LOG(DEBUG) << "ZMQ Recved" << LEND;
 }
 
 NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream):
@@ -188,13 +196,17 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::send"};
     ASSERT(is_root());
+    LOG(DEBUG) << "NcclGroupChannel Sending from " << this->local << LEND;
     send_recv(data_ptr, metadata);
+    LOG(DEBUG) << "NcclGroupChannel Sent." << LEND;
 }
 
 void NcclGroupChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::recv"};
     ASSERT(!is_root());
+    LOG(DEBUG) << "NcclGroupChannel Recving from " << this->local << LEND;
     send_recv(data_ptr, metadata);
+    LOG(DEBUG) << "NcclGroupChannel Recved." << LEND;
 }
 
 void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -232,21 +244,25 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
 void NcclGroupChannel::send_metadata(const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::bcast_metadata"};
     ASSERT(is_root());
+    LOG(DEBUG) << "NcclGroupChannel Sending metadata from " << this->local << LEND;
     std::string data = cerealize(std::make_shared<Metadata>(metadata));
     void* buf = (void*) data.data();
     size_t size = data.size();
     bcast_obj(buf, size);
+    LOG(DEBUG) << "NcclGroupChannel Sent metadata." << LEND;
 }
 
 void NcclGroupChannel::recv_metadata(Metadata& metadata) {
     tx_range _{"NcclGroupChannel::recv_metadata"};
     ASSERT(!is_root());
+    LOG(DEBUG) << "NcclGroupChannel Recving metadata from " << this->local << LEND;
     void* buf;
     size_t size;
     bcast_obj(buf, size);
 
     metadata = *decerealize<Metadata>((char*) buf, size);
     std::free(buf);
+    LOG(DEBUG) << "NcclGroupChannel Recved metadata." << LEND;
 }
 
 void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape) {

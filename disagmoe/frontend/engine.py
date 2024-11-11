@@ -117,7 +117,10 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
-        self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
+        self._logger.info(f"launching core: {layer_ids, in_device_ids, \
+                          out_device_ids, out_channel_infos, \
+                          in_nccl_ids, out_nccl_ids, out_device_group_ids, \
+                          device_group_ids, group_nccl_ids}")
         if device_group_ids is None:
             device_group_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
@@ -143,6 +146,7 @@ class Engine:
             group_nccl_ids,
         )
         set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+        self._logger.info("core launched")
         
     def _switch_scheduler(self):
         if self.scheduler == None:
@@ -321,7 +325,7 @@ class Engine:
         self.dispatcher.put(batch, 0)
 
     def loop(self):
-        self._logger.info("starting expert engine loop")
+        self._logger.info("starting engine loop")
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()

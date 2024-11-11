@@ -82,7 +82,7 @@ bool MuDispatcher::_is_group_channel(int cid) const {
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
-    // LOG(DEBUG) << "sending batch to channel " << cid << LEND;
+    LOG(DEBUG) << "sending batch to channel " << cid << LEND;
 
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
@@ -93,12 +93,15 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
         this->group_channels[cid]->send_metadata(meta);
         this->group_channels[cid]->send(buf, meta);
     }
+
+    LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
     for (int i = 0; i < this->channels.size(); i ++)
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
+    LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
@@ -371,6 +374,7 @@ void MuPool::run() {
     auto last = clock();
     auto start = last;
 
+    LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
         int peer_id;
         metadata_t meta;
@@ -472,7 +476,7 @@ MuAttentionPool::MuAttentionPool(
     Channel_t group_comm
 ): MuPool(layer_ids, device_id, channels, true), 
     device_group_ids(device_group_ids),
-    group_comm(std::dynamic_pointer_cast<NcclGroupChannel>(group_comm)) {
+    group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
 }
@@ -487,31 +491,49 @@ void MuAttentionPool::run() {
         return;
     }
 
-    for (auto &c: this->channels) {
-        if (is_embedding_node(c->get_peer_id()))
-            continue;
-        // if not embedding, then must be an expert dispatcher, which is a group channel
-        auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
-        ASSERT(group_c.get() != nullptr);
-        group_threads.emplace_back(std::thread(
-            [&](std::shared_ptr<NcclGroupChannel> c) {
-                // recv messages from multiple dispatchers
-                while (!end_flag) {
-                    Metadata meta;
-                    uintptr_t tensor_buf;
-                    c->recv_metadata(meta);
-                    tensor_buf = alloc_cuda_tensor(meta.num_element(), device_id);
-                    c->recv(tensor_buf, meta);
+    if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
+        LOG(INFO) << "Running ATTN Worker pool" << LEND;
+        group_threads.emplace_back(std::thread([&]() {
+            while (!end_flag) {
+                Metadata meta;
+                uintptr_t tensor_buf;
+                group_comm->recv_metadata(meta);
+                group_comm->recv(tensor_buf, meta);
+                auto meta_t = std::make_shared<Metadata>(meta);
+                process_batch(tensor_buf, meta_t, /*send_from_zmq=*/ false);
+            }
+        }));
+    } else {
+        LOG(INFO) << "Running ATTN Driver pool" << LEND;
+        for (auto &c: this->channels) {
+            if (is_embedding_node(c->get_peer_id()))
+                continue;
+            // if not embedding, then must be an expert dispatcher, which is a group channel
+            ASSERT(c.get() != nullptr);
+            auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
+            ASSERT(group_c.get() != nullptr);
+            group_threads.emplace_back(std::thread(
+                [&](std::shared_ptr<NcclGroupChannel> c) {
+                    // recv messages from multiple dispatchers
+                    while (!end_flag) {
+                        LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
+                        Metadata meta;
+                        uintptr_t tensor_buf;
+                        c->recv_metadata(meta);
+                        LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                        tensor_buf = alloc_cuda_tensor(meta.num_element(), device_id);
+                        c->recv(tensor_buf, meta);
 
-                    auto meta_t = std::make_shared<Metadata>(meta);
+                        auto meta_t = std::make_shared<Metadata>(meta);
 
-                    // When using large_comm, all tensors are sent to the workers
-                    // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
-                    // See MuAttentionPool::process_batch
-                    process_batch(tensor_buf, meta_t, /*send_from_zmq=*/ false);
-                }
-            }, group_c
-        ));
+                        // When using large_comm, all tensors are sent to the workers
+                        // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
+                        // See MuAttentionPool::process_batch
+                        process_batch(tensor_buf, meta_t, /*send_from_zmq=*/ false);
+                    }
+                }, group_c
+            ));
+        }
     }
 }
 
@@ -566,12 +588,14 @@ AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t m
 }
 
 void MuAttentionPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta, bool send_from_zmq) {
+    LOG(DEBUG) << "AttnPool processing batch: " << meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
         group_comm->send_metadata(*meta);
         group_comm->send(tensor_buf, *meta);
     }
+    LOG(DEBUG) << "Sent to group channel" << LEND;
 
     int lid = this->inner_layer_id[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor_buf, meta);

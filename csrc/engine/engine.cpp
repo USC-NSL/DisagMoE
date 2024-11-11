@@ -152,6 +152,7 @@ void init_all_channels(
             [&](Channel_t channel) {                                                        \
                 LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;  \
                 channel->instantiate();                                                     \
+                LOG(DEBUG) << local_id << " channel @" << channel << " inited" << LEND;     \
             },                                                                              \
             channel                                                                         \
         ));                                                                                 \
