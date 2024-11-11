@@ -103,8 +103,10 @@ void MuDispatcher::run() {
 
     LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
+        LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+        LOG(WARNING) << "Got a request !!!" << LEND;
         auto pr = this->send_queue.front();
         auto batch = pr.first;
         int rank = pr.second;
@@ -241,7 +243,7 @@ void MuExpertDispatcher::debug_put(TensorBatch batch) {
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuExpertDispatcher::_send_once"};
 
-    // LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
     std::vector<int> chans;
@@ -251,7 +253,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
 
     auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
         /*on_gpu=*/ !is_embedding_node(device_id));
-    // LOG(DEBUG) << "grouped channels" << LEND;
+    LOG(DEBUG) << "grouped channels" << LEND;
 
     for (auto &sub_batch: batches) {
         auto &channel = std::get<0>(sub_batch);
@@ -261,7 +263,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             std::get<2>(sub_batch)
         );
     }
-    // LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
+    LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
@@ -303,13 +305,13 @@ MuPool::MuPool(
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
-    // LOG(DEBUG) << "fetching a msg ..." << LEND;
+    LOG(DEBUG) << "fetching a msg ..." << LEND;
         
     std::vector<zmq::message_t> recv_msgs;
     zmq::recv_result_t result =
-    zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
+        zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
         
-    // LOG(DEBUG) << "got a msg!" << LEND;
+    LOG(DEBUG) << "got a msg!" << LEND;
     ASSERT(*result == 2);
 
     peer_id = std::stoi(recv_msgs[0].to_string());
@@ -592,10 +594,11 @@ void MuAttentionPool::process_batch(uintptr_t &tensor_buf, metadata_t &meta, boo
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
+        LOG(DEBUG) << "Sending to group channel" << LEND;
         group_comm->send_metadata(*meta);
         group_comm->send(tensor_buf, *meta);
+        LOG(DEBUG) << "Sent to group channel" << LEND;
     }
-    LOG(DEBUG) << "Sent to group channel" << LEND;
 
     int lid = this->inner_layer_id[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor_buf, meta);

@@ -124,9 +124,9 @@ void init_all_channels(
     const std::map<int, std::vector<int>> &out_device_group_ids,
     const std::map<int, std::string> &out_nccl_ids,
     // Intra-group Channels
-    Channel_t &intra_group_channel,
+    Channel_t &intra_group_channel_1, Channel_t &intra_group_channel_2,
     const std::vector<int> &device_group_ids,
-    const std::string &group_nccl_id
+    const std::pair<std::string, std::string> &group_nccl_id
 ) {
     /*
         We have multiple types of channels to be inited.
@@ -214,11 +214,16 @@ void init_all_channels(
     }
 
     if (device_group_ids.size() > 1) {
-        intra_group_channel = create_nccl_group_channel(
+        intra_group_channel_1 = create_nccl_group_channel(
             local_id, device_group_ids, 
-            convert_to_nccl_uid((char*) group_nccl_id.c_str())
+            convert_to_nccl_uid((char*) group_nccl_id.first.c_str())
         );
-        INST(intra_group_channel);
+        intra_group_channel_2 = create_nccl_group_channel(
+            local_id, device_group_ids, 
+            convert_to_nccl_uid((char*) group_nccl_id.second.c_str())
+        );
+        INST(intra_group_channel_1);
+        INST(intra_group_channel_2);
     }
 
     for (auto &t: threads)
@@ -237,10 +242,10 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::map<int, std::vector<int>> &out_device_group_ids,
     const std::map<int, std::string> &out_nccl_ids,
     const std::vector<int> device_group_ids,
-    const std::string &group_nccl_id) {
+    const std::pair<std::string, std::string> &group_nccl_id) {
 
     std::vector<Channel_t> in_channels, out_channels;
-    Channel_t intra_group_channel = nullptr;
+    Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr;
     // init_tensor_channels(local_id, is_attn, in_channels, out_channels, 
     //     in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
     //     tensor_channel, tensor_group_device_ids, tensor_group_nccl_id,
@@ -249,7 +254,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     init_all_channels(local_id, is_attn, 
         in_channels, in_device_ids, in_nccl_ids,
         out_channels, out_device_ids, out_device_group_ids, out_nccl_ids,
-        intra_group_channel, device_group_ids, group_nccl_id);
+        intra_group_channel_1, intra_group_channel_2, device_group_ids, group_nccl_id);
     
     // init dispatcher
     LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
@@ -267,15 +272,15 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     attn_scheduler_t attn_scheduler;
 
     if (is_attn) {
-        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel);
+        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1);
         if (cfg.tp == 1) {
             attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
         } else {
             if (local_id == device_group_ids[0]) {
                 // is driver, or saying `root` in the tp group
-                attn_scheduler = std::make_shared<AttentionDriverScheduler>(pool, layer_ids, intra_group_channel);
+                attn_scheduler = std::make_shared<AttentionDriverScheduler>(pool, layer_ids, intra_group_channel_2);
             } else {
-                attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, intra_group_channel);
+                attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, intra_group_channel_2);
             }
         }
     }

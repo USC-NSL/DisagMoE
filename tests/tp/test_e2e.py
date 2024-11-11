@@ -34,12 +34,18 @@ print(mp)
 
 master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 master.init_engine(mp, model_config, cache_config)
+
+print("start profile")
+master.start_profile()
+
+print("start engine")
 master.start_engine()
 
 n = 1
 
-master.start_profile()
+print("put multi request")
 master.put_multi_request(n)
+
+print("wait for request")
 stats = master.wait_for_requests(n)
-master.stop_workers()
 print(">>> Slo Stats:", stats)

@@ -93,7 +93,7 @@ class Controller:
             self, model_place: ModelPlacement
         ) -> Tuple[Dict[int, Dict[int, str]], 
                    Dict[int, Dict[int, str]], 
-                   Dict[Tuple[int], str]]:
+                   Dict[Tuple[int], Tuple[str, str]]]:
         in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
         out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
         for i, js in model_place.out_device_ids.items():
@@ -106,7 +106,7 @@ class Controller:
                 in_nccl_ids[j][i] = uid
                 out_nccl_ids[i][j] = uid
         group_nccl_ids = {
-            tuple(group): get_nccl_unique_id()
+            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id())
                 for group in model_place.device_groups.values()
         }
         return in_nccl_ids, out_nccl_ids, group_nccl_ids
@@ -130,7 +130,7 @@ class Controller:
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
         ray.get([
             worker.setup_engine.remote(
-                EngineType.ATTENTION if len(model_place.attn_ids_at(device_id)) > 0 else EngineType.EXPERT,
+                EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
                 model_config=model_config,
                 cache_config=cache_config,
                 rank=model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank),
@@ -167,7 +167,7 @@ class Controller:
                 out_nccl_ids=out_nccl_ids.get(device_id, {}),
                 device_group_ids=model_place.device_groups.get(device_id, []),
                 group_nccl_ids=group_nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), ""),
+                    tuple(model_place.device_groups.get(device_id, [])), ("", "")),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 

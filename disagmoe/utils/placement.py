@@ -72,6 +72,9 @@ class ModelPlacement:
     def is_worker_device(self, device_id: int) -> bool:
         return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
 
+    def is_attn(self, device_id: int) -> bool:
+        # NOTE(hogura|20241111): since the dict `attn` only includes driver now, we use `expert` to check
+        return device_id not in self.expert
 
 @dataclass
 class ClusterConfig:

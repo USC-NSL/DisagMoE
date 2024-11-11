@@ -7,6 +7,7 @@
 #include "comm.h"
 #include "muhelper.h"
 #include "block_manager.h"
+#include "cuda_utils.h"
 
 class Scheduler;
 
@@ -67,6 +68,7 @@ public:
 class AttentionDriverScheduler : public AttentionScheduler {
 protected:
     std::shared_ptr<NcclGroupChannel> chan;
+    cudaStream_t stream;
 
 public:
     AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
@@ -79,6 +81,7 @@ public:
 class AttentionWorkerScheduler : public AttentionScheduler {
 protected:
     std::shared_ptr<NcclGroupChannel> chan;
+    cudaStream_t stream;
 
 public:
     AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");

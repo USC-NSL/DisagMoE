@@ -47,7 +47,7 @@ void NcclChannel::instantiate() {
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
-    LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
+    LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
@@ -58,7 +58,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
-    LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
+    LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -180,7 +180,7 @@ int NcclGroupChannel::root() const {
     return 0;
 }
 
-void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type) {
+void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
     NCCLCHECK(ncclBroadcast(
         send_buf,
@@ -214,28 +214,31 @@ void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
         metadata.num_element(), metadata.get_nccl_datatype());
 }
 
-void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
+void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::bcast_obj"};
     if (is_root()) {
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
         CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
         void* size_buf = convert_to_cuda_buffer(size);
         // first send size
-        broadcast(size_buf, size_buf, 1, ncclUint64);
+        broadcast(size_buf, size_buf, 1, ncclUint64, stream);
         // then send data
-        broadcast(data_buf, data_buf, size, ncclInt8);
+        broadcast(data_buf, data_buf, size, ncclInt8, stream);
         free_cuda_tensor(size_buf);
         free_cuda_tensor(data_buf);
     } else {
         // first recv size
         void* size_buf = (void*) alloc_cuda_tensor(1, this->local, /*size_of_item=*/ sizeof(size_t));
-        broadcast(nullptr, size_buf, 1, ncclUint64);
+        broadcast(size_buf, size_buf, 1, ncclUint64, stream);
         CUDACHECK(cudaMemcpy(&size, size_buf, sizeof(size_t), cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        LOG(DEBUG) << "recved size: " << size << LEND;
+        ASSERT(size > 0);
         // then recv data
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
-        broadcast(nullptr, data_buf, size, ncclInt8);
+        broadcast(data_buf, data_buf, size, ncclInt8, stream);
         buf = std::malloc(size);
         CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        // LOG(DEBUG) << "received metadata " << *decerealize<Metadata>((char*) buf, size) << LEND;
         free_cuda_tensor(size_buf);
         free_cuda_tensor(data_buf);
     }
@@ -244,7 +247,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
 void NcclGroupChannel::send_metadata(const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::bcast_metadata"};
     ASSERT(is_root());
-    LOG(DEBUG) << "NcclGroupChannel Sending metadata from " << this->local << LEND;
+    LOG(DEBUG) << "NcclGroupChannel Sending metadata from " << this->local << ":" << metadata << LEND;
     std::string data = cerealize(std::make_shared<Metadata>(metadata));
     void* buf = (void*) data.data();
     size_t size = data.size();
@@ -271,6 +274,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
     int count = 1;
     for (int i: shape)
         count *= i;
+    LOG(DEBUG) << "Calling all_reduce for " << count << " elements." << LEND;
     NCCLCHECK(ncclAllReduce(
         buf,
         buf,
@@ -280,6 +284,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->comm,
         this->stream
     ));
+    LOG(DEBUG) << "AllReduce done." << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

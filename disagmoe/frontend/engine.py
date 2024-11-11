@@ -112,7 +112,7 @@ class Engine:
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: str = ""
+            group_nccl_ids: Tuple[str, str] = ("", "")
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
@@ -171,8 +171,8 @@ class Engine:
             torch.set_default_device("cuda:0")
             stream = torch.cuda.Stream()
             torch.cuda.set_stream(stream)
-            
-        set_tensor_model_parallel_config(model_config)
+            set_tensor_model_parallel_config(model_config)
+        
         self.engine_type = engine_type
         self.model_config = model_config
         if engine_type == EngineType.ATTENTION:
@@ -190,7 +190,7 @@ class Engine:
             for i in range(model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
         
-        self._logger.info(f"engine setup.")
+        self._logger.info(f"engine setup. {self.engine_type}")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -328,7 +328,7 @@ class Engine:
         self._logger.info("starting engine loop")
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
-            batch_info = self.scheduler.schedule()
+            batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
             if not batch_info.data:
                 continue
             
@@ -399,6 +399,7 @@ class TokenizerEngine(Engine):
     def put_request(self, tokens: List[int]):
         # TODO(hogura|20241008): only #prefill = 1 now
         assert len(tokens) == 1
+        self._logger.info("putting request")
         shape = (len(tokens), self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.ones(size=shape).type(self.model_config.dtype)
@@ -409,6 +410,7 @@ class TokenizerEngine(Engine):
     def gen_n_request(self, n_request: int):
         for i in range(n_request):
             self.put_request([i])
+        self._logger.info("request gen.")
         
     def init_core(
             self,

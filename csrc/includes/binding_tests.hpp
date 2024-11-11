@@ -436,3 +436,51 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
 
     LOG(INFO) << "rank " << rank << " passed" << LEND;
 }
+
+void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string> uids) {
+    std::vector<std::thread> threads;
+    for (int i = 0; i < uids.size(); i ++) {
+        threads.push_back(std::thread(
+            [&](std::string uid) {
+                auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+                auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+                c->instantiate();
+                if (i == 0) {
+                    if (rank == 0) {
+                        c->send_metadata(Metadata {
+                            /*shape=*/ std::vector<size_t>({1, 4}),
+                            /*dtype=*/ "fp16",
+                            /*layer_id=*/ 1,
+                            /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
+                            /*exp_ids=*/ std::vector<int>({3}),
+                            /*prefill_poss=*/ std::vector<int>({4}),
+                            /*prompt_lens=*/ std::map<int, int>(),
+                        });
+                        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+                        c->send_metadata(Metadata {
+                            /*shape=*/ std::vector<size_t>({1, 4}),
+                            /*dtype=*/ "fp16",
+                            /*layer_id=*/ 1,
+                            /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
+                            /*exp_ids=*/ std::vector<int>({3}),
+                            /*prefill_poss=*/ std::vector<int>({4}),
+                            /*prompt_lens=*/ std::map<int, int>(),
+                        });
+                    } else {
+                        Metadata meta;
+                        c->recv_metadata(meta);
+                        LOG(DEBUG) << "get " << meta << LEND;
+                        c->recv_metadata(meta);
+                        LOG(DEBUG) << "get " << meta << LEND;
+                    }
+                } else {
+                    auto data = alloc_cuda_tensor(4, rank);
+                    c->all_reduce(data, {1, 4096});
+                    LOG(DEBUG) << "all reduce done" << LEND;
+                }
+            }, uids[i]
+        ));
+    }
+    for (auto &t: threads)
+        t.join();
+}
