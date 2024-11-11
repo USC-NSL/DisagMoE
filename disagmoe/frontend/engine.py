@@ -333,6 +333,8 @@ class Engine:
 
     def loop(self):
         self._logger.info("starting engine loop")
+        a = torch.ones((1, 1)).to("cuda")
+        b = torch.ones((1, 1)).to("cuda")
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
@@ -342,6 +344,8 @@ class Engine:
             torch.cuda.set_stream(self.stream)
             self._logger.warning(f"scheduled result {batch_info}")
             self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
+            a += b
+            self._logger.warning(f"executed a+=b")
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)
             self._logger.info(f"tensor_as_buf finished")
