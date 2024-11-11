@@ -13,17 +13,19 @@ using std::string;
 std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
-    const vector<int> &layer_ids,
+    const std::vector<int> &layer_ids,
     // P2P Channels
-    const vector<int> &in_device_ids,
-    const vector<int> &out_device_ids,
-    const vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::pair<string, string>> &nccl_ids,
-    // Parallel Config
+    const std::vector<int> &in_device_ids,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos,
+    // Parallel config
     ParallelConfig cfg,
-    // Group Channels
-    const vector<int> &tensor_group_device_ids,
-    const string &tensor_group_nccl_id
+    // group channels
+    const std::map<int, std::string> &in_nccl_ids,
+    const std::map<int, std::vector<int>> &out_device_group_ids,
+    const std::map<int, std::string> &out_nccl_ids,
+    const std::vector<int> device_group_ids,
+    const std::string &group_nccl_id
 );
 
 void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);

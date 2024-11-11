@@ -51,10 +51,8 @@ protected:
     std::vector<zmq::socket_t> peer_mq;
 
     // use for nccl group channels
-    std::vector<std::vector<int>> group_device_ids;
-    std::vector<std::string> group_nccl_ids;
+    std::vector<bool> is_group_channels;
     std::vector<std::shared_ptr<NcclGroupChannel>> group_channels;
-    cudaStream_t group_stream;
 
     ParallelConfig cfg;
 
@@ -71,8 +69,7 @@ public:
                  int device_id, 
                  ParallelConfig cfg, 
                  std::vector<Channel_t> channels,
-                 std::vector<std::vector<int>> group_device_ids = {},
-                 std::vector<std::string> group_nccl_ids = {});
+                 const std::vector<bool> &is_group_channels={});
 
     void put(const TensorBatch &batch, int rank = 0);
 };
@@ -112,7 +109,8 @@ public:
                        int device_id, 
                        ParallelConfig cfg,
                        std::vector<Channel_t> channels={},
-                       std::vector<ChannelInfo> channel_infos={});
+                       std::vector<ChannelInfo> channel_infos={},
+                       const std::vector<bool> &is_group_channels={});
     
     void debug_put(TensorBatch batch);
 };
@@ -145,7 +143,7 @@ protected:
 
     void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
 
-    virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta);
+    virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta, bool send_from_zmq=true);
 
 public:
     MuPool(std::vector<int> layer_ids,
@@ -178,12 +176,13 @@ class MuAttentionPool: public MuPool {
 
 private:
 
+    // large device group: [previous_dispatcher; current_driver; current_workers]
+    // small device group: [current_driver; current_workers]
     std::vector<int> device_group_ids;
-    std::string nccl_id;
-    std::shared_ptr<NcclGroupChannel> comm;
-    cudaStream_t group_stream;
+    std::shared_ptr<NcclGroupChannel> group_comm;
 
     std::thread pool_thread;
+    std::vector<std::thread> group_threads;
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
@@ -191,7 +190,7 @@ private:
 
     int tokens_in_layer(int lid) override;
 
-    void process_batch(uintptr_t &tensor_buf, metadata_t &meta) override;
+    void process_batch(uintptr_t &tensor_buf, metadata_t &meta, bool send_from_zmq=true) override;
 
 public:
 
@@ -199,7 +198,7 @@ public:
            int device_id,
            std::vector<Channel_t> channels,
            std::vector<int> device_group_ids = {},
-           std::string nccl_id = "");
+           Channel_t group_comm = nullptr);
 
     std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 

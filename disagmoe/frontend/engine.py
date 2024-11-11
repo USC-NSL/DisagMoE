@@ -107,17 +107,19 @@ class Engine:
             in_device_ids: List[int],
             out_device_ids: List[int],
             out_channel_infos: List[ChannelInfo],
-            nccl_ids: Dict[int, int],
             # Group Channels
-            tensor_group_device_ids: List[int] = None,
-            tensor_group_nccl_id: str = ""
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: str = ""
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
-        if tensor_group_device_ids is None:
-            tensor_group_device_ids = []
+        if device_group_ids is None:
+            device_group_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
@@ -127,15 +129,18 @@ class Engine:
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
                 for info in out_channel_infos],
-            nccl_ids,
+            # Parallel config
             ParallelConfig_C(
                 self.model_config.tp_size,
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
             ),
             # Group Channels
-            tensor_group_device_ids,
-            tensor_group_nccl_id,
+            in_nccl_ids,
+            out_device_group_ids,
+            out_nccl_ids,
+            device_group_ids,
+            group_nccl_ids,
         )
         set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
         
@@ -340,16 +345,19 @@ class SamplerEngine(Engine):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
         
-    def init_core(self, 
-                  layer_ids: List[int], 
-                  in_device_ids: List[int], 
-                  out_device_ids: List[int], 
-                  out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int],
-                  tensor_group_device_ids: List[int] = None,
-                  tensor_group_nccl_id: str = "",
-                  meta_group_device_ids: List[int] = None,
-                  meta_group_nccl_id: str = ""):
+    def init_core(
+            self,
+            layer_ids: List[int],
+            # P2P Channels
+            in_device_ids: List[int],
+            out_device_ids: List[int],
+            out_channel_infos: List[ChannelInfo],
+            # Group Channels
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: str = ""):
         self.sampler = init_sampler(
             self.device_id,
             in_device_ids,
@@ -397,16 +405,19 @@ class TokenizerEngine(Engine):
         for i in range(n_request):
             self.put_request([i])
         
-    def init_core(self, 
-                  layer_ids: List[int], 
-                  in_device_ids: List[int], 
-                  out_device_ids: List[int], 
-                  out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int],
-                  tensor_group_device_ids: List[int] = None,
-                  tensor_group_nccl_id: str = "",
-                  meta_group_device_ids: List[int] = None,
-                  meta_group_nccl_id: str = ""):
+    def init_core(
+            self,
+            layer_ids: List[int],
+            # P2P Channels
+            in_device_ids: List[int],
+            out_device_ids: List[int],
+            out_channel_infos: List[ChannelInfo],
+            # Group Channels
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: str = ""):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

@@ -103,6 +103,8 @@ AttentionBatch AttentionDriverScheduler::schedule() {
         return AttentionBatch{0};
     }
 
+    // !FIXME(hogura|20241110): only sending #batches when EP>1 may incur correctness issue.
+
     long long schedule_result = (1ll * layer_id << 32) | batches.size();
 
     void* buf = (void*) &schedule_result;
