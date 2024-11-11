@@ -687,6 +687,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
 std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
     int layer_id, int num_batches) {
 
+    LOG(WARNING) << "fetching " << num_batches << " batches from worker's layer " << layer_id << LEND;
+
     // wait until the data_queue has enough batches
     for (bool flag = false; !flag;) {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -694,6 +696,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
             flag = true;
         }
     }
+
+    LOG(WARNING) << "should have fetched " << num_batches << " batches from worker's layer " << layer_id << LEND;
 
     // fetch first num_batches batches
     std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -713,6 +717,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
         attn_data_queue[layer_id].begin() + num_batches);
 
     maintain_largest_batch();
+
+    LOG(WARNING) << "!!! fetched " << num_batches << " batches from worker's layer " << layer_id << LEND;
 
     return result;
 }

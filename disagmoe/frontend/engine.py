@@ -166,11 +166,14 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
+        model_config.rank = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
             stream = torch.cuda.Stream()
             torch.cuda.set_stream(stream)
+            self._logger.info(f"set stream {stream}")
+            self.stream = stream
             set_tensor_model_parallel_config(model_config)
         
         self.engine_type = engine_type
@@ -190,7 +193,7 @@ class Engine:
             for i in range(model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
         
-        self._logger.info(f"engine setup. {self.engine_type}")
+        self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -264,7 +267,7 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
-        self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
+        self._logger.info(f"process batch AttentionBatchMetadata: {meta_c}")
         
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
@@ -276,12 +279,16 @@ class Engine:
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         
+        self._logger.info(f"packed FlashAttentionMetadata: {attn_meta}")
+        
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],))
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
+        
+        self._logger.info(f"processed batch: {hiddens.shape}")
         
         if not mocking:
             new_meta_c = meta_c.to_metadata()
@@ -331,12 +338,17 @@ class Engine:
             batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
             if not batch_info.data:
                 continue
-                        
+            
+            torch.cuda.set_stream(self.stream)
+            self._logger.warning(f"scheduled result {batch_info}")
+            self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)
+            self._logger.info(f"tensor_as_buf finished")
             
             output, meta = self._process_batch(meta, tensor)
             self.post_process(output, meta)
+            time.sleep(2)
     
     def terminate(self):
         self.end_flag = True
