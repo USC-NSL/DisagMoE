@@ -275,13 +275,13 @@ class Engine:
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
-        expert_ids = expert_ids.view((meta_c.shape[0],))
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
+        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
         
         if not mocking:
             new_meta_c = meta_c.to_metadata()
-            new_meta_c.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
+            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         else:
             new_meta_c = meta_c
         
@@ -293,20 +293,21 @@ class Engine:
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        expert_ids = torch.LongTensor(meta_c.exp_ids, device="cpu")
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
         permuted_tensor = permute_tokens(tensor, exp_mappings)
-        meta_c.permute_token_infos(exp_mappings.tolist())
+        meta_c.permute_token_infos(exp_mappings)
         
+        # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
-        batch_sizes = torch.LongTensor(
+        batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
+            dtype=torch.int64,
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
-        new_mapping = meta_c.sort_by_prefill_order()
-        output = permute_tokens(output, torch.LongTensor(new_mapping, device="cpu"))
+        new_mappings = meta_c.sort_by_prefill_order()
+        output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
         
