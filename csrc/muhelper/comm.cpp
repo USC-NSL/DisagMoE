@@ -14,8 +14,8 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         #endif
         if (!is_embedding_node(party_local)) {
             if (stream == nullptr) {
-                // CUDACHECK(cudaStreamCreate(&this->stream));
-                CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
+                CUDACHECK(cudaStreamCreate(&this->stream));
+                // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
             } else {
                 this->stream = stream;
             }
@@ -153,7 +153,7 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
         #endif
         if (!is_embedding_node(party_local)) {
             if (stream == nullptr) {
-                CUDACHECK(cudaStreamCreate(&this->stream));
+                CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
             } else {
                 this->stream = stream;
             }
@@ -193,6 +193,7 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->comm,
         this->stream
     ));
+    cudaStreamSynchronize(this->stream);
     LOG(DEBUG) << "finished broadcast" << LEND;
 }
 
@@ -287,6 +288,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
     LOG(DEBUG) << "AllReduce done." << LEND;
 }
 

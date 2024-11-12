@@ -335,7 +335,6 @@ class Engine:
         self._logger.info("starting engine loop")
         a = torch.ones((1, 1)).to("cuda")
         b = torch.ones((1, 1)).to("cuda")
-        torch.cuda.set_stream(self.stream)
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         while not self.end_flag:
@@ -356,7 +355,6 @@ class Engine:
             
             output, meta = self._process_batch(meta, tensor)
             self.post_process(output, meta)
-            time.sleep(2)
     
     def terminate(self):
         self.end_flag = True

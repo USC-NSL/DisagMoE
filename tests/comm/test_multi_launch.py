@@ -21,7 +21,7 @@ class Worker:
         
 def main():
     ray.init("auto")
-    n = 2
+    n = 3
     m = 3
     workers = [Worker.remote() for _ in range(n)]
     uids = [get_nccl_unique_id() for _ in range(m)]

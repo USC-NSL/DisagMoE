@@ -423,6 +423,9 @@ struct AttentionBatch {
         if (batches.empty()) {
             return AttentionBatch {0};
         }
+        cudaStream_t stream;
+        CUDACHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1));
+
         std::vector<attn_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
@@ -432,23 +435,24 @@ struct AttentionBatch {
         int prefill_data_size = meta->prefill_data_size();
         int decode_data_size = meta->decode_data_size();
         
-        uintptr_t buf = alloc_cuda_tensor((prefill_data_size + decode_data_size) / meta->get_datatype_size(), 0);
+        uintptr_t buf = alloc_cuda_tensor((prefill_data_size + decode_data_size) / meta->get_datatype_size(), 0, sizeof(short), stream);
         
         void* prefill_ptr = (void *)buf;
         void* decode_ptr = prefill_ptr + prefill_data_size;
-
         for (auto &batch: batches) {
             int prefill_copy_size = batch.metadata->prefill_data_size();
             int decode_copy_size = batch.metadata->decode_data_size();
-            cudaMemcpy(prefill_ptr, (void *)batch.data, prefill_copy_size, 
-                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            cudaMemcpyAsync(prefill_ptr, (void *)batch.data, prefill_copy_size, 
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
 
-            cudaMemcpy(decode_ptr, (void *)batch.data + prefill_copy_size, decode_copy_size,
-                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            cudaMemcpyAsync(decode_ptr, (void *)batch.data + prefill_copy_size, decode_copy_size,
+                cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
             prefill_ptr += prefill_copy_size;
             decode_ptr += decode_copy_size;
-            free_cuda_tensor((void *) batch.data);
+            free_cuda_tensor((void *) batch.data, stream);
         }
+        
+        cudaStreamSynchronize(stream);
 
         return AttentionBatch {buf, meta};
     }

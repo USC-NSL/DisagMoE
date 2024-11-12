@@ -38,25 +38,48 @@ static void print_back_trace() {
 } while(0)
 
 
-inline uintptr_t alloc_cuda_tensor(int count, int device_id, size_t size_of_item = 2) {
+inline uintptr_t alloc_cuda_tensor(int count, int device_id, 
+                                   size_t size_of_item = 2, 
+                                   cudaStream_t stream = nullptr, 
+                                   bool non_blocking = true) {
     ASSERT (count > 0);
     void* data;
     #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(device_id));
     #endif
-    CUDACHECK(cudaMalloc(&data, count * size_of_item));
+    if (!stream) {
+        CUDACHECK(cudaMalloc(&data, count * size_of_item));
+    }
+    else {
+        CUDACHECK(cudaMallocAsync(&data, count * size_of_item, stream));
+        if (!non_blocking)
+            CUDACHECK(cudaStreamSynchronize(stream));
+    }
     return (uintptr_t) (data);
 }
 
-inline uintptr_t alloc_copy_tensor(uintptr_t buf, int size) {
+inline uintptr_t alloc_copy_tensor(uintptr_t buf, int size, cudaStream_t stream = nullptr, bool non_blocking = true) {
     void* data;
-    CUDACHECK(cudaMalloc(&data, size));
-    CUDACHECK(cudaMemcpy(data, (void*) buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
+    if (!stream) {
+        CUDACHECK(cudaMalloc(&data, size));
+        CUDACHECK(cudaMemcpy(data, (void*) buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
+    } else {
+        CUDACHECK(cudaMallocAsync(&data, size, stream));
+        CUDACHECK(cudaMemcpyAsync(data, (void*) buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice, stream));
+        if (!non_blocking)
+            CUDACHECK(cudaStreamSynchronize(stream));
+    }
     return (uintptr_t) data;
 }
 
-inline void free_cuda_tensor(void *ptr) {
-    CUDACHECK(cudaFree(ptr));
+inline void free_cuda_tensor(void *ptr, cudaStream_t stream = nullptr, bool non_blocking = true) {
+    if (!stream) {
+        CUDACHECK(cudaFree(ptr));
+    } else {
+        CUDACHECK(cudaFreeAsync(ptr, stream));
+        if (!non_blocking)
+            CUDACHECK(cudaStreamSynchronize(stream));
+    }
 }
 
 inline void* convert_to_cuda_buffer(size_t number) {
