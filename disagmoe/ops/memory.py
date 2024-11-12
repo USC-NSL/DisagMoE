@@ -30,8 +30,6 @@ def _permute_tokens_kernel(
 
 @nvtx_range("get_mappings_from_exp_ids")
 def get_mappings_from_exp_ids(exp_ids: Union[torch.Tensor, List[int]], num_experts: int) -> Tuple[List[int], List[int]]:
-    assert len(exp_ids.shape) == 1 # [num_tokens]
-    
     if torch.is_tensor(exp_ids):
         exp_ids = exp_ids.view(-1).tolist()
     
@@ -63,13 +61,13 @@ def permute_tokens(tokens: torch.Tensor,
     permuted_tokens = torch.empty((num_tokens, hiddens_size), device=tokens.device, dtype=tokens.dtype)
     
     if not torch.is_tensor(mappings):
-        mappings = torch.IntTensor(mappings, device=tokens.device)
+        mappings = torch.tensor(mappings, dtype=torch.int32, device=tokens.device)
     
     grid = lambda META: (num_tokens, triton.cdiv(hiddens_size, META["BLOCK_SIZE"]))    
     _permute_tokens_kernel[grid](
         permuted_tokens, 
         tokens, 
-        mappings,
+        mappings.to(tokens.device),
         hiddens_size,
         BLOCK_SIZE=128
     )
