@@ -441,10 +441,12 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
     std::vector<std::thread> threads;
     for (int i = 0; i < uids.size(); i ++) {
         threads.push_back(std::thread(
-            [&](std::string uid) {
+            [&](std::string uid, int i) {
                 auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
                 auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
                 c->instantiate();
+                cudaStream_t stream;
+                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1);
                 if (i == 0) {
                     if (rank == 0) {
                         LOG(DEBUG) << "sending metadata" << LEND;
@@ -478,12 +480,14 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                     }
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                    LOG(DEBUG) << "thread " << i << " trying to allocate tensor" << LEND;
-                    auto data = alloc_cuda_tensor(4, rank);
+                    LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
+                    void* data;
+                    CUDACHECK(cudaMallocAsync(&data, 4096, stream));
+                    CUDACHECK(cudaStreamSynchronize(stream));
                     // c->all_reduce(data, {1, 4096});
-                    LOG(DEBUG) << "allocated tensor" << LEND;
+                    LOG(WARNING) << "allocated tensor" << LEND;
                 }
-            }, uids[i]
+            }, uids[i], i
         ));
     }
     for (auto &t: threads)

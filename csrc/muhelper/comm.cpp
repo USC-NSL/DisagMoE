@@ -14,7 +14,8 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         #endif
         if (!is_embedding_node(party_local)) {
             if (stream == nullptr) {
-                CUDACHECK(cudaStreamCreate(&this->stream));
+                // CUDACHECK(cudaStreamCreate(&this->stream));
+                CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
             } else {
                 this->stream = stream;
             }

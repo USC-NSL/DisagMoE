@@ -335,6 +335,9 @@ class Engine:
         self._logger.info("starting engine loop")
         a = torch.ones((1, 1)).to("cuda")
         b = torch.ones((1, 1)).to("cuda")
+        torch.cuda.set_stream(self.stream)
+        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_device("cuda:0")
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
