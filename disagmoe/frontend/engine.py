@@ -170,7 +170,7 @@ class Engine:
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
-            stream = torch.cuda.Stream()
+            stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
             self._logger.info(f"set stream {stream}")
             self.stream = stream
@@ -341,10 +341,11 @@ class Engine:
             if not batch_info.data:
                 continue
             
-            torch.cuda.set_stream(self.stream)
             self._logger.warning(f"scheduled result {batch_info}")
             self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
-            a += b
+            with torch.cuda.stream(self.stream):
+                self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
+                a += b
             self._logger.warning(f"executed a+=b")
             meta: Metadata = batch_info.metadata
             tensor = tensor_as_buf(batch_info.data, meta.shape)

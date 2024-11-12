@@ -148,6 +148,7 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
     std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, num_batches);
 
     auto batch = AttentionBatch::merge(batches);
+    LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
     return batch;
 }
 

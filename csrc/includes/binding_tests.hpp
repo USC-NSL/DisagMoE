@@ -447,6 +447,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                 c->instantiate();
                 if (i == 0) {
                     if (rank == 0) {
+                        LOG(DEBUG) << "sending metadata" << LEND;
                         c->send_metadata(Metadata {
                             /*shape=*/ std::vector<size_t>({1, 4}),
                             /*dtype=*/ "fp16",
@@ -456,27 +457,31 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                             /*prefill_poss=*/ std::vector<int>({4}),
                             /*prompt_lens=*/ std::map<int, int>(),
                         });
-                        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-                        c->send_metadata(Metadata {
-                            /*shape=*/ std::vector<size_t>({1, 4}),
-                            /*dtype=*/ "fp16",
-                            /*layer_id=*/ 1,
-                            /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
-                            /*exp_ids=*/ std::vector<int>({3}),
-                            /*prefill_poss=*/ std::vector<int>({4}),
-                            /*prompt_lens=*/ std::map<int, int>(),
-                        });
+                        LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+                        // c->send_metadata(Metadata {
+                        //     /*shape=*/ std::vector<size_t>({1, 4}),
+                        //     /*dtype=*/ "fp16",
+                        //     /*layer_id=*/ 1,
+                        //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
+                        //     /*exp_ids=*/ std::vector<int>({3}),
+                        //     /*prefill_poss=*/ std::vector<int>({4}),
+                        //     /*prompt_lens=*/ std::map<int, int>(),
+                        // });
                     } else {
                         Metadata meta;
+                        LOG(DEBUG) << "receiving metadata" << LEND;
                         c->recv_metadata(meta);
                         LOG(DEBUG) << "get " << meta << LEND;
                         c->recv_metadata(meta);
                         LOG(DEBUG) << "get " << meta << LEND;
                     }
                 } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                    LOG(DEBUG) << "thread " << i << " trying to allocate tensor" << LEND;
                     auto data = alloc_cuda_tensor(4, rank);
-                    c->all_reduce(data, {1, 4096});
-                    LOG(DEBUG) << "all reduce done" << LEND;
+                    // c->all_reduce(data, {1, 4096});
+                    LOG(DEBUG) << "allocated tensor" << LEND;
                 }
             }, uids[i]
         ));
