@@ -446,7 +446,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                 auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
                 c->instantiate();
                 cudaStream_t stream;
-                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1);
+                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -2);
                 if (i == 0) {
                     if (rank == 0) {
                         LOG(DEBUG) << "sending metadata" << LEND;
