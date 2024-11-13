@@ -29,7 +29,7 @@ void init_channels(
     const std::string &meta_group_nccl_id
 ) {
 
-    LOG(DEBUG) << local_id << " " << "init channels" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "init channels" << LEND;
 
     int n_in = in_device_ids.size();
     int n_out = out_device_ids.size();
@@ -66,10 +66,10 @@ void init_channels(
                 // tokenizer -> (attn/expert); expert -> sampler; sampler -> attn
                 /*is_sender=*/ is_tokenizer(peer_id) ? false : !is_attn
             );
-        LOG(DEBUG) << local_id << " created a thread" << LEND;
+        DMOE_LOG(DEBUG) << local_id << " created a thread" << LEND;
         threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
-                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
             }, 
             channel
@@ -83,13 +83,13 @@ void init_channels(
         );
         threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
-                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
             }, tensor_channel
         ));
     }
 
-    LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
     for (auto &t: threads)
         t.join();
 
@@ -121,7 +121,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
         meta_channel, meta_group_device_ids, meta_group_nccl_id);
     
     // init dispatcher
-    LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t dispatcher;
     if (is_attn) {
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
@@ -131,7 +131,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     }
     
     // init scheduler
-    LOG(DEBUG) << local_id << " init scheduler" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " init scheduler" << LEND;
     scheduler_t scheduler;
     attn_scheduler_t attn_scheduler;
 

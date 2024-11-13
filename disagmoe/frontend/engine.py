@@ -317,7 +317,7 @@ class Engine:
     def post_process(self, output: Tensor, meta: Metadata) -> None:
         self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
         batch: TensorBatch = TensorBatch_C()
-        batch.data = output.data_ptr()
+        batch.data = output
         batch.metadata = meta
         self.dispatcher.put(batch, 0)
 
@@ -326,13 +326,13 @@ class Engine:
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule()
-            if not batch_info.data:
+            if batch_info.data is None:
                 continue
             
-            meta: Metadata = batch_info.metadata
-            tensor = tensor_as_buf(batch_info.data, meta.shape)
-            
-            output, meta = self._process_batch(meta, tensor)
+            batch = TensorBatch.from_c(batch_info)
+
+            meta: Metadata = batch.metadata
+            output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
     
     def terminate(self):
@@ -397,7 +397,7 @@ class TokenizerEngine(Engine):
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.ones(size=shape).type(self.model_config.dtype)
         self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(x.data_ptr(), shape)
+        self.tokenizer.put_request(x, shape)
         self._frozen_tensors.append(x)
         
     def gen_n_request(self, n_request: int):

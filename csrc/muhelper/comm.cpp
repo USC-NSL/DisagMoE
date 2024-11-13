@@ -47,7 +47,7 @@ void NcclChannel::instantiate() {
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
-    LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
+    DMOE_LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
@@ -58,7 +58,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
-    LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
+    DMOE_LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -83,7 +83,7 @@ std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
-    LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
+    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
@@ -94,7 +94,7 @@ void ZmqChannel::instantiate() {
     } else {
         this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false));
     }
-    LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
+    DMOE_LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
 }
 
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {

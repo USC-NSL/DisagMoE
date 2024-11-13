@@ -1,6 +1,7 @@
 #pragma once
 
 #include "muhelper.h"
+#include "datatypes.hpp"
 
 #include <set>
 #include <memory>
@@ -34,7 +35,7 @@ public:
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
 
-    void process_batch(uintptr_t data, metadata_t meta);
+    void process_batch(torch::Tensor data, metadata_t meta);
 
     int sample(uintptr_t buf, metadata_t meta);
 
@@ -54,7 +55,7 @@ public:
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos);
 
-    void put_request(uintptr_t buf, std::vector<size_t> shape);
+    void put_request(torch::Tensor tensor, std::vector<size_t> shape);
 
     void start();
 };

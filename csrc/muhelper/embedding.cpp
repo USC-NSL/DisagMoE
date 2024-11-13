@@ -33,7 +33,7 @@ Sampler::Sampler(int device_id,
             ASSERT(this->peer_channels[id].get() == nullptr);
             this->peer_channels[ in_channels[i]->get_peer_id() ] = in_channels[i];
         }
-        LOG(INFO) << "inited sampler" << LEND;
+        DMOE_LOG(INFO) << "inited sampler" << LEND;
     }
 
 void Sampler::run() {
@@ -42,20 +42,24 @@ void Sampler::run() {
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
     while (!this->end_flag) {
-        LOG(DEBUG) << "sampler receiving msg ..." << LEND;
+        DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
         std::vector<zmq::message_t> recv_msgs;
         zmq::recv_result_t result =
             zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
         
-        LOG(DEBUG) << "sampler got msg !!!" << LEND;
+        DMOE_LOG(DEBUG) << "sampler got msg !!!" << LEND;
         ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
-        auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
+        torch::Tensor tensor = torch::empty(
+            {metadata->num_element()}, 
+            torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)
+        );
+        // auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
 
-        this->peer_channels[peer_id]->recv(tensor_buf, *metadata);
+        this->peer_channels[peer_id]->recv((uintptr_t)tensor.data_ptr(), *metadata);
         
-        this->process_batch(tensor_buf, metadata);
+        this->process_batch(tensor, metadata);
     }
 }
 
@@ -64,9 +68,9 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
     return 0;
 }
 
-void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
+void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    LOG(DEBUG) << "processing batch:" << *meta << LEND;
+    DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
@@ -84,7 +88,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
             }
             else {
                 // Finished, end.
-                LOG(INFO) << "Request " << rid << " ended, generated " 
+                DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                           << output_lens[rid] << " tokens." << LEND;
             }
         } else {
@@ -109,16 +113,17 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
 
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
-    LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
+    DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
+
     _send_once(TensorBatch{
-        tensor_slice(buf, meta, continue_ids, /*on_gpu=*/ false),
+        torch_tensor_slice(tensor, continue_ids),
         std::make_shared<Metadata>(new_meta)
     });
 
     // Step 4. sample tokens & marked finished
     for (int i: continue_ids) {
         int req_id = meta->req_ids[i];
-        int token = sample(tensor_at(buf, meta, i), meta);
+        int token = sample(tensor_at((uint64_t)tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
             finished_seqs.insert(req_id);
             slo_stats[req_id].t_decode = clock();
@@ -126,7 +131,7 @@ void Sampler::process_batch(uintptr_t buf, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    LOG(INFO) << "sampler processed one batch" << LEND;
+    DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
 }
 
 std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
@@ -156,7 +161,7 @@ Tokenizer::Tokenizer(int device_id,
     req_count = 0;
 }
 
-void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {
+void Tokenizer::put_request(torch::Tensor tensor, std::vector<size_t> shape) {
     req_count ++;
     // TODO(hogura|20241007): set the first attn
     auto meta_t = std::make_shared<Metadata>(Metadata {
@@ -168,7 +173,7 @@ void Tokenizer::put_request(uintptr_t buf, std::vector<size_t> shape) {
         /*prefill_pos=*/ {0},
         /*prompt_lens=*/ {}
     });
-    this->put(TensorBatch {buf, meta_t}, 0);
+    this->put(TensorBatch {tensor, meta_t}, 0);
 }
 
 void Tokenizer::start() {
