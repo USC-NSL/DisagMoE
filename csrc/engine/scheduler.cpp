@@ -100,7 +100,7 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     int layer_id;
     std::vector<AttentionBatch> batches = pool->fetch_largest_batch(&layer_id);
     if (layer_id == -1) {
-        return AttentionBatch{0};
+        return AttentionBatch{};
     }
 
     long long schedule_result = (1ll * layer_id << 32) | batches.size();

@@ -24,12 +24,12 @@ bool BlockManager::can_allocate(const int &seq_len) {
 
 void BlockManager::allocate(const int &seq_id, const int &seq_len) {
     AUTO_TX_RANGE;
-    // LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
+    // DMOE_LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
 
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     
-    // LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
+    // DMOE_LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
 
     ASSERT (free_blocks_.size() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
@@ -39,7 +39,7 @@ void BlockManager::allocate(const int &seq_id, const int &seq_len) {
     }
     block_tables_[seq_id] = block_list;
 
-    // LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
+    // DMOE_LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
 
 }
 

@@ -64,7 +64,7 @@ public:
                  ParallelConfig cfg, 
                  std::vector<Channel_t> channels);
 
-    void put(const TensorBatch &batch, int rank = 0);
+    void put(TensorBatch batch, int rank = 0);
 };
 
 
@@ -132,8 +132,8 @@ protected:
     virtual int tokens_in_layer(int lid);
 
     void recv_metadata(int &peer_id, metadata_t &meta);
-    void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
-    virtual void process_batch(uintptr_t &tensor_buf, metadata_t &meta);
+    void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
+    virtual void process_batch(torch::Tensor tensor, metadata_t &meta);
 
 public:
     MuPool(std::vector<int> layer_ids,
@@ -168,11 +168,11 @@ private:
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
-    AttentionBatch pack_attn_batch(uintptr_t, metadata_t);
+    AttentionBatch pack_attn_batch(torch::Tensor, metadata_t);
 
     int tokens_in_layer(int lid) override;
 
-    void process_batch(uintptr_t &tensor_buf, metadata_t &meta) override;
+    void process_batch(torch::Tensor tensor, metadata_t &meta) override;
 
 public:
 

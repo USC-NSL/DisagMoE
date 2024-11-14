@@ -12,6 +12,10 @@
 #include "logging.h"
 #include "nccl.h"
 
+inline torch::Tensor torch_tensor_slice(torch::Tensor tensor, const std::vector<int> &ids) {
+    return tensor.index_select(0, torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt32).device(tensor.device())));
+}
+
 inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {
     return buf + i * metadata.num_element() / metadata.num_tokens() * metadata.get_datatype_size();
 }
@@ -25,7 +29,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
                               const std::vector<int> &ids,
                               bool on_gpu = true) {
     // TODO(hogura|20241001): rewrite this function as a cuda kernel for better performance
-    // LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
+    // DMOE_LOG(DEBUG) << "num_ele " << metadata.num_element() << " num_tokens " << metadata.num_tokens() << LEND;
 
     size_t count_per_token = metadata.num_element() / metadata.num_tokens();
     size_t size_per_token = count_per_token * metadata.get_datatype_size();
@@ -34,7 +38,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
     if (on_gpu) {
         int device;
         CUDACHECK(cudaGetDevice(&device));
-        // LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
+        // DMOE_LOG(DEBUG) << "tensor_slice deivce: " << device << LEND;
         dst = alloc_cuda_tensor(ids.size() * count_per_token, device);
 
         for (size_t i = 0; i < ids.size(); i ++) {
@@ -62,7 +66,7 @@ inline uintptr_t tensor_slice(uintptr_t src,
         dst = (uintptr_t) buf;
     }
 
-    // LOG(DEBUG) << "copied " << ids.size() << " tokens." << LEND;
+    // DMOE_LOG(DEBUG) << "copied " << ids.size() << " tokens." << LEND;
     return dst;
 }
 
@@ -74,8 +78,8 @@ inline uintptr_t tensor_slice(uintptr_t src,
 }
 
 template<class T, class T_COMP = std::less<T>>
-inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
-    uintptr_t buf, 
+inline std::vector<std::tuple<T, torch::Tensor, Metadata>> group_by(
+    torch::Tensor tensor, 
     const Metadata &metadata,
     const std::vector<T> &keys,
     bool on_gpu = true) {
@@ -83,7 +87,7 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
     std::map<T, std::vector<int>, T_COMP> ids;
     ids.clear();
 
-    // LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
+    // DMOE_LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
     assert (keys.size() == metadata.req_ids.size());
     for (size_t i = 0; i < keys.size(); i ++) {
         auto iter = ids.find(keys[i]);
@@ -94,12 +98,12 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
         }
     }
 
-    std::vector<std::tuple<T, uintptr_t, Metadata>> results;
+    std::vector<std::tuple<T, torch::Tensor, Metadata>> results;
     results.clear();
     for (auto &[key, grouped_ids]: ids) {
-        // LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
+        // DMOE_LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
         Metadata sliced_meta = std::move(metadata.at(grouped_ids));
-        auto sliced_tensor = tensor_slice(buf, metadata, grouped_ids, on_gpu);
+        auto sliced_tensor = torch_tensor_slice(tensor, grouped_ids);
         results.push_back(std::make_tuple(
             key, 
             sliced_tensor, 
@@ -107,7 +111,7 @@ inline std::vector<std::tuple<T, uintptr_t, Metadata>> group_by(
         ));
     }
 
-    // LOG(DEBUG) << " Returning results" << LEND;
+    // DMOE_LOG(DEBUG) << " Returning results" << LEND;
 
     return results;
 }
@@ -157,7 +161,7 @@ std::shared_ptr<type> static decerealize(char* buf, size_t n) {
     cereal::BinaryInputArchive iarchive(ss);
     Metadata result;
     iarchive(result);
-    // LOG(WARNING) << "after decerealize, got metadata: " << result << LEND;
+    // DMOE_LOG(WARNING) << "after decerealize, got metadata: " << result << LEND;
     return std::make_shared<type>(result);
 }
 
