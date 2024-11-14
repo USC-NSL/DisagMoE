@@ -64,7 +64,7 @@ public:
                  ParallelConfig cfg, 
                  std::vector<Channel_t> channels);
 
-    void put(const TensorBatch &batch, int rank = 0);
+    void put(TensorBatch batch, int rank = 0);
 };
 
 

@@ -59,8 +59,6 @@ class Engine:
             
         self.loop_thread = Thread(target=self.loop)
         
-        # !TODO(hogura|20241011): remove the frozen tensors
-        self._frozen_tensors: List[torch.Tensor] = []
         self._process_batch: Callable
         
         self.block_mgr: BlockManager = None
@@ -315,7 +313,6 @@ class Engine:
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
-        self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
@@ -398,7 +395,6 @@ class TokenizerEngine(Engine):
         x = torch.ones(size=shape).type(self.model_config.dtype)
         self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(x, shape)
-        self._frozen_tensors.append(x)
         
     def gen_n_request(self, n_request: int):
         for i in range(n_request):

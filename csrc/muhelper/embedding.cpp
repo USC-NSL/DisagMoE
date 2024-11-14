@@ -173,7 +173,7 @@ void Tokenizer::put_request(torch::Tensor tensor, std::vector<size_t> shape) {
         /*prefill_pos=*/ {0},
         /*prompt_lens=*/ {}
     });
-    this->put(TensorBatch {tensor, meta_t}, 0);
+    this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }
 
 void Tokenizer::start() {
