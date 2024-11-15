@@ -304,8 +304,8 @@ class Engine:
         )
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
-        new_mappings = meta_c.sort_by_prefill_order()
-        output = permute_tokens(output, list(new_mappings))
+        new_mappings = list(meta_c.sort_by_prefill_order())
+        output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
         
