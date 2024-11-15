@@ -357,7 +357,7 @@ void MuPool::run() {
         this->recv_metadata(peer_id, meta);
 
         torch::Tensor tensor = torch::empty(
-            {meta->num_tokens(), meta->token_hidden_size()}, 
+            {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
 

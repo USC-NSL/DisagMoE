@@ -12,6 +12,7 @@
 #include "cuda_utils.h"
 #include "logging.h"
 #include "constants.h"
+#include "permute.h"
 
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
@@ -97,7 +98,7 @@ struct Metadata {
         return shape[0];
     }
 
-    inline size_t token_hidden_size() const {
+    inline size_t token_hidden_dim() const {
         return shape[1];
     }
 
@@ -268,6 +269,8 @@ struct TensorBatch {
     metadata_t metadata;
 
     static TensorBatch merge(const std::vector<TensorBatch>& batches) {
+        AUTO_TX_RANGE;
+
         if (batches.empty()) {
             return TensorBatch {};
         }
@@ -278,24 +281,38 @@ struct TensorBatch {
         }
         auto meta = Metadata::merge(metas);
 
-        auto dtype = meta->get_datatype_size();
-
         torch::Tensor tensor = torch::empty(
-            {meta->num_tokens(), meta->token_hidden_size()}, 
+            {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
-            
-        // uintptr_t buf = alloc_cuda_tensor(meta->num_element(), 0);
-        void* buf = tensor.data_ptr();
-        
-        void* ptr = buf;
+
+        // Option 1. use cudaMemcpy
+        // auto dtype = meta->get_datatype_size();
+        // void* buf = tensor.data_ptr();
+        // void* ptr = buf;
+        // for (auto &batch: batches) {
+        //     auto size = batch.metadata->num_element() * dtype;
+        //     cudaMemcpy((void*) ptr, (void*) batch.data.data_ptr(), size, 
+        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+        //     ptr += size;
+        // }
+
+        // Option 2. use gather cuda kernel
+
+        std::vector<uintptr_t> srcs(meta->num_tokens());
+
+        int idx = 0;
+        int hidden_size_bytes = meta->token_hidden_dim() * meta->get_datatype_size();
         for (auto &batch: batches) {
-            auto size = batch.metadata->num_element() * dtype;
-            // TODO: use torch::Tensor::copy_
-            cudaMemcpy((void*) ptr, (void*) batch.data.data_ptr(), size, 
-                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-            ptr += size;
+            uintptr_t cur_ptr = (uintptr_t) batch.data.data_ptr();
+            for (int i = 0; i < batch.metadata->num_tokens(); i ++) {
+                srcs[idx] = cur_ptr;
+                cur_ptr += hidden_size_bytes;
+                idx ++;
+            }
         }
+
+        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim());
 
         return TensorBatch {tensor, meta};
     }
@@ -343,7 +360,7 @@ struct AttentionBatchMetadata {
         return shape[0];
     }
 
-    inline int token_hidden_size() const {
+    inline int token_hidden_dim() const {
         return shape[1];
     }
 
@@ -438,6 +455,7 @@ struct AttentionBatch {
     attn_metadata_t metadata;
 
     static AttentionBatch merge(const std::vector<AttentionBatch>& batches) {
+        AUTO_TX_RANGE;
         
         if (batches.empty()) {
             return AttentionBatch {};
@@ -452,27 +470,51 @@ struct AttentionBatch {
         int decode_data_size = meta->decode_data_size();
 
         torch::Tensor tensor = torch::empty(
-            {meta->num_tokens(), meta->token_hidden_size()}, 
+            {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+
+        // Option 1. use cudaMemcpy
+        // void * buf = tensor.data_ptr();
         
-        // uintptr_t buf = alloc_cuda_tensor((prefill_data_size + decode_data_size) / meta->get_datatype_size(), 0);
-        void * buf = tensor.data_ptr();
-        
-        void* prefill_ptr = buf;
-        void* decode_ptr = prefill_ptr + prefill_data_size;
+        // void* prefill_ptr = buf;
+        // void* decode_ptr = prefill_ptr + prefill_data_size;
+
+        // for (auto &batch: batches) {
+        //     int prefill_copy_size = batch.metadata->prefill_data_size();
+        //     int decode_copy_size = batch.metadata->decode_data_size();
+        //     cudaMemcpy(prefill_ptr, (void *)batch.data.data_ptr(), prefill_copy_size, 
+        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+
+        //     cudaMemcpy(decode_ptr, (void *)batch.data.data_ptr() + prefill_copy_size, decode_copy_size,
+        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+        //     prefill_ptr += prefill_copy_size;
+        //     decode_ptr += decode_copy_size;
+        // }
+
+        // Option 2. use gather cuda kernel
+        int prefill_idx = 0;
+        int decode_idx = meta->num_prefill_tokens;
+
+        std::vector<uintptr_t> src_ptrs(meta->num_tokens());
+        const int hidden_size_byte = meta->token_hidden_dim() * tensor.element_size();
 
         for (auto &batch: batches) {
-            int prefill_copy_size = batch.metadata->prefill_data_size();
-            int decode_copy_size = batch.metadata->decode_data_size();
-            cudaMemcpy(prefill_ptr, (void *)batch.data.data_ptr(), prefill_copy_size, 
-                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+            uintptr_t cur_data_ptr = (uintptr_t) batch.data.data_ptr();
 
-            cudaMemcpy(decode_ptr, (void *)batch.data.data_ptr() + prefill_copy_size, decode_copy_size,
-                cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-            prefill_ptr += prefill_copy_size;
-            decode_ptr += decode_copy_size;
+            for (int i = 0; i < batch.metadata->num_prefill_tokens; i ++) {
+                src_ptrs[prefill_idx] = cur_data_ptr;
+                cur_data_ptr += hidden_size_byte;
+                prefill_idx ++;
+            }
+
+            for (int i = 0; i < batch.metadata->num_decode_tokens; i ++) {
+                src_ptrs[decode_idx] = cur_data_ptr;
+                cur_data_ptr += hidden_size_byte;
+                decode_idx ++;
+            }
         }
+        gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim());
 
         return AttentionBatch {tensor, meta};
     }
