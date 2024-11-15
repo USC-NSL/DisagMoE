@@ -31,7 +31,7 @@ def find_all_c_targets(path):
         if "build" in root:
             continue
         for file_name in files:
-            if len(file_name) > 4 and file_name[-4:] == ".cpp":
+            if file_name.endswith(".cpp") or file_name.endswith(".cu"):
                 res.append(os.path.join(root, file_name))
     print(res)
     return res
