@@ -10,9 +10,9 @@ from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
                                          AttentionBatchMetadata, SloStat)
-from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens
+from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
+from disagmoe.utils.utils import get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
@@ -304,7 +304,7 @@ class Engine:
         )
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
-        new_mappings = meta_c.sort_by_prefill_order()
+        new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()

@@ -5,7 +5,7 @@
 #include "muhelper.h"
 #include "datatypes.hpp"
 #include "block_manager.h"
-
+#include "permute.h"
 #include "binding_helper.h"
 #include "binding_tests.hpp"
 
@@ -123,6 +123,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("append_tokens", &BlockManager::append_tokens)
         .def("update_block_table", &BlockManager::update_block_table)
         .def("prepare_block_table", &BlockManager::prepare_block_table);
+
+    // custom ops
+    m.def("permute_tokens_cuda", &permute_tokens_cuda);
 
     // static function calls
     m.def("create_channel", &create_channel);

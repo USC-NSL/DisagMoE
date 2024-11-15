@@ -5,7 +5,7 @@ import triton.language as tl
 
 from disagmoe.utils.utils import nvtx_range
 from typing import List, Tuple, Union
-
+from disagmoe_c import permute_tokens_cuda as _permute_tokens_cuda
 @triton.jit
 def _permute_tokens_kernel(
     out_ptr, # buffer for permuted tokens 
@@ -51,8 +51,8 @@ def get_mappings_from_exp_ids(exp_ids: Union[torch.Tensor, List[int]], num_exper
         
     return mappings, exp_cnt
 
-@nvtx_range("permute_tokens")
-def permute_tokens(tokens: torch.Tensor, 
+@nvtx_range("permute_tokens_triton")
+def permute_tokens_triton(tokens: torch.Tensor, 
                    mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
     # permute tokens according to its expert id
     assert len(tokens.shape) == 2 # [num_tokens, hidden_size]
@@ -69,6 +69,13 @@ def permute_tokens(tokens: torch.Tensor,
         tokens, 
         mappings.to(tokens.device),
         hiddens_size,
-        BLOCK_SIZE=128
+        BLOCK_SIZE=1024
     )
     return permuted_tokens
+
+@nvtx_range("permute_tokens_cuda")
+def permute_tokens_cuda(tokens: torch.Tensor, 
+                   mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
+    if not torch.is_tensor(mappings):
+        mappings = torch.tensor(mappings, dtype=torch.int32, device=tokens.device)
+    return _permute_tokens_cuda(tokens, mappings.to(tokens.device))
