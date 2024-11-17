@@ -81,13 +81,15 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
         if (meta->prefill_poss[i] == -1) {
             // at decode phase
-            if (finished_seqs.find(rid) == finished_seqs.end()) {
+            if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
                 slo_stats[rid].t_tokens.push_back(clock());
             }
             else {
                 // Finished, end.
+                finished_seqs.insert(rid);
+                eos_seqs.erase(rid);
                 DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                           << output_lens[rid] << " tokens." << LEND;
             }
@@ -125,7 +127,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         int req_id = meta->req_ids[i];
         int token = sample(tensor_at((uint64_t)tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
-            finished_seqs.insert(req_id);
+            eos_seqs.insert(req_id);
             slo_stats[req_id].t_decode = clock();
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
@@ -138,6 +140,7 @@ std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
     std::lock_guard<std::mutex> _(this->result_lock);
     if (finished_seqs.size() < n_request)
         return {};
+    finished_seqs.clear();
     return slo_stats;
 }
 

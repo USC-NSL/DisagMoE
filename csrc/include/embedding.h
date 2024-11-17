@@ -19,7 +19,8 @@ protected:
     std::vector<zmq::socket_t> send_mqs;
 
     // batch processing info
-    std::set<int> finished_seqs;
+    std::set<int> eos_seqs; // sequences that have reached EOS
+    std::set<int> finished_seqs; // sequences that have reached EOS and ended another round of inference
     std::map<int, SloStat> slo_stats;
     std::map<int, int> output_lens;
 
