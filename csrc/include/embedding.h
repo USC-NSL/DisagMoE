@@ -48,14 +48,13 @@ public:
 
 class Tokenizer: public MuExpertDispatcher {
 protected:
-    int req_count;
 
 public:
     Tokenizer(int device_id, 
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos);
 
-    void put_request(torch::Tensor tensor, std::vector<size_t> shape);
+    void put_request(int req_id, torch::Tensor tensor);
 
     void start();
 };

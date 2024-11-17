@@ -158,17 +158,17 @@ Tokenizer::Tokenizer(int device_id,
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos):
     MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, 1), channels, out_channel_infos) {
-    req_count = 0;
 }
 
-void Tokenizer::put_request(torch::Tensor tensor, std::vector<size_t> shape) {
-    req_count ++;
+void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
     // TODO(hogura|20241007): set the first attn
+    ASSERT (tensor.dim() == 2);
+    std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
     auto meta_t = std::make_shared<Metadata>(Metadata {
         shape, 
         "fp16", 
         /*layer_id=*/ 0, 
-        /*req_id=*/ {req_count},
+        /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
         /*prefill_pos=*/ {0},
         /*prompt_lens=*/ {}

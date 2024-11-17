@@ -331,6 +331,11 @@ class Engine:
             meta: Metadata = batch.metadata
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
+            
+    def release_seqs(self, seq_ids: List[int]):
+        for id in seq_ids:
+            self.decode_seq_lens.pop(id)
+        self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
         self.end_flag = True
@@ -387,18 +392,21 @@ class TokenizerEngine(Engine):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
         
-    def put_request(self, tokens: List[int]):
+    def process_request(self, req_id: int, input_len: int):
         # TODO(hogura|20241008): only #prefill = 1 now
-        assert len(tokens) == 1
-        shape = (len(tokens), self.model_config.hidden_size)
+        assert input_len == 1
+        shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.ones(size=shape).type(self.model_config.dtype)
+        x = torch.zeros(size=shape).type(self.model_config.dtype)
         self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(x, shape)
+        self.tokenizer.put_request(req_id, x)
         
-    def gen_n_request(self, n_request: int):
-        for i in range(n_request):
-            self.put_request([i])
+    def put_single_request(self, req_id: int, input_len: int):
+        self.process_request(req_id, input_len)
+        
+    def put_requests(self, req_ids: List[int], input_lens: List[int]):
+        for req_id, input_len in zip(req_ids, input_lens):
+            self.process_request(req_id, input_len)
         
     def init_core(self, 
                   layer_ids: List[int], 
