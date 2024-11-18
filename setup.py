@@ -14,11 +14,12 @@ CSRC_DIR = os.path.abspath("csrc")
 THIRD_PARTY_DIR = os.path.abspath("third_party")
 
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
-NCCL_HOME = os.environ.get("NCCL_HOME", "/usr/local/nccl2")
-
 CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "include"))
 CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
 CUDA_LIB64_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib64"))
+
+NCCL_HOME = os.environ.get("NCCL_HOME", "/usr/local/nccl2")
+NCCL_INCLUDE_DIR = os.environ.get("NCCL_INCLUDE_DIR", os.path.join(NCCL_HOME, "include"))
 NCCL_LIB_DIR = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(NCCL_HOME, "lib"))
 
 TORCH_HOME = torch.__path__[0]
@@ -48,8 +49,9 @@ ext_modules = [
             f"{THIRD_PARTY_DIR}/cereal/include",
             f"{THIRD_PARTY_DIR}/NVTX/c/include",
             f"{NCCL_HOME}/include",
+            NCCL_INCLUDE_DIR,
             # *TORCH_INCLUDES,
-       ],
+        ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
@@ -57,7 +59,7 @@ ext_modules = [
             TORCH_LIB_DIR,
         ], 
         libraries=["cudart", "nccl", "zmq", "torch", "c10", "torch_cpu"],
-        extra_compile_args=["-lstdc++", "-O0", "-g"],
+        extra_compile_args=["-lstdc++", "-O0", "-g", "-w"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),
             ("D_ENABLE_NVTX", "1"),

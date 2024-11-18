@@ -183,7 +183,7 @@ int NcclGroupChannel::root() const {
 
 void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
-    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << LEND;
+    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
     NCCLCHECK(ncclBroadcast(
         send_buf,
         recv_buf,

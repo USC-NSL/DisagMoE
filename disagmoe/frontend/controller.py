@@ -218,7 +218,7 @@ class Controller:
     def put_requests(self, input_lens: int):
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
-        
+                
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
         # clean all in flight reqs as they are all done

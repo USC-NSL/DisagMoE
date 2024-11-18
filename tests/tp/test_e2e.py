@@ -44,7 +44,7 @@ master.start_engine()
 n = 1
 
 print("put multi request")
-master.put_multi_request(n)
+master.put_requests([1] * n)
 
 print("wait for request")
 stats = master.wait_for_requests(n)

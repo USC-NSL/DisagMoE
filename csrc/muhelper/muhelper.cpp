@@ -500,6 +500,8 @@ void MuAttentionPool::run() {
     if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
         DMOE_LOG(INFO) << "Running ATTN Worker pool" << LEND;
         group_threads.emplace_back(std::thread([&]() {
+            at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+            at::cuda::CUDAStreamGuard guard(c10_stream);
             while (!end_flag) {
                 Metadata meta;
                 group_comm->recv_metadata(meta);
@@ -526,6 +528,9 @@ void MuAttentionPool::run() {
             group_threads.emplace_back(std::thread(
                 [&](std::shared_ptr<NcclGroupChannel> c) {
                     // recv messages from multiple dispatchers
+                    at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+                    at::cuda::CUDAStreamGuard guard(c10_stream);
+                    
                     while (!end_flag) {
                         DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
                         Metadata meta;

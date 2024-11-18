@@ -1,3 +1,4 @@
 #include <string>
+#include <vector>
 
-void test_bcast_comm(int rank, int world_size, std::string uid);
+void test_op_overlap(int rank, std::vector<int> ranks, std::string uid);

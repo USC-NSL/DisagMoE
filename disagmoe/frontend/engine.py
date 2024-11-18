@@ -335,14 +335,16 @@ class Engine:
         b = torch.ones((1, 1)).to("cuda")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
+        torch.cuda.set_stream(self.stream)
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
-            batch_info = self.scheduler.schedule()
+            batch_info = self.scheduler.schedule() # using non-blocking schedule
             if batch_info.data is None:
                 continue
             
             batch = TensorBatch.from_c(batch_info)
 
+            self._logger.info(f"received batch, current stream: {torch.cuda.current_stream()}")
             meta: Metadata = batch.metadata
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)

@@ -4,6 +4,9 @@
 
 #include <torch/torch.h>
 #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
+
 #include <assert.h>
 #include <cstring>
 #include <string>
@@ -104,15 +107,16 @@ __global__ void gather_tokens_kernel(T *d_out, uintptr_t *d_in_ptr, const int hi
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    gather_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, hidden_size); \
+    gather_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, hidden_size); \
 } while(0)
 
 template <class T>
-void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size) {
+void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
+    puts("DDDDDDDDDDDDDD");
     if (num_tokens <= 80) {
         LAUNCH_GATHER_KERNEL_(512);
     } else if (num_tokens <= 160) {
@@ -122,10 +126,15 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
     }
 }
 
-void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, int hidden_size) {
+void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
+    at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+    std::cout << "current stream: " << c10_stream.stream() << std::endl;
+    puts("AAAAAAAAAAAAA");
     torch::Tensor src_tensor = torch::from_blob(src_ptr, {num_tokens}, torch::TensorOptions().dtype(torch::kUInt64)).to(dest.device());
+    puts("BBBBBBBBBBBBB");
     AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
-        _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
+        _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
     });
+    puts("CCCCCCCCCCCCC");
 }

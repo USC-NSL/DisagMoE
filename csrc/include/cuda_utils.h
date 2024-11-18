@@ -3,6 +3,9 @@
 #include "cuda_runtime.h"
 #include "nccl.h"
 #include "constants.h"
+#include "torch/torch.h"
+#include "c10/cuda/CUDAStream.h"
+#include "c10/cuda/CUDAGuard.h"
 
 #include <execinfo.h>
 #include <cstdlib>
@@ -87,6 +90,11 @@ inline void* convert_to_cuda_buffer(size_t number) {
     CUDACHECK(cudaMalloc(&data, sizeof(size_t)));
     CUDACHECK(cudaMemcpy(data, &number, sizeof(size_t), cudaMemcpyHostToDevice));
     return data;
+}
+
+inline cudaStream_t get_current_torch_stream(int device_id = 0) {
+    at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(device_id);
+    return c10_stream.stream();
 }
 
 #ifdef D_ENABLE_NVTX

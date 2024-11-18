@@ -274,6 +274,7 @@ struct TensorBatch {
         if (batches.empty()) {
             return TensorBatch {};
         }
+        cudaStream_t stream = get_current_torch_stream();
 
         std::vector<metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
@@ -312,7 +313,7 @@ struct TensorBatch {
             }
         }
 
-        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim());
+        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
 
         return TensorBatch {tensor, meta};
     }
@@ -460,8 +461,9 @@ struct AttentionBatch {
         if (batches.empty()) {
             return AttentionBatch {};
         }
-        cudaStream_t stream;
-        CUDACHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1));
+        at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
+        cudaStream_t stream = c10_stream.stream();
+        at::cuda::CUDAStreamGuard guard(c10_stream);
 
         std::vector<attn_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
@@ -521,7 +523,9 @@ struct AttentionBatch {
                 decode_idx ++;
             }
         }
-        gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim());
+        DMOE_LOG(WARNING) << "start gather_tokens_cuda in stream " << stream << LEND;
+        gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
+        DMOE_LOG(WARNING) << "end gather_tokens_cuda" << LEND;
 
         return AttentionBatch {tensor, meta};
     }
