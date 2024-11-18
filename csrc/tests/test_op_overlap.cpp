@@ -9,15 +9,18 @@
 std::thread t_calc_op, t_comm_op, t_copy_op, t_kernel_op;
 
 void test_comm(int rank, std::vector<int> ranks, std::string uid) {
-    auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
-    c_raw->instantiate();
-    auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+    // auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+    // c_raw->instantiate();
+    // auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+    ncclComm_t comm;
+    ncclUniqueId& id = *((ncclUniqueId*)(uid.c_str()));
+    ncclCommInitRank(&comm, ranks.size(), id, rank);
     DMOE_LOG(INFO) << "rank " << rank << " communication start." << LEND;
     at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(false, 0);
     at::cuda::CUDAStreamGuard guard(c10_stream);
     auto stream = c10_stream.stream();
 
-    size_t size = 4096;
+    size_t size = 4;
     DMOE_LOG(WARNING) << "comm stream: " << stream << LEND;
     torch::Tensor data = torch::empty({1, size}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
     uintptr_t buf = (uintptr_t) data.data_ptr();
@@ -31,8 +34,10 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
         /*prompt_lens=*/ std::map<int, int>(),
     };
 
-    if (rank == 1)
-        c->send_recv(buf, meta);
+    if (rank == 1) {
+        // ncclRecv((void*) buf, size, ncclFloat16, 0, comm, stream);
+        ncclBroadcast((void*) buf, (void*) buf, size, ncclFloat16, ranks[0], comm, stream);
+    }
     
     DMOE_LOG(INFO) << "rank " << rank << " communication done." << LEND;
 }
@@ -113,11 +118,28 @@ void test_kernel(int rank) {
     DMOE_LOG(INFO) << "rank " << rank << " kernel done." << LEND;
 }
 
+void test_kernel_simple(int rank) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    DMOE_LOG(INFO) << "rank " << rank << " simple kernel start." << LEND;
+    cudaStream_t stream;
+    CUDACHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1));
+    size_t size = 4096;
+    float* buf;
+    CUDACHECK(cudaMalloc(&buf, size));
+    DMOE_LOG(WARNING) << "rank " << rank << "kernel stream: " << stream << LEND;
+    DMOE_LOG(WARNING) << "rank " << rank \
+        << " thread<" << std::this_thread::get_id() \
+        << "> current stream status: " << (cudaStreamQuery(stream) == cudaSuccess) << LEND \
+        << "default stream status: " << (cudaStreamQuery(cudaStreamDefault) == cudaSuccess) << LEND;
+    add_one_cuda(buf, buf, 128, stream);
+    DMOE_LOG(INFO) << "rank " << rank << " simple kernel done." << LEND;
+}
+
 void test_op_overlap(int rank, std::vector<int> ranks, std::string uid) {
     t_comm_op = std::thread(test_comm, rank, ranks, uid);
     t_calc_op = std::thread(test_calc, rank);
     t_copy_op = std::thread(test_copy, rank);
-    t_kernel_op = std::thread(test_kernel, rank);
+    t_kernel_op = std::thread(test_kernel_simple, rank);
     t_comm_op.join();
     t_calc_op.join();
     t_copy_op.join();
