@@ -148,6 +148,7 @@ MuAttnDispatcher::MuAttnDispatcher(
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
+            DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
             exp_channels[id] = i;
         }
     }
@@ -176,6 +177,9 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             j ++;
         ASSERT(ep_rank >= 0);
         int cid = _encode(lid, batch.metadata->exp_ids[i]);
+        DMOE_LOG(WARNING) << "sending a batch to channel " << cid << " expert id " << i << " " << batch.metadata->exp_ids[i] << " " << lid << LEND;
+        for (int i = 0; i < this->exp_channels.size(); i ++)
+            DMOE_LOG(DEBUG) << i << " " << this->exp_channels[i] << LEND;
         if (i == 0 && j == n) {
             // a faster path
             this->_send_batch(
@@ -530,7 +534,7 @@ void MuAttentionPool::run() {
                     // recv messages from multiple dispatchers
                     at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
                     at::cuda::CUDAStreamGuard guard(c10_stream);
-                    
+
                     while (!end_flag) {
                         DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
                         Metadata meta;

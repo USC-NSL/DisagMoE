@@ -324,6 +324,9 @@ class Engine:
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
+        if self.engine_type == EngineType.ATTENTION and self.model_config.rank != 0:
+            # not a driver; no need to post_process
+            return
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
@@ -331,8 +334,6 @@ class Engine:
 
     def loop(self):
         self._logger.info("starting engine loop")
-        a = torch.ones((1, 1)).to("cuda")
-        b = torch.ones((1, 1)).to("cuda")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -344,7 +345,6 @@ class Engine:
             
             batch = TensorBatch.from_c(batch_info)
 
-            self._logger.info(f"received batch, current stream: {torch.cuda.current_stream()}")
             meta: Metadata = batch.metadata
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)

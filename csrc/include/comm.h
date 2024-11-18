@@ -93,6 +93,11 @@ public:
 
 class NcclGroupChannel: public NcclChannel {
 protected:
+    zmq::context_t ctx;
+    zmq::socket_t mq;
+    int root_device_id;
+    int zmq_comm_id;
+    
     int local_rank;
     int size;
 
