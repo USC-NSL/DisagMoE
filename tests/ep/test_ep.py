@@ -9,7 +9,7 @@ import torch
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
 
-cluster_config = ClusterConfig(n_node=1, n_gpu=6, 
+cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
                                id_tokenizer=tokenizer, 
                                id_sampler=sampler)
 
@@ -41,7 +41,9 @@ print("engine started")
 
 n = 32
 
-master.put_multi_request(n)
+input_lens = [1] * n
+
+master.put_requests(input_lens)
 
 stats = master.wait_for_requests(n)
 

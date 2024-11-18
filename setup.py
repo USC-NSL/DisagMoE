@@ -42,7 +42,7 @@ ext_modules = [
         find_all_c_targets(CSRC_DIR),
         include_dirs=[
             pybind11.get_include(),
-            os.path.join(CSRC_DIR, "includes"),
+            os.path.join(CSRC_DIR, "include"),
             CUDA_INCLUDE_DIR,
             f"{THIRD_PARTY_DIR}/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
             f"{THIRD_PARTY_DIR}/cereal/include",

@@ -114,6 +114,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def(py::init<int, int, int>())
         .def("can_allocate", &BlockManager::can_allocate)
         .def("allocate", &BlockManager::allocate)
+        .def("release", &BlockManager::release)
+        .def("batch_release", &BlockManager::batch_release)
         .def("free", &BlockManager::free)
         .def("can_append", &BlockManager::can_append)
         .def("append_block", &BlockManager::append_block)

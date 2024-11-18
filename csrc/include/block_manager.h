@@ -25,23 +25,27 @@ private:
 
 public:
 
-    BlockManager(const int &block_size, const int &num_blocks, const int &reserved_blocks);
+    BlockManager(int block_size, int num_blocks, int reserved_blocks);
 
-    bool can_allocate(const int &seq_len);
+    bool can_allocate(int seq_len);
 
-    void allocate(const int &seq_id, const int &seq_len);
+    void release(int seq_ids);
 
-    void free(const int &seq_id);
+    void batch_release(const std::vector<int> &seq_ids);
+
+    void allocate(int seq_id, int seq_len);
+
+    void free(int seq_id);
 
     bool can_append();
 
-    void append_block(const int& seq_id);
+    void append_block(int seq_id);
 
     int num_free_blocks();
 
-    block_list_t get_seq_block_list(const int& seq_id);
+    block_list_t get_seq_block_list(int seq_id);
 
-    bool has_seq_block_list(const int &seq_id);
+    bool has_seq_block_list(int seq_id);
 
     void append_tokens(int seq_id, int context_len, int num_tokens);
 

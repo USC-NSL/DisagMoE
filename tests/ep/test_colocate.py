@@ -52,7 +52,9 @@ print("engine started")
 
 n = 1
 
-master.put_multi_request(n)
+input_lens = [1] * n
+
+master.put_requests(input_lens)
 
 stats = master.wait_for_requests(n)
 
