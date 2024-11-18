@@ -10,9 +10,9 @@ from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
                                          AttentionBatchMetadata, SloStat)
-from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens
+from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import tensor_as_buf, get_ip, nvtx_range
+from disagmoe.utils.utils import get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
@@ -59,8 +59,6 @@ class Engine:
             
         self.loop_thread = Thread(target=self.loop)
         
-        # !TODO(hogura|20241011): remove the frozen tensors
-        self._frozen_tensors: List[torch.Tensor] = []
         self._process_batch: Callable
         
         self.block_mgr: BlockManager = None
@@ -284,15 +282,15 @@ class Engine:
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
-        expert_ids = expert_ids.view((meta_c.shape[0],))
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
+        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
         
         self._logger.info(f"processed batch: {hiddens.shape}")
         
         if not mocking:
             new_meta_c = meta_c.to_metadata()
-            new_meta_c.update_exp_ids(expert_ids.tolist(), exp_mappings.tolist())
+            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         else:
             new_meta_c = meta_py
         
@@ -304,20 +302,21 @@ class Engine:
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        expert_ids = torch.LongTensor(meta_c.exp_ids, device="cpu")
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
         permuted_tensor = permute_tokens(tensor, exp_mappings)
-        meta_c.permute_token_infos(exp_mappings.tolist())
+        meta_c.permute_token_infos(exp_mappings)
         
+        # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
-        batch_sizes = torch.LongTensor(
+        batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
+            dtype=torch.int64,
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
-        new_mapping = meta_c.sort_by_prefill_order()
-        output = permute_tokens(output, torch.LongTensor(new_mapping, device="cpu"))
+        new_mappings = list(meta_c.sort_by_prefill_order())
+        output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
         
@@ -325,9 +324,8 @@ class Engine:
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
-        self._frozen_tensors.append(output)  # TODO(hogura|20241014): use pybind11.ref_count to control the reference
         batch: TensorBatch = TensorBatch_C()
-        batch.data = output.data_ptr()
+        batch.data = output
         batch.metadata = meta
         self.dispatcher.put(batch, 0)
 
@@ -339,22 +337,20 @@ class Engine:
         torch.set_default_device("cuda:0")
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
-            batch_info = self.scheduler.schedule()  # !NOTE(hogura|20241111): the attn worker will also block the scheduling
-            if not batch_info.data:
+            batch_info = self.scheduler.schedule()
+            if batch_info.data is None:
                 continue
             
-            self._logger.warning(f"scheduled result {batch_info}")
-            self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
-            with torch.cuda.stream(self.stream):
-                self._logger.warning(f"current stream {torch.cuda.current_stream()}, saved stream {self.stream}")
-                a += b
-            self._logger.warning(f"executed a+=b")
-            meta: Metadata = batch_info.metadata
-            tensor = tensor_as_buf(batch_info.data, meta.shape)
-            self._logger.info(f"tensor_as_buf finished")
-            
-            output, meta = self._process_batch(meta, tensor)
+            batch = TensorBatch.from_c(batch_info)
+
+            meta: Metadata = batch.metadata
+            output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
+            
+    def release_seqs(self, seq_ids: List[int]):
+        for id in seq_ids:
+            self.decode_seq_lens.pop(id)
+        self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
         self.end_flag = True
@@ -414,21 +410,21 @@ class TokenizerEngine(Engine):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
         
-    def put_request(self, tokens: List[int]):
+    def process_request(self, req_id: int, input_len: int):
         # TODO(hogura|20241008): only #prefill = 1 now
-        assert len(tokens) == 1
-        self._logger.info("putting request")
-        shape = (len(tokens), self.model_config.hidden_size)
+        assert input_len == 1
+        shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.ones(size=shape).type(self.model_config.dtype)
+        x = torch.zeros(size=shape).type(self.model_config.dtype)
         self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(x.data_ptr(), shape)
-        self._frozen_tensors.append(x)
+        self.tokenizer.put_request(req_id, x)
         
-    def gen_n_request(self, n_request: int):
-        for i in range(n_request):
-            self.put_request([i])
-        self._logger.info("request gen.")
+    def put_single_request(self, req_id: int, input_len: int):
+        self.process_request(req_id, input_len)
+        
+    def put_requests(self, req_ids: List[int], input_lens: List[int]):
+        for req_id, input_len in zip(req_ids, input_lens):
+            self.process_request(req_id, input_len)
         
     def init_core(
             self,

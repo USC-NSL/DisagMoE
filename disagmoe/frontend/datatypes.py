@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
-
+import torch
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
@@ -46,8 +46,15 @@ class Metadata:
 
 @dataclass
 class TensorBatch:
-    data: int       # pointer
+    data: torch.Tensor       # pointer
     metadata: int # pointer
+    
+    @staticmethod
+    def from_c(batch_c: "TensorBatch_C") -> "TensorBatch":
+        return TensorBatch(
+            batch_c.data,
+            batch_c.metadata
+        )
 
 @dataclass
 class AttentionBatchMetadata:

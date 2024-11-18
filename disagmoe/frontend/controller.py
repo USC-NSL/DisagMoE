@@ -15,7 +15,16 @@ from disagmoe.utils.constants import *
 from disagmoe.config import CacheConfig, ModelConfig
 from disagmoe.env import ENV_VARS
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Union, Tuple
+
+class RequestIDGenerator:
+        
+    def __init__(self):
+        self._req_id = 0
+        
+    def next(self) -> int:
+        self._req_id += 1
+        return self._req_id
 
 class Controller:
     
@@ -25,11 +34,14 @@ class Controller:
         self.n_gpu_per_node = n_gpu_per_node
         self.n_gpu_per_worker = 1
         self.workers = []
+        self.attn_workers = []
         self.device_ids = []
         self._logger = get_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
         self.profile = False
+        self.req_id_generator = RequestIDGenerator()
+        self.in_flight_reqs = set()
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -128,6 +140,12 @@ class Controller:
                                        num_gpu_blocks=NUM_BLOCKS, 
                                        num_reserved_blocks=RESERVED_BLOCKS)
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
+        
+        # collect attention workers for kv-cache management
+        for worker, device_id in zip(self.workers, self.device_ids):
+            if len(model_place.attn_ids_at(device_id)) > 0:
+                self.attn_workers.append(worker)
+        
         ray.get([
             worker.setup_engine.remote(
                 EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
@@ -177,20 +195,37 @@ class Controller:
         self._logger.info("launched all tasks")
         ray.get(tasks)
         
+    def release_kv_cache(self, req_ids: Union[int, List[int]]):
+        if not isinstance(req_ids, list):
+            req_ids = [req_ids]
+        tasks = [worker.release_seqs.remote(req_ids) for worker in self.attn_workers]
+        ray.get(tasks)
+        
     def start_engine(self, non_blocking: bool = True):
         tasks = [worker.start.remote() for worker in self.workers + \
                     [self.sampler_worker, self.tokenizer_worker]]
         if not non_blocking:
             ray.get(tasks)
+    
+    def get_new_req_id(self) -> int:
+        req_id = self.req_id_generator.next()
+        self.in_flight_reqs.add(req_id)
+        return req_id
             
-    def put_request(self, tokens: List[int]):
-        self.tokenizer_worker.put_request.remote(tokens)
+    def put_single_request(self, input_len: List[int]):
         
-    def put_multi_request(self, n_request: int):
-        self.tokenizer_worker.gen_n_request.remote(n_request)
+        self.tokenizer_worker.put_single_request.remote(self.get_new_req_id(), input_len)
+        
+    def put_requests(self, input_lens: int):
+        req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
+        self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
         
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
+        # clean all in flight reqs as they are all done
+        finished_req_ids = [req_id for req_id in self.in_flight_reqs]
+        self.release_kv_cache(finished_req_ids)
+        self.in_flight_reqs.clear()
         return results
     
     def stop_workers(self):

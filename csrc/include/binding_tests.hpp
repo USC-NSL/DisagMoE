@@ -6,6 +6,7 @@
 #include "embedding.h"
 #include "constants.h"
 #include "utils.hpp"
+#include "datatypes.hpp"
 
 #include <thread>
 #include <memory>
@@ -171,8 +172,8 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     printf("fetched size: %u\n", res.size());
 //     // if (res.size() == 2) {
 //     //     for (int i = 0; i < 2; i ++)
-//     //         LOG(INFO) << *res[i].metadata << LEND;
-//     //     LOG(INFO) << "passed" << LEND;
+//     //         DMOE_LOG(INFO) << *res[i].metadata << LEND;
+//     //     DMOE_LOG(INFO) << "passed" << LEND;
 //     //     exit(0);
 //     // }
 //     std::cout << *res[0].metadata << std::endl;
@@ -247,7 +248,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     auto batch1 = scheduler->schedule();
 //     auto batch2 = scheduler->schedule();
     
-//     LOG(INFO) << "batch1:" << *(batch1.metadata) << "\n" << "batch2: " << *(batch2.metadata) << LEND;
+//     DMOE_LOG(INFO) << "batch1:" << *(batch1.metadata) << "\n" << "batch2: " << *(batch2.metadata) << LEND;
 
 //     exit(0);    
 // }
@@ -265,7 +266,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     auto pr = init_zmq_channel(0, SAMPLER_DEV_ID);
 //     auto pr2 = init_zmq_channel(SAMPLER_DEV_ID, 1); // dummy channel
     
-//     LOG(INFO) << "got all channels" << LEND;
+//     DMOE_LOG(INFO) << "got all channels" << LEND;
 
 //     std::vector<ChannelInfo> chan_info = {ChannelInfo(std::vector<int>(), {0})};
 //     auto c_sender = pr.first, c_recver = pr.second;
@@ -275,7 +276,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //         chan_info);
 //     MuExpertDispatcher sender({0}, 0, {c_sender}, {ChannelInfo{{0}, {0}}});
 
-//     LOG(INFO) << "got all workers" << LEND;
+//     DMOE_LOG(INFO) << "got all workers" << LEND;
 
 //     size_t n = 1;
 //     size_t hs = 4;
@@ -292,11 +293,11 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     sampler.start();
 //     sender.start();
 
-//     LOG(INFO) << "started workers" << LEND;
+//     DMOE_LOG(INFO) << "started workers" << LEND;
 
 //     sender.debug_put(TensorBatch {buf, meta});
 //     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-//     LOG(INFO) << "end tests" << LEND;
+//     DMOE_LOG(INFO) << "end tests" << LEND;
 //     exit(0);
 // }
 
@@ -304,7 +305,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     auto pr = init_zmq_channel(SAMPLER_DEV_ID, 0);
 //     auto pr2 = init_zmq_channel(1, SAMPLER_DEV_ID); // dummy channel
     
-//     LOG(INFO) << "got all channels" << LEND;
+//     DMOE_LOG(INFO) << "got all channels" << LEND;
 
 //     std::vector<ChannelInfo> chan_info = {ChannelInfo(std::vector<int>(), {0})};
 //     auto c_sender = pr.first, c_recver = pr.second;
@@ -314,7 +315,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //         chan_info);
 //     MuPool recver({0}, 0, {c_recver}, true);
 
-//     LOG(INFO) << "got all workers" << LEND;
+//     DMOE_LOG(INFO) << "got all workers" << LEND;
 
 //     size_t n = 1;
 //     size_t hs = 4;
@@ -333,15 +334,15 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     sampler.process_batch(buf, meta);
 
-//     LOG(INFO) << "started workers" << LEND;
+//     DMOE_LOG(INFO) << "started workers" << LEND;
 
 //     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
 //     auto res = recver.fetch_largest_batch();
 
-//     LOG(INFO) << "fetched " << res.size() << " batch" << LEND;
+//     DMOE_LOG(INFO) << "fetched " << res.size() << " batch" << LEND;
 
-//     LOG(INFO) << "end tests" << LEND;
+//     DMOE_LOG(INFO) << "end tests" << LEND;
 
 //     exit(0);
 // }
@@ -351,7 +352,7 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
     auto c = static_cast<NcclGroupChannel*>(c_raw.get());
     c->instantiate();
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
     
     if (rank == 0) {
         Metadata meta = Metadata {
@@ -365,12 +366,12 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
         };
         uintptr_t buf = alloc_cuda_tensor(4, 0);
         c->send_metadata(meta);
-        LOG(INFO) << "Send metadata." << LEND;
+        DMOE_LOG(INFO) << "Send metadata." << LEND;
         c->send(buf, meta);
     } else {
         Metadata meta;
         c->recv_metadata(meta);
-        LOG(INFO) << "Got metadata: " << meta << LEND;
+        DMOE_LOG(INFO) << "Got metadata: " << meta << LEND;
         ASSERT(meta.num_element() == 4);
         uintptr_t buf = alloc_cuda_tensor(meta.num_element(), 0);
         c->recv(buf, meta);
@@ -379,14 +380,14 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
         ASSERT(meta.prefill_poss[0] == 4);
     }
 
-    LOG(INFO) << "rank " << rank << " passed" << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
 }
 
 void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string uid) {
     auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
     auto c = static_cast<NcclGroupChannel*>(c_raw.get());
     c->instantiate();
-    LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
 
     std::vector<int> layer_ids{0, 1};
     std::vector<Channel_t> channels{};
@@ -396,17 +397,19 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
         channels
     );
 
+    torch::Tensor dummy_tensor = torch::empty({0}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
+
     std::vector<std::vector<AttentionBatch>> data_queue(2);
     data_queue[0] = std::vector<AttentionBatch>{
-        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {0}, {1}, {1}, {}}
         )},
-        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {1}, {1}, {1}, {}}
         )},
     };
     data_queue[1] = std::vector<AttentionBatch>{
-        AttentionBatch{0, std::make_shared<AttentionBatchMetadata>(
+        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {2}, {1}, {1}, {}}
         )}
     };
@@ -429,11 +432,12 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
     auto &seq_ids = result.metadata->seq_ids;
 
     for (int i: seq_ids)
-        LOG(DEBUG) << "seq_id: " << i << LEND;
+        DMOE_LOG(DEBUG) << "seq_id: " << i << LEND;
 
     ASSERT(seq_ids.size() == 2);
     ASSERT(seq_ids[0] == 0 && seq_ids[1] == 1);
 
+<<<<<<< HEAD:csrc/includes/binding_tests.hpp
     LOG(INFO) << "rank " << rank << " passed" << LEND;
 }
 
@@ -492,4 +496,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
     }
     for (auto &t: threads)
         t.join();
+=======
+    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
+>>>>>>> main:csrc/include/binding_tests.hpp
 }

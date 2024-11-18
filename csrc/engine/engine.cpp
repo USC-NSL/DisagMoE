@@ -28,7 +28,7 @@ void init_tensor_channels(
     const std::map<int, string> &out_group_nccl_ids
 ) {
     /*
-        !NOTE(hogura|20241110): decrypted function
+        !NOTE(hogura|20241110): deprecated function
     */
     ASSERT(!is_embedding_node(local_id));
     LOG(DEBUG) << local_id << " " << "init channels" << LEND;
@@ -79,10 +79,10 @@ void init_tensor_channels(
                 // tokenizer -> (attn/expert); expert -> sampler; sampler -> attn
                 /*is_sender=*/ is_tokenizer(peer_id) ? false : !is_attn
             );
-        LOG(DEBUG) << local_id << " created a thread" << LEND;
+        DMOE_LOG(DEBUG) << local_id << " created a thread" << LEND;
         threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
-                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
             }, 
             channel
@@ -96,13 +96,13 @@ void init_tensor_channels(
         );
         threads.emplace_back(std::thread(
             [&](Channel_t channel) { 
-                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;
                 channel->instantiate(); 
             }, tensor_channel
         ));
     }
 
-    LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "joining channel threads" << LEND;
     for (auto &t: threads)
         t.join();
 
@@ -257,7 +257,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
         intra_group_channel_1, intra_group_channel_2, device_group_ids, group_nccl_id);
     
     // init dispatcher
-    LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t dispatcher;
     if (is_attn) {
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
@@ -267,7 +267,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     }
     
     // init scheduler
-    LOG(DEBUG) << local_id << " init scheduler" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " init scheduler" << LEND;
     scheduler_t scheduler;
     attn_scheduler_t attn_scheduler;
 

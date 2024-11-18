@@ -7,29 +7,43 @@
 
 #include "cuda_utils.h"
 
-BlockManager::BlockManager(const int &block_size, const int &num_blocks, const int &reserved_blocks) {
+BlockManager::BlockManager(int block_size, int num_blocks, int reserved_blocks) {
     num_blocks_ = num_blocks;
     reserved_blocks_ = reserved_blocks;
     block_size_ = block_size;
     
-    for (int i = 0; i < num_blocks_; i++) {
+    for (int i = 0; i < num_blocks_ + reserved_blocks_; i++) {
         free_blocks_.push(i);
     }
 }
 
-bool BlockManager::can_allocate(const int &seq_len) {
+bool BlockManager::can_allocate(int seq_len) {
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     return free_blocks_.size() >= blocks_needed + reserved_blocks_;
 }
 
-void BlockManager::allocate(const int &seq_id, const int &seq_len) {
+void BlockManager::release(int seq_ids) {
+    ASSERT (block_tables_.find(seq_ids) != block_tables_.end());
+    for (auto &x: (*block_tables_[seq_ids])) {
+        free_blocks_.push(x);
+    }
+    block_tables_.erase(seq_ids);
+}
+
+void BlockManager::batch_release(const std::vector<int> &seq_ids) {
+    for (auto &seq_id: seq_ids) {
+        release(seq_id);
+    }
+}
+
+void BlockManager::allocate(int seq_id, int seq_len) {
     AUTO_TX_RANGE;
-    // LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
+    // DMOE_LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
 
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     
-    // LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
+    // DMOE_LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
 
     ASSERT (free_blocks_.size() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
@@ -39,11 +53,11 @@ void BlockManager::allocate(const int &seq_id, const int &seq_len) {
     }
     block_tables_[seq_id] = block_list;
 
-    // LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
+    // DMOE_LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
 
 }
 
-void BlockManager::free(const int &seq_id) {
+void BlockManager::free(int seq_id) {
     auto it = block_tables_.find(seq_id);
     auto block_list = it->second;
     for (auto &x: (*block_list)) {
@@ -52,7 +66,7 @@ void BlockManager::free(const int &seq_id) {
     block_tables_.erase(it);
 }
 
-void BlockManager::append_block(const int& seq_id) {
+void BlockManager::append_block(int seq_id) {
     ASSERT (free_blocks_.size() > 0);
     int block_to_append = free_blocks_.front();
     free_blocks_.pop();
@@ -70,11 +84,11 @@ int BlockManager::num_free_blocks() {
     return free_blocks_.size();
 }
 
-bool BlockManager::has_seq_block_list(const int &seq_id) {
+bool BlockManager::has_seq_block_list(int seq_id) {
     return block_tables_.find(seq_id) != block_tables_.end();
 }
 
-block_list_t BlockManager::get_seq_block_list(const int &seq_id) {
+block_list_t BlockManager::get_seq_block_list(int seq_id) {
     return block_tables_[seq_id];
 }
 

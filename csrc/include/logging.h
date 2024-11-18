@@ -50,8 +50,7 @@ static void log(LogLevel level, const std::string& message) {
     }
 }
 
-#define LOG(LEVEL) std::cerr << COLOR_MAP[int(LEVEL)] << "" \
-                             << "(" << std::this_thread::get_id() << ")" \
+#define DMOE_LOG(LEVEL) std::cerr << COLOR_MAP[int(LEVEL)] << "" \
                              << " - " << __FILE__ ":" << __LINE__ \
                              << "@" << __FUNCTION__ \
                              << ">: " << C_RESET

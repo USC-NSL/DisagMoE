@@ -25,7 +25,7 @@ class MuDispatcher:
 
 class Tokenizer:
     
-    def put_request(self, tensor_buf: int, shape: Tuple[int]):
+    def put_request(self, tensor: torch.Tensor, shape: Tuple[int]):
         ...
         
     def start(self):
