@@ -97,7 +97,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid] = SloStat {clock(), 0, {}};
+            slo_stats[rid] = SloStat {rid, clock(), 0, {}};
         }
     }
 
@@ -136,7 +136,18 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
 }
 
-std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
+std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    std::vector<SloStat> res {};
+    for (auto &x: finished_seqs) {
+        res.emplace_back(slo_stats[x]);
+        slo_stats.erase(x);
+    }
+    finished_seqs.clear();
+    return res;
+}
+
+std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {
     std::lock_guard<std::mutex> _(this->result_lock);
     if (finished_seqs.size() < n_request)
         return {};

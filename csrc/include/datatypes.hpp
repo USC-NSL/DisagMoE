@@ -521,6 +521,7 @@ struct AttentionBatch {
 };
 
 struct SloStat {
+    int req_id;
     clock_t t_prefill;  // time to all finished prefill tokens
     clock_t t_decode;   // time to all finished decode tokens
 

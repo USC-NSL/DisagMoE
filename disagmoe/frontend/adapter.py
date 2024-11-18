@@ -36,7 +36,10 @@ class Sampler:
     def start(self):
         ...
         
-    def get_slo_stats(self, n_request: int) -> Dict[int, SloStat]:
+    def wait_slo_stats(self, n_request: int) -> Dict[int, SloStat]:
+        ...
+    
+    def fetch_finished_slo_stats(self) -> List[SloStat]:
         ...
         
 class BlockManager:
@@ -46,9 +49,6 @@ class BlockManager:
         
     # def allocate(seq_id: int, seq_len: int) -> List[int]:
     #     ...
-        
-    def free(self, seq_id: int) -> None:
-        ...
         
     def can_append(self) -> bool:
         ...

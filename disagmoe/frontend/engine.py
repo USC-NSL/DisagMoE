@@ -373,10 +373,10 @@ class SamplerEngine(Engine):
         self.sampler.start()
         
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
-        result = self.sampler.get_slo_stats(n_request)
+        result = self.sampler.wait_slo_stats(n_request)
         while len(result) == 0:
-            # NOTE(hogura|20241022): get_slo_stats will return len=0 until #request==n_reqquest
-            result = self.sampler.get_slo_stats(n_request)
+            # NOTE(hogura|20241022): wait_slo_stats will return len=0 until #request==n_reqquest
+            result = self.sampler.wait_slo_stats(n_request)
         new_res = {
             k: SloStat(
                 stat.t_prefill / CPS - (time.time() - self._t_start),

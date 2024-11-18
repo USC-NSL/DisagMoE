@@ -44,7 +44,9 @@ public:
 
     void start();
 
-    std::map<int, SloStat> get_slo_stats(int n_request);
+    std::vector<SloStat> fetch_finished_slo_stats();
+
+    std::map<int, SloStat> wait_slo_stats(int n_request);
 };
 
 class Tokenizer: public MuExpertDispatcher {
