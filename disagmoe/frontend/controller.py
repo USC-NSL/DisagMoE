@@ -207,7 +207,6 @@ class Controller:
         return req_id
             
     def put_single_request(self, input_len: List[int]):
-        
         self.tokenizer_worker.put_single_request.remote(self.get_new_req_id(), input_len)
         
     def put_requests(self, input_lens: int):
