@@ -2,6 +2,7 @@
 
 #include <string>
 #include <exception>
+#include <stdexcept>
 
 const int ZMQ_PORT_BASE = 24000;
 const int ZMQ_CPU_PORT_BASE = 25000;
