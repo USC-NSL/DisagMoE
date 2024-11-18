@@ -19,7 +19,7 @@ void test_bcast_comm(int rank, std::vector<int> ranks, std::string uid) {
     
     c->bcast_obj(buf, size);
 
-    LOG(INFO) << "rank " << rank << " communication done." << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " communication done." << LEND;
 }
 
 void test_bcast_calc(int rank) {

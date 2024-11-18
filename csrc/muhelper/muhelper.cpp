@@ -505,7 +505,7 @@ void MuAttentionPool::run() {
                 group_comm->recv_metadata(meta);
 
                 torch::Tensor tensor = torch::empty(
-                    {meta->num_tokens(), meta->token_hidden_dim()}, 
+                    {meta.num_tokens(), meta.token_hidden_dim()}, 
                     torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                 );
 
@@ -532,7 +532,7 @@ void MuAttentionPool::run() {
                         c->recv_metadata(meta);
 
                         torch::Tensor tensor = torch::empty(
-                            {meta->num_tokens(), meta->token_hidden_dim()}, 
+                            {meta.num_tokens(), meta.token_hidden_dim()}, 
                             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                         );
 
@@ -544,7 +544,7 @@ void MuAttentionPool::run() {
                         // When using large_comm, all tensors are sent to the workers
                         // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
                         // See MuAttentionPool::process_batch
-                        process_batch(tensor_buf, meta_t, /*send_from_zmq=*/ false);
+                        process_batch(tensor, meta_t, /*send_from_zmq=*/ false);
                     }
                 }, group_c
             ));
@@ -557,7 +557,7 @@ void MuAttentionPool::terminate() {
     pool_thread.join();
 }
 
-AttentionBatch MuAttentionPool::pack_attn_batch(uintptr_t data_ptr, metadata_t meta) {
+AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
     // for a simple case we consider prefill sequences can only have 1 token,
     // so all sequences in tensor are complete and can be scheduled immediately
 

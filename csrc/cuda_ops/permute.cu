@@ -15,7 +15,6 @@ template <class T, int CHUNK_SIZE>
 __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
     constexpr int WARPSIZE = 32;
 
-    int token_id = blockIdx.x;
     int chunk_id = blockIdx.y;
     int num_warps = blockDim.x / WARPSIZE;
 

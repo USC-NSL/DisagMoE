@@ -103,13 +103,13 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     if (layer_id == -1) {
         return AttentionBatch{};
     }
-    LOG(DEBUG) << "Driver scheduling" << LEND;
+    DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
 
     // !FIXME(hogura|20241110): only sending #batches when EP>1 may incur correctness issue.
 
     long long schedule_result = (1ll * layer_id << 32) | batches.size();
 
-    LOG(DEBUG) << "Driver schedule result: " << schedule_result << " " << layer_id << " " << batches.size() << LEND;
+    DMOE_LOG(DEBUG) << "Driver schedule result: " << schedule_result << " " << layer_id << " " << batches.size() << LEND;
 
     void* buf = (void*) &schedule_result;
     size_t size = sizeof(schedule_result);
@@ -133,7 +133,7 @@ AttentionWorkerScheduler::AttentionWorkerScheduler(
 
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
-    LOG(DEBUG) << "Worker scheduling" << LEND;
+    DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
     long long schedule_result;
     void* buf;
     size_t size;
@@ -143,12 +143,12 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
     int layer_id = schedule_result >> 32;
     unsigned int num_batches = schedule_result & 0xffffffffu;
 
-    LOG(DEBUG) << "Worker got result: " << schedule_result << " " << layer_id << " " << num_batches << LEND;
+    DMOE_LOG(DEBUG) << "Worker got result: " << schedule_result << " " << layer_id << " " << num_batches << LEND;
 
     std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, num_batches);
 
     auto batch = AttentionBatch::merge(batches);
-    LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
+    DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
     return batch;
 }
 

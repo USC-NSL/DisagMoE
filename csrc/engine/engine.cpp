@@ -31,7 +31,7 @@ void init_tensor_channels(
         !NOTE(hogura|20241110): deprecated function
     */
     ASSERT(!is_embedding_node(local_id));
-    LOG(DEBUG) << local_id << " " << "init channels" << LEND;
+    DMOE_LOG(DEBUG) << local_id << " " << "init channels" << LEND;
 
     int n_in = in_device_ids.size();
     int n_out = out_device_ids.size();
@@ -150,9 +150,9 @@ void init_all_channels(
     #define INST(channel) {                                                                 \
         threads.emplace_back(std::thread(                                                   \
             [&](Channel_t channel) {                                                        \
-                LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;  \
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;  \
                 channel->instantiate();                                                     \
-                LOG(DEBUG) << local_id << " channel @" << channel << " inited" << LEND;     \
+                DMOE_LOG(DEBUG) << local_id << " channel @" << channel << " inited" << LEND;     \
             },                                                                              \
             channel                                                                         \
         ));                                                                                 \

@@ -437,8 +437,7 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
     ASSERT(seq_ids.size() == 2);
     ASSERT(seq_ids[0] == 0 && seq_ids[1] == 1);
 
-<<<<<<< HEAD:csrc/includes/binding_tests.hpp
-    LOG(INFO) << "rank " << rank << " passed" << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
 }
 
 void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string> uids) {
@@ -453,7 +452,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                 cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -2);
                 if (i == 0) {
                     if (rank == 0) {
-                        LOG(DEBUG) << "sending metadata" << LEND;
+                        DMOE_LOG(DEBUG) << "sending metadata" << LEND;
                         c->send_metadata(Metadata {
                             /*shape=*/ std::vector<size_t>({1, 4}),
                             /*dtype=*/ "fp16",
@@ -463,7 +462,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                             /*prefill_poss=*/ std::vector<int>({4}),
                             /*prompt_lens=*/ std::map<int, int>(),
                         });
-                        LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
+                        DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
                         std::this_thread::sleep_for(std::chrono::milliseconds(10000));
                         // c->send_metadata(Metadata {
                         //     /*shape=*/ std::vector<size_t>({1, 4}),
@@ -476,27 +475,25 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                         // });
                     } else {
                         Metadata meta;
-                        LOG(DEBUG) << "receiving metadata" << LEND;
+                        DMOE_LOG(DEBUG) << "receiving metadata" << LEND;
                         c->recv_metadata(meta);
-                        LOG(DEBUG) << "get " << meta << LEND;
+                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
                         c->recv_metadata(meta);
-                        LOG(DEBUG) << "get " << meta << LEND;
+                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
                     }
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                    LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
+                    DMOE_LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
                     void* data;
                     CUDACHECK(cudaMallocAsync(&data, 4096, stream));
                     CUDACHECK(cudaStreamSynchronize(stream));
                     // c->all_reduce(data, {1, 4096});
-                    LOG(WARNING) << "allocated tensor" << LEND;
+                    DMOE_LOG(WARNING) << "allocated tensor" << LEND;
                 }
             }, uids[i], i
         ));
     }
     for (auto &t: threads)
         t.join();
-=======
     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
->>>>>>> main:csrc/include/binding_tests.hpp
 }

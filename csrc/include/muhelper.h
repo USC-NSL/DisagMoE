@@ -141,7 +141,7 @@ protected:
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
-    void recv_tensor(int peer_id, uintptr_t &tensor_buf, metadata_t &meta);
+    void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
 
     virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true);
 
@@ -186,7 +186,7 @@ private:
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
-    AttentionBatch pack_attn_batch(torch::Tensor, metadata_t);
+    AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
 
     int tokens_in_layer(int lid) override;
 
