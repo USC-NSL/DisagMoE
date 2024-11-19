@@ -2,8 +2,7 @@ import torch
 import time
 import enum
 import os
-
-import numpy as np
+import asyncio
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
@@ -17,7 +16,6 @@ from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
 
-from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Union, Callable, Tuple
@@ -215,8 +213,6 @@ class Engine:
             decode_seq_lens[i] += 1
             self.decode_seq_lens[seq_id] += 1
         
-        self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
-        
         # 3. prepare seqlens and start_locs
         seq_lens_cuda = torch.IntTensor(meta_py.prefill_seq_len + decode_seq_lens).to("cuda", non_blocking=True)
         
@@ -334,6 +330,7 @@ class Engine:
             
     def release_seqs(self, seq_ids: List[int]):
         for id in seq_ids:
+            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
             self.decode_seq_lens.pop(id)
         self.block_mgr.batch_release(seq_ids)
     
@@ -371,6 +368,11 @@ class SamplerEngine(Engine):
         
     def start(self):
         self.sampler.start()
+        
+    def fetch_finished_results(self) -> List[SloStat]:
+        # convert c++ vector to python list
+        list_results = list(self.sampler.fetch_finished_slo_stats())
+        return list_results
         
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
         result = self.sampler.wait_slo_stats(n_request)

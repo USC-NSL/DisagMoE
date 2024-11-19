@@ -2,6 +2,7 @@ import ray
 import ray.runtime_env
 import torch
 import os
+import asyncio
 
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -16,6 +17,26 @@ from disagmoe.config import CacheConfig, ModelConfig
 from disagmoe.env import ENV_VARS
 
 from typing import List, Dict, Optional, Union
+
+class AsyncResult:
+    
+    def __init__(self, req_id: int):
+        self.req_id = req_id
+        self.finish_cond = asyncio.Condition()
+        self.slo_stat = None
+        
+    async def wait(self):
+        await self.finish_cond.acquire()
+        await self.finish_cond.wait()
+        self.finish_cond.release()
+        
+    async def get(self) -> SloStat:
+        await self.wait()
+        return self.slo_stat
+        
+    def put(self, slo_stat: SloStat):
+        self.slo_stat = slo_stat
+        self.finish_cond.notify()
 
 class RequestIDGenerator:
         
@@ -42,6 +63,8 @@ class Controller:
         self.profile = False
         self.req_id_generator = RequestIDGenerator()
         self.in_flight_reqs = set()
+        self.end_flag = False
+        self.request_results: Dict[int, AsyncResult] = dict()
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -205,13 +228,37 @@ class Controller:
         req_id = self.req_id_generator.next()
         self.in_flight_reqs.add(req_id)
         return req_id
-            
-    def put_single_request(self, input_len: List[int]):
-        self.tokenizer_worker.put_single_request.remote(self.get_new_req_id(), input_len)
+    
+    def process_finished_results(self, results: List[SloStat]):
+        # release request resources
+        finished_req_ids = [r.req_id for r in results]
+        self.release_kv_cache(finished_req_ids)
+        for req_id in finished_req_ids:
+            self.in_flight_reqs.remove(req_id)
         
-    def put_requests(self, input_lens: int):
+        # deal with request results
+        for result in results:
+            self.request_results[result.req_id].put(result)
+            self.request_results.pop(result.req_id)
+        
+    async def poll_finished_results(self) -> List[SloStat]:
+        while not self.end_flag:
+            results = ray.get(self.sampler_worker.fetch_finished_results.remote())
+            if len(results) != 0:
+                self.process_finished_results(results)
+            asyncio.sleep(0.1)
+            
+    def put_single_request(self, input_len: List[int]) -> AsyncResult:
+        req_id = self.get_new_req_id()
+        res = AsyncResult(req_id)
+        self.tokenizer_worker.put_single_request.remote(req_id, input_len)
+        return res
+        
+    def put_requests(self, input_lens: int) -> List[AsyncResult]:
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
+        results = [AsyncResult(req_id) for req_id in req_ids]
         self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
+        return results
         
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
@@ -223,6 +270,7 @@ class Controller:
     
     def stop_workers(self):
         self.stop_profile()
+        self.end_flag = True
         tasks = [worker.terminate.remote() for worker in self.workers]
         ray.get(tasks)
         
