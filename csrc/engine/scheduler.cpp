@@ -6,6 +6,7 @@
 #include <exception>
 #include <vector>
 #include <string>
+#include <set>
 
 scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
@@ -105,14 +106,19 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     }
     DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
 
-    // !FIXME(hogura|20241110): only sending #batches when EP>1 may incur correctness issue.
+    // TODO(hogura|20241119): here only send seq_ids as schedule result; need to send prefill_len
 
-    long long schedule_result = (1ll * layer_id << 32) | batches.size();
+    std::vector<int> schedule_result;
+    schedule_result.push_back(layer_id);
+    for (auto &batch: batches)
+        for (int i: batch.metadata->seq_ids)
+            schedule_result.push_back(i);
 
-    DMOE_LOG(DEBUG) << "Driver schedule result: " << schedule_result << " " << layer_id << " " << batches.size() << LEND;
+    DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
 
-    void* buf = (void*) &schedule_result;
-    size_t size = sizeof(schedule_result);
+    auto cerealized = cerealize_(schedule_result);
+    void* buf = cerealized.data();
+    size_t size = cerealized.size();
     chan->bcast_obj(buf, size);
 
     auto batch = AttentionBatch::merge(batches);
@@ -134,18 +140,20 @@ AttentionWorkerScheduler::AttentionWorkerScheduler(
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
     DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
-    long long schedule_result;
+    std::vector<int> schedule_result;
     void* buf;
     size_t size;
     chan->bcast_obj(buf, size);
-    schedule_result = *((long long*)buf);
+    decerealize_((char*) buf, size, schedule_result);
 
-    int layer_id = schedule_result >> 32;
-    unsigned int num_batches = schedule_result & 0xffffffffu;
+    int layer_id = schedule_result[0];
+    std::set<int> seq_ids;
+    for (int i = 1; i < schedule_result.size(); i++)
+        seq_ids.insert(schedule_result[i]);
 
-    DMOE_LOG(DEBUG) << "Worker got result: " << schedule_result << " " << layer_id << " " << num_batches << LEND;
+    DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
 
-    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, num_batches);
+    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
 
     auto batch = AttentionBatch::merge(batches);
     DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;

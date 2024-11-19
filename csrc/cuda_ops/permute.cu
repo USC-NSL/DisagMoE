@@ -133,4 +133,5 @@ void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, 
     AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
         _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
     });
+    CUDACHECK(cudaStreamSynchronize(stream));
 }

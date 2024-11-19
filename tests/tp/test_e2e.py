@@ -41,7 +41,7 @@ master.start_profile()
 print("start engine")
 master.start_engine()
 
-n = 1
+n = 4
 
 print("put multi request")
 master.put_requests([1] * n)

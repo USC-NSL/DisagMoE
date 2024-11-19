@@ -4,6 +4,7 @@
 #include <thread>
 #include <queue>
 #include <condition_variable>
+#include <set>
 
 #include "datatypes.hpp"
 #include "comm.h"
@@ -202,7 +203,7 @@ public:
 
     std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, int num_batches);
+    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
 
     void run() override;
 
