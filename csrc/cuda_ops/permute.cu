@@ -128,7 +128,6 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
 void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
     at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
-    std::cout << "current stream: " << c10_stream.stream() << std::endl;
     torch::Tensor src_tensor = torch::from_blob(src_ptr, {num_tokens}, torch::TensorOptions().dtype(torch::kUInt64)).to(dest.device());
     AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
         _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);

@@ -523,9 +523,7 @@ struct AttentionBatch {
                 decode_idx ++;
             }
         }
-        DMOE_LOG(WARNING) << "start gather_tokens_cuda in stream " << stream << LEND;
         gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
-        DMOE_LOG(WARNING) << "end gather_tokens_cuda" << LEND;
 
         return AttentionBatch {tensor, meta};
     }

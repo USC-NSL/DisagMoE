@@ -221,8 +221,6 @@ class Engine:
             decode_seq_lens[i] += 1
             self.decode_seq_lens[seq_id] += 1
         
-        self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
-        
         # 3. prepare seqlens and start_locs
         seq_lens_cuda = torch.IntTensor(meta_py.prefill_seq_len + decode_seq_lens).to("cuda", non_blocking=True)
         
@@ -265,8 +263,6 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
-        self._logger.info(f"process batch AttentionBatchMetadata: {meta_c}")
-        
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
         
@@ -277,16 +273,12 @@ class Engine:
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         
-        self._logger.info(f"packed FlashAttentionMetadata: {attn_meta}")
-        
         # TODO(hogura|20241015): only top-1 expert currently
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
-        
-        self._logger.info(f"processed attn batch: {hiddens.shape}")
         
         if not mocking:
             new_meta_c = meta_c.to_metadata()
@@ -301,33 +293,25 @@ class Engine:
                              meta_c: Metadata, 
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
-        self._logger.info(f"start process_batch_expert")
         
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
-        self._logger.info(f"permute_tokens")
         permuted_tensor = permute_tokens(tensor, exp_mappings)
         meta_c.permute_token_infos(exp_mappings)
         
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
-        self._logger.info(f"get_expert_batch_sizes")
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
-        self._logger.info(f"saved stream {self.stream}, current stream {torch.cuda.current_stream()}")
-        self.stream.synchronize()
-        self._logger.info(f"expert execute, {meta_c.layer_id, permuted_tensor.shape, batch_sizes}")
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
-        
-        self._logger.info(f"processed expert batch: {output.shape}")
-        
+                
         return output, meta_c
 
     @nvtx_range("Engine.post_process")

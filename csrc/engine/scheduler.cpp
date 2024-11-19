@@ -104,7 +104,7 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     if (layer_id == -1) {
         return AttentionBatch{};
     }
-    DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
+    // DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
 
     // TODO(hogura|20241119): here only send seq_ids as schedule result; need to send prefill_len
 
@@ -114,7 +114,7 @@ AttentionBatch AttentionDriverScheduler::schedule() {
         for (int i: batch.metadata->seq_ids)
             schedule_result.push_back(i);
 
-    DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
+    // DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
 
     auto cerealized = cerealize_(schedule_result);
     void* buf = cerealized.data();
@@ -139,7 +139,7 @@ AttentionWorkerScheduler::AttentionWorkerScheduler(
 
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
-    DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
+    // DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
     std::vector<int> schedule_result;
     void* buf;
     size_t size;
@@ -151,12 +151,12 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
     for (int i = 1; i < schedule_result.size(); i++)
         seq_ids.insert(schedule_result[i]);
 
-    DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
+    // DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
 
     std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
 
     auto batch = AttentionBatch::merge(batches);
-    DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
+    // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
     return batch;
 }
 

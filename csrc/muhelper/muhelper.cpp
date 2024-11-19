@@ -82,7 +82,7 @@ bool MuDispatcher::_is_group_channel(int cid) const {
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
-    DMOE_LOG(DEBUG) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
+    // DMOE_LOG(DEBUG) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
@@ -94,7 +94,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
         this->group_channels[cid]->send(buf, meta);
     }
 
-    DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
+    // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
@@ -103,10 +103,10 @@ void MuDispatcher::run() {
 
     DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
-        DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
+        // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
-        DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
+        // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
         auto pr = this->send_queue.front();
         auto batch = pr.first;
         int rank = pr.second;
@@ -177,9 +177,6 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             j ++;
         ASSERT(ep_rank >= 0);
         int cid = _encode(lid, batch.metadata->exp_ids[i]);
-        DMOE_LOG(WARNING) << "sending a batch to channel " << cid << " expert id " << i << " " << batch.metadata->exp_ids[i] << " " << lid << LEND;
-        for (int i = 0; i < this->exp_channels.size(); i ++)
-            DMOE_LOG(DEBUG) << i << " " << this->exp_channels[i] << LEND;
         if (i == 0 && j == n) {
             // a faster path
             this->_send_batch(
@@ -237,7 +234,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
-    DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
+    // DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
     return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id] : sampler_channel_id;
 }
 
@@ -325,7 +322,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
-    DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
+    // DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
     ASSERT(0 <= peer_id && peer_id < this->peer_channels.size());
     ASSERT(this->peer_channels[peer_id].get() != nullptr);
     ASSERT(meta.get() != nullptr);
@@ -456,10 +453,10 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     }
     
     if (id == -1) {
-        DMOE_LOG(INFO) << "No available batch" << LEND;
+        // DMOE_LOG(INFO) << "No available batch" << LEND;
         return {};
     }
-    DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
+    // DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
 
     std::vector<TensorBatch> result;
     {
@@ -512,7 +509,7 @@ void MuAttentionPool::run() {
             at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
             at::cuda::CUDAStreamGuard guard(c10_stream);
             while (!end_flag) {
-                DMOE_LOG(DEBUG) << "Worker AttnPool fetching metadata ..." << LEND;
+                // DMOE_LOG(DEBUG) << "Worker AttnPool fetching metadata ..." << LEND;
                 Metadata meta;
                 group_comm->recv_metadata(meta);
 
@@ -521,7 +518,7 @@ void MuAttentionPool::run() {
                     torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                 );
 
-                DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
+                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
                 group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
                 auto t_meta = std::make_shared<Metadata>(meta);
                 process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
@@ -544,7 +541,7 @@ void MuAttentionPool::run() {
                 at::cuda::CUDAStreamGuard guard(c10_stream);
 
                 while (!end_flag) {
-                    DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
+                    // DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
                     Metadata meta;
                     c->recv_metadata(meta);
 
@@ -553,7 +550,7 @@ void MuAttentionPool::run() {
                         torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                     );
 
-                    DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                    // DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
                     c->recv((uintptr_t)tensor.data_ptr(), meta);
 
                     auto meta_t = std::make_shared<Metadata>(meta);
@@ -619,14 +616,12 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    DMOE_LOG(DEBUG) << "AttnPool processing batch: " << meta << LEND;
+    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
-        DMOE_LOG(DEBUG) << "Sending to group channel" << LEND;
         group_comm->send_metadata(*meta);
         group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
-        DMOE_LOG(DEBUG) << "Sent to group channel" << LEND;
     }
 
     int lid = this->inner_layer_id[meta->layer_id];
@@ -697,7 +692,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         maintain_largest_batch();
     }
 
-    DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);
@@ -715,7 +710,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
 std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
     int layer_id, std::set<int> &seq_ids) {
 
-    DMOE_LOG(WARNING) << "fetching " << seq_ids.size() << " batches from worker's layer " << layer_id << LEND;
+    // DMOE_LOG(WARNING) << "fetching " << seq_ids.size() << " batches from worker's layer " << layer_id << LEND;
 
     // wait until the data_queue has enough batches
     for (bool flag = false; !flag;) {
@@ -736,7 +731,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
         }
     }
 
-    DMOE_LOG(WARNING) << "should have fetched " << seq_ids.size() << " seq_ids from worker's layer " << layer_id << LEND;
+    // DMOE_LOG(WARNING) << "should have fetched " << seq_ids.size() << " seq_ids from worker's layer " << layer_id << LEND;
 
     std::lock_guard<std::mutex> lock(this->batch_mutex);
     ASSERT(layer_id >= 0 && layer_id < this->attn_data_queue.size());
@@ -759,7 +754,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
 
     maintain_largest_batch();
 
-    DMOE_LOG(WARNING) << "!!! fetched " << result.size() << " batches and " << num_tokens << " tokens from worker's layer " << layer_id << LEND;
+    // DMOE_LOG(WARNING) << "fetched " << result.size() << " batches and " << num_tokens << " tokens from worker's layer " << layer_id << LEND;
 
     return result;
 }
