@@ -15,6 +15,7 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         if (!is_embedding_node(party_local)) {
             if (stream == nullptr) {
                 CUDACHECK(cudaStreamCreate(&this->stream));
+                // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
             } else {
                 this->stream = stream;
             }
@@ -47,7 +48,7 @@ void NcclChannel::instantiate() {
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
-    DMOE_LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
+    // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
@@ -58,7 +59,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
-    DMOE_LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
+    // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -118,6 +119,8 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
 void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     tx_range _{"ZmqChannel::send"};
 
+    // DMOE_LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
+
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     this->mq->send(zmq::buffer(buf, size));
@@ -125,16 +128,22 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     // !FIXME(hogura|20241009): may have memory leakage
     // if (data != (uintptr_t) buf)
     //     std::free(buf);
+
+    // DMOE_LOG(DEBUG) << "ZMQ Sent." << LEND;
 }
 
 void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
     tx_range _{"ZmqChannel::recv"};
+
+    // DMOE_LOG(DEBUG) << "ZMQ Recving from " << get_peer_id() << LEND;
 
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
     this->_tensor_copy((uintptr_t) msg.data(), metadata, 
         /*to_gpu=*/ !is_embedding_node(local), data);
+
+    // DMOE_LOG(DEBUG) << "ZMQ Recved" << LEND;
 }
 
 NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream):
@@ -144,24 +153,45 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
         #endif
         if (!is_embedding_node(party_local)) {
             if (stream == nullptr) {
-                CUDACHECK(cudaStreamCreate(&this->stream));
+                CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
             } else {
                 this->stream = stream;
             }
         }
         local_rank = std::find(party_all.begin(), party_all.end(), party_local) - party_all.begin();
+        ctx = zmq::context_t(1);
+        mq = zmq::socket_t(ctx, is_root() ? zmq::socket_type::push : zmq::socket_type::pull);
+        root_device_id = party_all[0];
+        other = party_all[0];
+        zmq_comm_id = 0;
+        for (int i: party_all)
+            zmq_comm_id += i;
+        for (int i = 0; i < 128; i ++)
+            (zmq_comm_id += comm_id.internal[i]) %= ZMQ_MAGIC_MOD;
     }
 
 void NcclGroupChannel::instantiate() {
     #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->local));
     #endif
-    NCCLCHECK(ncclCommInitRank(
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    config.blocking = 0;
+    ncclCommInitRankConfig(
         &this->comm,
         /*nranks=*/ size,
         this->comm_id,
-        /*rank=*/ this->local_rank
-    ));
+        /*rank=*/ this->local_rank,
+        &config
+    );
+    ncclResult_t state;
+    do {
+        ncclCommGetAsyncError(comm, &state);
+    } while(state == ncclInProgress);
+
+    if (is_root())
+        mq.bind(get_zmq_addr(root_device_id, false, /*manual_port=*/ ZMQ_GROUP_PORT + zmq_comm_id));
+    else
+        mq.connect(get_zmq_addr(root_device_id, false, /*manual_port=*/ ZMQ_GROUP_PORT + zmq_comm_id));
 }
 
 bool NcclGroupChannel::is_root() const {
@@ -172,8 +202,9 @@ int NcclGroupChannel::root() const {
     return 0;
 }
 
-void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type) {
+void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
+    // DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
     NCCLCHECK(ncclBroadcast(
         send_buf,
         recv_buf,
@@ -183,18 +214,24 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+    // DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
 }
 
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::send"};
     ASSERT(is_root());
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Sending from " << this->local << LEND;
     send_recv(data_ptr, metadata);
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Sent." << LEND;
 }
 
 void NcclGroupChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::recv"};
     ASSERT(!is_root());
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Recving from " << this->local << LEND;
     send_recv(data_ptr, metadata);
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Recved." << LEND;
 }
 
 void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
@@ -202,29 +239,31 @@ void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
         metadata.num_element(), metadata.get_nccl_datatype());
 }
 
-void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
+void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::bcast_obj"};
     if (is_root()) {
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
         CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
-        void* size_buf = convert_to_cuda_buffer(size);
         // first send size
-        broadcast(size_buf, size_buf, 1, ncclUint64);
+        // use zmq to broadcast
+        for (int i = 0; i < this->size - 1; i ++)
+            this->mq.send(zmq::buffer((char*) &size, sizeof(size_t)));
         // then send data
         broadcast(data_buf, data_buf, size, ncclInt8);
-        free_cuda_tensor(size_buf);
         free_cuda_tensor(data_buf);
     } else {
         // first recv size
-        void* size_buf = (void*) alloc_cuda_tensor(1, this->local, /*size_of_item=*/ sizeof(size_t));
-        broadcast(nullptr, size_buf, 1, ncclUint64);
-        CUDACHECK(cudaMemcpy(&size, size_buf, sizeof(size_t), cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        zmq::message_t msg(sizeof(size));
+        this->mq.recv(msg, zmq::recv_flags::none);
+        size = *(size_t*) msg.data();
+        // DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
+        ASSERT(size > 0);
         // then recv data
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
-        broadcast(nullptr, data_buf, size, ncclInt8);
+        broadcast(data_buf, data_buf, size, ncclInt8);
         buf = std::malloc(size);
         CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
-        free_cuda_tensor(size_buf);
+        // DMOE_LOG(DEBUG) << "received metadata " << *decerealize<Metadata>((char*) buf, size) << LEND;
         free_cuda_tensor(data_buf);
     }
 }
@@ -232,21 +271,25 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
 void NcclGroupChannel::send_metadata(const Metadata& metadata) {
     tx_range _{"NcclGroupChannel::bcast_metadata"};
     ASSERT(is_root());
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Sending metadata from " << this->local << ":" << metadata << LEND;
     std::string data = cerealize(std::make_shared<Metadata>(metadata));
     void* buf = (void*) data.data();
     size_t size = data.size();
     bcast_obj(buf, size);
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Sent metadata." << LEND;
 }
 
 void NcclGroupChannel::recv_metadata(Metadata& metadata) {
     tx_range _{"NcclGroupChannel::recv_metadata"};
     ASSERT(!is_root());
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Recving metadata from " << this->local << LEND;
     void* buf;
     size_t size;
     bcast_obj(buf, size);
 
     metadata = *decerealize<Metadata>((char*) buf, size);
     std::free(buf);
+    // DMOE_LOG(DEBUG) << "NcclGroupChannel Recved metadata." << LEND;
 }
 
 void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape) {
@@ -255,6 +298,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
     int count = 1;
     for (int i: shape)
         count *= i;
+    // DMOE_LOG(DEBUG) << "Calling all_reduce for " << count << " elements." << LEND;
     NCCLCHECK(ncclAllReduce(
         buf,
         buf,
@@ -264,6 +308,8 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+    // DMOE_LOG(DEBUG) << "AllReduce done." << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

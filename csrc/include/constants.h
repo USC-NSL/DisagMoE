@@ -2,9 +2,12 @@
 
 #include <string>
 #include <exception>
+#include <stdexcept>
 
 const int ZMQ_PORT_BASE = 24000;
 const int ZMQ_CPU_PORT_BASE = 25000;
+const int ZMQ_GROUP_PORT = 26000;
+const int ZMQ_MAGIC_MOD = 1007;
 
 #ifndef MAX_OUTPUT_LEN
 #define MAX_OUTPUT_LEN 16

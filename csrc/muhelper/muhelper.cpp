@@ -55,35 +55,58 @@ void MuHelper::init_cuda_device() {
 // MuDispatcher
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, 
-                           ParallelConfig cfg, std::vector<Channel_t> channels): 
+                           ParallelConfig cfg, std::vector<Channel_t> channels,
+                           const std::vector<bool> &is_group_channels): 
     MuHelper(layer_ids, device_id, channels), 
     peer_ctx(channels.size()),
     peer_mq(channels.size()),
-    cfg(cfg) {
+    cfg(cfg),
+    is_group_channels(is_group_channels) {
     sprintf(this->device_id_str, "%d", this->device_id);
+    if (is_group_channels.empty())
+        this->is_group_channels.resize(channels.size(), false);
+    ASSERT(this->is_group_channels.size() == channels.size());
+    group_channels.resize(channels.size());
     for (int i = 0; i < channels.size(); i ++) {
         peer_ctx[i] = zmq::context_t(1);
         peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
+        if (_is_group_channel(i)) {
+            group_channels[i] = std::dynamic_pointer_cast<NcclGroupChannel>(channels[i]);
+        }
     }
+}
+
+bool MuDispatcher::_is_group_channel(int cid) const {
+    return is_group_channels[cid];
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
-    // DMOE_LOG(DEBUG) << "sending batch to channel " << cid << LEND;
+    // DMOE_LOG(DEBUG) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    auto data = cerealize(std::make_shared<Metadata>(meta));
-    this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
-    this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
-    this->channels[cid]->send(buf, meta);
+    if (!_is_group_channel(cid)) {
+        auto data = cerealize(std::make_shared<Metadata>(meta));
+        this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
+        this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
+        this->channels[cid]->send(buf, meta);
+    } else {
+        this->group_channels[cid]->send_metadata(meta);
+        this->group_channels[cid]->send(buf, meta);
+    }
+
+    // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
     for (int i = 0; i < this->channels.size(); i ++)
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
+    DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
+        // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         std::unique_lock<std::mutex> lock(this->mtx);
         this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+        // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
         auto pr = this->send_queue.front();
         auto batch = pr.first;
         int rank = pr.second;
@@ -125,6 +148,7 @@ MuAttnDispatcher::MuAttnDispatcher(
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
+            DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
             exp_channels[id] = i;
         }
     }
@@ -184,8 +208,9 @@ MuExpertDispatcher::MuExpertDispatcher(
     int device_id, 
     ParallelConfig cfg,
     std::vector<Channel_t> channels,
-    std::vector<ChannelInfo> channel_infos): 
-        MuDispatcher(layer_ids, device_id, cfg, channels),
+    std::vector<ChannelInfo> channel_infos,
+    const std::vector<bool> &is_group_channels): 
+        MuDispatcher(layer_ids, device_id, cfg, channels, is_group_channels),
         channel_infos(channel_infos) {
     int max_layer = -1;
     for (auto info: channel_infos)
@@ -209,7 +234,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
-    DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
+    // DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
     return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id] : sampler_channel_id;
 }
 
@@ -287,7 +312,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
         
     std::vector<zmq::message_t> recv_msgs;
     zmq::recv_result_t result =
-    zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
+        zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
         
     // DMOE_LOG(DEBUG) << "got a msg!" << LEND;
     ASSERT(*result == 2);
@@ -297,10 +322,15 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
+    // DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
+    ASSERT(0 <= peer_id && peer_id < this->peer_channels.size());
+    ASSERT(this->peer_channels[peer_id].get() != nullptr);
+    ASSERT(meta.get() != nullptr);
+    ASSERT(tensor_buf != 0);
     this->peer_channels[peer_id]->recv(tensor_buf, *meta);
 }
 
-void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta) {
+void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // TODO(hogura|20241014): sync prefill sequences
     /*
     TODO(shaoyuw|20241011): separate sequences into waiting queue and running queue
@@ -350,20 +380,21 @@ void MuPool::run() {
     auto last = clock();
     auto start = last;
 
+    DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
         int peer_id;
         metadata_t meta;
 
-        this->recv_metadata(peer_id, meta);
+        MuPool::recv_metadata(peer_id, meta);
 
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
 
-        this->recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
+        MuPool::recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
 
-        this->process_batch(tensor, meta);
+        this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
     }
 }
 
@@ -422,10 +453,10 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     }
     
     if (id == -1) {
-        DMOE_LOG(INFO) << "No available batch" << LEND;
+        // DMOE_LOG(INFO) << "No available batch" << LEND;
         return {};
     }
-    DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
+    // DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
 
     std::vector<TensorBatch> result;
     {
@@ -452,10 +483,91 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 MuAttentionPool::MuAttentionPool(
     std::vector<int> layer_ids, 
     int device_id,
-    std::vector<Channel_t> channels
-): MuPool(layer_ids, device_id, channels, true) {
+    std::vector<Channel_t> channels,
+    std::vector<int> device_group_ids,
+    Channel_t group_comm
+): MuPool(layer_ids, device_id, channels, true), 
+    device_group_ids(device_group_ids),
+    group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
+}
+
+void MuAttentionPool::run() {
+    pool_thread = std::thread([&]() {
+        MuPool::run();
+    });
+
+    if (device_group_ids.size() <= 1) {
+        DMOE_LOG(WARNING) << "No group channel is needed in MuAttnPool::run." << LEND;
+        return;
+    }
+
+    if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
+        DMOE_LOG(INFO) << "Running ATTN Worker pool (intra-group)" << LEND;
+        group_threads.emplace_back(std::thread([&]() {
+            at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+            at::cuda::CUDAStreamGuard guard(c10_stream);
+            while (!end_flag) {
+                // DMOE_LOG(DEBUG) << "Worker AttnPool fetching metadata ..." << LEND;
+                Metadata meta;
+                group_comm->recv_metadata(meta);
+
+                torch::Tensor tensor = torch::empty(
+                    {meta.num_tokens(), meta.token_hidden_dim()}, 
+                    torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+                );
+
+                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
+                group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
+                auto t_meta = std::make_shared<Metadata>(meta);
+                process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
+            }
+        }));
+    }
+
+    DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
+    for (auto &c: this->channels) {
+        if (is_embedding_node(c->get_peer_id()))
+            continue;
+        // if not embedding, then must be an expert dispatcher, which is a group channel
+        ASSERT(c.get() != nullptr);
+        auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
+        ASSERT(group_c.get() != nullptr);
+        group_threads.emplace_back(std::thread(
+            [&](std::shared_ptr<NcclGroupChannel> c) {
+                // recv messages from multiple dispatchers
+                at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+                at::cuda::CUDAStreamGuard guard(c10_stream);
+
+                while (!end_flag) {
+                    // DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
+                    Metadata meta;
+                    c->recv_metadata(meta);
+
+                    torch::Tensor tensor = torch::empty(
+                        {meta.num_tokens(), meta.token_hidden_dim()}, 
+                        torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+                    );
+
+                    // DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                    c->recv((uintptr_t)tensor.data_ptr(), meta);
+
+                    auto meta_t = std::make_shared<Metadata>(meta);
+
+                    // When using large_comm, all tensors are sent to the workers
+                    // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
+                    // See MuAttentionPool::process_batch
+                    process_batch(tensor, meta_t, /*send_from_zmq=*/ false);
+                }
+            }, group_c
+        ));
+    }
+}
+
+void MuAttentionPool::terminate() {
+    MuPool::terminate();
+    pool_thread.join();
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
@@ -503,7 +615,15 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     return AttentionBatch {tensor, attn_meta};
 }
 
-void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta) {
+void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
+    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << meta << LEND;
+    if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
+        // since only driver can have the pool, we can send the data from layer 0 to other workers here.
+        // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
+        group_comm->send_metadata(*meta);
+        group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
+    }
+
     int lid = this->inner_layer_id[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor, meta);
     int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
@@ -572,7 +692,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         maintain_largest_batch();
     }
 
-    DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);
@@ -588,34 +708,53 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
 }
 
 std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
-    int layer_id, int num_batches) {
+    int layer_id, std::set<int> &seq_ids) {
+
+    // DMOE_LOG(WARNING) << "fetching " << seq_ids.size() << " batches from worker's layer " << layer_id << LEND;
 
     // wait until the data_queue has enough batches
     for (bool flag = false; !flag;) {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
-        if (this->attn_data_queue[layer_id].size() >= num_batches) {
+        int sum = 0;
+        for (auto &batch: this->attn_data_queue[layer_id]) {
+            int id = batch.metadata->seq_ids[0];
+            if (seq_ids.find(id) != seq_ids.end()) {
+                // !NOTE(hogura|20241119): here we make an asumption:
+                // the batch in the attn_data_queue must not be merged,
+                // each batch send to the driver must be sent to the worker as-is.
+                sum += batch.metadata->seq_ids.size();
+            }
+        }
+        ASSERT(sum <= seq_ids.size());
+        if (sum == seq_ids.size()) {
             flag = true;
         }
     }
 
-    // fetch first num_batches batches
+    // DMOE_LOG(WARNING) << "should have fetched " << seq_ids.size() << " seq_ids from worker's layer " << layer_id << LEND;
+
     std::lock_guard<std::mutex> lock(this->batch_mutex);
     ASSERT(layer_id >= 0 && layer_id < this->attn_data_queue.size());
-    ASSERT(num_batches > 0);
 
-    std::vector<AttentionBatch> result(
-        this->attn_data_queue[layer_id].begin(),
-        this->attn_data_queue[layer_id].begin() + num_batches
-    );
+    std::vector<AttentionBatch> result, remains;
+    for (auto &batch: this->attn_data_queue[layer_id]) {
+        int id = batch.metadata->seq_ids[0];
+        if (seq_ids.find(id) != seq_ids.end()) {
+            result.emplace_back(batch);
+        } else {
+            remains.emplace_back(batch);
+        }
+    }
+
     int num_tokens = 0;
     for (auto &batch: result)
         num_tokens += batch.metadata->num_prefill_tokens + batch.metadata->num_decode_tokens;
     this->tokens_per_layer_[layer_id] -= num_tokens;
-    attn_data_queue[layer_id].erase(
-        attn_data_queue[layer_id].begin(),
-        attn_data_queue[layer_id].begin() + num_batches);
+    this->attn_data_queue[layer_id] = remains;
 
     maintain_largest_batch();
+
+    // DMOE_LOG(WARNING) << "fetched " << result.size() << " batches and " << num_tokens << " tokens from worker's layer " << layer_id << LEND;
 
     return result;
 }

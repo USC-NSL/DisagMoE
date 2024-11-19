@@ -93,6 +93,11 @@ public:
 
 class NcclGroupChannel: public NcclChannel {
 protected:
+    zmq::context_t ctx;
+    zmq::socket_t mq;
+    int root_device_id;
+    int zmq_comm_id;
+    
     int local_rank;
     int size;
 
@@ -100,7 +105,7 @@ protected:
 
     int root() const;
 
-    void broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type);
+    void broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream=nullptr);
 
 public:
     NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
@@ -113,7 +118,7 @@ public:
 
     void send_recv(uintptr_t data, const Metadata& metadata);
 
-    void bcast_obj(void* &buf, size_t &size);
+    void bcast_obj(void* &buf, size_t &size, cudaStream_t stream = nullptr);
 
     void send_metadata(const Metadata& metadata);
 

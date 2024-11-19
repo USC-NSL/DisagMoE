@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cereal/archives/binary.hpp>
+#include <cereal/types/vector.hpp>
 #include <sstream>
 #include <vector>
 #include <map>
@@ -126,9 +127,14 @@ inline void* convert_to_nccl_uid(char* bytes) {
 }
 
 
-inline std::string get_zmq_addr(int device_id, bool is_gpu = true) {
+inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_port = -1) {
     char ip[256];
-    sprintf(ip, "tcp://127.0.0.1:%d\0", (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE) + device_id);
+    int port = device_id +
+        (manual_port == -1 \
+            ? (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE)
+            : manual_port);
+    fprintf(stderr, "zmq device_id: %d, port: %d, manual port %d\n", device_id, port, manual_port);
+    sprintf(ip, "tcp://0.0.0.0:%d", port);
     return std::string(ip);
 }
 
@@ -155,6 +161,14 @@ std::string static cerealize(std::shared_ptr<type> metadata) {
 }
 
 template<class type>
+inline std::string static cerealize_(type data) {
+    std::stringstream ss;
+    cereal::BinaryOutputArchive oarchive(ss);
+    oarchive(data);
+    return ss.str();
+}
+
+template<class type>
 std::shared_ptr<type> static decerealize(char* buf, size_t n) {
     std::string buffer(buf, n);
     std::istringstream ss(buffer);
@@ -163,6 +177,14 @@ std::shared_ptr<type> static decerealize(char* buf, size_t n) {
     iarchive(result);
     // DMOE_LOG(WARNING) << "after decerealize, got metadata: " << result << LEND;
     return std::make_shared<type>(result);
+}
+
+template<class type>
+inline void static decerealize_(char* buf, size_t n, type& result) {
+    std::string buffer(buf, n);
+    std::istringstream ss(buffer);
+    cereal::BinaryInputArchive iarchive(ss);
+    iarchive(result);
 }
 
 static void print_buf(void* buf, size_t n) {

@@ -274,6 +274,7 @@ struct TensorBatch {
         if (batches.empty()) {
             return TensorBatch {};
         }
+        cudaStream_t stream = get_current_torch_stream();
 
         std::vector<metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
@@ -312,7 +313,7 @@ struct TensorBatch {
             }
         }
 
-        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim());
+        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
 
         return TensorBatch {tensor, meta};
     }
@@ -460,6 +461,10 @@ struct AttentionBatch {
         if (batches.empty()) {
             return AttentionBatch {};
         }
+        at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
+        cudaStream_t stream = c10_stream.stream();
+        at::cuda::CUDAStreamGuard guard(c10_stream);
+
         std::vector<attn_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
@@ -477,20 +482,24 @@ struct AttentionBatch {
         // Option 1. use cudaMemcpy
         // void * buf = tensor.data_ptr();
         
-        // void* prefill_ptr = buf;
+        // uintptr_t buf = alloc_cuda_tensor((prefill_data_size + decode_data_size) / meta->get_datatype_size(), 0, sizeof(short), stream);
+        
+        // void* prefill_ptr = (void *)buf;
         // void* decode_ptr = prefill_ptr + prefill_data_size;
-
         // for (auto &batch: batches) {
         //     int prefill_copy_size = batch.metadata->prefill_data_size();
         //     int decode_copy_size = batch.metadata->decode_data_size();
-        //     cudaMemcpy(prefill_ptr, (void *)batch.data.data_ptr(), prefill_copy_size, 
-        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+        //     cudaMemcpyAsync(prefill_ptr, (void *)batch.data, prefill_copy_size, 
+        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
 
-        //     cudaMemcpy(decode_ptr, (void *)batch.data.data_ptr() + prefill_copy_size, decode_copy_size,
-        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+        //     cudaMemcpyAsync(decode_ptr, (void *)batch.data + prefill_copy_size, decode_copy_size,
+        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
         //     prefill_ptr += prefill_copy_size;
         //     decode_ptr += decode_copy_size;
+        //     free_cuda_tensor((void *) batch.data, stream);
         // }
+        
+        // cudaStreamSynchronize(stream);
 
         // Option 2. use gather cuda kernel
         int prefill_idx = 0;
@@ -514,7 +523,7 @@ struct AttentionBatch {
                 decode_idx ++;
             }
         }
-        gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim());
+        gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
 
         return AttentionBatch {tensor, meta};
     }

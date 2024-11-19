@@ -15,7 +15,7 @@ from disagmoe.utils.constants import *
 from disagmoe.config import CacheConfig, ModelConfig
 from disagmoe.env import ENV_VARS
 
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 
 class RequestIDGenerator:
         
@@ -101,26 +101,33 @@ class Controller:
             self.device_ids.append(device_id)
         print("#workers", len(self.workers))
     
-    def _get_nccl_ids(self, model_place: ModelPlacement):
-        prs = set()
-        nccl_ids = {k: {} for k in model_place.out_device_ids}
+    def _get_nccl_ids(
+            self, model_place: ModelPlacement
+        ) -> Tuple[Dict[int, Dict[int, str]], 
+                   Dict[int, Dict[int, str]], 
+                   Dict[Tuple[int], Tuple[str, str]]]:
+        in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
+        out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
         for i, js in model_place.out_device_ids.items():
             if i in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
                 continue
             for j in js:
                 if j in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
                     continue
-                p = tuple(sorted((i, j)))
-                if p in prs:
-                    continue
-                prs.add(p)
-                u1, u2 = get_nccl_unique_id(), get_nccl_unique_id()
-                nccl_ids[i][j] = u1, u2
-                nccl_ids[j][i] = u2, u1     # NOTE(hogura|20241030): must be reversed to match opposite side's uid
-        # self._logger.info(f"nccl_ids {nccl_ids}")
-        for lst in model_place.device_groups.values():
-            nccl_ids[tuple(lst)] = get_nccl_unique_id()
-        return nccl_ids
+                uid = get_nccl_unique_id()
+                in_nccl_ids[j][i] = uid
+                out_nccl_ids[i][j] = uid
+        group_nccl_ids = {
+            # NOTE(hogura|20241118): the first is for the channel in Pool, the second is for the channel in Scheduler
+            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id())
+                for group in model_place.device_groups.values()
+        }
+        # inter-group nccl ids, [expert -> TP group]
+        for j, group in model_place.device_groups.items():
+            if len(group) > 1 and j != group[0]: # is a worker
+                root = group[0]
+                in_nccl_ids[j] = in_nccl_ids[root]
+        return in_nccl_ids, out_nccl_ids, group_nccl_ids
     
     def init_engine(self, 
                     model_place: ModelPlacement, 
@@ -138,7 +145,7 @@ class Controller:
             cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                                        num_gpu_blocks=NUM_BLOCKS, 
                                        num_reserved_blocks=RESERVED_BLOCKS)
-        nccl_ids = self._get_nccl_ids(model_place)
+        in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
@@ -147,7 +154,7 @@ class Controller:
         
         ray.get([
             worker.setup_engine.remote(
-                EngineType.ATTENTION if len(model_place.attn_ids_at(device_id)) > 0 else EngineType.EXPERT,
+                EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
                 model_config=model_config,
                 cache_config=cache_config,
                 rank=model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank),
@@ -167,7 +174,7 @@ class Controller:
         tasks = [
             worker.init_core.remote(
                 layer_ids=model_place.layer_ids_at(device_id),
-                in_device_ids=model_place.in_device_ids.get(device_id, []),
+                in_device_ids=model_place.in_device_ids_at(device_id),
                 out_device_ids=model_place.out_device_ids.get(device_id, []),
                 out_channel_infos=[
                     ChannelInfo(
@@ -176,10 +183,15 @@ class Controller:
                     )
                         for out in model_place.out_device_ids.get(device_id, [])
                 ],
-                nccl_ids=nccl_ids.get(device_id, {}),
-                tensor_group_device_ids=model_place.device_groups.get(device_id, []),
-                tensor_group_nccl_id=nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), ""),
+                in_nccl_ids=in_nccl_ids.get(device_id, {}),
+                out_device_group_ids={
+                    j: [device_id] + model_place.device_groups.get(j, [])
+                        for j in model_place.out_device_ids.get(device_id, [])
+                },
+                out_nccl_ids=out_nccl_ids.get(device_id, {}),
+                device_group_ids=model_place.device_groups.get(device_id, []),
+                group_nccl_ids=group_nccl_ids.get(
+                    tuple(model_place.device_groups.get(device_id, [])), ("", "")),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -207,13 +219,12 @@ class Controller:
         return req_id
             
     def put_single_request(self, input_len: List[int]):
-        
         self.tokenizer_worker.put_single_request.remote(self.get_new_req_id(), input_len)
         
     def put_requests(self, input_lens: int):
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
-        
+                
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
         results = ray.get(self.sampler_worker.wait_for_n_requests.remote(n_request))
         # clean all in flight reqs as they are all done

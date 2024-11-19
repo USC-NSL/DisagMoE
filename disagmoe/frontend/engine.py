@@ -105,21 +105,22 @@ class Engine:
             in_device_ids: List[int],
             out_device_ids: List[int],
             out_channel_infos: List[ChannelInfo],
-            nccl_ids: Dict[int, int],
             # Group Channels
-            tensor_group_device_ids: List[int] = None,
-            tensor_group_nccl_id: str = "",
-            meta_group_device_ids: List[int] = None,
-            meta_group_nccl_id: str = "",
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: Tuple[str, str] = ("", "")
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
-        self._logger.info(f"launching core: {layer_ids, in_device_ids, out_device_ids, out_channel_infos}")
-        if meta_group_device_ids is None:
-            meta_group_device_ids = []
-        if tensor_group_device_ids is None:
-            tensor_group_device_ids = []
+        self._logger.info(f"launching core: {layer_ids, in_device_ids, \
+                          out_device_ids, out_channel_infos, \
+                          in_nccl_ids, out_nccl_ids, out_device_group_ids, \
+                          device_group_ids, group_nccl_ids}")
+        if device_group_ids is None:
+            device_group_ids = []
         self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
@@ -129,19 +130,21 @@ class Engine:
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
                 for info in out_channel_infos],
-            nccl_ids,
+            # Parallel config
             ParallelConfig_C(
                 self.model_config.tp_size,
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
             ),
             # Group Channels
-            tensor_group_device_ids,
-            tensor_group_nccl_id,
-            meta_group_device_ids,
-            meta_group_nccl_id,
+            in_nccl_ids,
+            out_device_group_ids,
+            out_nccl_ids,
+            device_group_ids,
+            group_nccl_ids,
         )
         set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+        self._logger.info("core launched")
         
     def _switch_scheduler(self):
         if self.scheduler == None:
@@ -161,13 +164,16 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
+        model_config.rank = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
-            stream = torch.cuda.Stream()
+            stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
-            
-        set_tensor_model_parallel_config(model_config)
+            self._logger.info(f"set stream {stream}")
+            self.stream = stream
+            set_tensor_model_parallel_config(model_config)
+        
         self.engine_type = engine_type
         self.model_config = model_config
         if engine_type == EngineType.ATTENTION:
@@ -185,7 +191,7 @@ class Engine:
             for i in range(model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
         
-        self._logger.info(f"engine setup.")
+        self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -214,8 +220,6 @@ class Engine:
         for i, seq_id in enumerate(decode_seq_ids):
             decode_seq_lens[i] += 1
             self.decode_seq_lens[seq_id] += 1
-        
-        self._logger.debug(f"new decode_seq_lens: {self.decode_seq_lens}")
         
         # 3. prepare seqlens and start_locs
         seq_lens_cuda = torch.IntTensor(meta_py.prefill_seq_len + decode_seq_lens).to("cuda", non_blocking=True)
@@ -259,13 +263,12 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
-        self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
-        
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
+            meta_py = meta_c
             meta_c = meta_c.to_c()
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
@@ -281,7 +284,7 @@ class Engine:
             new_meta_c = meta_c.to_metadata()
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         else:
-            new_meta_c = meta_c
+            new_meta_c = meta_py
         
         return hiddens, new_meta_c
     
@@ -308,21 +311,27 @@ class Engine:
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
-        
+                
         return output, meta_c
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
+        if self.engine_type == EngineType.ATTENTION and self.model_config.rank != 0:
+            # not a driver; no need to post_process
+            return
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
         self.dispatcher.put(batch, 0)
 
     def loop(self):
-        self._logger.info("starting expert engine loop")
+        self._logger.info("starting engine loop")
+        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_device("cuda:0")
+        torch.cuda.set_stream(self.stream)
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
-            batch_info = self.scheduler.schedule()
+            batch_info = self.scheduler.schedule() # using non-blocking schedule
             if batch_info.data is None:
                 continue
             
@@ -349,16 +358,19 @@ class SamplerEngine(Engine):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
         
-    def init_core(self, 
-                  layer_ids: List[int], 
-                  in_device_ids: List[int], 
-                  out_device_ids: List[int], 
-                  out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int],
-                  tensor_group_device_ids: List[int] = None,
-                  tensor_group_nccl_id: str = "",
-                  meta_group_device_ids: List[int] = None,
-                  meta_group_nccl_id: str = ""):
+    def init_core(
+            self,
+            layer_ids: List[int],
+            # P2P Channels
+            in_device_ids: List[int],
+            out_device_ids: List[int],
+            out_channel_infos: List[ChannelInfo],
+            # Group Channels
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: str = ""):
         self.sampler = init_sampler(
             self.device_id,
             in_device_ids,
@@ -408,16 +420,19 @@ class TokenizerEngine(Engine):
         for req_id, input_len in zip(req_ids, input_lens):
             self.process_request(req_id, input_len)
         
-    def init_core(self, 
-                  layer_ids: List[int], 
-                  in_device_ids: List[int], 
-                  out_device_ids: List[int], 
-                  out_channel_infos: List[ChannelInfo], 
-                  nccl_ids: Dict[int, int],
-                  tensor_group_device_ids: List[int] = None,
-                  tensor_group_nccl_id: str = "",
-                  meta_group_device_ids: List[int] = None,
-                  meta_group_nccl_id: str = ""):
+    def init_core(
+            self,
+            layer_ids: List[int],
+            # P2P Channels
+            in_device_ids: List[int],
+            out_device_ids: List[int],
+            out_channel_infos: List[ChannelInfo],
+            # Group Channels
+            in_nccl_ids: Dict[int, int],
+            out_device_group_ids: Dict[int, List[int]],
+            out_nccl_ids: Dict[int, int],
+            device_group_ids: List[int] = None,
+            group_nccl_ids: str = ""):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

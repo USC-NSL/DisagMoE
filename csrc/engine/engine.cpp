@@ -10,7 +10,7 @@
 #include <ctime>
 #include <map>
 
-void init_channels(
+void init_tensor_channels(
     int local_id,
     bool is_attn,
     // P2P Channels
@@ -24,11 +24,13 @@ void init_channels(
     Channel_t &tensor_channel,
     const std::vector<int> &tensor_group_device_ids,
     const std::string &tensor_group_nccl_id,
-    Channel_t &meta_channel,
-    const std::vector<int> &meta_group_device_ids,
-    const std::string &meta_group_nccl_id
+    const std::map<int, vector<int>> &out_group_device_ids,
+    const std::map<int, string> &out_group_nccl_ids
 ) {
-
+    /*
+        !NOTE(hogura|20241110): deprecated function
+    */
+    ASSERT(!is_embedding_node(local_id));
     DMOE_LOG(DEBUG) << local_id << " " << "init channels" << LEND;
 
     int n_in = in_device_ids.size();
@@ -55,10 +57,21 @@ void init_channels(
     for (auto &[local_channel, channel]: channels) {
         int peer_id = local_channel.m_id;
         if (!is_embedding_node(peer_id)) {
-            auto nccl_id = local_channel.m_is_in_channel ? nccl_ids.at(peer_id).first : nccl_ids.at(peer_id).second;
-            channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_id.c_str())
-            );
+            if (out_group_device_ids.find(peer_id) != out_group_device_ids.end()
+                && out_group_device_ids.at(peer_id).size() > 1) {
+                // is a group channel
+                ASSERT(out_group_device_ids.at(peer_id)[0] == local_id);
+                auto nccl_id = out_group_nccl_ids.at(peer_id);
+                channel = create_nccl_group_channel(
+                    local_id, out_group_device_ids.at(peer_id), 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            } else {
+                auto nccl_id = local_channel.m_is_in_channel ? nccl_ids.at(peer_id).first : nccl_ids.at(peer_id).second;
+                channel = create_channel(local_id, peer_id, 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            }
         }
         else
             channel = create_zmq_channel(
@@ -99,6 +112,129 @@ void init_channels(
         out_channels[i] = channels[ LocalChannel(out_device_ids[i], D_OUT_CHANNEL) ];
 }
 
+void init_all_channels(
+    int local_id,
+    bool is_attn,
+    // Inter-group Channels
+    std::vector<Channel_t> &in_channels,
+    const std::vector<int> &in_device_ids,
+    const std::map<int, std::string> &in_nccl_ids,
+    std::vector<Channel_t> &out_channels,
+    const std::vector<int> &out_device_ids,
+    const std::map<int, std::vector<int>> &out_device_group_ids,
+    const std::map<int, std::string> &out_nccl_ids,
+    // Intra-group Channels
+    Channel_t &intra_group_channel_1, Channel_t &intra_group_channel_2,
+    const std::vector<int> &device_group_ids,
+    const std::pair<std::string, std::string> &group_nccl_id,
+    std::vector<bool> &is_group_channels
+) {
+    /*
+        We have multiple types of channels to be inited.
+
+        TP_SIZE = device_group_ids.size()
+
+        * Normal P2P channel (TP_SIZE = 1)
+
+        * Inter Group P2P channel (TP_SIZE > 1)
+            * Both for in_device_ids and out_device_ids
+        * Intra Group P2P channel (TP_SIZE > 1)
+            * Only for device_group_ids
+            
+    */
+    std::vector<std::thread> threads;
+    auto n_in = in_device_ids.size();
+    auto n_out = out_device_ids.size();
+    in_channels.resize(n_in);
+    out_channels.resize(n_out);
+    is_group_channels.resize(n_out);
+
+    #define INST(channel) {                                                                 \
+        threads.emplace_back(std::thread(                                                   \
+            [&](Channel_t channel) {                                                        \
+                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;  \
+                channel->instantiate();                                                     \
+                DMOE_LOG(DEBUG) << local_id << " channel @" << channel << " inited" << LEND;     \
+            },                                                                              \
+            channel                                                                         \
+        ));                                                                                 \
+    }
+    
+    for (size_t i = 0; i < n_in; i ++) {
+        auto peer_id = in_device_ids[i];
+        auto &channel = in_channels[i];
+        if (is_embedding_node(peer_id)) {
+            channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ false);
+        } else {
+            if (device_group_ids.size() > 1) {
+                // is a group channel
+                // construct the inter-group as [peer_id, device_group_ids]
+                std::vector<int> device_ids{};
+                device_ids.push_back(peer_id);
+                for (auto i: device_group_ids)
+                    device_ids.push_back(i);
+                auto nccl_id = in_nccl_ids.at(peer_id);
+                DMOE_LOG(WARNING) << local_id << " launching nccl group channel " << device_ids.size() << " " << nccl_id << LEND;
+                channel = create_nccl_group_channel(
+                    local_id, device_ids,
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            } else {
+                auto nccl_id = in_nccl_ids.at(peer_id);
+                channel = create_channel(local_id, peer_id, 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            }
+        }
+        INST(channel);
+    }
+
+    for (size_t i = 0; i < n_out; i ++) {
+        auto peer_id = out_device_ids[i];
+        auto &channel = out_channels[i];
+        if (is_embedding_node(peer_id)) {
+            channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ true);
+        } else {
+            if (out_device_group_ids.find(peer_id) != out_device_group_ids.end() 
+                && out_device_group_ids.at(peer_id).size() > 2) {
+                // size > 2 since [local_id, driver, workers...]
+                // is a group channel
+                // use out_device_group_ids as intra group
+                ASSERT(out_device_group_ids.at(peer_id)[0] == local_id);
+                auto nccl_id = out_nccl_ids.at(peer_id);
+                DMOE_LOG(WARNING) << local_id << " launching nccl group channel " << out_device_group_ids.at(peer_id).size() << " " << nccl_id << LEND;
+                channel = create_nccl_group_channel(
+                    local_id, out_device_group_ids.at(peer_id),
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+                is_group_channels[i] = true;
+            } else {
+                auto nccl_id = out_nccl_ids.at(peer_id);
+                channel = create_channel(local_id, peer_id, 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            }
+        }
+        INST(channel);
+    }
+
+    if (device_group_ids.size() > 1) {
+        intra_group_channel_1 = create_nccl_group_channel(
+            local_id, device_group_ids, 
+            convert_to_nccl_uid((char*) group_nccl_id.first.c_str())
+        );
+        intra_group_channel_2 = create_nccl_group_channel(
+            local_id, device_group_ids, 
+            convert_to_nccl_uid((char*) group_nccl_id.second.c_str())
+        );
+        INST(intra_group_channel_1);
+        INST(intra_group_channel_2);
+    }
+
+    for (auto &t: threads)
+        t.join();
+}
+
 std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     bool is_attn,
@@ -106,19 +242,26 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    std::map<int, std::pair<std::string, std::string>> &nccl_ids,
     ParallelConfig cfg,
-    const std::vector<int> &tensor_group_device_ids,
-    const std::string &tensor_group_nccl_id,
-    const std::vector<int> &meta_group_device_ids,
-    const std::string &meta_group_nccl_id) {
+    const std::map<int, std::string> &in_nccl_ids,
+    const std::map<int, std::vector<int>> &out_device_group_ids,
+    const std::map<int, std::string> &out_nccl_ids,
+    const std::vector<int> device_group_ids,
+    const std::pair<std::string, std::string> &group_nccl_id) {
 
     std::vector<Channel_t> in_channels, out_channels;
-    Channel_t tensor_channel, meta_channel;
-    init_channels(local_id, is_attn, in_channels, out_channels, 
-        in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
-        tensor_channel, tensor_group_device_ids, tensor_group_nccl_id,
-        meta_channel, meta_group_device_ids, meta_group_nccl_id);
+    std::vector<bool> is_group_channels;
+    Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr;
+    // init_tensor_channels(local_id, is_attn, in_channels, out_channels, 
+    //     in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
+    //     tensor_channel, tensor_group_device_ids, tensor_group_nccl_id,
+    //     out_group_device_ids, out_group_nccl_ids);
+
+    init_all_channels(local_id, is_attn, 
+        in_channels, in_device_ids, in_nccl_ids,
+        out_channels, out_device_ids, out_device_group_ids, out_nccl_ids,
+        intra_group_channel_1, intra_group_channel_2, device_group_ids, group_nccl_id, 
+        is_group_channels);
     
     // init dispatcher
     DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
@@ -127,7 +270,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
     }
     else {
-        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
+        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos, is_group_channels);
     }
     
     // init scheduler
@@ -136,15 +279,15 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     attn_scheduler_t attn_scheduler;
 
     if (is_attn) {
-        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels);
+        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1);
         if (cfg.tp == 1) {
             attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
         } else {
-            if (local_id == tensor_group_device_ids[0]) {
+            if (local_id == device_group_ids[0]) {
                 // is driver, or saying `root` in the tp group
-                attn_scheduler = std::make_shared<AttentionDriverScheduler>(pool, layer_ids, tensor_channel);
+                attn_scheduler = std::make_shared<AttentionDriverScheduler>(pool, layer_ids, intra_group_channel_2);
             } else {
-                attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, tensor_channel);
+                attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, intra_group_channel_2);
             }
         }
     }

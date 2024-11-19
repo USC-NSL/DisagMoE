@@ -439,3 +439,61 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
 
     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
 }
+
+void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string> uids) {
+    std::vector<std::thread> threads;
+    for (int i = 0; i < uids.size(); i ++) {
+        threads.push_back(std::thread(
+            [&](std::string uid, int i) {
+                auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+                auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+                c->instantiate();
+                cudaStream_t stream;
+                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -2);
+                if (i == 0) {
+                    if (rank == 0) {
+                        DMOE_LOG(DEBUG) << "sending metadata" << LEND;
+                        c->send_metadata(Metadata {
+                            /*shape=*/ std::vector<size_t>({1, 4}),
+                            /*dtype=*/ "fp16",
+                            /*layer_id=*/ 1,
+                            /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
+                            /*exp_ids=*/ std::vector<int>({3}),
+                            /*prefill_poss=*/ std::vector<int>({4}),
+                            /*prompt_lens=*/ std::map<int, int>(),
+                        });
+                        DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+                        // c->send_metadata(Metadata {
+                        //     /*shape=*/ std::vector<size_t>({1, 4}),
+                        //     /*dtype=*/ "fp16",
+                        //     /*layer_id=*/ 1,
+                        //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
+                        //     /*exp_ids=*/ std::vector<int>({3}),
+                        //     /*prefill_poss=*/ std::vector<int>({4}),
+                        //     /*prompt_lens=*/ std::map<int, int>(),
+                        // });
+                    } else {
+                        Metadata meta;
+                        DMOE_LOG(DEBUG) << "receiving metadata" << LEND;
+                        c->recv_metadata(meta);
+                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
+                        c->recv_metadata(meta);
+                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
+                    }
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                    DMOE_LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
+                    void* data;
+                    CUDACHECK(cudaMallocAsync(&data, 4096, stream));
+                    CUDACHECK(cudaStreamSynchronize(stream));
+                    // c->all_reduce(data, {1, 4096});
+                    DMOE_LOG(WARNING) << "allocated tensor" << LEND;
+                }
+            }, uids[i], i
+        ));
+    }
+    for (auto &t: threads)
+        t.join();
+    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
+}
