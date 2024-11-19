@@ -126,7 +126,8 @@ void init_all_channels(
     // Intra-group Channels
     Channel_t &intra_group_channel_1, Channel_t &intra_group_channel_2,
     const std::vector<int> &device_group_ids,
-    const std::pair<std::string, std::string> &group_nccl_id
+    const std::pair<std::string, std::string> &group_nccl_id,
+    std::vector<bool> &is_group_channels
 ) {
     /*
         We have multiple types of channels to be inited.
@@ -146,6 +147,7 @@ void init_all_channels(
     auto n_out = out_device_ids.size();
     in_channels.resize(n_in);
     out_channels.resize(n_out);
+    is_group_channels.resize(n_out);
 
     #define INST(channel) {                                                                 \
         threads.emplace_back(std::thread(                                                   \
@@ -172,6 +174,7 @@ void init_all_channels(
                 for (auto i: device_group_ids)
                     device_ids.push_back(i);
                 auto nccl_id = in_nccl_ids.at(peer_id);
+                DMOE_LOG(WARNING) << local_id << " launching nccl group channel " << device_ids.size() << " " << nccl_id << LEND;
                 channel = create_nccl_group_channel(
                     local_id, device_ids,
                     convert_to_nccl_uid((char*) nccl_id.c_str())
@@ -199,10 +202,12 @@ void init_all_channels(
                 // use out_device_group_ids as intra group
                 ASSERT(out_device_group_ids.at(peer_id)[0] == local_id);
                 auto nccl_id = out_nccl_ids.at(peer_id);
+                DMOE_LOG(WARNING) << local_id << " launching nccl group channel " << out_device_group_ids.at(peer_id).size() << " " << nccl_id << LEND;
                 channel = create_nccl_group_channel(
                     local_id, out_device_group_ids.at(peer_id),
                     convert_to_nccl_uid((char*) nccl_id.c_str())
                 );
+                is_group_channels[i] = true;
             } else {
                 auto nccl_id = out_nccl_ids.at(peer_id);
                 channel = create_channel(local_id, peer_id, 
@@ -245,6 +250,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::pair<std::string, std::string> &group_nccl_id) {
 
     std::vector<Channel_t> in_channels, out_channels;
+    std::vector<bool> is_group_channels;
     Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr;
     // init_tensor_channels(local_id, is_attn, in_channels, out_channels, 
     //     in_device_ids, out_device_ids, out_channel_infos, nccl_ids,
@@ -254,7 +260,8 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     init_all_channels(local_id, is_attn, 
         in_channels, in_device_ids, in_nccl_ids,
         out_channels, out_device_ids, out_device_group_ids, out_nccl_ids,
-        intra_group_channel_1, intra_group_channel_2, device_group_ids, group_nccl_id);
+        intra_group_channel_1, intra_group_channel_2, device_group_ids, group_nccl_id, 
+        is_group_channels);
     
     // init dispatcher
     DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
@@ -263,7 +270,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
     }
     else {
-        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
+        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos, is_group_channels);
     }
     
     // init scheduler

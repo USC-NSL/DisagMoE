@@ -286,7 +286,7 @@ class Engine:
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
         
-        self._logger.info(f"processed batch: {hiddens.shape}")
+        self._logger.info(f"processed attn batch: {hiddens.shape}")
         
         if not mocking:
             new_meta_c = meta_c.to_metadata()
@@ -301,6 +301,7 @@ class Engine:
                              meta_c: Metadata, 
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
+        self._logger.info(f"start process_batch_expert")
         
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
         permuted_tensor = permute_tokens(tensor, exp_mappings)
@@ -319,6 +320,8 @@ class Engine:
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
+        
+        self._logger.info(f"processed expert batch: {output.shape}")
         
         return output, meta_c
 

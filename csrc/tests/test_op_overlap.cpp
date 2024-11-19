@@ -42,14 +42,21 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
     // auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
     // c_raw->instantiate();
     // auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+    cudaSetDevice(0);
     ncclComm_t comm;
     ncclUniqueId& id = *((ncclUniqueId*)(uid.c_str()));
-    ncclCommInitRank(&comm, ranks.size(), id, rank);
-    DMOE_LOG(INFO) << "rank " << rank << " communication start." << now() << LEND;
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    config.blocking = 1;
+    DMOE_LOG(INFO) << "rank " << rank << " ncclCommInitRankConfig." << now() << LEND;
+    auto res = ncclCommInitRankConfig(&comm, ranks.size(), id, rank, &config);
+    DMOE_LOG(INFO) << "rank " << rank << " initing..." << res << " " << now() << LEND;
+    ncclResult_t state;
+    do {
+        ncclCommGetAsyncError(comm, &state);
+    } while(state == ncclInProgress);
     at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(false, 0);
     at::cuda::CUDAStreamGuard guard(c10_stream);
     auto cstream = c10_stream.stream();
-    barrier.arrive_and_wait();
 
     size_t size = 4;
     DMOE_LOG(WARNING) << "comm stream: " << cstream << LEND;
@@ -69,13 +76,18 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
     cudaStream_t stream;
     CUDACHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1));
 
+    barrier.arrive_and_wait();
+    DMOE_LOG(INFO) << "rank " << rank << " communication start." << now() << LEND;
+
     if (rank == 1) {
         // ncclRecv((void*) buf, size, ncclFloat16, 0, comm, stream);
-        ncclBroadcast((void*) buf, (void*) buf, size, ncclFloat16, ranks[0], comm, stream);
+        NCCLCHECK(ncclBroadcast((void*) buf, (void*) buf, size, ncclFloat16, ranks[0], comm, stream));
     } else {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        ncclBroadcast((void*) buf, (void*) buf, size, ncclFloat16, ranks[0], comm, stream);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        NCCLCHECK(ncclBroadcast((void*) buf, (void*) buf, size, ncclFloat16, ranks[0], comm, stream));
     }
+
+    DMOE_LOG(INFO) << "rank " << rank << " nccl submitted. " << now() << LEND;
 
     CUDACHECK(cudaStreamSynchronize(stream));
     
@@ -83,7 +95,6 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
 }
 
 void test_calc(int rank) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     DMOE_LOG(INFO) << "rank " << rank << " calculation start." << now() << LEND;
     at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, 0);
     at::cuda::CUDAStreamGuard guard(c10_stream);
@@ -98,12 +109,13 @@ void test_calc(int rank) {
     b.fill_(2.0);
 
     DMOE_LOG(INFO) << "calc c" << LEND;
+    barrier.arrive_and_wait();
     torch::Tensor c = a * b;
 
     DMOE_LOG(INFO) << "calc gpu->cpu" << LEND;
     auto result = c.sum().item<float>();
     
-    DMOE_LOG(INFO) << "rank " << rank << " calculation done with result: " << result << LEND;
+    DMOE_LOG(INFO) << "rank " << rank << " calculation done with result: " << result << "; " << now() << LEND;
 }
 
 void test_copy(int rank) {
@@ -127,20 +139,21 @@ void test_copy(int rank) {
 }
 
 void test_kernel_simple(int rank) {
-    barrier.arrive_and_wait();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    DMOE_LOG(INFO) << "rank " << rank << " simple kernel start. " << now() << LEND;
     cudaStream_t stream;
     CUDACHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -1));
     size_t size = 4096;
     float* buf;
     CUDACHECK(cudaMalloc(&buf, size));
-    DMOE_LOG(WARNING) << "rank " << rank << "kernel stream: " << stream << LEND;
-    DMOE_LOG(WARNING) << "rank " << rank \
-        << " thread<" << std::this_thread::get_id() \
-        << "> current stream status: " << (cudaStreamQuery(stream) == cudaSuccess) << LEND \
-        << "default stream status: " << (cudaStreamQuery(cudaStreamDefault) == cudaSuccess) << LEND;
     add_one_cuda(buf, buf, 128, stream);
+    add_one_cuda(buf, buf, 128, stream);
+    add_one_cuda(buf, buf, 128, stream);
+    cudaStreamSynchronize(stream);
+    barrier.arrive_and_wait();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    DMOE_LOG(INFO) << "rank " << rank << " simple kernel start. " << now() << LEND;
+    add_one_cuda(buf, buf, 128, stream);
+    DMOE_LOG(INFO) << "rank " << rank << " simple kernel submitted. " << now() << LEND;
+    cudaStreamSynchronize(stream);
     DMOE_LOG(INFO) << "rank " << rank << " simple kernel done." << now() << LEND;
 }
 
@@ -173,6 +186,7 @@ void test_kernel(int rank) {
 
     DMOE_LOG(WARNING) << "kernel stream: " << stream << LEND;
     gather_tokens_cuda(tensor, src_ptrs.data(), meta.num_tokens(), meta.token_hidden_dim(), stream);
+    cudaStreamSynchronize(stream);
     DMOE_LOG(INFO) << "rank " << rank << " kernel done." << LEND;
 }
 

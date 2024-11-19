@@ -162,6 +162,7 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
         ctx = zmq::context_t(1);
         mq = zmq::socket_t(ctx, is_root() ? zmq::socket_type::push : zmq::socket_type::pull);
         root_device_id = party_all[0];
+        other = party_all[0];
         zmq_comm_id = 0;
         for (int i: party_all)
             zmq_comm_id += i;
@@ -173,12 +174,20 @@ void NcclGroupChannel::instantiate() {
     #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->local));
     #endif
-    NCCLCHECK(ncclCommInitRank(
+    ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+    config.blocking = 0;
+    ncclCommInitRankConfig(
         &this->comm,
         /*nranks=*/ size,
         this->comm_id,
-        /*rank=*/ this->local_rank
-    ));
+        /*rank=*/ this->local_rank,
+        &config
+    );
+    ncclResult_t state;
+    do {
+        ncclCommGetAsyncError(comm, &state);
+    } while(state == ncclInProgress);
+
     if (is_root())
         mq.bind(get_zmq_addr(root_device_id, false, /*manual_port=*/ ZMQ_GROUP_PORT + zmq_comm_id));
     else
@@ -205,7 +214,7 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->comm,
         this->stream
     ));
-    cudaStreamSynchronize(this->stream);
+    CUDACHECK(cudaStreamSynchronize(this->stream));
     DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
 }
 

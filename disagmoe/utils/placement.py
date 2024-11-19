@@ -75,6 +75,13 @@ class ModelPlacement:
     def is_attn(self, device_id: int) -> bool:
         # NOTE(hogura|20241111): since the dict `attn` only includes driver now, we use `expert` to check
         return device_id not in self.expert
+    
+    def in_device_ids_at(self, device_id: int) -> List[int]:
+        if self.is_worker_device(device_id):
+            # return the driver's in_device_ids
+            return [w for w in self.in_device_ids.get(self.device_groups[device_id][0], []) if w not in [self.tokenizer, self.sampler]]
+        else:
+            return self.in_device_ids.get(device_id, [])
 
 @dataclass
 class ClusterConfig:

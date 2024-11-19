@@ -118,9 +118,15 @@ class Controller:
                 in_nccl_ids[j][i] = uid
                 out_nccl_ids[i][j] = uid
         group_nccl_ids = {
+            # NOTE(hogura|20241118): the first is for the channel in Pool, the second is for the channel in Scheduler
             tuple(group): (get_nccl_unique_id(), get_nccl_unique_id())
                 for group in model_place.device_groups.values()
         }
+        # inter-group nccl ids, [expert -> TP group]
+        for j, group in model_place.device_groups.items():
+            if len(group) > 1 and j != group[0]: # is a worker
+                root = group[0]
+                in_nccl_ids[j] = in_nccl_ids[root]
         return in_nccl_ids, out_nccl_ids, group_nccl_ids
     
     def init_engine(self, 
@@ -168,7 +174,7 @@ class Controller:
         tasks = [
             worker.init_core.remote(
                 layer_ids=model_place.layer_ids_at(device_id),
-                in_device_ids=model_place.in_device_ids.get(device_id, []),
+                in_device_ids=model_place.in_device_ids_at(device_id),
                 out_device_ids=model_place.out_device_ids.get(device_id, []),
                 out_channel_infos=[
                     ChannelInfo(

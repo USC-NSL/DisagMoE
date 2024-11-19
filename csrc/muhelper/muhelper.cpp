@@ -82,7 +82,7 @@ bool MuDispatcher::_is_group_channel(int cid) const {
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
-    DMOE_LOG(DEBUG) << "sending batch to channel " << cid << LEND;
+    DMOE_LOG(DEBUG) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
@@ -325,6 +325,11 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
+    DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
+    ASSERT(0 <= peer_id && peer_id < this->peer_channels.size());
+    ASSERT(this->peer_channels[peer_id].get() != nullptr);
+    ASSERT(meta.get() != nullptr);
+    ASSERT(tensor_buf != 0);
     this->peer_channels[peer_id]->recv(tensor_buf, *meta);
 }
 
@@ -502,11 +507,12 @@ void MuAttentionPool::run() {
     }
 
     if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
-        DMOE_LOG(INFO) << "Running ATTN Worker pool" << LEND;
+        DMOE_LOG(INFO) << "Running ATTN Worker pool (intra-group)" << LEND;
         group_threads.emplace_back(std::thread([&]() {
             at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
             at::cuda::CUDAStreamGuard guard(c10_stream);
             while (!end_flag) {
+                DMOE_LOG(DEBUG) << "Worker AttnPool fetching metadata ..." << LEND;
                 Metadata meta;
                 group_comm->recv_metadata(meta);
 
@@ -515,49 +521,50 @@ void MuAttentionPool::run() {
                     torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                 );
 
+                DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
                 group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
                 auto t_meta = std::make_shared<Metadata>(meta);
                 process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
             }
         }));
-    } else {
-        DMOE_LOG(INFO) << "Running ATTN Driver pool" << LEND;
-        for (auto &c: this->channels) {
-            if (is_embedding_node(c->get_peer_id()))
-                continue;
-            // if not embedding, then must be an expert dispatcher, which is a group channel
-            ASSERT(c.get() != nullptr);
-            auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
-            ASSERT(group_c.get() != nullptr);
-            group_threads.emplace_back(std::thread(
-                [&](std::shared_ptr<NcclGroupChannel> c) {
-                    // recv messages from multiple dispatchers
-                    at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
-                    at::cuda::CUDAStreamGuard guard(c10_stream);
+    }
 
-                    while (!end_flag) {
-                        DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
-                        Metadata meta;
-                        c->recv_metadata(meta);
+    DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
+    for (auto &c: this->channels) {
+        if (is_embedding_node(c->get_peer_id()))
+            continue;
+        // if not embedding, then must be an expert dispatcher, which is a group channel
+        ASSERT(c.get() != nullptr);
+        auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
+        ASSERT(group_c.get() != nullptr);
+        group_threads.emplace_back(std::thread(
+            [&](std::shared_ptr<NcclGroupChannel> c) {
+                // recv messages from multiple dispatchers
+                at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+                at::cuda::CUDAStreamGuard guard(c10_stream);
 
-                        torch::Tensor tensor = torch::empty(
-                            {meta.num_tokens(), meta.token_hidden_dim()}, 
-                            torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
-                        );
+                while (!end_flag) {
+                    DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
+                    Metadata meta;
+                    c->recv_metadata(meta);
 
-                        DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
-                        c->recv((uintptr_t)tensor.data_ptr(), meta);
+                    torch::Tensor tensor = torch::empty(
+                        {meta.num_tokens(), meta.token_hidden_dim()}, 
+                        torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+                    );
 
-                        auto meta_t = std::make_shared<Metadata>(meta);
+                    DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                    c->recv((uintptr_t)tensor.data_ptr(), meta);
 
-                        // When using large_comm, all tensors are sent to the workers
-                        // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
-                        // See MuAttentionPool::process_batch
-                        process_batch(tensor, meta_t, /*send_from_zmq=*/ false);
-                    }
-                }, group_c
-            ));
-        }
+                    auto meta_t = std::make_shared<Metadata>(meta);
+
+                    // When using large_comm, all tensors are sent to the workers
+                    // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
+                    // See MuAttentionPool::process_batch
+                    process_batch(tensor, meta_t, /*send_from_zmq=*/ false);
+                }
+            }, group_c
+        ));
     }
 }
 
