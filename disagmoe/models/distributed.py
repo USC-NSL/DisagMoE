@@ -28,13 +28,11 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     assert _channel is not None
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
-    new_tensor = torch.zeros_like(tensor, dtype=tensor.dtype, device=tensor.device)
     _channel.all_reduce(tensor.data_ptr(), tensor.shape)
-    # mocking
-    return new_tensor
+    return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:
-    assert False, "No gather is needed"
+    assert False, "AllGather is not required currently"
     if _tp_model_config.tp_size == 1:
         return tensor
     assert _channel is not None

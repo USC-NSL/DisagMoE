@@ -304,16 +304,21 @@ class Engine:
         self._logger.info(f"start process_batch_expert")
         
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
+        self._logger.info(f"permute_tokens")
         permuted_tensor = permute_tokens(tensor, exp_mappings)
         meta_c.permute_token_infos(exp_mappings)
         
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
+        self._logger.info(f"get_expert_batch_sizes")
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
+        self._logger.info(f"saved stream {self.stream}, current stream {torch.cuda.current_stream()}")
+        self.stream.synchronize()
+        self._logger.info(f"expert execute, {meta_c.layer_id, permuted_tensor.shape, batch_sizes}")
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
