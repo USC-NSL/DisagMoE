@@ -93,8 +93,8 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Finished, end.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
-                DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
-                          << output_lens[rid] << " tokens." << LEND;
+                // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
+                //           << output_lens[rid] << " tokens." << LEND;
             }
         } else {
             // at prefill phase

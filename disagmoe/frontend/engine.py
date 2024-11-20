@@ -375,8 +375,8 @@ class SamplerEngine(Engine):
     def fetch_finished_results(self) -> List[SloStat]:
         # convert c++ vector to python list
         results = self.sampler.fetch_finished_slo_stats()
-        if len(results) > 0:
-            self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        # if len(results) > 0:
+        #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
     
     def set_sampling_params(self, max_output_len: int):
@@ -404,7 +404,7 @@ class TokenizerEngine(Engine):
         shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.zeros(size=shape).type(self.model_config.dtype)
-        self._logger.info("tokenizer put 1 request")
+        # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, x)
         
     def put_single_request(self, req_id: int, input_len: int):
