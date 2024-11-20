@@ -65,6 +65,7 @@ class Controller:
         self.in_flight_reqs = set()
         self.end_flag = False
         self.request_results: Dict[int, AsyncResult] = dict()
+        self.is_polling = False
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -246,7 +247,11 @@ class Controller:
             results = ray.get(self.sampler_worker.fetch_finished_results.remote())
             if len(results) != 0:
                 self.process_finished_results(results)
-            asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)
+    
+    def start_polling_results(self):
+        self.is_polling = True
+        asyncio.create_task(self.poll_finished_results())
             
     def put_single_request(self, input_len: List[int]) -> AsyncResult:
         req_id = self.get_new_req_id()
