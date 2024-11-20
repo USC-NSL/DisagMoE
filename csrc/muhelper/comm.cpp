@@ -204,18 +204,28 @@ int NcclGroupChannel::root() const {
 
 void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
-    // DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
-    NCCLCHECK(ncclBroadcast(
-        send_buf,
-        recv_buf,
-        count,
-        type,
-        root(),
-        this->comm,
-        this->stream
-    ));
+    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
+    if (is_root()) {
+        NCCLCHECK(ncclBcast(
+            send_buf,
+            count,
+            type,
+            root(),
+            this->comm,
+            this->stream
+        ));
+    } else {
+        NCCLCHECK(ncclBcast(
+            recv_buf,
+            count,
+            type,
+            root(),
+            this->comm,
+            this->stream
+        ));
+    }
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    // DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
+    DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
 }
 
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
@@ -298,7 +308,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
     int count = 1;
     for (int i: shape)
         count *= i;
-    // DMOE_LOG(DEBUG) << "Calling all_reduce for " << count << " elements." << LEND;
+    DMOE_LOG(DEBUG) << "Calling all_reduce for " << count << " elements on stream" << this->stream << LEND;
     NCCLCHECK(ncclAllReduce(
         buf,
         buf,
@@ -309,7 +319,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->stream
     ));
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    // DMOE_LOG(DEBUG) << "AllReduce done." << LEND;
+    DMOE_LOG(DEBUG) << "AllReduce done on stream " << this->stream << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {

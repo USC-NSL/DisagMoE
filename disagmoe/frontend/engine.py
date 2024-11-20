@@ -265,6 +265,7 @@ class Engine:
         
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
+        self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
@@ -274,6 +275,7 @@ class Engine:
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         
         # TODO(hogura|20241015): only top-1 expert currently
+        self._logger.info(f"executing attn {meta_c.seq_ids}")
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
@@ -286,6 +288,7 @@ class Engine:
         else:
             new_meta_c = meta_py
         
+        self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")
@@ -293,6 +296,8 @@ class Engine:
                              meta_c: Metadata, 
                              tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
+        
+        self._logger.info(f"process batch expert {meta_c.req_ids}")
         
         exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
         permuted_tensor = permute_tokens(tensor, exp_mappings)
@@ -305,13 +310,16 @@ class Engine:
             dtype=torch.int64,
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
+        
+        self._logger.info(f"executing expert {meta_c.req_ids}")
         output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
-                
+
+        self._logger.info(f"processed batch expert {meta_c.req_ids}")
         return output, meta_c
 
     @nvtx_range("Engine.post_process")
@@ -334,7 +342,7 @@ class Engine:
             batch_info = self.scheduler.schedule() # using non-blocking schedule
             if batch_info.data is None:
                 continue
-            
+                        
             batch = TensorBatch.from_c(batch_info)
 
             meta: Metadata = batch.metadata

@@ -518,8 +518,9 @@ void MuAttentionPool::run() {
                     torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                 );
 
-                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
+                DMOE_LOG(DEBUG) << "Worker AttnPool fetched result:" << meta << LEND;
                 group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
+                DMOE_LOG(DEBUG) << "Worker AttnPool broadcast finished" << LEND;
                 auto t_meta = std::make_shared<Metadata>(meta);
                 process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
             }
@@ -550,8 +551,9 @@ void MuAttentionPool::run() {
                         torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                     );
 
-                    // DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                    DMOE_LOG(DEBUG) << "AttnPool fetched: " << meta << LEND;
                     c->recv((uintptr_t)tensor.data_ptr(), meta);
+                    DMOE_LOG(DEBUG) << "AttnPool broadcast finished" << LEND;
 
                     auto meta_t = std::make_shared<Metadata>(meta);
 
@@ -620,8 +622,10 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
+        DMOE_LOG(DEBUG) << "Broadcasting attn batch to workers" << LEND;
         group_comm->send_metadata(*meta);
         group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
+        DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
     }
 
     int lid = this->inner_layer_id[meta->layer_id];

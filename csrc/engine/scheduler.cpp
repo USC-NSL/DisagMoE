@@ -114,7 +114,10 @@ AttentionBatch AttentionDriverScheduler::schedule() {
         for (int i: batch.metadata->seq_ids)
             schedule_result.push_back(i);
 
-    // DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
+    DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << "; ";
+    for (int i = 1; i < schedule_result.size(); i++)
+        std::cerr << schedule_result[i] << " ";
+    std::cerr << LEND;
 
     auto cerealized = cerealize_(schedule_result);
     void* buf = cerealized.data();
@@ -151,12 +154,15 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
     for (int i = 1; i < schedule_result.size(); i++)
         seq_ids.insert(schedule_result[i]);
 
-    // DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
+    DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << "; ";
+    for (int i = 1; i < schedule_result.size(); i++)
+        std::cerr << schedule_result[i] << " ";
+    std::cerr << LEND;
 
     std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
 
     auto batch = AttentionBatch::merge(batches);
-    // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
+    DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
     return batch;
 }
 

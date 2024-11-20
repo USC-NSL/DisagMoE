@@ -1,9 +1,12 @@
 from disagmoe.config import ModelConfig
 from disagmoe.frontend.adapter import NcclGroupChannel
+from disagmoe.utils.logger import get_logger
 
 import torch
 
 from torch import Tensor
+
+_logger = get_logger("dist")
 
 _tp_model_config: ModelConfig = None
 _channel: NcclGroupChannel = None
@@ -28,7 +31,9 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     assert _channel is not None
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
+    _logger.info("start allreduce")
     _channel.all_reduce(tensor.data_ptr(), tensor.shape)
+    _logger.info("end allreduce")
     return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:
