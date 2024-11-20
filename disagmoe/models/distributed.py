@@ -32,7 +32,7 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:
-    assert False, "AllGather is not required currently"
+    assert False, "No gather is needed"
     if _tp_model_config.tp_size == 1:
         return tensor
     assert _channel is not None

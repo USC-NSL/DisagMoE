@@ -4,10 +4,7 @@ _env_vars = {
     "DMOE_PROFILE_DIR": "",
     "CUDA_LAUNCH_BLOCKING": "0",
     "NCCL_DEBUG": "",
-    "NCCL_LAUNCH_MODE": "",
-    "RAY_DEDUP_LOGS": "1",
-    "CUDA_DEVICE_MAX_CONNECTIONS": "",
-    "NCCL_BLOCKING_WAIT": "0",
+    "NCCL_LAUNCH_MODE": ""
 }
 
 ENV_VARS = {

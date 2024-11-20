@@ -6,7 +6,6 @@
 #include <exception>
 #include <vector>
 #include <string>
-#include <set>
 
 scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
@@ -94,7 +93,6 @@ AttentionDriverScheduler::AttentionDriverScheduler(
     Channel_t chan, std::string policy): 
     AttentionScheduler(pool, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
-    CUDACHECK(cudaStreamCreate(&this->stream));  // unused
 }
 
 AttentionBatch AttentionDriverScheduler::schedule() {
@@ -104,21 +102,11 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     if (layer_id == -1) {
         return AttentionBatch{};
     }
-    // DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
 
-    // TODO(hogura|20241119): here only send seq_ids as schedule result; need to send prefill_len
+    long long schedule_result = (1ll * layer_id << 32) | batches.size();
 
-    std::vector<int> schedule_result;
-    schedule_result.push_back(layer_id);
-    for (auto &batch: batches)
-        for (int i: batch.metadata->seq_ids)
-            schedule_result.push_back(i);
-
-    // DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
-
-    auto cerealized = cerealize_(schedule_result);
-    void* buf = cerealized.data();
-    size_t size = cerealized.size();
+    void* buf = (void*) &schedule_result;
+    size_t size = sizeof(schedule_result);
     chan->bcast_obj(buf, size);
 
     auto batch = AttentionBatch::merge(batches);
@@ -134,29 +122,22 @@ AttentionWorkerScheduler::AttentionWorkerScheduler(
     Channel_t chan, std::string policy): 
     AttentionScheduler(pool, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
-    CUDACHECK(cudaStreamCreate(&this->stream));  // unused
 }
 
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
-    // DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
-    std::vector<int> schedule_result;
+    long long schedule_result;
     void* buf;
     size_t size;
     chan->bcast_obj(buf, size);
-    decerealize_((char*) buf, size, schedule_result);
+    schedule_result = *((long long*)buf);
 
-    int layer_id = schedule_result[0];
-    std::set<int> seq_ids;
-    for (int i = 1; i < schedule_result.size(); i++)
-        seq_ids.insert(schedule_result[i]);
+    int layer_id = schedule_result >> 32;
+    unsigned int num_batches = schedule_result & 0xffffffffu;
 
-    // DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
-
-    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
+    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, num_batches);
 
     auto batch = AttentionBatch::merge(batches);
-    // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
     return batch;
 }
 
