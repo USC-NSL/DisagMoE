@@ -275,7 +275,7 @@ class Engine:
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         
         # TODO(hogura|20241015): only top-1 expert currently
-        self._logger.info(f"executing attn {meta_c.seq_ids}")
+        self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
         hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()

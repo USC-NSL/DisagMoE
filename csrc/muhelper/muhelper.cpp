@@ -545,13 +545,14 @@ void MuAttentionPool::run() {
                     // DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
                     Metadata meta;
                     c->recv_metadata(meta);
+                    DMOE_LOG(DEBUG) << "AttnPool fetched in stream " << c10_stream.stream() << " " << meta << LEND;
 
                     torch::Tensor tensor = torch::empty(
                         {meta.num_tokens(), meta.token_hidden_dim()}, 
                         torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                     );
 
-                    DMOE_LOG(DEBUG) << "AttnPool fetched: " << meta << LEND;
+                    DMOE_LOG(DEBUG) << "AttnPool created tensor" << LEND;
                     c->recv((uintptr_t)tensor.data_ptr(), meta);
                     DMOE_LOG(DEBUG) << "AttnPool broadcast finished" << LEND;
 

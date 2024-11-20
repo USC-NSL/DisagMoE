@@ -101,6 +101,8 @@ protected:
     int local_rank;
     int size;
 
+    int* barrier;
+
     bool is_root() const;
 
     int root() const;

@@ -159,6 +159,11 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
             }
         }
         local_rank = std::find(party_all.begin(), party_all.end(), party_local) - party_all.begin();
+        DMOE_LOG(DEBUG) << "NcclGroupChannel " << local << " " << local_rank << " " << size << ";";
+        for (int i: party_all)
+            std::cerr << " " << i;
+        std::cerr << LEND;
+        ASSERT(0 <= local_rank && local_rank < size);
         ctx = zmq::context_t(1);
         mq = zmq::socket_t(ctx, is_root() ? zmq::socket_type::push : zmq::socket_type::pull);
         root_device_id = party_all[0];
@@ -168,6 +173,10 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
             zmq_comm_id += i;
         for (int i = 0; i < 128; i ++)
             (zmq_comm_id += comm_id.internal[i]) %= ZMQ_MAGIC_MOD;
+        
+        // use barrier as a signal to synchronize in broadcast
+        CUDACHECK(cudaMalloc(&barrier, sizeof(int)));
+        CUDACHECK(cudaMemset(barrier, 0, sizeof(int)));
     }
 
 void NcclGroupChannel::instantiate() {
@@ -204,28 +213,21 @@ int NcclGroupChannel::root() const {
 
 void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
-    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
-    if (is_root()) {
-        NCCLCHECK(ncclBcast(
-            send_buf,
-            count,
-            type,
-            root(),
-            this->comm,
-            this->stream
-        ));
-    } else {
-        NCCLCHECK(ncclBcast(
-            recv_buf,
-            count,
-            type,
-            root(),
-            this->comm,
-            this->stream
-        ));
-    }
+    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local << " " << count << " on the stream " << this->stream << LEND;
+    NCCLCHECK(ncclBroadcast(
+        send_buf,
+        recv_buf,
+        count,
+        type,
+        root(),
+        this->comm,
+        this->stream
+    ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+    NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+    DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
 }
 
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
@@ -258,6 +260,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) 
         // use zmq to broadcast
         for (int i = 0; i < this->size - 1; i ++)
             this->mq.send(zmq::buffer((char*) &size, sizeof(size_t)));
+        DMOE_LOG(DEBUG) << "sent size: " << size << LEND;
         // then send data
         broadcast(data_buf, data_buf, size, ncclInt8);
         free_cuda_tensor(data_buf);
@@ -266,7 +269,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) 
         zmq::message_t msg(sizeof(size));
         this->mq.recv(msg, zmq::recv_flags::none);
         size = *(size_t*) msg.data();
-        // DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
+        DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
         ASSERT(size > 0);
         // then recv data
         void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
