@@ -9,6 +9,7 @@
 #include <thread>
 
 Sampler::Sampler(int device_id, 
+                int max_output_len,
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos):
@@ -22,6 +23,8 @@ Sampler::Sampler(int device_id,
         
         ctx = zmq::context_t(in_channels.size());
         recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
+
+        this->max_output_len = max_output_len;
 
         // copied from MuPool
         int max_peer_id = 0;
@@ -42,12 +45,12 @@ void Sampler::run() {
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
     while (!this->end_flag) {
-        DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
+        // DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
         std::vector<zmq::message_t> recv_msgs;
         zmq::recv_result_t result =
             zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
         
-        DMOE_LOG(DEBUG) << "sampler got msg !!!" << LEND;
+        // DMOE_LOG(DEBUG) << "sampler got msg !!!" << LEND;
         ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
@@ -70,7 +73,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 
 void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
+    // DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
@@ -115,7 +118,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
-    DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
+    // DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
 
     _send_once(TensorBatch{
         torch_tensor_slice(tensor, continue_ids),
@@ -133,7 +136,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
+    // DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
 }
 
 std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
@@ -161,7 +164,7 @@ int Sampler::sample(uintptr_t buf, metadata_t meta) {
 }
 
 bool Sampler::check_finished(int token, int req_id) {
-    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= MAX_OUTPUT_LEN;
+    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= this->max_output_len;
 }
 
 void Sampler::start() {

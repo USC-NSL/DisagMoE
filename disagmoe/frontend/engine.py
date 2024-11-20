@@ -255,7 +255,7 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
-        self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
+        # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
@@ -345,6 +345,7 @@ class SamplerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
+        self.max_output_len = -1
         
     def init_core(self, 
                   layer_ids: List[int], 
@@ -356,8 +357,10 @@ class SamplerEngine(Engine):
                   tensor_group_nccl_id: str = "",
                   meta_group_device_ids: List[int] = None,
                   meta_group_nccl_id: str = ""):
+        assert self.max_output_len > 0, "max_output_len should be set before init_core"
         self.sampler = init_sampler(
             self.device_id,
+            self.max_output_len,
             in_device_ids,
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
@@ -371,8 +374,13 @@ class SamplerEngine(Engine):
         
     def fetch_finished_results(self) -> List[SloStat]:
         # convert c++ vector to python list
-        list_results = list(self.sampler.fetch_finished_slo_stats())
-        return list_results
+        results = self.sampler.fetch_finished_slo_stats()
+        if len(results) > 0:
+            self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        return [SloStat.from_c(r) for r in results]
+    
+    def set_sampling_params(self, max_output_len: int):
+        self.max_output_len = max_output_len
         
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
         result = self.sampler.wait_slo_stats(n_request)
@@ -380,11 +388,7 @@ class SamplerEngine(Engine):
             # NOTE(hogura|20241022): wait_slo_stats will return len=0 until #request==n_reqquest
             result = self.sampler.wait_slo_stats(n_request)
         new_res = {
-            k: SloStat(
-                stat.t_prefill / CPS - (time.time() - self._t_start),
-                (stat.t_decode - stat.t_prefill) / CPS,
-                [(x - y) / CPS for x, y in zip(stat.t_tokens[1:], stat.t_tokens[:-1])],
-            ) for k, stat in result.items()
+            req_id: SloStat.from_c(stat) for req_id, stat in result.items()
         }
         return new_res
         

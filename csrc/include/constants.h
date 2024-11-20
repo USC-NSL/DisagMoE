@@ -6,10 +6,6 @@
 const int ZMQ_PORT_BASE = 24000;
 const int ZMQ_CPU_PORT_BASE = 25000;
 
-#ifndef MAX_OUTPUT_LEN
-#define MAX_OUTPUT_LEN 16
-#endif
-
 #ifndef N_EXPERTS
 #define N_EXPERTS 8
 #endif

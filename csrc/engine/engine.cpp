@@ -175,6 +175,7 @@ void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dis
 
 Sampler_t init_sampler(
     int local,
+    int max_output_len,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos
@@ -194,7 +195,7 @@ Sampler_t init_sampler(
         t.join();
 
     Sampler_t sampler = std::make_shared<Sampler>(
-        local, in_channels, out_channels, out_channel_infos
+        local, max_output_len, in_channels, out_channels, out_channel_infos
     );
     return sampler;
 }

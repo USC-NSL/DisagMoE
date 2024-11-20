@@ -47,7 +47,6 @@ void NcclChannel::instantiate() {
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
-    DMOE_LOG(INFO) << "initiating nccl channel: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
@@ -58,7 +57,6 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
-    DMOE_LOG(INFO) << "NCCL instantiated " << local << " " << other << LEND;
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {

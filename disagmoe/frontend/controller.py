@@ -26,17 +26,18 @@ class AsyncResult:
         self.slo_stat = None
         
     async def wait(self):
-        await self.finish_cond.acquire()
-        await self.finish_cond.wait()
-        self.finish_cond.release()
+        async with self.finish_cond:
+            await self.finish_cond.wait()
         
     async def get(self) -> SloStat:
         await self.wait()
         return self.slo_stat
         
-    def put(self, slo_stat: SloStat):
+    async def put(self, slo_stat: SloStat):
         self.slo_stat = slo_stat
-        self.finish_cond.notify()
+        async with self.finish_cond:
+            self.finish_cond.notify()
+        
 
 class RequestIDGenerator:
         
@@ -149,7 +150,10 @@ class Controller:
     def init_engine(self, 
                     model_place: ModelPlacement, 
                     model_config: Optional[ModelConfig] = None,
-                    cache_config: Optional[CacheConfig] = None):
+                    cache_config: Optional[CacheConfig] = None,
+                    max_output_len: int = 32):
+        self.max_output_len = max_output_len
+        
         if not model_config:
             # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
@@ -188,6 +192,9 @@ class Controller:
                     [EngineType.TOKENIZER, EngineType.SAMPLER]
                 )
         ])
+        
+        ray.get(self.sampler_worker.set_sampling_params.remote(self.max_output_len))
+        
         tasks = [
             worker.init_core.remote(
                 layer_ids=model_place.layer_ids_at(device_id),
@@ -230,7 +237,7 @@ class Controller:
         self.in_flight_reqs.add(req_id)
         return req_id
     
-    def process_finished_results(self, results: List[SloStat]):
+    async def process_finished_results(self, results: List[SloStat]):
         # release request resources
         finished_req_ids = [r.req_id for r in results]
         self.release_kv_cache(finished_req_ids)
@@ -239,15 +246,16 @@ class Controller:
         
         # deal with request results
         for result in results:
-            self.request_results[result.req_id].put(result)
+            await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
         
     async def poll_finished_results(self) -> List[SloStat]:
+        print(f"master start polling request")
         while not self.end_flag:
             results = ray.get(self.sampler_worker.fetch_finished_results.remote())
             if len(results) != 0:
-                self.process_finished_results(results)
-            await asyncio.sleep(0.1)
+                asyncio.create_task(self.process_finished_results(results))
+            await asyncio.sleep(0)
     
     def start_polling_results(self):
         self.is_polling = True
@@ -256,12 +264,15 @@ class Controller:
     def put_single_request(self, input_len: List[int]) -> AsyncResult:
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
+        self.request_results[req_id] = res
         self.tokenizer_worker.put_single_request.remote(req_id, input_len)
         return res
         
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         results = [AsyncResult(req_id) for req_id in req_ids]
+        for r in results:
+            self.request_results[r.req_id] = r
         self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
         return results
         

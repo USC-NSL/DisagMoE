@@ -209,7 +209,7 @@ MuExpertDispatcher::MuExpertDispatcher(
 }
 
 int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
-    DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
+    // DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
     return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id] : sampler_channel_id;
 }
 
@@ -368,7 +368,7 @@ void MuPool::run() {
 }
 
 void MuPool::wait_for_new_requests() {
-    DMOE_LOG(INFO) << "MuPool waiting for new requests" << LEND;
+    // DMOE_LOG(INFO) << "MuPool waiting for new requests" << LEND;
     std::unique_lock<std::mutex> lock(this->request_mutex);
     if (this->cur_request_count > 0) {
         lock.unlock();
@@ -376,7 +376,7 @@ void MuPool::wait_for_new_requests() {
     }
     this->request_cv.wait(lock, [&] { return this->cur_request_count > 0; });
     lock.unlock();
-    DMOE_LOG(INFO) << "MuPool got new requests." << LEND;
+    // DMOE_LOG(INFO) << "MuPool got new requests." << LEND;
 }
 
 // the batch_mutex must be used outside this function
@@ -422,10 +422,10 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     }
     
     if (id == -1) {
-        DMOE_LOG(INFO) << "No available batch" << LEND;
+        // DMOE_LOG(INFO) << "No available batch" << LEND;
         return {};
     }
-    DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
+    // DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
 
     std::vector<TensorBatch> result;
     {
@@ -535,9 +535,9 @@ int MuAttentionPool::tokens_in_layer(int lid) {
     int num_tokens = 0;
     for (auto &d: q) {
         num_tokens += d.metadata->num_prefill_tokens + d.metadata->num_decode_tokens;
-        DMOE_LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
-            << d.metadata->num_prefill_tokens << " " 
-            << d.metadata->num_decode_tokens << LEND;
+        // DMOE_LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
+        //     << d.metadata->num_prefill_tokens << " " 
+        //     << d.metadata->num_decode_tokens << LEND;
     }
     return num_tokens;
 }
@@ -572,7 +572,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         maintain_largest_batch();
     }
 
-    DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);

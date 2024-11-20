@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple
+from disagmoe.utils.constants import CPS
 import torch
 @dataclass
 class ChannelInfo:
@@ -107,6 +108,16 @@ class AttentionBatchMetadata:
         
 @dataclass
 class SloStat:
+    req_id: int
     t_prefill: int
     t_decode: int
     t_tokens: List[int]
+    
+    @staticmethod
+    def from_c(stat_c: "SloStat_C") -> "SloStat":
+        return SloStat(
+            stat_c.req_id,
+            stat_c.t_prefill / CPS, # NOTE: consider how to deal with prefill time
+            (stat_c.t_decode - stat_c.t_prefill) / CPS,
+            [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
+        )

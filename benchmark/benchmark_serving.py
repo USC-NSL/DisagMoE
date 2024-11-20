@@ -11,7 +11,7 @@ sampler = SAMPLER_DEV_ID
 
 master: Controller = None
 
-def launch():
+def launch(args):
     cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
@@ -34,11 +34,10 @@ def launch():
                                 num_gpu_blocks=NUM_BLOCKS, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
-    master.init_engine(mp, model_config, cache_config)
+    master.init_engine(mp, model_config, cache_config, args.output_len)
 
     master.start_engine()
    
-    # master.stop_workers()
     
 async def process_response(resp: AsyncResult):
     slo_stat = await resp.get()
@@ -52,11 +51,23 @@ async def generate_requests(args):
     
     # start polling results
     master.start_polling_results()
-    
-    while True:
-        resp = master.put_single_request(args.input_len)
-        asyncio.create_task(process_response(resp))
-        await asyncio.sleep(args.rate)
+    cnt = 0
+    tasks = []
+    if args.num_requests is None:
+        while True:
+            resp = master.put_single_request(args.input_len)
+            asyncio.create_task(process_response(resp))
+            await asyncio.sleep(args.rate)
+    else:
+        while cnt < args.num_requests:
+            cnt += 1
+            resp = master.put_single_request(args.input_len)
+            task = asyncio.create_task(process_response(resp))
+            tasks.append(task)
+            await asyncio.sleep(args.rate)
+        
+        await asyncio.gather(*tasks)
+        master.stop_workers()
     
 def get_args():
     parser = ArgumentParser()
@@ -64,6 +75,7 @@ def get_args():
     parser.add_argument("-r", "--rate", type=float, default=0.1, help="rate of incoming requests, seconds per request")
     parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
+    parser.add_argument("-n", "--num-requests", type=int, default=None, help="number of requests to generate")
     
     args = parser.parse_args()
     return args
@@ -71,7 +83,7 @@ def get_args():
 def main():
     args = get_args()
     
-    launch()
+    launch(args)
     
     asyncio.run(generate_requests(args))
     
