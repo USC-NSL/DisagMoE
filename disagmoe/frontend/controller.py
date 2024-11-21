@@ -99,7 +99,7 @@ class Controller:
             
             self.workers.append(worker)
             self.device_ids.append(device_id)
-        print("#workers", len(self.workers))
+        self._logger.info(f"workers: {len(self.workers), self.device_ids, node_ids}")
     
     @property
     def all_workers(self):
