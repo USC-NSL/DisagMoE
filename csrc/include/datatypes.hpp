@@ -181,6 +181,8 @@ struct Metadata {
     }
 
     static metadata_t merge(const std::vector<metadata_t> &metas) {
+        AUTO_TX_RANGE;
+
         ASSERT(metas.size() > 0);
         std::vector<size_t> shape = metas[0]->shape;
         auto dtype = metas[0]->dtype;
@@ -303,14 +305,19 @@ struct TensorBatch {
 
         int idx = 0;
         int hidden_size_bytes = meta->token_hidden_dim() * meta->get_datatype_size();
-        for (auto &batch: batches) {
-            uintptr_t cur_ptr = (uintptr_t) batch.data.data_ptr();
-            for (int i = 0; i < batch.metadata->num_tokens(); i ++) {
-                srcs[idx] = cur_ptr;
-                cur_ptr += hidden_size_bytes;
-                idx ++;
+
+        {
+            tx_range _{"TensorBatch::merge::perpare_for_gather_cuda"};
+            for (auto &batch: batches) {
+                uintptr_t cur_ptr = (uintptr_t) batch.data.data_ptr();
+                for (int i = 0; i < batch.metadata->num_tokens(); i ++) {
+                    srcs[idx] = cur_ptr;
+                    cur_ptr += hidden_size_bytes;
+                    idx ++;
+                }
             }
         }
+        
 
         gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim());
 
@@ -373,6 +380,8 @@ struct AttentionBatchMetadata {
     }
 
     static attn_metadata_t merge(const std::vector<attn_metadata_t>& batches) {
+        AUTO_TX_RANGE;
+        
         int new_prefills_seqs = 0;
         int new_prefill_tokens = 0;
         int new_decode_tokens = 0;
@@ -455,11 +464,11 @@ struct AttentionBatch {
     attn_metadata_t metadata;
 
     static AttentionBatch merge(const std::vector<AttentionBatch>& batches) {
-        AUTO_TX_RANGE;
-        
         if (batches.empty()) {
             return AttentionBatch {};
         }
+        AUTO_TX_RANGE;
+
         std::vector<attn_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
@@ -499,21 +508,25 @@ struct AttentionBatch {
         std::vector<uintptr_t> src_ptrs(meta->num_tokens());
         const int hidden_size_byte = meta->token_hidden_dim() * tensor.element_size();
 
-        for (auto &batch: batches) {
-            uintptr_t cur_data_ptr = (uintptr_t) batch.data.data_ptr();
+        {
+            tx_range _{"AttentionBatch::merge::perpare_for_gather_cuda"};
+            for (auto &batch: batches) {
+                uintptr_t cur_data_ptr = (uintptr_t) batch.data.data_ptr();
 
-            for (int i = 0; i < batch.metadata->num_prefill_tokens; i ++) {
-                src_ptrs[prefill_idx] = cur_data_ptr;
-                cur_data_ptr += hidden_size_byte;
-                prefill_idx ++;
-            }
+                for (int i = 0; i < batch.metadata->num_prefill_tokens; i ++) {
+                    src_ptrs[prefill_idx] = cur_data_ptr;
+                    cur_data_ptr += hidden_size_byte;
+                    prefill_idx ++;
+                }
 
-            for (int i = 0; i < batch.metadata->num_decode_tokens; i ++) {
-                src_ptrs[decode_idx] = cur_data_ptr;
-                cur_data_ptr += hidden_size_byte;
-                decode_idx ++;
+                for (int i = 0; i < batch.metadata->num_decode_tokens; i ++) {
+                    src_ptrs[decode_idx] = cur_data_ptr;
+                    cur_data_ptr += hidden_size_byte;
+                    decode_idx ++;
+                }
             }
         }
+        
         gather_tokens_cuda(tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim());
 
         return AttentionBatch {tensor, meta};
