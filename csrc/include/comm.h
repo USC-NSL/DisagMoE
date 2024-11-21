@@ -101,6 +101,7 @@ protected:
     int local_rank;
     int size;
 
+    torch::Tensor buffer_gpu;
     int* barrier;
 
     bool is_root() const;
@@ -122,7 +123,7 @@ public:
 
     void send_recv(uintptr_t data, const Metadata& metadata);
 
-    void bcast_obj(void* &buf, size_t &size, cudaStream_t stream = nullptr);
+    void bcast_obj(void* &buf, size_t &size);
 
     void send_metadata(const Metadata& metadata);
 

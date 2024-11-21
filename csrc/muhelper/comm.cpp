@@ -196,6 +196,11 @@ void NcclGroupChannel::instantiate() {
     do {
         ncclCommGetAsyncError(comm, &state);
     } while(state == ncclInProgress);
+    
+    this->buffer_gpu = torch::empty(
+        {GROUP_CHANNEL_BUFFER_SIZE}, 
+        torch::TensorOptions().dtype(torch::kInt8).device(torch::kCUDA, 0)
+    );
 
     synchronize();
 
@@ -231,8 +236,6 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->comm,
         this->stream
     ));
-    DMOE_LOG(DEBUG) << "reaching barrier " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
-    // NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
     CUDACHECK(cudaStreamSynchronize(this->stream));
     DMOE_LOG(DEBUG) << "finished broadcast " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
 }
@@ -258,38 +261,50 @@ void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
         metadata.num_element(), metadata.get_nccl_datatype());
 }
 
-void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) {
+void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
     tx_range _{"NcclGroupChannel::bcast_obj"};
     if (is_root()) {
         // first send size
-        // use zmq to broadcast
+        // [option 1] use zmq to broadcast
         for (int i = 0; i < this->size - 1; i ++)
             this->mq.send(zmq::buffer((char*) &size, sizeof(size_t)));
         DMOE_LOG(DEBUG) << "sent size: " << size << LEND;
 
+        // [option 2] use NcclBroadcast
+        // CUDACHECK(cudaMemcpyAsync(
+        //     this->buffer_gpu.data_ptr(), &size, 
+        //     sizeof(size_t), 
+        //     cudaMemcpyKind::cudaMemcpyHostToDevice,
+        //     this->stream
+        // ));
+        // broadcast(this->buffer_gpu.data_ptr(), this->buffer_gpu.data_ptr(), 1, ncclUint64);
+
         // then send data
-        torch::Tensor tensor = torch::empty(
-            {size}, 
-            torch::TensorOptions().dtype(torch::kInt8).device(torch::kCUDA, 0)
-        );
-        void* data_buf = (void*) tensor.data_ptr();
+        ASSERT (size <= GROUP_CHANNEL_BUFFER_SIZE);
+        void* data_buf = (void*) this->buffer_gpu.data_ptr();
         CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
 
         broadcast(data_buf, data_buf, size, ncclInt8);
     } else {
         // first recv size
+        // [option 1] use zmq to recv
         zmq::message_t msg(sizeof(size));
         this->mq.recv(msg, zmq::recv_flags::none);
         size = *(size_t*) msg.data();
+        
+        // [option 2] use NcclBroadcast
+        // broadcast(this->buffer_gpu.data_ptr(), this->buffer_gpu.data_ptr(), 1, ncclUint64);
+        // CUDACHECK(cudaMemcpy(
+        //     &size, this->buffer_gpu.data_ptr(), 
+        //     sizeof(size_t), 
+        //     cudaMemcpyKind::cudaMemcpyDeviceToHost
+        // )); // cannot use cudaMemcpyAsync here
+
         DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
-        ASSERT(size > 0);
+        ASSERT(size > 0 && size <= GROUP_CHANNEL_BUFFER_SIZE);
 
         // then recv data
-        torch::Tensor tensor = torch::empty(
-            {size}, 
-            torch::TensorOptions().dtype(torch::kInt8).device(torch::kCUDA, 0)
-        );
-        void* data_buf = (void*) tensor.data_ptr();
+        void* data_buf = (void*) this->buffer_gpu.data_ptr();
         broadcast(data_buf, data_buf, size, ncclInt8);
         buf = std::malloc(size);
         CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
