@@ -14,7 +14,7 @@ cluster_config = ClusterConfig(n_node=1, n_gpu=3,
                                id_sampler=sampler)
 
 model_config = duo_expert_mixtral
-model_config.num_layer = 16
+model_config.num_layers = 16
 model_config.ep_size = 2
 model_config.num_experts = 8
 model_config.tp_size = 1

@@ -6,6 +6,7 @@
 #include <ctime>
 #include <utility>
 
+#include "distributed.hpp"
 #include "datatypes.hpp"
 #include "muhelper.h"
 #include "comm.h"

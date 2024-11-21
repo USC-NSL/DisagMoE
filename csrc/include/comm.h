@@ -76,6 +76,8 @@ protected:
     static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
     mq_t mq;
+
+    std::string other_ip;
     bool is_sender;
     char device_id_str[3];
 

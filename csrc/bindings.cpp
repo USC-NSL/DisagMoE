@@ -11,7 +11,7 @@
 #include "binding_tests.hpp"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
-#define REGISTER_TEST(name) m.def(#name, &name)
+#define REGISTER_FUNC(name) m.def(#name, &name)
 
 namespace py = pybind11;
 
@@ -147,6 +147,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("start_engine", &start_engine);
     m.def("init_sampler", &init_sampler);
     m.def("init_tokenizer", &init_tokenizer);
+    REGISTER_FUNC(set_hosts);
 
     /********
         Test functions
@@ -156,7 +157,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
     m.def("test_multi_launch", &test_multi_launch);
 
-    REGISTER_TEST(test_op_overlap);
+    REGISTER_FUNC(test_op_overlap);
     // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
     // m.def("test_attn_dispatcher", &test_attn_dispatcher);
     // m.def("test_expert_dispatcher", &test_expert_dispatcher);

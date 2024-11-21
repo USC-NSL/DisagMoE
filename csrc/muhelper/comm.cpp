@@ -1,6 +1,7 @@
 #include "comm.h"
 #include "logging.h"
 #include "utils.hpp"
+#include "distributed.hpp"
 
 #include <iomanip>
 #include <mutex>

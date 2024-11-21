@@ -29,6 +29,10 @@ const int ZMQ_MAGIC_MOD = 1007;
 #define SAMPLER_DEV_ID 82
 #endif
 
+#ifndef TEMP_DIR
+#define TEMP_DIR "/tmp/disagmoe/"
+#endif
+
 #define ASSERT(condition) do {if (!(condition)) { \
     throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
 }} while(0)
