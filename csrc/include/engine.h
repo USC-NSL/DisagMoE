@@ -25,7 +25,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     const std::map<int, std::vector<int>> &out_device_group_ids,
     const std::map<int, std::string> &out_nccl_ids,
     const std::vector<int> device_group_ids,
-    const std::pair<std::string, std::string> &group_nccl_id
+    const std::tuple<std::string, std::string, std::string> &group_nccl_id
 );
 
 void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);

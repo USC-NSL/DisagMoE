@@ -40,7 +40,6 @@ static void print_back_trace() {
     }                                                   \
 } while(0)
 
-
 inline uintptr_t alloc_cuda_tensor(int count, int device_id, 
                                    size_t size_of_item = 2, 
                                    cudaStream_t stream = nullptr, 

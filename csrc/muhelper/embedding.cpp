@@ -42,12 +42,12 @@ void Sampler::run() {
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
     while (!this->end_flag) {
-        DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
+        // DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
         std::vector<zmq::message_t> recv_msgs;
         zmq::recv_result_t result =
             zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
         
-        DMOE_LOG(DEBUG) << "sampler got msg !!!" << LEND;
+        // DMOE_LOG(DEBUG) << "sampler got msg !!!" << LEND;
         ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
@@ -70,7 +70,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 
 void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
+    // DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
@@ -115,7 +115,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
-    DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
+    // DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
 
     _send_once(TensorBatch{
         torch_tensor_slice(tensor, continue_ids),

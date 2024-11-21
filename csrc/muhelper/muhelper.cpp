@@ -101,7 +101,7 @@ void MuDispatcher::run() {
     for (int i = 0; i < this->channels.size(); i ++)
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
 
-    DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
+    // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
         // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         std::unique_lock<std::mutex> lock(this->mtx);
@@ -148,7 +148,7 @@ MuAttnDispatcher::MuAttnDispatcher(
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
-            DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
+            // DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
             exp_channels[id] = i;
         }
     }
@@ -380,7 +380,7 @@ void MuPool::run() {
     auto last = clock();
     auto start = last;
 
-    DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
+    // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
         int peer_id;
         metadata_t meta;
@@ -518,8 +518,9 @@ void MuAttentionPool::run() {
                     torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                 );
 
-                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched" << meta << LEND;
+                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched result:" << meta << LEND;
                 group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
+                // DMOE_LOG(DEBUG) << "Worker AttnPool broadcast finished" << LEND;
                 auto t_meta = std::make_shared<Metadata>(meta);
                 process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
             }
@@ -544,14 +545,16 @@ void MuAttentionPool::run() {
                     // DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
                     Metadata meta;
                     c->recv_metadata(meta);
+                    // DMOE_LOG(DEBUG) << "AttnPool fetched in stream " << c10_stream.stream() << " " << meta << LEND;
 
                     torch::Tensor tensor = torch::empty(
                         {meta.num_tokens(), meta.token_hidden_dim()}, 
                         torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
                     );
 
-                    // DMOE_LOG(DEBUG) << "AttnPool fetched" << meta << LEND;
+                    // DMOE_LOG(DEBUG) << "AttnPool created tensor" << LEND;
                     c->recv((uintptr_t)tensor.data_ptr(), meta);
+                    // DMOE_LOG(DEBUG) << "AttnPool broadcast finished" << LEND;
 
                     auto meta_t = std::make_shared<Metadata>(meta);
 
@@ -620,8 +623,10 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
+        // DMOE_LOG(DEBUG) << "Broadcasting attn batch to workers" << LEND;
         group_comm->send_metadata(*meta);
         group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
+        // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
     }
 
     int lid = this->inner_layer_id[meta->layer_id];
@@ -698,7 +703,6 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
     //     std::lock_guard<std::mutex> lock(this->request_mutex);
     //     DMOE_LOG(WARNING) << "del cur_request_count:" << cur_request_count << " " << batched_tokens << LEND;
     //     this->cur_request_count -= batched_tokens;
-    //     DMOE_LOG(DEBUG) << "cur request count: " << cur_request_count << LEND;
     //     ASSERT(this->cur_request_count >= 0);
     // }
 

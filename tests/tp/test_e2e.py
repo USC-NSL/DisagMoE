@@ -9,9 +9,7 @@ from disagmoe.frontend.datatypes import AttentionBatchMetadata
 
 model_config = mixtral_config
 model_config.tp_size = 2
-model_config.num_experts = 2
-model_config.ep_size = 1
-model_config.num_layers = 4
+model_config.ep_size = 2
 
 cluster_config = ClusterConfig(
     n_node=1,
@@ -41,11 +39,14 @@ master.start_profile()
 print("start engine")
 master.start_engine()
 
-n = 16
+overall = []
+
+n = 32
 
 print("put multi request")
 master.put_requests([1] * n)
 
 print("wait for request")
 stats = master.wait_for_requests(n)
+
 print(">>> Slo Stats:", stats)

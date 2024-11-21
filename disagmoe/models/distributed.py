@@ -1,9 +1,12 @@
 from disagmoe.config import ModelConfig
 from disagmoe.frontend.adapter import NcclGroupChannel
+from disagmoe.utils.logger import get_logger
 
 import torch
 
 from torch import Tensor
+
+_logger = get_logger("dist")
 
 _tp_model_config: ModelConfig = None
 _channel: NcclGroupChannel = None
