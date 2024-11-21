@@ -7,11 +7,14 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <thread>
+#include <mutex>
 
 #include "constants.h"
 #include "logging.h"
 
 static std::map<int, std::string> device_id_2_ip;
+static std::mutex mutex;
 
 // this function must be called before init engine
 // NOTE(hogura|20241120): local_device_id is mapped to 0.0.0.0, as in engine.py:set_hosts
@@ -31,7 +34,7 @@ static void set_hosts_internal(int process_id, const std::map<int, std::string>&
 }
 
 static std::string get_ip_of_device(int device_id) {
-    return "0.0.0.0";
+    std::lock_guard lock(mutex);
     if (device_id_2_ip.empty()) {
         auto pid = getpid();
         std::string filename = std::string(TEMP_DIR) + "hostfile_" + std::to_string(pid);
@@ -50,6 +53,7 @@ static std::string get_ip_of_device(int device_id) {
     if (device_id_2_ip.find(device_id) == device_id_2_ip.end()) {
         DMOE_LOG(ERROR) << "device_id " << device_id << " not found in device_id_2_ip, with size: " << device_id_2_ip.size() << LEND;
     } else {
+        DMOE_LOG(WARNING) << "getting device_id " << device_id << LEND;
         DMOE_LOG(WARNING) << "device_id " << device_id << " ip: " << device_id_2_ip.at(device_id) << LEND;
     }
     return device_id_2_ip.at(device_id);
