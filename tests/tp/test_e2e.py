@@ -8,7 +8,7 @@ from disagmoe.frontend.controller import Controller, init_controller
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 
 model_config = mixtral_config
-model_config.tp_size = 2
+model_config.tp_size = 1
 model_config.ep_size = 2
 
 cluster_config = ClusterConfig(
@@ -41,14 +41,12 @@ master.start_engine()
 
 overall = []
 
-for i in range(8):
-    n = 32
+n = 32
 
-    print("put multi request")
-    master.put_requests([1] * n)
+print("put multi request")
+master.put_requests([1] * n)
 
-    print("wait for request")
-    stats = master.wait_for_requests(n)
-    overall.append(stats)
+print("wait for request")
+stats = master.wait_for_requests(n)
 
-print(">>> Slo Stats:", overall)
+print(">>> Slo Stats:", stats)

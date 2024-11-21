@@ -31,9 +31,7 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     assert _channel is not None
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
-    _logger.info("start allreduce")
     _channel.all_reduce(tensor.data_ptr(), tensor.shape)
-    _logger.info("end allreduce")
     return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:

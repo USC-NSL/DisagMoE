@@ -125,7 +125,6 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     this->mq->send(zmq::buffer(buf, size));
     
-    // !FIXME(hogura|20241009): may have memory leakage
     // if (data != (uintptr_t) buf)
     //     std::free(buf);
 
@@ -159,10 +158,6 @@ NcclGroupChannel::NcclGroupChannel(int party_local, const std::vector<int> &part
             }
         }
         local_rank = std::find(party_all.begin(), party_all.end(), party_local) - party_all.begin();
-        DMOE_LOG(DEBUG) << "NcclGroupChannel " << local << " " << local_rank << " " << size << ";";
-        for (int i: party_all)
-            std::cerr << " " << i;
-        std::cerr << LEND;
         ASSERT(0 <= local_rank && local_rank < size);
         ctx = zmq::context_t(1);
         mq = zmq::socket_t(ctx, is_root() ? zmq::socket_type::push : zmq::socket_type::pull);
@@ -226,7 +221,7 @@ int NcclGroupChannel::root() const {
 
 void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
-    DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
+    // DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
     NCCLCHECK(ncclBroadcast(
         send_buf,
         recv_buf,
@@ -237,7 +232,7 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->stream
     ));
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    DMOE_LOG(DEBUG) << "finished broadcast " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
+    // DMOE_LOG(DEBUG) << "finished broadcast " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
 }
 
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
@@ -268,7 +263,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
         // [option 1] use zmq to broadcast
         for (int i = 0; i < this->size - 1; i ++)
             this->mq.send(zmq::buffer((char*) &size, sizeof(size_t)));
-        DMOE_LOG(DEBUG) << "sent size: " << size << LEND;
+        // DMOE_LOG(DEBUG) << "sent size: " << size << LEND;
 
         // [option 2] use NcclBroadcast
         // CUDACHECK(cudaMemcpyAsync(
@@ -300,7 +295,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size) {
         //     cudaMemcpyKind::cudaMemcpyDeviceToHost
         // )); // cannot use cudaMemcpyAsync here
 
-        DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
+        // DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
         ASSERT(size > 0 && size <= GROUP_CHANNEL_BUFFER_SIZE);
 
         // then recv data
@@ -342,7 +337,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
     int count = 1;
     for (int i: shape)
         count *= i;
-    DMOE_LOG(DEBUG) << "Calling all_reduce for " << count << " elements on stream" << this->stream << LEND;
+    // DMOE_LOG(DEBUG) << "Calling all_reduce for " << count << " elements on stream" << this->stream << LEND;
     NCCLCHECK(ncclAllReduce(
         buf,
         buf,
@@ -353,7 +348,7 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->stream
     ));
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    DMOE_LOG(DEBUG) << "AllReduce done on stream " << this->stream << LEND;
+    // DMOE_LOG(DEBUG) << "AllReduce done on stream " << this->stream << LEND;
 }
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
