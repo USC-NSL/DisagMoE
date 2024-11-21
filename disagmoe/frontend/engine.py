@@ -26,7 +26,7 @@ from threading import Thread
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
-from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
+from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
                         ChannelInfo as ChannelInfo_C,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
@@ -161,6 +161,10 @@ class Engine:
     def set_device_id(self, device_id: int):
         self.device_id = device_id
         self._logger = get_logger(f"engine{device_id}")
+
+    def set_hosts(self, device_2_host: Dict[int, str]):
+        device_2_host[self.device_id] = "0.0.0.0"
+        set_hosts(os.getpid(), device_2_host)
 
     def setup_engine(self, 
                      engine_type: EngineType,

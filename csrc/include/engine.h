@@ -42,3 +42,5 @@ Tokenizer_t init_tokenizer(
     const vector<int> &out_device_ids,
     const vector<ChannelInfo> &out_channel_infos
 );
+
+void set_hosts(int process_id, const std::map<int, std::string>& device_id_2_ip);

@@ -3,6 +3,7 @@
 #include "utils.hpp"
 #include "engine.h"
 #include "comm.h"
+#include "distributed.hpp"
 
 #include <chrono>
 #include <thread>
@@ -367,4 +368,8 @@ Tokenizer_t init_tokenizer(
         local, out_channels, out_channel_infos
     );
     return tokenizer;
+}
+
+void set_hosts(int local_id, const std::map<int, std::string>& device_id_2_ip) {
+    set_hosts_internal(local_id, device_id_2_ip);
 }

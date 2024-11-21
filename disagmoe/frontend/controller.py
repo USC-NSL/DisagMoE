@@ -99,7 +99,15 @@ class Controller:
             
             self.workers.append(worker)
             self.device_ids.append(device_id)
-        print("#workers", len(self.workers))
+        self._logger.info(f"workers: {len(self.workers), self.device_ids, node_ids}")
+    
+    @property
+    def all_workers(self):
+        return self.workers + [self.sampler_worker, self.tokenizer_worker]
+    
+    @property
+    def all_device_ids(self):
+        return self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
     
     def _get_nccl_ids(
             self, model_place: ModelPlacement
@@ -152,6 +160,17 @@ class Controller:
         for worker, device_id in zip(self.workers, self.device_ids):
             if len(model_place.attn_ids_at(device_id)) > 0:
                 self.attn_workers.append(worker)
+        
+        # broadcast the host ips of all devices
+        device_2_host = {
+            device_id: ray.get(worker.get_node_ip.remote()) 
+                for worker, device_id in zip(self.all_workers, self.all_device_ids)
+        }
+        self._logger.info(f"device_id to host_ip: {device_2_host}")
+        ray.get([
+            worker.set_hosts.remote(device_2_host)
+                for worker in self.all_workers
+        ])
         
         ray.get([
             worker.setup_engine.remote(

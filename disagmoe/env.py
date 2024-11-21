@@ -7,7 +7,7 @@ _env_vars = {
     "NCCL_LAUNCH_MODE": "",
     "RAY_DEDUP_LOGS": "1",
     "CUDA_DEVICE_MAX_CONNECTIONS": "",
-    "NCCL_BLOCKING_WAIT": "0",
+    "NCCL_BLOCKING_WAIT": "",
 }
 
 ENV_VARS = {

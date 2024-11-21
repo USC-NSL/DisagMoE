@@ -29,6 +29,10 @@ const int ZMQ_MAGIC_MOD = 1007;
 #define SAMPLER_DEV_ID 82
 #endif
 
+#ifndef TEMP_DIR
+#define TEMP_DIR "/tmp/disagmoe/"
+#endif
+
 #ifndef GROUP_CHANNEL_BUFFER_SIZE
 #define GROUP_CHANNEL_BUFFER_SIZE 8192
 #endif

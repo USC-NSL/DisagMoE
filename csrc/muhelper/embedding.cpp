@@ -1,3 +1,4 @@
+#include "distributed.hpp"
 #include "embedding.h"
 #include "constants.h"
 #include "logging.h"

@@ -9,10 +9,12 @@ from disagmoe.frontend.datatypes import AttentionBatchMetadata
 
 model_config = mixtral_config
 model_config.tp_size = 2
-model_config.ep_size = 2
+model_config.ep_size = 1
+model_config.num_layers = 8
+n_node = 2
 
 cluster_config = ClusterConfig(
-    n_node=1,
+    n_node=n_node,
     n_gpu=model_config.tp_size + model_config.ep_size,
     id_sampler=SAMPLER_DEV_ID,
     id_tokenizer=TOKENIZER_DEV_ID,
