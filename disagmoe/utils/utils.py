@@ -9,18 +9,10 @@ from torch import Tensor
 from typing import List, Tuple, Dict
 from contextlib import contextmanager
 
-def tensor_as_buf(buf: int, shape: List[int], dtype = torch.bfloat16) -> Tensor:
-    # FIXME(hogura|20241030): frombuffer is invalid
-    data = ctypes.cast(buf, ctypes.POINTER(ctypes.c_int16))
-    # tensor = torch.frombuffer(data, dtype=dtype)
-    # print("received tensor:", tensor)
-    return torch.ones(shape, dtype=dtype).cuda()
-    # return tensor.view(*shape)
-    
 def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
     return unique_id()
-    
+
 class Counter:
 
     def __init__(self, start: int = 0, end: int = 1e9, step: int = 1) -> None:

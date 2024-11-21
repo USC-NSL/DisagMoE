@@ -175,7 +175,7 @@ class Controller:
         tasks = [
             worker.init_core.remote(
                 layer_ids=model_place.layer_ids_at(device_id),
-                in_device_ids=model_place.in_device_ids_at(device_id),
+                in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
                 out_device_ids=model_place.out_device_ids.get(device_id, []),
                 out_channel_infos=[
                     ChannelInfo(

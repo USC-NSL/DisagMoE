@@ -15,6 +15,7 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import get_ip, nvtx_range
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
+from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
 
 from vllm.attention import AttentionMetadata
@@ -25,6 +26,8 @@ from threading import Thread
 
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
+
+import torch.distributed as dist
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
                         ChannelInfo as ChannelInfo_C,
@@ -66,6 +69,7 @@ class Engine:
         self.decode_seq_lens = {}
         self.profiler = None
         self.inner_exp_rank = []
+        self.device_group_ids = []
         
     def start_profile(self):
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
@@ -97,7 +101,10 @@ class Engine:
 
     def _is_attn(self):
         return self.is_attn
-
+    
+    def is_attn_driver(self):
+        return len(self.device_group_ids) > 0 and self.device_id == self.device_group_ids[0]
+    
     def init_core(
             self,
             layer_ids: List[int],
@@ -115,8 +122,9 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
+        self.device_group_ids = device_group_ids
         if not self.model_config.tp_enable_inter_group:
-            deivce_group_ids = None
+            device_group_ids = None
             out_device_group_ids = {}
         self._logger.info(f"launching core: {layer_ids, in_device_ids, \
                           out_device_ids, out_channel_infos, \
@@ -135,7 +143,7 @@ class Engine:
                 for info in out_channel_infos],
             # Parallel config
             ParallelConfig_C(
-                self.model_config.tp_size,
+                self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
             ),
@@ -146,7 +154,14 @@ class Engine:
             device_group_ids,
             group_nccl_ids,
         )
-        set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+        if self.model_config.tp_enable_inter_group:
+            set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+        else:
+            dist.init_process_group(backend="nccl", 
+                                    world_size=len(self.device_group_ids), 
+                                    rank=self.device_group_ids.index(self.device_id),
+                                    init_method="env://")
+            
         self._logger.info("core launched")
         
     def _switch_scheduler(self):
@@ -154,8 +169,13 @@ class Engine:
             self.scheduler = self.a_scheduler
         
     def start(self):
-        start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
-        self._switch_scheduler()
+        if not self.is_attn \
+            or self.is_attn_driver() \
+            or self.model_config.tp_enable_inter_group:
+            start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
+            self._switch_scheduler()
+        else:
+            self.loop_thread = Thread(target=self.attn_worker_loop)
         self.loop_thread.start()
 
     def set_device_id(self, device_id: int):
@@ -186,6 +206,9 @@ class Engine:
                 cache_config.block_size, 
                 cache_config.num_gpu_blocks, 
                 cache_config.num_reserved_blocks)
+            if model_config.tp_enable_inter_group:
+                self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
+                self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
         elif engine_type == EngineType.EXPERT:
             self.executor = ExpertsExecutor(model_config)
             self._process_batch = self.process_batch_expert
@@ -259,6 +282,18 @@ class Engine:
             use_cuda_graph=False,
         )
 
+    def _attn_driver_broadcast_flash_attn_meta(self, layer_id: int, meta: FlashAttentionMetadata):
+        pack_flash_attn_meta(
+            self.buffer_meta,
+            self.buffer_loc,
+            layer_id,
+            meta
+        )
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc[0:2, 0: meta.query_start_loc.shape[0]], 0)
+        dist.broadcast(meta.slot_mapping, 0)
+        dist.broadcast(meta.block_tables, 0)
+
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
@@ -276,6 +311,8 @@ class Engine:
             meta_c = meta_c.to_c()
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
+        if not self.model_config.tp_enable_inter_group:
+            
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
@@ -334,6 +371,17 @@ class Engine:
         batch.data = output
         batch.metadata = meta
         self.dispatcher.put(batch, 0)
+
+    def attn_worker_loop(self):
+        self._logger.info("starting engine loop")
+        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_device("cuda:0")
+        torch.cuda.set_stream(self.stream)
+        while not self.end_flag:
+            dist.broadcast(buffer_meta, 0)
+            
+            positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
+            hiddens, expert_ids = self.executor.execute(layer_id, positions, tensor, attn_meta)
 
     def loop(self):
         self._logger.info("starting engine loop")

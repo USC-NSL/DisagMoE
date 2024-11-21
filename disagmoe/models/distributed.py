@@ -31,7 +31,11 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     assert _channel is not None
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
-    _channel.all_reduce(tensor.data_ptr(), tensor.shape)
+    if _tp_model_config.tp_enable_inter_group:
+        _channel.all_reduce(tensor.data_ptr(), tensor.shape)
+    else:
+        import torch.distributed as dist
+        dist.all_reduce(tensor)
     return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:
