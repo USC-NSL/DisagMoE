@@ -110,7 +110,7 @@ class Engine:
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: Tuple[str, str] = ("", "")
+            group_nccl_ids: Tuple[str, str, str] = ("", "", "")
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0

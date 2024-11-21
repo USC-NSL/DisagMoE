@@ -420,11 +420,11 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
 
     if (rank == 0) {
         // driver scheduler
-        AttentionDriverScheduler scheduler(pool, layer_ids, c_raw);
+        AttentionDriverScheduler scheduler(pool, layer_ids, c_raw, c_raw);
         result = scheduler.schedule();
     } else {
         // worker scheduler
-        AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw);
+        AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw, c_raw);
         result = scheduler.schedule();
     }
 

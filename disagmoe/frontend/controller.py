@@ -119,7 +119,8 @@ class Controller:
                 out_nccl_ids[i][j] = uid
         group_nccl_ids = {
             # NOTE(hogura|20241118): the first is for the channel in Pool, the second is for the channel in Scheduler
-            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id())
+            # the third is for the allreduce in TP Group
+            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id(), get_nccl_unique_id())
                 for group in model_place.device_groups.values()
         }
         # inter-group nccl ids, [expert -> TP group]
@@ -191,7 +192,7 @@ class Controller:
                 out_nccl_ids=out_nccl_ids.get(device_id, {}),
                 device_group_ids=model_place.device_groups.get(device_id, []),
                 group_nccl_ids=group_nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), ("", "")),
+                    tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 

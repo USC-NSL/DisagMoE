@@ -1,8 +1,11 @@
 #pragma once
 
+#include <queue>
 #include <memory>
 #include <vector>
 #include <string>
+#include <thread>
+#include <condition_variable>
 
 #include "comm.h"
 #include "muhelper.h"
@@ -67,11 +70,12 @@ public:
 
 class AttentionDriverScheduler : public AttentionScheduler {
 protected:
-    std::shared_ptr<NcclGroupChannel> chan;
-    cudaStream_t stream;
+    // chan is used for intra-group communication in scheduler
+    // chan_dist is used for TP group's allreduce
+    std::shared_ptr<NcclGroupChannel> chan, chan_dist;
 
 public:
-    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
+    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "largest");
 
     AttentionBatch schedule() override;
 
@@ -80,11 +84,19 @@ public:
 
 class AttentionWorkerScheduler : public AttentionScheduler {
 protected:
-    std::shared_ptr<NcclGroupChannel> chan;
-    cudaStream_t stream;
+    std::shared_ptr<NcclGroupChannel> chan, chan_dist;
+    
+    bool end_flag;
+    std::thread t_async;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::queue<AttentionBatch> _schedule_result;
+
+    void async_schedule();
 
 public:
-    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, std::string policy = "largest");
+    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "largest");
+    ~AttentionWorkerScheduler();
 
     AttentionBatch schedule() override;
 

@@ -255,16 +255,21 @@ void NcclGroupChannel::send_recv(uintptr_t data_ptr, const Metadata& metadata) {
 void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::bcast_obj"};
     if (is_root()) {
-        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
-        CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
         // first send size
         // use zmq to broadcast
         for (int i = 0; i < this->size - 1; i ++)
             this->mq.send(zmq::buffer((char*) &size, sizeof(size_t)));
         DMOE_LOG(DEBUG) << "sent size: " << size << LEND;
+
         // then send data
+        torch::Tensor tensor = torch::empty(
+            {size}, 
+            torch::TensorOptions().dtype(torch::kInt8).device(torch::kCUDA, 0)
+        );
+        void* data_buf = (void*) tensor.data_ptr();
+        CUDACHECK(cudaMemcpy(data_buf, buf, size, cudaMemcpyKind::cudaMemcpyHostToDevice));
+
         broadcast(data_buf, data_buf, size, ncclInt8);
-        free_cuda_tensor(data_buf);
     } else {
         // first recv size
         zmq::message_t msg(sizeof(size));
@@ -272,13 +277,17 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) 
         size = *(size_t*) msg.data();
         DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
         ASSERT(size > 0);
+
         // then recv data
-        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char), this->stream);
+        torch::Tensor tensor = torch::empty(
+            {size}, 
+            torch::TensorOptions().dtype(torch::kInt8).device(torch::kCUDA, 0)
+        );
+        void* data_buf = (void*) tensor.data_ptr();
         broadcast(data_buf, data_buf, size, ncclInt8);
         buf = std::malloc(size);
         CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
         // DMOE_LOG(DEBUG) << "received metadata " << *decerealize<Metadata>((char*) buf, size) << LEND;
-        free_cuda_tensor(data_buf);
     }
 }
 
