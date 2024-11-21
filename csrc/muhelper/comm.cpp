@@ -106,7 +106,7 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
         CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
             cudaMemcpyKind::cudaMemcpyDeviceToHost));
     } else {
-        buf = !dst ? alloc_cuda_tensor(metadata.num_element(), this->local) : dst;
+        buf = dst;
         CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
             cudaMemcpyKind::cudaMemcpyHostToDevice));
     }

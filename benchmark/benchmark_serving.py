@@ -50,15 +50,13 @@ def launch(args):
                                 id_sampler=sampler)
 
     model_config = duo_expert_mixtral
-    model_config.num_layer = 32
+    model_config.num_layers = 32
     model_config.ep_size = 2
     model_config.num_experts = 8
     model_config.tp_size = 1
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
 
-    print(mp)
-    
     global master
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
@@ -110,22 +108,27 @@ async def benchmark_serving(args):
     
     print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     
-    pbar = tqdm.tqdm(total=args.num_requests)
-    benchmark_start_time = time.perf_counter()
-    tasks = []
-    for _ in range(args.num_requests):
-        resp = master.put_single_request(args.input_len)
-        tasks.append(asyncio.create_task(process_response(resp, pbar)))
-        await asyncio.sleep(args.rate)
-    
-    results: List[SloStat] = await asyncio.gather(*tasks)
-    benchmark_duration = time.perf_counter() - benchmark_start_time
-    pbar.close()
+    async def run_once():
+        pbar = tqdm.tqdm(total=args.num_requests)
+        benchmark_start_time = time.perf_counter()
+        tasks = []
+        for _ in range(args.num_requests):
+            resp = master.put_single_request(args.input_len)
+            tasks.append(asyncio.create_task(process_response(resp, pbar)))
+            await asyncio.sleep(args.rate)
+        
+        results: List[SloStat] = await asyncio.gather(*tasks)
+        benchmark_duration = time.perf_counter() - benchmark_start_time
+        pbar.close()
 
-    metrics = analyze_results(results, benchmark_duration)
+        metrics = analyze_results(results, benchmark_duration)
+        
+        print(metrics)
+    
+    await run_once()
+    
     master.stop_workers()
     
-    print(metrics)
     
 def get_args():
     parser = ArgumentParser()
