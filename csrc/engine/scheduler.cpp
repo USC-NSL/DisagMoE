@@ -180,7 +180,7 @@ void AttentionWorkerScheduler::async_schedule() {
 
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
-    std::unique_lock lock(this->mutex);
+    std::lock_guard lock(this->mutex);
     if (this->_schedule_result.empty())
         return AttentionBatch {};
     auto result = this->_schedule_result.front();

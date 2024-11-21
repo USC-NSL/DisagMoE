@@ -197,10 +197,18 @@ void NcclGroupChannel::instantiate() {
         ncclCommGetAsyncError(comm, &state);
     } while(state == ncclInProgress);
 
+    synchronize();
+
     if (is_root())
         mq.bind(get_zmq_addr(root_device_id, false, /*manual_port=*/ ZMQ_GROUP_PORT + zmq_comm_id));
     else
         mq.connect(get_zmq_addr(root_device_id, false, /*manual_port=*/ ZMQ_GROUP_PORT + zmq_comm_id));
+}
+
+void NcclGroupChannel::synchronize() {
+    NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+    DMOE_LOG(DEBUG) << "group_channel synchronized " << local << " " << local_rank << " " << this->stream << LEND;
 }
 
 bool NcclGroupChannel::is_root() const {
@@ -214,7 +222,6 @@ int NcclGroupChannel::root() const {
 void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream) {
     tx_range _{"NcclGroupChannel::broadcast"};
     DMOE_LOG(DEBUG) << "broadcasting " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
-    CUDACHECK(cudaStreamSynchronize(this->stream));
     NCCLCHECK(ncclBroadcast(
         send_buf,
         recv_buf,
@@ -224,9 +231,8 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->comm,
         this->stream
     ));
-    CUDACHECK(cudaStreamSynchronize(this->stream));
     DMOE_LOG(DEBUG) << "reaching barrier " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
-    NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
+    // NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
     CUDACHECK(cudaStreamSynchronize(this->stream));
     DMOE_LOG(DEBUG) << "finished broadcast " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
 }

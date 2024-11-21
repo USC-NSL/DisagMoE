@@ -59,7 +59,7 @@ ext_modules = [
             TORCH_LIB_DIR,
         ], 
         libraries=["cudart", "nccl", "zmq", "torch", "c10", "torch_cpu"],
-        extra_compile_args=["-lstdc++", "-O0", "-g", "-w"],
+        extra_compile_args=["-lstdc++", "-O2"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),
             ("D_ENABLE_NVTX", "1"),

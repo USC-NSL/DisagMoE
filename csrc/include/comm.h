@@ -118,6 +118,8 @@ public:
 
     void recv(uintptr_t data, const Metadata& metadata) override;
 
+    void synchronize();
+
     void send_recv(uintptr_t data, const Metadata& metadata);
 
     void bcast_obj(void* &buf, size_t &size, cudaStream_t stream = nullptr);

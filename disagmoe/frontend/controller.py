@@ -74,7 +74,7 @@ class Controller:
                 scheduling_strategy=ray_scheduling_strategy,
                 runtime_env={
                     "env_vars": ENV_VARS,
-                    "nsight": "default"
+                    # "nsight": "default"
                 },
             )(worker_cls).remote()
             
