@@ -31,6 +31,7 @@ static void set_hosts_internal(int process_id, const std::map<int, std::string>&
 }
 
 static std::string get_ip_of_device(int device_id) {
+    return "0.0.0.0";
     if (device_id_2_ip.empty()) {
         auto pid = getpid();
         std::string filename = std::string(TEMP_DIR) + "hostfile_" + std::to_string(pid);

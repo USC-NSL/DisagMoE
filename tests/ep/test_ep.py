@@ -1,7 +1,7 @@
 from disagmoe.frontend.controller import init_controller
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
+from disagmoe.config import ModelConfig, CacheConfig, mixtral_config
 
 import time
 import torch
@@ -13,10 +13,8 @@ cluster_config = ClusterConfig(n_node=1, n_gpu=3,
                                id_tokenizer=tokenizer, 
                                id_sampler=sampler)
 
-model_config = duo_expert_mixtral
-model_config.num_layers = 16
+model_config = mixtral_config
 model_config.ep_size = 2
-model_config.num_experts = 8
 model_config.tp_size = 1
 
 mp = get_model_placement(model_config, cluster_config, "interleave")
@@ -39,7 +37,7 @@ master.start_profile()
 
 print("engine started")
 
-n = 32
+n = 1
 
 input_lens = [1] * n
 

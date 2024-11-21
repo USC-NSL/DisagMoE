@@ -168,7 +168,7 @@ class Controller:
         self._logger.info(f"device_id to host_ip: {device_2_host}")
         ray.get([
             worker.set_hosts.remote(device_2_host)
-                for worker in self.workers + [self.sampler_worker, self.tokenizer_worker]
+                for worker in self.all_workers
         ])
         
         ray.get([

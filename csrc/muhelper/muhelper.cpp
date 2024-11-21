@@ -149,7 +149,6 @@ MuAttnDispatcher::MuAttnDispatcher(
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
-            DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
             exp_channels[id] = i;
         }
     }
