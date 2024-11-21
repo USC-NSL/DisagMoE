@@ -8,8 +8,9 @@ from disagmoe.frontend.controller import Controller, init_controller
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 
 model_config = mixtral_config
-model_config.tp_size = 1
-model_config.ep_size = 2
+model_config.tp_size = 2
+model_config.ep_size = 1
+model_config.num_layers = 8
 n_node = 2
 
 cluster_config = ClusterConfig(
