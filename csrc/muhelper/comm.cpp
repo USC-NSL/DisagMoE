@@ -225,9 +225,10 @@ void NcclGroupChannel::broadcast(void* send_buf, void* recv_buf, size_t count, n
         this->stream
     ));
     CUDACHECK(cudaStreamSynchronize(this->stream));
+    DMOE_LOG(DEBUG) << "reaching barrier " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
     NCCLCHECK(ncclAllReduce(barrier, barrier, 1, ncclInt, ncclSum, this->comm, this->stream));
     CUDACHECK(cudaStreamSynchronize(this->stream));
-    DMOE_LOG(DEBUG) << "finished broadcast" << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
+    DMOE_LOG(DEBUG) << "finished broadcast " << root() << " " << local_rank << " " << count << " on the stream " << this->stream << LEND;
 }
 
 void NcclGroupChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
@@ -272,7 +273,7 @@ void NcclGroupChannel::bcast_obj(void* &buf, size_t &size, cudaStream_t stream) 
         DMOE_LOG(DEBUG) << "recved size: " << size << LEND;
         ASSERT(size > 0);
         // then recv data
-        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char));
+        void* data_buf = (void*) alloc_cuda_tensor(size, this->local, /*size_of_item=*/ sizeof(char), this->stream);
         broadcast(data_buf, data_buf, size, ncclInt8);
         buf = std::malloc(size);
         CUDACHECK(cudaMemcpy(buf, data_buf, size, cudaMemcpyKind::cudaMemcpyDeviceToHost));
