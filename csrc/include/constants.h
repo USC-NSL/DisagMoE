@@ -33,6 +33,10 @@ const int ZMQ_MAGIC_MOD = 1007;
 #define TEMP_DIR "/tmp/disagmoe/"
 #endif
 
+#ifndef GROUP_CHANNEL_BUFFER_SIZE
+#define GROUP_CHANNEL_BUFFER_SIZE 8192
+#endif
+
 #define ASSERT(condition) do {if (!(condition)) { \
     throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
 }} while(0)

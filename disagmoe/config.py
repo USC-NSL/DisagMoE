@@ -18,6 +18,8 @@ class ModelConfig:
     tp_size: int = 1
     rank: int = 0
     
+    tp_enable_inter_group: bool = True
+    
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size

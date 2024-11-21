@@ -91,10 +91,10 @@ void AttentionScheduler::wait_for_new_requests() {
 
 AttentionDriverScheduler::AttentionDriverScheduler(
     mu_attn_pool_t pool, std::vector<int> layer_ids, 
-    Channel_t chan, std::string policy): 
+    Channel_t chan, Channel_t chan_dist, std::string policy): 
     AttentionScheduler(pool, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
-    CUDACHECK(cudaStreamCreate(&this->stream));  // unused
+    this->chan_dist = std::dynamic_pointer_cast<NcclGroupChannel>(chan_dist);
 }
 
 AttentionBatch AttentionDriverScheduler::schedule() {
@@ -114,7 +114,10 @@ AttentionBatch AttentionDriverScheduler::schedule() {
         for (int i: batch.metadata->seq_ids)
             schedule_result.push_back(i);
 
-    // DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << " " << schedule_result.size() << LEND;
+    // DMOE_LOG(DEBUG) << "Driver schedule result: " << layer_id << "; ";
+    // for (int i = 1; i < schedule_result.size(); i++)
+    //     std::cerr << schedule_result[i] << " ";
+    // std::cerr << LEND;
 
     auto cerealized = cerealize_(schedule_result);
     void* buf = cerealized.data();
@@ -126,40 +129,66 @@ AttentionBatch AttentionDriverScheduler::schedule() {
 }
 
 std::shared_ptr<NcclGroupChannel> AttentionDriverScheduler::get_channel() {
-    return chan;
+    return chan_dist;
 }
 
 AttentionWorkerScheduler::AttentionWorkerScheduler(
     mu_attn_pool_t pool, std::vector<int> layer_ids, 
-    Channel_t chan, std::string policy): 
+    Channel_t chan, Channel_t chan_dist, std::string policy): 
     AttentionScheduler(pool, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
-    CUDACHECK(cudaStreamCreate(&this->stream));  // unused
+    this->chan_dist = std::dynamic_pointer_cast<NcclGroupChannel>(chan_dist);
+    end_flag = 0;
+    this->t_async = std::thread(&AttentionWorkerScheduler::async_schedule, this);
+}
+
+AttentionWorkerScheduler::~AttentionWorkerScheduler() {
+    this->end_flag = 1;
+    this->cv.notify_one();
+    this->t_async.join();
+}
+
+void AttentionWorkerScheduler::async_schedule() {
+    while (!end_flag) {
+        tx_range _{"AttentionWorkerScheduler::async_schedule"};
+        // DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
+        std::vector<int> schedule_result;
+        void* buf;
+        size_t size;
+        chan->bcast_obj(buf, size);
+        decerealize_((char*) buf, size, schedule_result);
+
+        int layer_id = schedule_result[0];
+        std::set<int> seq_ids;
+        for (int i = 1; i < schedule_result.size(); i++)
+            seq_ids.insert(schedule_result[i]);
+
+        // DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << "; ";
+        // for (int i = 1; i < schedule_result.size(); i++)
+        //     std::cerr << schedule_result[i] << " ";
+        // std::cerr << LEND;
+
+        std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
+
+        auto batch = AttentionBatch::merge(batches);
+        // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
+
+        std::lock_guard lock(this->mutex);
+        this->_schedule_result.push(batch);
+    }
 }
 
 AttentionBatch AttentionWorkerScheduler::schedule() {
     tx_range _{"AttentionWorkerScheduler::schedule"};
-    // DMOE_LOG(DEBUG) << "Worker scheduling" << LEND;
-    std::vector<int> schedule_result;
-    void* buf;
-    size_t size;
-    chan->bcast_obj(buf, size);
-    decerealize_((char*) buf, size, schedule_result);
-
-    int layer_id = schedule_result[0];
-    std::set<int> seq_ids;
-    for (int i = 1; i < schedule_result.size(); i++)
-        seq_ids.insert(schedule_result[i]);
-
-    // DMOE_LOG(DEBUG) << "Worker got result: " << " " << layer_id << " " << seq_ids.size() << LEND;
-
-    std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
-
-    auto batch = AttentionBatch::merge(batches);
-    // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
-    return batch;
+    std::lock_guard lock(this->mutex);
+    if (this->_schedule_result.empty())
+        return AttentionBatch {};
+    auto result = this->_schedule_result.front();
+    this->_schedule_result.pop();
+    return result;
 }
 
 std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
-    return chan;
+    return chan_dist;
+
 }
