@@ -19,7 +19,8 @@ from vllm.model_executor.utils import set_weight_attrs
 from disagmoe.models.distributed import (get_tensor_model_parallel_rank,
                                          get_tensor_model_parallel_world_size,
                                          tensor_model_parallel_all_gather,
-                                         tensor_model_parallel_all_reduce)
+                                         tensor_model_parallel_all_reduce,
+                                         get_linear_method_init_value)
 
 logger = init_logger(__name__)
 
@@ -124,6 +125,8 @@ class UnquantizedLinearMethod(LinearMethodBase):
                                        input_size_per_partition,
                                        dtype=params_dtype),
                            requires_grad=False)
+        if value := get_linear_method_init_value():
+            weight.data.fill_(value)
         set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
         layer.register_parameter("weight", weight)
         set_weight_attrs(weight, extra_weight_attrs)
@@ -1066,7 +1069,6 @@ class RowParallelLinear(LinearBase):
             input_parallel = input_
         else:
             tp_rank = get_tensor_model_parallel_rank()
-            
             splitted_input = split_tensor_along_last_dim(
                 input_, num_partitions=self.tp_size)
             input_parallel = splitted_input[tp_rank].contiguous()

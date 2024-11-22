@@ -6,7 +6,7 @@ from transformers import MixtralConfig
 from vllm.attention import Attention, AttentionMetadata
 
 from vllm.config import CacheConfig
-from vllm.distributed import get_tensor_model_parallel_world_size
+from disagmoe.models.distributed import get_tensor_model_parallel_world_size, get_tensor_model_parallel_rank
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
@@ -97,7 +97,6 @@ class MoEAttention(nn.Module):
                               num_kv_heads=self.num_kv_heads,
                               cache_config=cache_config,
                               quant_config=quant_config)
-        
         # Gate always runs at half / full precision for now.
 
         self.gate = ReplicatedLinear(hidden_size,
@@ -114,11 +113,26 @@ class MoEAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
+        rank = get_tensor_model_parallel_rank()
+        import time
+        st = time.time()
+        if rank == 0:
+            print("hidden_states shape:", hidden_states.shape)
         qkv, _ = self.qkv_proj(hidden_states)
+        if rank == 0:
+            print("qkv shape:", qkv.shape)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if rank == 0:
+            print("q shape:", q.shape, "k shape:", k.shape, "v shape:", v.shape)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        if rank == 0:
+            print("attn_output shape:", attn_output.shape)
+            # torch.cuda.synchronize()
+            # print("elapsed time:", time.time() - st)
         output, _ = self.o_proj(attn_output)
+        if rank == 0:
+            print("output shape:", output.shape)
         router_logits, _ = self.gate(hidden_states)
         
         # (shaoyuw): We only consider top_1 at first
