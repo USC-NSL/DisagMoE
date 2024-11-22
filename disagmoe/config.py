@@ -28,7 +28,7 @@ class ModelConfig:
     def layer_ids(self):
         return list(range(self.num_layers))
     
-    
+@dataclass
 class CacheConfig(vllm.config.CacheConfig):
     
     def __init__(
@@ -50,6 +50,10 @@ class CacheConfig(vllm.config.CacheConfig):
         self.num_reserved_blocks = num_reserved_blocks
         self.num_gpu_blocks = num_gpu_blocks
         
+@dataclass
+class SamplingConfig:
+    
+    max_output_len: int
 
 mixtral_config = ModelConfig(
     hidden_size = 4096,

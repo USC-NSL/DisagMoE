@@ -1,7 +1,7 @@
 from disagmoe.frontend.controller import init_controller, Controller, AsyncResult
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
+from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
@@ -65,7 +65,9 @@ def launch(args):
                                 num_gpu_blocks=NUM_BLOCKS, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
-    master.init_engine(mp, model_config, cache_config, args.output_len)
+    sampling_config = SamplingConfig(max_output_len=args.output_len)
+    
+    master.init_engine(mp, model_config, cache_config, sampling_config)
 
     master.start_engine()
    
