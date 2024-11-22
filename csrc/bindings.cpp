@@ -45,7 +45,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
         .def("start", &Sampler::start)
-        .def("get_slo_stats", &Sampler::get_slo_stats);
+        .def("wait_slo_stats", &Sampler::wait_slo_stats)
+        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats);
 
     REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
@@ -74,6 +75,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("metadata", &AttentionBatch::metadata);
 
     REGISTER_STRUCT(SloStat)
+        .def_readwrite("req_id", &SloStat::req_id)
         .def_readwrite("t_prefill", &SloStat::t_prefill)
         .def_readwrite("t_decode", &SloStat::t_decode)
         .def_readwrite("t_tokens", &SloStat::t_tokens);
@@ -118,11 +120,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("allocate", &BlockManager::allocate)
         .def("release", &BlockManager::release)
         .def("batch_release", &BlockManager::batch_release)
-        .def("free", &BlockManager::free)
         .def("can_append", &BlockManager::can_append)
         .def("append_block", &BlockManager::append_block)
         .def("num_free_blocks", &BlockManager::num_free_blocks)
-        // .def("get_seq_block_list", &BlockManager::get_seq_block_list)
         .def("has_seq_block_list", &BlockManager::has_seq_block_list)
         .def("append_tokens", &BlockManager::append_tokens)
         .def("update_block_table", &BlockManager::update_block_table)

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "permute.h"
+#include "cuda_utils.h"
 
 template <class T, int CHUNK_SIZE>
 __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
@@ -79,6 +80,8 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_tokens, int hi
 }
 
 torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings) {
+    AUTO_TX_RANGE;
+
     assert(tokens.dim() == 2);
     assert(mappings.dim() == 1);
     assert(tokens.size(0) == mappings.size(0));
@@ -127,7 +130,7 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
 
 void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
-    at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
+    AUTO_TX_RANGE;
     torch::Tensor src_tensor = torch::from_blob(src_ptr, {num_tokens}, torch::TensorOptions().dtype(torch::kUInt64)).to(dest.device());
     AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
         _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);

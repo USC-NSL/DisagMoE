@@ -32,6 +32,7 @@ void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dis
 
 Sampler_t init_sampler(
     int device_id,
+    int max_output_len,
     const vector<int> &in_device_ids,
     const vector<int> &out_device_ids,
     const vector<ChannelInfo> &out_channel_infos

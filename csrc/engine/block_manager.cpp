@@ -4,6 +4,7 @@
 #include <vector>
 #include <queue>
 #include <memory>
+#include <mutex>
 
 #include "cuda_utils.h"
 
@@ -23,6 +24,7 @@ bool BlockManager::can_allocate(int seq_len) {
 }
 
 void BlockManager::release(int seq_ids) {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (block_tables_.find(seq_ids) != block_tables_.end());
     for (auto &x: (*block_tables_[seq_ids])) {
         free_blocks_.push(x);
@@ -39,7 +41,7 @@ void BlockManager::batch_release(const std::vector<int> &seq_ids) {
 void BlockManager::allocate(int seq_id, int seq_len) {
     AUTO_TX_RANGE;
     // DMOE_LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
-
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     
@@ -57,17 +59,10 @@ void BlockManager::allocate(int seq_id, int seq_len) {
 
 }
 
-void BlockManager::free(int seq_id) {
-    auto it = block_tables_.find(seq_id);
-    auto block_list = it->second;
-    for (auto &x: (*block_list)) {
-        free_blocks_.push(x);
-    }
-    block_tables_.erase(it);
-}
-
 void BlockManager::append_block(int seq_id) {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (free_blocks_.size() > 0);
+
     int block_to_append = free_blocks_.front();
     free_blocks_.pop();
 
@@ -77,10 +72,20 @@ void BlockManager::append_block(int seq_id) {
 }
 
 bool BlockManager::can_append() {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     return free_blocks_.size() > 0;
 }
 
+int BlockManager::get_one_block() {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
+    ASSERT (free_blocks_.size() > 0);
+    int block_id = free_blocks_.front();
+    free_blocks_.pop();
+    return block_id;
+}
+
 int BlockManager::num_free_blocks() {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     return free_blocks_.size();
 }
 
@@ -104,11 +109,10 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     // NOTE(hogura|20241015): here use >= instead of >, otherwise no blocks available at block_size_.
     if (num_tokens > remain_slots) {
         int blocks_to_add = (num_tokens - remain_slots - 1) / block_size_ + 1;
-        ASSERT (free_blocks_.size() > blocks_to_add);
+        ASSERT (num_free_blocks() > blocks_to_add);
         auto seq_block_list = block_tables_.find(seq_id);
         while (blocks_to_add > 0) {
-            int block_to_append = free_blocks_.front();
-            free_blocks_.pop();
+            int block_to_append = get_one_block();
             seq_block_list->second->emplace_back(block_to_append);
             blocks_to_add --;
         }

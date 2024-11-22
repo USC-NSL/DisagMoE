@@ -24,6 +24,8 @@ protected:
     std::map<int, SloStat> slo_stats;
     std::map<int, int> output_lens;
 
+    int max_output_len;
+
     std::mutex result_lock;
 
     void run() override;
@@ -32,6 +34,7 @@ protected:
 
 public:
     Sampler(int device_id, 
+            int max_output_len,
             std::vector<Channel_t> in_channels, 
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
@@ -44,7 +47,9 @@ public:
 
     void start();
 
-    std::map<int, SloStat> get_slo_stats(int n_request);
+    std::vector<SloStat> fetch_finished_slo_stats();
+
+    std::map<int, SloStat> wait_slo_stats(int n_request);
 };
 
 class Tokenizer: public MuExpertDispatcher {

@@ -2,8 +2,7 @@ import torch
 import time
 import enum
 import os
-
-import numpy as np
+import asyncio
 
 from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
                                         ModelConfig, CacheConfig)
@@ -17,7 +16,6 @@ from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
 
-from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Union, Callable, Tuple
@@ -270,6 +268,8 @@ class Engine:
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
+        # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
+        
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
@@ -358,6 +358,7 @@ class Engine:
             
     def release_seqs(self, seq_ids: List[int]):
         for id in seq_ids:
+            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
             self.decode_seq_lens.pop(id)
         self.block_mgr.batch_release(seq_ids)
     
@@ -372,6 +373,7 @@ class SamplerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
+        self.max_output_len = -1
         
     def init_core(
             self,
@@ -388,6 +390,7 @@ class SamplerEngine(Engine):
             group_nccl_ids: str = ""):
         self.sampler = init_sampler(
             self.device_id,
+            self.max_output_len,
             in_device_ids,
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
@@ -399,17 +402,23 @@ class SamplerEngine(Engine):
     def start(self):
         self.sampler.start()
         
+    def fetch_finished_results(self) -> List[SloStat]:
+        # convert c++ vector to python list
+        results = self.sampler.fetch_finished_slo_stats()
+        # if len(results) > 0:
+        #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        return [SloStat.from_c(r) for r in results]
+    
+    def set_sampling_params(self, max_output_len: int):
+        self.max_output_len = max_output_len
+        
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
-        result = self.sampler.get_slo_stats(n_request)
+        result = self.sampler.wait_slo_stats(n_request)
         while len(result) == 0:
-            # NOTE(hogura|20241022): get_slo_stats will return len=0 until #request==n_reqquest
-            result = self.sampler.get_slo_stats(n_request)
+            # NOTE(hogura|20241022): wait_slo_stats will return len=0 until #request==n_reqquest
+            result = self.sampler.wait_slo_stats(n_request)
         new_res = {
-            k: SloStat(
-                stat.t_prefill / CPS - (time.time() - self._t_start),
-                (stat.t_decode - stat.t_prefill) / CPS,
-                [(x - y) / CPS for x, y in zip(stat.t_tokens[1:], stat.t_tokens[:-1])],
-            ) for k, stat in result.items()
+            req_id: SloStat.from_c(stat) for req_id, stat in result.items()
         }
         return new_res
         
@@ -425,7 +434,7 @@ class TokenizerEngine(Engine):
         shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.zeros(size=shape).type(self.model_config.dtype)
-        self._logger.info("tokenizer put 1 request")
+        # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, x)
         
     def put_single_request(self, req_id: int, input_len: int):
