@@ -13,6 +13,11 @@ def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
     return unique_id()
 
+def get_nccl_url_from_uid(uid):
+    h = hash(uid) % 10007
+    print("hash result:", h)
+    return f"{os.getenv("MASTER_ADDR")}:{int(os.getenv("MASTER_PORT")) + h}"
+
 class Counter:
 
     def __init__(self, start: int = 0, end: int = 1e9, step: int = 1) -> None:

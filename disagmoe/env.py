@@ -8,6 +8,8 @@ _env_vars = {
     "RAY_DEDUP_LOGS": "1",
     "CUDA_DEVICE_MAX_CONNECTIONS": "",
     "NCCL_BLOCKING_WAIT": "0",
+    "MASTER_ADDR": "localhost",
+    "MASTER_PORT": "26500",
 }
 
 ENV_VARS = {

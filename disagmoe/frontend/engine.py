@@ -12,7 +12,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat)
 from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import get_ip, nvtx_range
+from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta
@@ -157,10 +157,11 @@ class Engine:
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
         else:
-            dist.init_process_group(backend="nccl", 
-                                    world_size=len(self.device_group_ids), 
-                                    rank=self.device_group_ids.index(self.device_id),
-                                    init_method="env://")
+            if self.is_attn:
+                dist.init_process_group(backend="nccl", 
+                                        world_size=len(self.device_group_ids), 
+                                        rank=self.model_config.rank,
+                                        init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
             
         self._logger.info("core launched")
         
