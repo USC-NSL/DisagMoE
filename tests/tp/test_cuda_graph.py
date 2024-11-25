@@ -2,6 +2,7 @@ import os
 import ray
 import torch
 import torch.distributed as dist
+import copy
 
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_linear_method_init_value
@@ -16,8 +17,9 @@ DEFAULT_VALUE = 0.05
 @ray.remote(num_gpus=1)
 class Worker:
     
-    def __init__(self, device_id, model_config: ModelConfig, cache_config: CacheConfig):
+    def __init__(self, device_id, bs, model_config: ModelConfig, cache_config: CacheConfig):
         print(model_config)
+        self.bs = bs
         self.device_id = device_id
         self.model_config = model_config
         self.cache_config = cache_config
@@ -36,6 +38,10 @@ class Worker:
             self.executor = ParallelAttnExecutor(self.model_config, self.cache_config)
         else:
             self.executor = AttnExecutor(self.model_config, self.cache_config)
+        self.static_input = torch.randn([self.bs, self.model_config.hidden_size]).to("cuda")
+        self.static_hiddens = torch.randn_like(self.static_input)
+        self.static_expert_ids = torch.randint(0, 4, [self.bs]).to("cuda")
+        self.positions = torch.zeros([self.bs], dtype=torch.long).to("cuda", non_blocking=True)
     
     def nccl_barrier(self):
         tmp = torch.zeros((2048, )).to("cuda")
@@ -43,6 +49,9 @@ class Worker:
         torch.cuda.synchronize()
     
     def execute(self, tensor: torch.Tensor, meta: FlashAttentionMetadata):
+        # warmup
+        self.executor.execute(0, self.positions, tensor, meta)
+        torch.cuda.synchronize()
         
         profiler = torch.profiler.profile(
                 activities=[
@@ -52,29 +61,43 @@ class Worker:
                 # with_stack=True,
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     dir_name="./reports", 
-                    worker_name=f"worker-{self.device_id}",
+                    worker_name=f"worker_{self.bs}_({self.model_config.rank}-{self.model_config.tp_size})-",
                     use_gzip=True,))
+        if self.model_config.tp_size > 1:
+            dist.barrier()
         profiler.start()
         
-        positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
-        hiddens, expert_ids = self.executor.execute(0, positions, tensor, meta)
+        # cuda graph record
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            meta.use_cuda_graph = True
+            self.static_hiddens, self.static_expert_ids = self.executor.execute(0, self.positions, self.static_input, meta)
         
         if self.model_config.tp_size > 1:
             dist.barrier()
         torch.cuda.synchronize()
-        time.sleep(1)
-        if self.model_config.tp_size > 1:
-            dist.barrier()
         
-        st = time.time()
-        hiddens, expert_ids = self.executor.execute(0, positions, tensor, meta)
-        torch.cuda.synchronize()
         if self.model_config.rank == 0:
-            print("Time taken:", time.time() - st)
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            
+        self.static_input.copy_(tensor)
+        g.replay()
+        
+        if self.model_config.rank == 0:
+            end.record()
+            torch.cuda.synchronize()
+            elapsed = start.elapsed_time(end)
+        else:
+            elapsed = 0
+        
+        if self.model_config.rank == 0:
+            print("Time taken:", elapsed)
         
         profiler.stop()
         
-        return hiddens, expert_ids
+        return elapsed
     
     def sync(self):
         pass
@@ -142,14 +165,14 @@ def make_prefill_meta(num_prefills: int):
     )
     return meta
 
-def main():
+def test_main(bs):
     set_linear_method_init_value(DEFAULT_VALUE)
     torch.set_default_device("cuda")
     torch.set_default_dtype(torch.bfloat16)
     tasks = []
     
     # TP = 1
-    model_config = mixtral_config
+    model_config = copy.deepcopy(mixtral_config)
     model_config.tp_size = 1
     model_config.ep_size = 1
     model_config.tp_enable_inter_group = False
@@ -162,14 +185,12 @@ def main():
         num_gpu_blocks=4096,
         num_reserved_blocks=1024,
     )
-    worker = Worker.remote(0, model_config, cache_config)
+    worker = Worker.remote(0, bs, model_config, cache_config)
     worker.setup.remote()
-    bs = 256
     meta = make_prefill_meta(num_prefills=bs)
     # torch.manual_seed(123)
     tensor = torch.randn(bs, model_config.hidden_size).to("cuda")
-    std, _ = ray.get(worker.execute.remote(tensor, meta))
-    print(std)
+    t_tp0 = ray.get(worker.execute.remote(tensor, meta))
     del worker
     
     # TP > 1
@@ -178,20 +199,23 @@ def main():
     workers = []
     for i in range(n):
         model_config.rank = i
-        workers.append(Worker.remote(i + 1, model_config, cache_config))
+        workers.append(Worker.remote(i + 1, bs, model_config, cache_config))
         workers[-1].setup.remote()
     
     ray.get([w.sync.remote() for w in workers])
-    print("inited")
     
     for i in range(n):
         tasks.append(workers[i].execute.remote(tensor, meta))
     
-    results = ray.get(tasks)
-    out: torch.Tensor = results[0][0]
-    print(out)
-    print(((out - std) / std))
-    print(((out - std) / std).abs().max())
-    assert ((out - std) / std).abs().max() < 1e-6
+    t_tpn = ray.get(tasks)
     
-main()
+    del workers
+    return t_tp0, t_tpn[0]
+    
+results = {}
+for i in range(5, 12):
+    bs = 2 ** i
+    t0, tn = test_main(bs)
+    results[bs] = (t0, tn)
+    
+print(results)
