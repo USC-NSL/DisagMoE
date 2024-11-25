@@ -9,9 +9,9 @@ from disagmoe.frontend.datatypes import AttentionBatchMetadata
 
 model_config = mixtral_config
 model_config.tp_size = 2
-model_config.ep_size = 1
+model_config.ep_size = 2
 model_config.tp_enable_inter_group = False
-model_config.num_layers = 1
+model_config.num_layers = 32
 
 cluster_config = ClusterConfig(
     n_node=1,
@@ -43,7 +43,7 @@ master.start_engine()
 
 overall = []
 
-n = 1
+n = 16
 
 print("put multi request")
 master.put_requests([1] * n)
