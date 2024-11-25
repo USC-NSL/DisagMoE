@@ -312,7 +312,7 @@ class Engine:
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         if not self.model_config.tp_enable_inter_group:
-            
+            pass
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
