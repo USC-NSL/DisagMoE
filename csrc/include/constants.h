@@ -9,10 +9,6 @@ const int ZMQ_CPU_PORT_BASE = 25000;
 const int ZMQ_GROUP_PORT = 26000;
 const int ZMQ_MAGIC_MOD = 1007;
 
-#ifndef MAX_OUTPUT_LEN
-#define MAX_OUTPUT_LEN 16
-#endif
-
 #ifndef N_EXPERTS
 #define N_EXPERTS 8
 #endif
@@ -27,6 +23,10 @@ const int ZMQ_MAGIC_MOD = 1007;
 
 #ifndef SAMPLER_DEV_ID
 #define SAMPLER_DEV_ID 82
+#endif
+
+#ifndef TEMP_DIR
+#define TEMP_DIR "/tmp/disagmoe/"
 #endif
 
 #ifndef GROUP_CHANNEL_BUFFER_SIZE

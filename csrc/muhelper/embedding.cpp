@@ -1,3 +1,4 @@
+#include "distributed.hpp"
 #include "embedding.h"
 #include "constants.h"
 #include "logging.h"
@@ -9,6 +10,7 @@
 #include <thread>
 
 Sampler::Sampler(int device_id, 
+                int max_output_len,
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos):
@@ -22,6 +24,8 @@ Sampler::Sampler(int device_id,
         
         ctx = zmq::context_t(in_channels.size());
         recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
+
+        this->max_output_len = max_output_len;
 
         // copied from MuPool
         int max_peer_id = 0;
@@ -90,14 +94,14 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Finished, end.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
-                DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
-                          << output_lens[rid] << " tokens." << LEND;
+                // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
+                //           << output_lens[rid] << " tokens." << LEND;
             }
         } else {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid] = SloStat {clock(), 0, {}};
+            slo_stats[rid] = SloStat {rid, clock(), 0, {}};
         }
     }
 
@@ -133,10 +137,21 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
+    // DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
 }
 
-std::map<int, SloStat> Sampler::get_slo_stats(int n_request) {
+std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    std::vector<SloStat> res {};
+    for (auto &x: finished_seqs) {
+        res.emplace_back(slo_stats[x]);
+        slo_stats.erase(x);
+    }
+    finished_seqs.clear();
+    return res;
+}
+
+std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {
     std::lock_guard<std::mutex> _(this->result_lock);
     if (finished_seqs.size() < n_request)
         return {};
@@ -150,7 +165,7 @@ int Sampler::sample(uintptr_t buf, metadata_t meta) {
 }
 
 bool Sampler::check_finished(int token, int req_id) {
-    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= MAX_OUTPUT_LEN;
+    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= this->max_output_len;
 }
 
 void Sampler::start() {

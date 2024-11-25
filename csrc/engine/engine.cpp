@@ -3,6 +3,7 @@
 #include "utils.hpp"
 #include "engine.h"
 #include "comm.h"
+#include "distributed.hpp"
 
 #include <chrono>
 #include <thread>
@@ -324,6 +325,7 @@ void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dis
 
 Sampler_t init_sampler(
     int local,
+    int max_output_len,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos
@@ -343,7 +345,7 @@ Sampler_t init_sampler(
         t.join();
 
     Sampler_t sampler = std::make_shared<Sampler>(
-        local, in_channels, out_channels, out_channel_infos
+        local, max_output_len, in_channels, out_channels, out_channel_infos
     );
     return sampler;
 }
@@ -367,4 +369,8 @@ Tokenizer_t init_tokenizer(
         local, out_channels, out_channel_infos
     );
     return tokenizer;
+}
+
+void set_hosts(int local_id, const std::map<int, std::string>& device_id_2_ip) {
+    set_hosts_internal(local_id, device_id_2_ip);
 }

@@ -126,19 +126,6 @@ inline void* convert_to_nccl_uid(char* bytes) {
     return (void*) buf;
 }
 
-
-inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_port = -1) {
-    char ip[256];
-    int port = device_id +
-        (manual_port == -1 \
-            ? (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE)
-            : manual_port);
-    fprintf(stderr, "zmq device_id: %d, port: %d, manual port %d\n", device_id, port, manual_port);
-    sprintf(ip, "tcp://0.0.0.0:%d", port);
-    return std::string(ip);
-}
-
-
 inline bool is_embedding_node(int device_id) {
     return device_id == TOKENIZER_DEV_ID || device_id == SAMPLER_DEV_ID;
 }

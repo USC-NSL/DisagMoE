@@ -6,6 +6,7 @@
 #include <ctime>
 #include <utility>
 
+#include "distributed.hpp"
 #include "datatypes.hpp"
 #include "muhelper.h"
 #include "comm.h"
@@ -148,7 +149,6 @@ MuAttnDispatcher::MuAttnDispatcher(
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
-            // DMOE_LOG(WARNING) << "exp_id " << exp_id.first << " " << exp_id.second << " " << id << LEND;
             exp_channels[id] = i;
         }
     }
@@ -399,7 +399,7 @@ void MuPool::run() {
 }
 
 void MuPool::wait_for_new_requests() {
-    DMOE_LOG(INFO) << "MuPool waiting for new requests" << LEND;
+    // DMOE_LOG(INFO) << "MuPool waiting for new requests" << LEND;
     std::unique_lock<std::mutex> lock(this->request_mutex);
     if (this->cur_request_count > 0) {
         lock.unlock();
@@ -407,7 +407,7 @@ void MuPool::wait_for_new_requests() {
     }
     this->request_cv.wait(lock, [&] { return this->cur_request_count > 0; });
     lock.unlock();
-    DMOE_LOG(INFO) << "MuPool got new requests." << LEND;
+    // DMOE_LOG(INFO) << "MuPool got new requests." << LEND;
 }
 
 // the batch_mutex must be used outside this function
@@ -660,9 +660,9 @@ int MuAttentionPool::tokens_in_layer(int lid) {
     int num_tokens = 0;
     for (auto &d: q) {
         num_tokens += d.metadata->num_prefill_tokens + d.metadata->num_decode_tokens;
-        DMOE_LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
-            << d.metadata->num_prefill_tokens << " " 
-            << d.metadata->num_decode_tokens << LEND;
+        // DMOE_LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
+        //     << d.metadata->num_prefill_tokens << " " 
+        //     << d.metadata->num_decode_tokens << LEND;
     }
     return num_tokens;
 }

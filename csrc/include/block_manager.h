@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <mutex>
 
 #include "datatypes.hpp"
 
@@ -19,9 +20,13 @@ private:
  
     int block_size_;
 
+    std::mutex free_blocks_lock_;
+
     std::queue<int> free_blocks_;
 
     std::unordered_map<int , block_list_t> block_tables_{};
+
+    int get_one_block(); 
 
 public:
 
@@ -34,8 +39,6 @@ public:
     void batch_release(const std::vector<int> &seq_ids);
 
     void allocate(int seq_id, int seq_len);
-
-    void free(int seq_id);
 
     bool can_append();
 
