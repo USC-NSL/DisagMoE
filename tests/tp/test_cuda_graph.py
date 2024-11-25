@@ -100,6 +100,8 @@ class Worker:
                 ts.append(elapsed)
         
         profiler.stop()
+        if ts == []:
+            return 0
         t_tot = (sum(ts) - max(ts) - min(ts)) / (N_STEP - 2)
         
         return t_tot
