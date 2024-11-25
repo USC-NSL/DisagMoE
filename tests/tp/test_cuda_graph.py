@@ -76,7 +76,7 @@ class Worker:
         if self.model_config.tp_size > 1:
             dist.barrier()
         profiler.start()
-        t_tot = 0
+        ts = []
         for i in range(N_STEP):
             torch.cuda.synchronize()
             
@@ -97,11 +97,12 @@ class Worker:
             
             if self.model_config.rank == 0:
                 print("Time taken:", elapsed)
-                t_tot += elapsed
+                ts.append(elapsed)
         
         profiler.stop()
+        t_tot = (sum(ts) - max(ts) - min(ts)) / (N_STEP - 2)
         
-        return t_tot / N_STEP
+        return t_tot
     
     def sync(self):
         pass
