@@ -206,9 +206,10 @@ class Engine:
                 cache_config.block_size, 
                 cache_config.num_gpu_blocks, 
                 cache_config.num_reserved_blocks)
-            if model_config.tp_enable_inter_group:
+            if not model_config.tp_enable_inter_group:
                 self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
                 self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
+                self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, model_config.hidden_size)).to("cuda", non_blocking=True)
         elif engine_type == EngineType.EXPERT:
             self.executor = ExpertsExecutor(model_config)
             self._process_batch = self.process_batch_expert
@@ -282,7 +283,7 @@ class Engine:
             use_cuda_graph=False,
         )
 
-    def _attn_driver_broadcast_flash_attn_meta(self, layer_id: int, meta: FlashAttentionMetadata):
+    def _attn_driver_broadcast(self, layer_id: int, meta: FlashAttentionMetadata, tensor: torch.Tensor):
         pack_flash_attn_meta(
             self.buffer_meta,
             self.buffer_loc,
@@ -290,9 +291,20 @@ class Engine:
             meta
         )
         dist.broadcast(self.buffer_meta, 0)
-        dist.broadcast(self.buffer_loc[0:2, 0: meta.query_start_loc.shape[0]], 0)
+        dist.broadcast(self.buffer_loc, 0)
         dist.broadcast(meta.slot_mapping, 0)
         dist.broadcast(meta.block_tables, 0)
+        dist.broadcast(tensor, 0)
+
+    def _attn_worker_broadcast(self):
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        layer_id, meta = unpack_flash_attn_meta(self.buffer_meta, self.buffer_loc)
+        bs = meta.num_prefill_tokens + meta.num_decode_tokens
+        dist.braodcast(self.buffer_tensor[:bs], 0)
+        return layer_id, meta, self.buffer_tensor[:bs]
 
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
@@ -312,7 +324,7 @@ class Engine:
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
         if not self.model_config.tp_enable_inter_group:
-            pass
+            self._attn_driver_broadcast(meta_c.layer_id, attn_meta)
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
@@ -378,10 +390,10 @@ class Engine:
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
         while not self.end_flag:
-            dist.broadcast(buffer_meta, 0)
-            
-            positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
-            hiddens, expert_ids = self.executor.execute(layer_id, positions, tensor, attn_meta)
+            layer_id, meta, tensor = self._attn_worker_broadcast()
+            num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
+            positions = torch.zeros([num_tokens], dtype=torch.long).to("cuda", non_blocking=True)
+            hiddens, expert_ids = self.executor.execute(layer_id, positions, tensor, meta)
 
     def loop(self):
         self._logger.info("starting engine loop")
