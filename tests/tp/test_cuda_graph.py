@@ -13,6 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 import time
 
 DEFAULT_VALUE = 0.05
+N_STEP = 10
 
 @ray.remote(num_gpus=1)
 class Worker:
@@ -65,7 +66,6 @@ class Worker:
                     use_gzip=True,))
         if self.model_config.tp_size > 1:
             dist.barrier()
-        profiler.start()
         
         # cuda graph record
         g = torch.cuda.CUDAGraph()
@@ -75,29 +75,33 @@ class Worker:
         
         if self.model_config.tp_size > 1:
             dist.barrier()
-        torch.cuda.synchronize()
-        
-        if self.model_config.rank == 0:
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            
-        self.static_input.copy_(tensor)
-        g.replay()
-        
-        if self.model_config.rank == 0:
-            end.record()
+        profiler.start()
+        t_tot = 0
+        for i in range(N_STEP):
             torch.cuda.synchronize()
-            elapsed = start.elapsed_time(end)
-        else:
-            elapsed = 0
-        
-        if self.model_config.rank == 0:
-            print("Time taken:", elapsed)
+            
+            if self.model_config.rank == 0:
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
+                
+            self.static_input.copy_(tensor)
+            g.replay()
+            
+            if self.model_config.rank == 0:
+                end.record()
+                torch.cuda.synchronize()
+                elapsed = start.elapsed_time(end)
+            else:
+                elapsed = 0
+            
+            if self.model_config.rank == 0:
+                print("Time taken:", elapsed)
+                t_tot += elapsed
         
         profiler.stop()
         
-        return elapsed
+        return t_tot / N_STEP
     
     def sync(self):
         pass
