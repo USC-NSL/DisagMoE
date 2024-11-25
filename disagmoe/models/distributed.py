@@ -3,6 +3,7 @@ from disagmoe.frontend.adapter import NcclGroupChannel
 from disagmoe.utils.logger import get_logger
 
 import torch
+import torch.distributed as dist
 
 from torch import Tensor
 
@@ -28,10 +29,13 @@ def get_tensor_model_parallel_world_size() -> int:
 def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
     if _tp_model_config.tp_size == 1:
         return tensor
-    assert _channel is not None
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
-    _channel.all_reduce(tensor.data_ptr(), tensor.shape)
+    if _tp_model_config.tp_enable_inter_group:
+        assert _channel is not None
+        _channel.all_reduce(tensor.data_ptr(), tensor.shape)
+    else:
+        dist.all_reduce(tensor)
     return tensor
 
 def tensor_model_parallel_all_gather(tensor: Tensor, dim: int = -1) -> Tensor:
