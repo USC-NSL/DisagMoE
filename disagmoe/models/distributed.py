@@ -3,6 +3,7 @@ from disagmoe.frontend.adapter import NcclGroupChannel
 from disagmoe.utils.logger import get_logger
 
 import torch
+import torch.distributed as dist
 
 from torch import Tensor
 
@@ -43,7 +44,6 @@ def tensor_model_parallel_all_reduce(tensor: Tensor) -> Tensor:
         assert _channel is not None
         _channel.all_reduce(tensor.data_ptr(), tensor.shape)
     else:
-        import torch.distributed as dist
         dist.all_reduce(tensor)
     return tensor
 

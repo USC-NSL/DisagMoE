@@ -348,7 +348,6 @@ void NcclGroupChannel::all_reduce(uintptr_t data, const std::vector<int> &shape)
         this->comm,
         this->stream
     ));
-    CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(DEBUG) << "AllReduce done on stream " << this->stream << LEND;
 }
 
