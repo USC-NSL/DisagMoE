@@ -61,7 +61,7 @@ class AttnExecutor(Executor):
         
         self._make_kv_cache(
             self.num_layers,
-            self.cache_config.num_gpu_blocks,
+            self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks,
             self.cache_config.block_size, 
             self.model_config.num_kv_heads, 
             self.model_config.hidden_size // self.model_config.num_heads,
@@ -137,7 +137,7 @@ class ParallelAttnExecutor(AttnExecutor):
         
         self._make_kv_cache(
             self.num_layers,
-            self.cache_config.num_gpu_blocks,
+            self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks,
             self.cache_config.block_size, 
             self.model_config.num_kv_heads, 
             self.model_config.hidden_size // self.model_config.num_heads,

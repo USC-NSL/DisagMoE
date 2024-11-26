@@ -82,6 +82,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     for (int i = 0; i < meta->req_ids.size(); i ++) {
         int rid = meta->req_ids[i];
         output_lens[rid] ++;
+        this->_active_token_count ++;
 
         if (meta->prefill_poss[i] == -1) {
             // at decode phase
@@ -94,6 +95,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Finished, end.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
+                this->_active_token_count -= output_lens[rid];
                 // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                 //           << output_lens[rid] << " tokens." << LEND;
             }
@@ -137,7 +139,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    // DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
+    DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
 
 std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
