@@ -8,10 +8,11 @@ from time import sleep
 from enum import Enum
 
 from vllm.attention import AttentionMetadata
+from vllm.config import CacheConfig as VllmCacheConfig
 
 from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts
-from disagmoe.config import ModelConfig, CacheConfig
+from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range
 
 
@@ -36,16 +37,23 @@ class Executor:
 
 class AttnExecutor(Executor):
 
-    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig):
+    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
         super().__init__(model_config)
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
+        self.vllm_cache_config = VllmCacheConfig(
+            cache_dtype="auto",
+            block_size=cache_config.block_size,
+            gpu_memory_utilization=0, # useless in our case
+            swap_space=0, #useless in our case
+        )
         self.operators = [
             MoEAttention(
                 self.model_config.hidden_size, 
                 self.model_config.num_heads, 
                 self.model_config.num_kv_heads, 
                 self.model_config.num_experts,
+                cache_config=self.vllm_cache_config,
             ) for _ in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
@@ -81,7 +89,7 @@ class AttnExecutor(Executor):
         return outputs, topk_experts
     
     @staticmethod
-    def build(model_config: ModelConfig, cache_config: CacheConfig) -> "Executor":
+    def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
         if model_config.tp_size > 1:
             return ParallelAttnExecutor(model_config, cache_config)
         else:
@@ -110,7 +118,7 @@ class ExpertsExecutor(Executor):
     
 class ParallelAttnExecutor(AttnExecutor):
     
-    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig):
+    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
         Executor.__init__(self, model_config)
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config

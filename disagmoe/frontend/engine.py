@@ -4,8 +4,8 @@ import enum
 import os
 import asyncio
 
-from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
-                                        ModelConfig, CacheConfig)
+from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
+from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
                                          AttentionBatchMetadata, SloStat)
@@ -224,11 +224,11 @@ class Engine:
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
     def _create_buffers(self):
-        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
-        self.buffer_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
-        self.buffer_block_table = torch.zeros((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32).to("cuda", non_blocking=True)
+        self.buffer_meta = torch.empty((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
+        self.buffer_loc = torch.empty((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32, device="cuda")
+        self.buffer_tensor = torch.empty((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
+        self.buffer_slot_mapping = torch.empty((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
+        self.buffer_block_table = torch.empty((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32, device="cuda")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -295,6 +295,10 @@ class Engine:
             block_tables=block_table_cuda.view(tokens_in_batch, -1),
             use_cuda_graph=False,
         )
+        
+    def _wait_handles(self, handles):
+        for h in handles:
+            h.wait()
 
     def _attn_driver_broadcast(self, layer_id: int, meta: FlashAttentionMetadata, tensor: torch.Tensor):
         pack_flash_attn_meta(
@@ -303,18 +307,19 @@ class Engine:
             layer_id,
             meta
         )
-        dist.broadcast(self.buffer_meta, 0, async_op=True)
-        dist.broadcast(self.buffer_loc, 0, async_op=True)
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(tensor, 0, async_op=True)
+        # handles = []
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        dist.broadcast(meta.slot_mapping, 0)
+        dist.broadcast(meta.block_tables, 0)
+        dist.broadcast(tensor, 0)
+        # self._wait_handles(handles)
+        
 
     def _attn_worker_broadcast(self):
-        h1 = dist.broadcast(self.buffer_meta, 0, async_op=True)
-        h2 = dist.broadcast(self.buffer_loc, 0, async_op=True)
-        
-        h1.wait()
-        h2.wait()
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        # self._wait_handles(handles)
         
         layer_id, max_blocks_per_seq, meta = unpack_flash_attn_meta(self.buffer_meta, self.buffer_loc)
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
@@ -323,9 +328,10 @@ class Engine:
         if not meta.block_tables.is_contiguous():
             meta.block_tables = meta.block_tables.contiguous()
         
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(self.buffer_tensor[:bs], 0, async_op=True)
+        dist.broadcast(meta.slot_mapping, 0)
+        dist.broadcast(meta.block_tables, 0)
+        dist.broadcast(self.buffer_tensor[:bs], 0)
+        # self._wait_handles(handles)
         
         return layer_id, meta, self.buffer_tensor[:bs]
 
