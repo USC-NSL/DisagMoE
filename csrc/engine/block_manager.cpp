@@ -18,9 +18,18 @@ BlockManager::BlockManager(int block_size, int num_blocks, int reserved_blocks) 
     }
 }
 
-bool BlockManager::can_allocate(int seq_len) {
-    int blocks_needed = (seq_len - 1) / block_size_ + 1;
-    return free_blocks_.size() >= blocks_needed + reserved_blocks_;
+int BlockManager::get_one_free_block() {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
+    ASSERT (free_blocks_.size() > 0);
+    int block_id = free_blocks_.front();
+    free_blocks_.pop();
+    // DMOE_LOG(INFO) << "get_one_free_block, remaining blocks: " << free_blocks_.size() << LEND;
+    return block_id;
+}
+
+int BlockManager::num_free_blocks() {
+    std::lock_guard<std::mutex> lock(free_blocks_lock_);
+    return free_blocks_.size();
 }
 
 void BlockManager::release(int seq_ids) {
@@ -32,6 +41,11 @@ void BlockManager::release(int seq_ids) {
     block_tables_.erase(seq_ids);
 }
 
+bool BlockManager::can_allocate(int seq_len) {
+    int blocks_needed = (seq_len - 1) / block_size_ + 1;
+    return num_free_blocks() >= blocks_needed + reserved_blocks_;
+}
+
 void BlockManager::batch_release(const std::vector<int> &seq_ids) {
     for (auto &seq_id: seq_ids) {
         release(seq_id);
@@ -41,52 +55,34 @@ void BlockManager::batch_release(const std::vector<int> &seq_ids) {
 void BlockManager::allocate(int seq_id, int seq_len) {
     AUTO_TX_RANGE;
     // DMOE_LOG(DEBUG) << "allocating for " << seq_id << " " << seq_len << LEND;
-    std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (block_tables_.find(seq_id) == block_tables_.end());
     int blocks_needed = (seq_len - 1) / block_size_ + 1;
     
     // DMOE_LOG(INFO) << "blocks_needed = " << blocks_needed << LEND;
 
-    ASSERT (free_blocks_.size() >= blocks_needed + reserved_blocks_);
+    ASSERT (num_free_blocks() >= blocks_needed + reserved_blocks_);
     block_list_t block_list = std::make_shared<std::vector<int>>(std::vector<int>(blocks_needed));
     for (int i = 0; i < blocks_needed; i++) {
-        (*block_list)[i] = free_blocks_.front();
-        free_blocks_.pop();
+        int new_block_id = get_one_free_block();
+        (*block_list)[i] = new_block_id;
     }
     block_tables_[seq_id] = block_list;
 
     // DMOE_LOG(DEBUG) << "allocated for " << seq_id << " " << seq_len << LEND;
-
 }
 
 void BlockManager::append_block(int seq_id) {
-    std::lock_guard<std::mutex> lock(free_blocks_lock_);
-    ASSERT (free_blocks_.size() > 0);
+    ASSERT (num_free_blocks() > 0);
 
-    int block_to_append = free_blocks_.front();
-    free_blocks_.pop();
+    int new_block_id = get_one_free_block();
 
     auto seq_block_list = block_tables_.find(seq_id);
     ASSERT (seq_block_list != block_tables_.end());
-    seq_block_list->second->emplace_back(block_to_append);
+    seq_block_list->second->emplace_back(new_block_id);
 }
 
 bool BlockManager::can_append() {
-    std::lock_guard<std::mutex> lock(free_blocks_lock_);
-    return free_blocks_.size() > 0;
-}
-
-int BlockManager::get_one_block() {
-    std::lock_guard<std::mutex> lock(free_blocks_lock_);
-    ASSERT (free_blocks_.size() > 0);
-    int block_id = free_blocks_.front();
-    free_blocks_.pop();
-    return block_id;
-}
-
-int BlockManager::num_free_blocks() {
-    std::lock_guard<std::mutex> lock(free_blocks_lock_);
-    return free_blocks_.size();
+    return num_free_blocks() > 0;
 }
 
 bool BlockManager::has_seq_block_list(int seq_id) {
@@ -106,13 +102,13 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     if (remain_slots == block_size_) { 
         remain_slots = 0;
     }
-    // NOTE(hogura|20241015): here use >= instead of >, otherwise no blocks available at block_size_.
     if (num_tokens > remain_slots) {
         int blocks_to_add = (num_tokens - remain_slots - 1) / block_size_ + 1;
         ASSERT (num_free_blocks() > blocks_to_add);
         auto seq_block_list = block_tables_.find(seq_id);
+        // DMOE_LOG(INFO) << "append_tokens for sequence: " << seq_id << ", current block_num: " << seq_block_list->second->size() << ", blocks_to_add: " << blocks_to_add << LEND;
         while (blocks_to_add > 0) {
-            int block_to_append = get_one_block();
+            int block_to_append = get_one_free_block();
             seq_block_list->second->emplace_back(block_to_append);
             blocks_to_add --;
         }

@@ -23,7 +23,6 @@ from typing import Optional, List, Dict, Union, Callable, Tuple
 from threading import Thread
 
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 
 import torch.distributed as dist
 
@@ -241,25 +240,28 @@ class Engine:
         prefill_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs:]
         
+        # 1. prepare block table
+        
+        #  if the first layer in this attention worker, update block table and decode_seq_lens
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-        # 1. update and prepare block table
-        self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+        if meta_py.layer_id == self.model_config.layer_ids[0]:
+            for i, seq_id in enumerate(prefill_seq_ids):
+                self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
+            
+            for i, seq_id in enumerate(decode_seq_ids):
+                decode_seq_lens[i] += 1
+                self.decode_seq_lens[seq_id] += 1
+                
+            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+                
         block_table, slot_mapping = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
         block_table_cuda = torch.IntTensor(block_table, device="cpu").to("cuda", non_blocking=True)
         slot_mapping_cuda = torch.LongTensor(slot_mapping, device="cpu").to("cuda", non_blocking=True)
         tokens_in_batch = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         assert len(block_table) % tokens_in_batch == 0
         
-        # 2. update decode_seq_lens
-        for i, seq_id in enumerate(prefill_seq_ids):
-            self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
-        
-        for i, seq_id in enumerate(decode_seq_ids):
-            decode_seq_lens[i] += 1
-            self.decode_seq_lens[seq_id] += 1
-        
-        # 3. prepare seqlens and start_locs
+        # 2. prepare seqlens and start_locs
         seq_lens_cuda = torch.IntTensor(meta_py.prefill_seq_len + decode_seq_lens).to("cuda", non_blocking=True)
         
         def make_seqlens(lens):
@@ -346,7 +348,7 @@ class Engine:
             meta_c = meta_c.to_c()
 
         attn_meta = self._pack_flash_attn_metadata(meta_c)
-        if not self.model_config.tp_enable_inter_group:
+        if self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group):
             self._attn_driver_broadcast(meta_c.layer_id, attn_meta, tensor)
         
         # TODO(hogura|20241015): only top-1 expert currently

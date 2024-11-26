@@ -26,7 +26,7 @@ private:
 
     std::unordered_map<int , block_list_t> block_tables_{};
 
-    int get_one_block(); 
+    int get_one_free_block(); 
 
 public:
 

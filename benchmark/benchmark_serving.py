@@ -54,6 +54,7 @@ def launch(args):
     model_config.ep_size = 2
     model_config.num_experts = 8
     model_config.tp_size = 1
+    model_config.tp_enable_inter_group = False
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
 
@@ -135,7 +136,7 @@ async def benchmark_serving(args):
 def get_args():
     parser = ArgumentParser()
     
-    parser.add_argument("-r", "--rate", type=float, default=0.1, help="rate of incoming requests, seconds per request")
+    parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
     parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
