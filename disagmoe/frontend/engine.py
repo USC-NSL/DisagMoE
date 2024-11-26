@@ -308,24 +308,34 @@ class Engine:
         dist.broadcast(tensor, 0, async_op=True)
 
     def _attn_worker_broadcast(self):
+        # e_start = torch.cuda.Event()
+        # e_start.record()
+        
         h1 = dist.broadcast(self.buffer_meta, 0, async_op=True)
         h2 = dist.broadcast(self.buffer_loc, 0, async_op=True)
         
-        h1.wait()
-        h2.wait()
+        for h in [h1, h2]:
+            if h is not None:
+                h.wait()
         
         layer_id, max_blocks_per_seq, meta = unpack_flash_attn_meta(self.buffer_meta, self.buffer_loc)
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
         meta.slot_mapping = self.buffer_slot_mapping[:bs]
         meta.block_tables = self.buffer_block_table[:bs, :max_blocks_per_seq]
+        tensor = self.buffer_tensor[:bs]
         if not meta.block_tables.is_contiguous():
             meta.block_tables = meta.block_tables.contiguous()
         
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(self.buffer_tensor[:bs], 0, async_op=True)
+        h1 = dist.broadcast(meta.slot_mapping, 0, async_op=True)
+        h2 = dist.broadcast(meta.block_tables, 0, async_op=True)
+        h3 = dist.broadcast(tensor, 0, async_op=True)
         
-        return layer_id, meta, self.buffer_tensor[:bs]
+        for h in [h1, h2, h3]:
+            if h is not None:
+                h.wait()
+        
+        # self._logger.info(f"attn worker broadcasted {layer_id, meta.slot_mapping, meta.block_tables}")
+        return layer_id, meta, tensor
 
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
@@ -338,7 +348,7 @@ class Engine:
         
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(tensor.shape[0], dtype=torch.long).to("cuda", non_blocking=True)
-        # self._logger.info(f"process batch attn {meta_c.seq_ids}")
+        self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
@@ -363,7 +373,7 @@ class Engine:
         else:
             new_meta_c = meta_py
         
-        # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
+        self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")

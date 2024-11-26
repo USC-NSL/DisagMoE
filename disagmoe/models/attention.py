@@ -114,25 +114,26 @@ class MoEAttention(nn.Module):
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
         rank = get_tensor_model_parallel_rank()
-        import time
-        st = time.time()
         if rank == 0:
-            print("hidden_states shape:", hidden_states.shape)
+            # print("hidden_states shape:", hidden_states.shape)
+            pass
         qkv, _ = self.qkv_proj(hidden_states)
         if rank == 0:
-            print("qkv shape:", qkv.shape)
+            # print("qkv shape:", qkv.shape)
+            pass
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if rank == 0:
-            print("q shape:", q.shape, "k shape:", k.shape, "v shape:", v.shape)
+            # print("q shape:", q.shape, "k shape:", k.shape, "v shape:", v.shape)
+            pass
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
         if rank == 0:
-            print("attn_output shape:", attn_output.shape)
-            # torch.cuda.synchronize()
-            # print("elapsed time:", time.time() - st)
+            # print("attn_output shape:", attn_output.shape)
+            pass
         output, _ = self.o_proj(attn_output)
         if rank == 0:
-            print("output shape:", output.shape)
+            # print("output shape:", output.shape)
+            pass
         router_logits, _ = self.gate(hidden_states)
         
         # (shaoyuw): We only consider top_1 at first

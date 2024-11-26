@@ -21,7 +21,7 @@ cluster_config = ClusterConfig(
 )
 
 cache_config = CacheConfig(
-    block_size=32,
+    block_size=64,
     gpu_memory_utilization=0.9,
     swap_space=0,
     cache_dtype="auto",
