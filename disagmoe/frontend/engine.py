@@ -230,6 +230,25 @@ class Engine:
         self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
         self.buffer_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
         self.buffer_block_table = torch.zeros((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32).to("cuda", non_blocking=True)
+        
+        if self.model_config.enable_cuda_graph:
+            self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
+            if self.is_attn:
+                self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
+            else:
+                self.static_expert_mappings = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
+
+    def _warmup(self):
+        if self.is_attn:
+            self._warmup_attn()
+        else:
+            self._warmup_expert()
+
+    def _warmup_attn(self):
+        pass
+    
+    def _warmup_expert(self):
+        pass
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(

@@ -19,6 +19,7 @@ class ModelConfig:
     rank: int = 0
     
     tp_enable_inter_group: bool = True
+    enable_cuda_graph: bool = False
     
     @property
     def num_experts_per_rank(self):
