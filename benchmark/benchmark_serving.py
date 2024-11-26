@@ -45,7 +45,7 @@ class BenchmarkMetrics:
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
 
 def launch(args):
-    cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
+    cluster_config = ClusterConfig(n_node=1, n_gpu=4, 
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
 
@@ -53,7 +53,7 @@ def launch(args):
     model_config.num_layers = 32
     model_config.ep_size = 2
     model_config.num_experts = 8
-    model_config.tp_size = 1
+    model_config.tp_size = 2
     model_config.tp_enable_inter_group = False
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
@@ -62,8 +62,8 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
-    cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
-                                num_gpu_blocks=NUM_BLOCKS, 
+    cache_config = CacheConfig(64, 0.8, 2, "auto", 
+                                num_gpu_blocks=4096, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
     sampling_config = SamplingConfig(max_output_len=args.output_len)

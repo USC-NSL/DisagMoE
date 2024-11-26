@@ -320,14 +320,20 @@ class Engine:
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
         meta.slot_mapping = self.buffer_slot_mapping[:bs]
         meta.block_tables = self.buffer_block_table[:bs, :max_blocks_per_seq]
+        tensor = self.buffer_tensor[:bs]
         if not meta.block_tables.is_contiguous():
             meta.block_tables = meta.block_tables.contiguous()
         
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(self.buffer_tensor[:bs], 0, async_op=True)
+        h1 = dist.broadcast(meta.slot_mapping, 0, async_op=True)
+        h2 = dist.broadcast(meta.block_tables, 0, async_op=True)
+        h3 = dist.broadcast(tensor, 0, async_op=True)
         
-        return layer_id, meta, self.buffer_tensor[:bs]
+        for h in [h1, h2, h3]:
+            if h is not None:
+                h.wait()
+        torch.cuda.synchronize()
+        
+        return layer_id, meta, tensor
 
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
