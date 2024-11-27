@@ -50,7 +50,7 @@ def launch(args):
                                 id_sampler=sampler)
 
     model_config = duo_expert_mixtral
-    model_config.num_layers = 32
+    model_config.num_layers = 8
     model_config.ep_size = 2
     model_config.num_experts = 8
     model_config.tp_size = 2
@@ -62,7 +62,7 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
-    cache_config = CacheConfig(64, 0.8, 2, "auto", 
+    cache_config = CacheConfig(32, 0.8, 2, "auto", 
                                 num_gpu_blocks=4096, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
