@@ -13,7 +13,7 @@ from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
-from disagmoe.config import CacheConfig, ModelConfig
+from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
 from disagmoe.env import ENV_VARS
 
 from typing import List, Dict, Optional, Union, Tuple
@@ -61,7 +61,7 @@ class Controller:
         self._logger = get_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
-        self.profile = False
+        self._profile_enabled = False
         self.req_id_generator = RequestIDGenerator()
         self.in_flight_reqs = set()
         self.end_flag = False
@@ -167,8 +167,7 @@ class Controller:
                     model_place: ModelPlacement, 
                     model_config: Optional[ModelConfig] = None,
                     cache_config: Optional[CacheConfig] = None,
-                    max_output_len: int = 32):
-        self.max_output_len = max_output_len
+                    sampling_config: Optional[SamplingConfig] = None):
         
         if not model_config:
             # TODO: replace default model config
@@ -182,6 +181,13 @@ class Controller:
             cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                                        num_gpu_blocks=NUM_BLOCKS, 
                                        num_reserved_blocks=RESERVED_BLOCKS)
+            
+        if not sampling_config:
+            self.max_output_len = 64
+            print(f"Sampler using default max output len: {self.max_output_len}")
+        else:
+            self.max_output_len = sampling_config.max_output_len
+            
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
         
         # collect attention workers for kv-cache management
@@ -322,13 +328,13 @@ class Controller:
         tasks = [worker.terminate.remote() for worker in self.workers]
         ray.get(tasks)
         
-    def start_profile(self):
-        self.profile = True
-        tasks = [worker.start_profile.remote() for worker in self.workers]
+    def start_profile(self, profile_dir=None):
+        self._profile_enabled = True
+        tasks = [worker.start_profile.remote(profile_dir) for worker in self.workers]
         ray.get(tasks)
         
     def stop_profile(self):
-        if not self.profile:
+        if not self._profile_enabled:
             return
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)

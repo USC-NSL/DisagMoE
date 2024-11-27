@@ -1,7 +1,7 @@
 from disagmoe.frontend.controller import init_controller, Controller, AsyncResult
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
+from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
@@ -54,6 +54,7 @@ def launch(args):
     model_config.ep_size = 2
     model_config.num_experts = 8
     model_config.tp_size = 1
+    model_config.tp_enable_inter_group = False
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
 
@@ -65,9 +66,15 @@ def launch(args):
                                 num_gpu_blocks=NUM_BLOCKS, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
-    master.init_engine(mp, model_config, cache_config, args.output_len)
+    sampling_config = SamplingConfig(max_output_len=args.output_len)
+    
+    master.init_engine(mp, model_config, cache_config, sampling_config)
+    
+    if args.profile_dir is not None:
+        master.start_profile(args.profile_dir)
 
     master.start_engine()
+    
    
 async def process_response(resp: AsyncResult, pbar):
     slo_stat = await resp.get()
@@ -133,10 +140,11 @@ async def benchmark_serving(args):
 def get_args():
     parser = ArgumentParser()
     
-    parser.add_argument("-r", "--rate", type=float, default=0.1, help="rate of incoming requests, seconds per request")
+    parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
     parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
+    parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
     
     args = parser.parse_args()
     return args

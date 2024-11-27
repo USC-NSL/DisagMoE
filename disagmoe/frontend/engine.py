@@ -4,8 +4,8 @@ import enum
 import os
 import asyncio
 
-from disagmoe.executor.executor import (Executor, ExpertsExecutor, AttnExecutor,
-                                        ModelConfig, CacheConfig)
+from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
+from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
                                          AttentionBatchMetadata, SloStat)
@@ -23,7 +23,6 @@ from typing import Optional, List, Dict, Union, Callable, Tuple
 from threading import Thread
 
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 
 import torch.distributed as dist
 
@@ -70,29 +69,30 @@ class Engine:
         self.inner_exp_rank = []
         self.device_group_ids = []
         
-    def start_profile(self):
+    def start_profile(self, profile_dir=None):
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
         
-        if profile_dir := os.environ["DMOE_PROFILE_DIR"]:
-            print(f"enable profiler, results stored at {profile_dir}")
-        
-            self.profiler = torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    # with_stack=True,
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                        dir_name=profile_dir, 
-                        worker_name=f"engine-{self.device_id}",
-                        use_gzip=True,))
-            self.profiler.start()
+        if profile_dir is None:
+            self._logger.info("profiling directory not specified, using default")
+            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
+            
+        self._logger.info(f"enable profiler, results stored at {profile_dir}")
+    
+        self.profiler = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                # with_stack=True,
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                    dir_name=profile_dir, 
+                    worker_name=f"engine-{self.device_id}",
+                    use_gzip=True,))
+        self.profiler.start()
     
     def stop_profile(self):
-        assert self.profiler is not None or \
-            os.environ.get("DMOE_PROFILE_DIR", "") == ""
-        if os.environ.get("DMOE_PROFILE_DIR", "") != "":
-            self.profiler.stop()
+        assert self.profiler is not None, "torch rofiler is not enabled"
+        self.profiler.stop()
 
     @property
     def is_attn(self):
@@ -225,11 +225,11 @@ class Engine:
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
     def _create_buffers(self):
-        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
-        self.buffer_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
-        self.buffer_block_table = torch.zeros((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32).to("cuda", non_blocking=True)
+        self.buffer_meta = torch.empty((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
+        self.buffer_loc = torch.empty((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32, device="cuda")
+        self.buffer_tensor = torch.empty((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
+        self.buffer_slot_mapping = torch.empty((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
+        self.buffer_block_table = torch.empty((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32, device="cuda")
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -241,25 +241,28 @@ class Engine:
         prefill_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs:]
         
+        # 1. prepare block table
+        
+        #  if the first layer in this attention worker, update block table and decode_seq_lens
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-        # 1. update and prepare block table
-        self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+        if meta_py.layer_id == self.model_config.layer_ids[0]:
+            for i, seq_id in enumerate(prefill_seq_ids):
+                self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
+            
+            for i, seq_id in enumerate(decode_seq_ids):
+                decode_seq_lens[i] += 1
+                self.decode_seq_lens[seq_id] += 1
+                
+            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+        
         block_table, slot_mapping = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
         block_table_cuda = torch.IntTensor(block_table, device="cpu").to("cuda", non_blocking=True)
         slot_mapping_cuda = torch.LongTensor(slot_mapping, device="cpu").to("cuda", non_blocking=True)
         tokens_in_batch = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         assert len(block_table) % tokens_in_batch == 0
         
-        # 2. update decode_seq_lens
-        for i, seq_id in enumerate(prefill_seq_ids):
-            self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
-        
-        for i, seq_id in enumerate(decode_seq_ids):
-            decode_seq_lens[i] += 1
-            self.decode_seq_lens[seq_id] += 1
-        
-        # 3. prepare seqlens and start_locs
+        # 2. prepare seqlens and start_locs
         seq_lens_cuda = torch.IntTensor(meta_py.prefill_seq_len + decode_seq_lens).to("cuda", non_blocking=True)
         
         def make_seqlens(lens):
@@ -293,6 +296,10 @@ class Engine:
             block_tables=block_table_cuda.view(tokens_in_batch, -1),
             use_cuda_graph=False,
         )
+        
+    def _wait_handles(self, handles):
+        for h in handles:
+            h.wait()
 
     def _attn_driver_broadcast(self, layer_id: int, meta: FlashAttentionMetadata, tensor: torch.Tensor):
         pack_flash_attn_meta(
@@ -301,31 +308,34 @@ class Engine:
             layer_id,
             meta
         )
+        # handles = []
         dist.broadcast(self.buffer_meta, 0, async_op=True)
-        dist.broadcast(self.buffer_loc, 0, async_op=True)
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(tensor, 0, async_op=True)
 
+        dist.broadcast(tensor, 0)
+        # self._wait_handles(handles)
     def _attn_worker_broadcast(self):
-        h1 = dist.broadcast(self.buffer_meta, 0, async_op=True)
-        h2 = dist.broadcast(self.buffer_loc, 0, async_op=True)
-        
-        h1.wait()
-        h2.wait()
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        # self._wait_handles(handles)
         
         layer_id, max_blocks_per_seq, meta = unpack_flash_attn_meta(self.buffer_meta, self.buffer_loc)
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
         meta.slot_mapping = self.buffer_slot_mapping[:bs]
         meta.block_tables = self.buffer_block_table[:bs, :max_blocks_per_seq]
+        
+        buffer = torch.empty( bs + bs * table_pad_size)
+        slot_mapping = buffer[:bs]
+        block_tables = buffer[bs:].view(bs, table_pad_size)
+        
+        tensor = self.buffer_tensor[:bs]
         if not meta.block_tables.is_contiguous():
             meta.block_tables = meta.block_tables.contiguous()
         
-        dist.broadcast(meta.slot_mapping, 0, async_op=True)
-        dist.broadcast(meta.block_tables, 0, async_op=True)
-        dist.broadcast(self.buffer_tensor[:bs], 0, async_op=True)
+        dist.broadcast(meta.slot_mapping, 0)
+        dist.broadcast(meta.block_tables, 0)
+        dist.broadcast(tensor, 0)
         
-        return layer_id, meta, self.buffer_tensor[:bs]
+        return layer_id, meta, tensor
 
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
@@ -345,9 +355,13 @@ class Engine:
             meta_py = meta_c
             meta_c = meta_c.to_c()
 
-        attn_meta = self._pack_flash_attn_metadata(meta_c)
-        if not self.model_config.tp_enable_inter_group:
+        if self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group):
             self._attn_driver_broadcast(meta_c.layer_id, attn_meta, tensor)
+            
+        attn_meta = self._pack_flash_attn_metadata(meta_c)
+        
+        # broadcast block table
+            
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
