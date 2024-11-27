@@ -90,6 +90,8 @@ torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings) 
     int hidden_size = tokens.size(1);
 
     torch::Tensor out = torch::empty_like(tokens);
+
+    torch::cuda::synchronize(); // "cuda illegal memory access" without this line, seems to in a different stream with pytorch
    
     AT_DISPATCH_REDUCED_FLOATING_TYPES(tokens.scalar_type(), "permute_tokens_cuda", [&] {
         _permute_tokens_cuda<scalar_t>(out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), num_tokens, hidden_size);
