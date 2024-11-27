@@ -46,7 +46,7 @@ class Engine:
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
         self.scheduler: Scheduler = scheduler
-        self.a_scheduler: Scheduler = scheduler
+        self.attn_scheduler: Scheduler = scheduler
         self.executor: Executor = executor
         self.dispatcher: MuDispatcher = dispatcher
         self.device_id = device_id
@@ -68,42 +68,29 @@ class Engine:
         self.profiler = None
         self.inner_exp_rank = []
         self.device_group_ids = []
-        
-    def start_profile(self, profile_dir=None):
-        assert self.device_id is not None, "Engine should be assigned with a device before profiling"
-        
-        if profile_dir is None:
-            self._logger.info("profiling directory not specified, using default")
-            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
-            
-        self._logger.info(f"enable profiler, results stored at {profile_dir}")
-    
-        self.profiler = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                # with_stack=True,
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                    dir_name=profile_dir, 
-                    worker_name=f"engine-{self.device_id}",
-                    use_gzip=True,))
-        self.profiler.start()
-    
-    def stop_profile(self):
-        assert self.profiler is not None, "torch rofiler is not enabled"
-        self.profiler.stop()
+        self.handles = []
+        self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
 
     @property
     def is_attn(self):
         return self.engine_type == EngineType.ATTENTION
-
-    def _is_attn(self):
-        return self.is_attn
     
+    @property
     def is_attn_driver(self):
-        return len(self.device_group_ids) > 0 and self.device_id == self.device_group_ids[0]
+        return self.is_attn and self.rank_in_group == 0
     
+    @property
+    def is_attn_worker(self):
+        return self.is_attn and (not self.is_attn_driver)
+    
+    @property
+    def _inter_group_tp_enabled(self):
+        return self.is_attn and self.model_config.tp_size > 1 and self.model_config.tp_enable_inter_group
+    
+    @property
+    def _intra_group_tp_enabled(self):
+        return self.is_attn and self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group)
+        
     def init_core(
             self,
             layer_ids: List[int],
@@ -131,7 +118,7 @@ class Engine:
                           device_group_ids, group_nccl_ids}")
         if device_group_ids is None:
             device_group_ids = []
-        self.scheduler, self.a_scheduler, self.dispatcher = init_engine(
+        self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
             self.device_id,
             self.is_attn,
             layer_ids,
@@ -154,28 +141,27 @@ class Engine:
             group_nccl_ids,
         )
         if self.model_config.tp_enable_inter_group:
-            set_tensor_model_parallel_channel(self.a_scheduler.get_channel() if self.a_scheduler is not None else None)
+            set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
         else:
             if self.is_attn:
                 dist.init_process_group(backend="nccl", 
                                         world_size=len(self.device_group_ids), 
-                                        rank=self.model_config.rank,
+                                        rank=self.rank_in_group,
                                         init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
             
         self._logger.info("core launched")
         
     def _switch_scheduler(self):
         if self.scheduler == None:
-            self.scheduler = self.a_scheduler
-        
+            self.scheduler = self.attn_scheduler
+    
     def start(self):
-        if not self.is_attn \
-            or self.is_attn_driver() \
-            or self.model_config.tp_enable_inter_group:
-            start_engine(self.scheduler, self.a_scheduler, self.dispatcher)
-            self._switch_scheduler()
-        else:
+        if self.is_attn_worker:
             self.loop_thread = Thread(target=self.attn_worker_loop)
+        else:
+            start_engine(self.scheduler, self.attn_scheduler, self.dispatcher)
+            self._switch_scheduler()
+            
         self.loop_thread.start()
 
     def set_device_id(self, device_id: int):
@@ -191,7 +177,7 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
-        model_config.rank = rank
+        self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
             torch.set_default_device("cuda:0")
@@ -230,7 +216,12 @@ class Engine:
         self.buffer_tensor = torch.empty((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
         self.buffer_slot_mapping = torch.empty((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
         self.buffer_block_table = torch.empty((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32, device="cuda")
-
+        
+    def _wait_handles(self):
+        for h in self.handles:
+            h.wait()
+        self.handles = []
+    
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
             self,
@@ -247,6 +238,7 @@ class Engine:
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
         if meta_py.layer_id == self.model_config.layer_ids[0]:
+            # only update block table and decode_seq_lens in the first layer
             for i, seq_id in enumerate(prefill_seq_ids):
                 self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
             
@@ -308,24 +300,20 @@ class Engine:
             layer_id,
             meta
         )
-        # handles = []
-        dist.broadcast(self.buffer_meta, 0, async_op=True)
-
+        dist.broadcast(self.buffer_meta, 0)
+        dist.broadcast(self.buffer_loc, 0)
+        dist.broadcast(meta.slot_mapping, 0)
+        dist.broadcast(meta.block_tables, 0)
         dist.broadcast(tensor, 0)
-        # self._wait_handles(handles)
+        
     def _attn_worker_broadcast(self):
         dist.broadcast(self.buffer_meta, 0)
         dist.broadcast(self.buffer_loc, 0)
-        # self._wait_handles(handles)
         
         layer_id, max_blocks_per_seq, meta = unpack_flash_attn_meta(self.buffer_meta, self.buffer_loc)
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
         meta.slot_mapping = self.buffer_slot_mapping[:bs]
         meta.block_tables = self.buffer_block_table[:bs, :max_blocks_per_seq]
-        
-        buffer = torch.empty( bs + bs * table_pad_size)
-        slot_mapping = buffer[:bs]
-        block_tables = buffer[bs:].view(bs, table_pad_size)
         
         tensor = self.buffer_tensor[:bs]
         if not meta.block_tables.is_contiguous():
@@ -355,13 +343,11 @@ class Engine:
             meta_py = meta_c
             meta_c = meta_c.to_c()
 
+
+        attn_meta = self._pack_flash_attn_metadata(meta_c)
+
         if self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group):
             self._attn_driver_broadcast(meta_c.layer_id, attn_meta, tensor)
-            
-        attn_meta = self._pack_flash_attn_metadata(meta_c)
-        
-        # broadcast block table
-            
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
@@ -413,14 +399,13 @@ class Engine:
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata) -> None:
-        if self.engine_type == EngineType.ATTENTION and self.model_config.rank != 0:
-            # not a driver; no need to post_process
-            return
+        assert not self.is_attn_worker
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
         self.dispatcher.put(batch, 0)
 
+    @torch.inference_mode()
     def attn_worker_loop(self):
         self._logger.info("starting engine (attn TP worker) loop")
         torch.set_default_dtype(torch.bfloat16)
@@ -432,6 +417,7 @@ class Engine:
             positions = torch.zeros(num_tokens, dtype=torch.long).to("cuda", non_blocking=False)
             hiddens, expert_ids = self.executor.execute(layer_id, positions, tensor, meta)
 
+    @torch.inference_mode()
     def loop(self):
         self._logger.info("starting engine loop")
         torch.set_default_dtype(torch.bfloat16)
@@ -450,7 +436,8 @@ class Engine:
             self.post_process(output, meta)
             
     def release_seqs(self, seq_ids: List[int]):
-        if self.is_attn and not self.is_attn_driver() and not self.model_config.tp_enable_inter_group:
+        # TODO(optimize): master should only send release request to the driver
+        if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
         for id in seq_ids:
@@ -463,6 +450,31 @@ class Engine:
         
     def get_node_ip(self) -> str:
         return get_ip()
+    
+    def start_profile(self, profile_dir=None):
+        assert self.device_id is not None, "Engine should be assigned with a device before profiling"
+        
+        if profile_dir is None:
+            self._logger.info("profiling directory not specified, using default")
+            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
+            
+        self._logger.info(f"enable profiler, results stored at {profile_dir}")
+    
+        self.profiler = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                # with_stack=True,
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                    dir_name=profile_dir, 
+                    worker_name=f"engine-{self.device_id}",
+                    use_gzip=True,))
+        self.profiler.start()
+    
+    def stop_profile(self):
+        assert self.profiler is not None, "torch rofiler is not enabled"
+        self.profiler.stop()
 
 class SamplerEngine(Engine):
     
