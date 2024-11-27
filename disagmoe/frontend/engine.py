@@ -69,29 +69,30 @@ class Engine:
         self.inner_exp_rank = []
         self.device_group_ids = []
         
-    def start_profile(self):
+    def start_profile(self, profile_dir=None):
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
         
-        if profile_dir := os.environ["DMOE_PROFILE_DIR"]:
-            print(f"enable profiler, results stored at {profile_dir}")
-        
-            self.profiler = torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    # with_stack=True,
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                        dir_name=profile_dir, 
-                        worker_name=f"engine-{self.device_id}",
-                        use_gzip=True,))
-            self.profiler.start()
+        if profile_dir is None:
+            self._logger.info("profiling directory not specified, using default")
+            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
+            
+        self._logger.info(f"enable profiler, results stored at {profile_dir}")
+    
+        self.profiler = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                # with_stack=True,
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(
+                    dir_name=profile_dir, 
+                    worker_name=f"engine-{self.device_id}",
+                    use_gzip=True,))
+        self.profiler.start()
     
     def stop_profile(self):
-        assert self.profiler is not None or \
-            os.environ.get("DMOE_PROFILE_DIR", "") == ""
-        if os.environ.get("DMOE_PROFILE_DIR", "") != "":
-            self.profiler.stop()
+        assert self.profiler is not None, "torch rofiler is not enabled"
+        self.profiler.stop()
 
     @property
     def is_attn(self):
@@ -254,7 +255,7 @@ class Engine:
                 self.decode_seq_lens[seq_id] += 1
                 
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
-                
+        
         block_table, slot_mapping = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
         block_table_cuda = torch.IntTensor(block_table, device="cpu").to("cuda", non_blocking=True)
         slot_mapping_cuda = torch.LongTensor(slot_mapping, device="cpu").to("cuda", non_blocking=True)
@@ -308,14 +309,10 @@ class Engine:
             meta
         )
         # handles = []
-        dist.broadcast(self.buffer_meta, 0)
-        dist.broadcast(self.buffer_loc, 0)
-        dist.broadcast(meta.slot_mapping, 0)
-        dist.broadcast(meta.block_tables, 0)
+        dist.broadcast(self.buffer_meta, 0, async_op=True)
+
         dist.broadcast(tensor, 0)
         # self._wait_handles(handles)
-        
-
     def _attn_worker_broadcast(self):
         dist.broadcast(self.buffer_meta, 0)
         dist.broadcast(self.buffer_loc, 0)
@@ -325,6 +322,11 @@ class Engine:
         bs = meta.num_prefill_tokens + meta.num_decode_tokens
         meta.slot_mapping = self.buffer_slot_mapping[:bs]
         meta.block_tables = self.buffer_block_table[:bs, :max_blocks_per_seq]
+        
+        buffer = torch.empty( bs + bs * table_pad_size)
+        slot_mapping = buffer[:bs]
+        block_tables = buffer[bs:].view(bs, table_pad_size)
+        
         tensor = self.buffer_tensor[:bs]
         if not meta.block_tables.is_contiguous():
             meta.block_tables = meta.block_tables.contiguous()
@@ -353,9 +355,13 @@ class Engine:
             meta_py = meta_c
             meta_c = meta_c.to_c()
 
-        attn_meta = self._pack_flash_attn_metadata(meta_c)
         if self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group):
             self._attn_driver_broadcast(meta_c.layer_id, attn_meta, tensor)
+            
+        attn_meta = self._pack_flash_attn_metadata(meta_c)
+        
+        # broadcast block table
+            
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")

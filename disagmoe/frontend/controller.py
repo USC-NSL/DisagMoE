@@ -61,7 +61,7 @@ class Controller:
         self._logger = get_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
-        self.profile = False
+        self._profile_enabled = False
         self.req_id_generator = RequestIDGenerator()
         self.in_flight_reqs = set()
         self.end_flag = False
@@ -328,13 +328,13 @@ class Controller:
         tasks = [worker.terminate.remote() for worker in self.workers]
         ray.get(tasks)
         
-    def start_profile(self):
-        self.profile = True
-        tasks = [worker.start_profile.remote() for worker in self.workers]
+    def start_profile(self, profile_dir=None):
+        self._profile_enabled = True
+        tasks = [worker.start_profile.remote(profile_dir) for worker in self.workers]
         ray.get(tasks)
         
     def stop_profile(self):
-        if not self.profile:
+        if not self._profile_enabled:
             return
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)

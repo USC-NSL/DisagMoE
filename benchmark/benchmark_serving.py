@@ -45,7 +45,7 @@ class BenchmarkMetrics:
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
 
 def launch(args):
-    cluster_config = ClusterConfig(n_node=1, n_gpu=4, 
+    cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
 
@@ -53,7 +53,7 @@ def launch(args):
     model_config.num_layers = 32
     model_config.ep_size = 2
     model_config.num_experts = 8
-    model_config.tp_size = 2
+    model_config.tp_size = 1
     model_config.tp_enable_inter_group = False
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
@@ -62,15 +62,19 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
-    cache_config = CacheConfig(64, 0.8, 2, "auto", 
+    cache_config = CacheConfig(32, 0.8, 2, "auto", 
                                 num_gpu_blocks=4096, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
     sampling_config = SamplingConfig(max_output_len=args.output_len)
     
     master.init_engine(mp, model_config, cache_config, sampling_config)
+    
+    if args.profile_dir is not None:
+        master.start_profile(args.profile_dir)
 
     master.start_engine()
+    
    
 async def process_response(resp: AsyncResult, pbar):
     slo_stat = await resp.get()
@@ -140,6 +144,7 @@ def get_args():
     parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
+    parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
     
     args = parser.parse_args()
     return args
