@@ -1,8 +1,11 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from typing import Tuple
-from torch.nn.utils.rnn import pad_sequence
+import torch.distributed as dist
 
 import torch
+import pickle
+from typing import List, Any, Optional
+import numpy as np
 
 def pack_flash_attn_meta(buffer_meta: torch.Tensor,
                          buffer_locs: torch.Tensor,
@@ -77,3 +80,40 @@ def unpack_flash_attn_meta(buffer_meta: torch.Tensor,
         None, # block_table
         use_cuda_graph=False
     )
+    
+def broadcast_pyobj(
+    data: List[Any],
+    rank: int,
+    dist_group: Optional[torch.distributed.ProcessGroup] = None,
+):
+    """Broadcast inputs from rank=0 to all other ranks with torch.dist backend."""
+
+    if rank == 0:
+        if len(data) == 0:
+            tensor_size = torch.tensor([0], dtype=torch.long)
+            dist.broadcast(tensor_size, src=0, group=dist_group)
+        else:
+            serialized_data = pickle.dumps(data)
+            size = len(serialized_data)
+            tensor_data = torch.ByteTensor(
+                np.frombuffer(serialized_data, dtype=np.uint8)
+            )
+            tensor_size = torch.tensor([size], dtype=torch.long)
+
+            dist.broadcast(tensor_size, src=0, group=dist_group)
+            dist.broadcast(tensor_data, src=0, group=dist_group)
+        return data
+    else:
+        tensor_size = torch.tensor([0], dtype=torch.long)
+        dist.broadcast(tensor_size, src=0, group=dist_group)
+        size = tensor_size.item()
+
+        if size == 0:
+            return []
+
+        tensor_data = torch.empty(size, dtype=torch.uint8)
+        dist.broadcast(tensor_data, src=0, group=dist_group)
+
+        serialized_data = bytes(tensor_data.cpu().numpy())
+        data = pickle.loads(serialized_data)
+        return data

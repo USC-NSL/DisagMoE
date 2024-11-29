@@ -6,7 +6,7 @@ import socket
 from disagmoe.utils.logger import get_logger
 
 from torch import Tensor
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
 
 def get_nccl_unique_id():
@@ -89,3 +89,24 @@ def nvtx_range(msg, *args, **kwargs):
         yield
     finally:
         torch.cuda.nvtx.range_pop()
+        
+def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
+    if isinstance(lens, Tensor):
+        lens = lens.view(-1).tolist()
+    if len(lens) == 0:
+        return None
+    seqlen = [0]
+    for l in lens:
+        seqlen.append(seqlen[-1] + l)
+    result = torch.IntTensor(seqlen).to("cuda", non_blocking=True)
+    return result
+
+def make_seqlens_list(lens: Union[List[int], Tensor]) -> List[int]:
+    if isinstance(lens, Tensor):
+        lens = lens.view(-1).tolist()
+    if len(lens) == 0:
+        return None
+    seqlen = [0]
+    for l in lens:
+        seqlen.append(seqlen[-1] + l)
+    return seqlen
