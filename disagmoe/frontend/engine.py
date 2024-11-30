@@ -237,14 +237,14 @@ class Engine:
         
         if meta_py.layer_id == self.model_config.layer_ids[0]:
             # only update block table and decode_seq_lens in the first layer
+            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+            
             for i, seq_id in enumerate(prefill_seq_ids):
                 self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
             
             for i, seq_id in enumerate(decode_seq_ids):
                 decode_seq_lens[i] += 1
                 self.decode_seq_lens[seq_id] += 1
-                
-            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
         return decode_seq_lens
     
