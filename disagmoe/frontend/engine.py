@@ -311,13 +311,16 @@ class Engine:
                 *decode_seq_lens, # 4 + num_prefill_seqs + num_prefill_seqs
             ]
             
-            self.buffer_meta[:len(bc_meta)].copy_(torch.IntTensor(bc_meta), non_blocking=True)
+            self.buffer_meta[ : len(bc_meta)].copy_(torch.IntTensor(bc_meta, device="cpu"))
             dist.broadcast(self.buffer_meta, 0)
             
             # 2. broadcast input tensor asynchronously
             self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
             
         attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+        
+        max_num_blocks = (max(attn_meta.seq_lens) - 1) // self.cache_config.block_size + 1
+        assert max_num_blocks == attn_meta.block_tables.shape[-1], "block table wrong"
         
         if self._intra_group_tp_enabled:
             self._wait_async_handles()
@@ -329,8 +332,8 @@ class Engine:
             num_elems = num_tokens + max_num_blocks * num_tokens
             
             bc_attn_meta = self.buffer_attn_meta[ : num_elems]
-            bc_attn_meta[:num_tokens].copy_(attn_meta.slot_mapping, non_blocking=True)
-            bc_attn_meta[num_tokens:].copy_(attn_meta.block_tables.view(-1), non_blocking=True)
+            bc_attn_meta[ : num_tokens].copy_(attn_meta.slot_mapping.to(torch.int32))
+            bc_attn_meta[num_tokens : ].copy_(attn_meta.block_tables.view(-1))
             
             dist.broadcast(bc_attn_meta, 0)
         
@@ -339,42 +342,43 @@ class Engine:
     @nvtx_range("engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
         dist.broadcast(self.buffer_meta, 0)
-        meta = self.buffer_meta.to("cpu")
-        layer_id = meta[0].item()
-        num_prefill_seqs = meta[1].item()
-        num_prefill_tokens = meta[2].item()
-        num_decode_tokens = meta[3].item()
+        meta = self.buffer_meta.tolist()
+        layer_id = meta[0]
+        num_prefill_seqs = meta[1]
+        num_prefill_tokens = meta[2]
+        num_decode_tokens = meta[3]
         
         num_tokens = num_prefill_tokens + num_decode_tokens
+        num_seqs = num_prefill_seqs + num_decode_tokens
         
         input_tensor = self.buffer_tensor[ : num_prefill_tokens + num_decode_tokens]
         self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
         
-        prefill_query_len = meta[4 : 4 + num_prefill_seqs]
-        seq_lens = meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_tokens]
-        seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_tokens]
-        prefill_seq_len = seq_lens[ : num_prefill_seqs]
+        prefill_query_lens = meta[4 : 4 + num_prefill_seqs]
+        seq_lens = meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+        seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+        prefill_seq_lens = seq_lens[ : num_prefill_seqs]
         decode_seq_lens = seq_lens[num_prefill_seqs : ]
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
         # [slot_mapping, block_table]
         num_elems = num_tokens + max_num_blocks * num_tokens
         
-        query_start_loc = make_seqlens_cuda_tensor(prefill_query_len)
+        query_start_loc = make_seqlens_cuda_tensor(prefill_query_lens)
         seq_start_loc = make_seqlens_cuda_tensor(seq_lens)
-        context_lens = [seq_len - que_len for seq_len, que_len in zip(prefill_seq_len, prefill_query_len)] + [seq_len - 1 for seq_len in decode_seq_lens]
+        context_lens = [seq_len - que_len for seq_len, que_len in zip(prefill_seq_lens, prefill_query_lens)] + [seq_len - 1 for seq_len in decode_seq_lens]
         context_lens_tensor = torch.IntTensor(context_lens).to("cuda", non_blocking=True)
         
-        max_query_len=torch.max(prefill_query_len).item() if prefill_query_len.numel() > 0 else 0
-        max_prefill_seq_len=torch.max(prefill_seq_len).item() if prefill_seq_len.numel() > 0 else 0
-        max_decode_seq_len=torch.max(decode_seq_lens).item() if decode_seq_lens.numel() > 0 else 0
+        max_query_len = max(prefill_query_lens) if len(prefill_query_lens) > 0 else 0
+        max_prefill_seq_len = max(prefill_seq_lens) if len(prefill_seq_lens) > 0 else 0
+        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
         self._wait_async_handles()
         
         bc_attn_meta = self.buffer_attn_meta[ : num_elems]
         dist.broadcast(bc_attn_meta, 0)
-        slot_mapping_cuda = bc_attn_meta[:num_tokens]
-        block_table_cuda = bc_attn_meta[num_tokens:].view(num_tokens, -1)
+        slot_mapping_cuda = bc_attn_meta[ : num_tokens]
+        block_table_cuda = bc_attn_meta[num_tokens : ].view(num_tokens, -1)
         
         return layer_id, input_tensor, FlashAttentionMetadata(
             num_prefill_seqs,
@@ -482,6 +486,7 @@ class Engine:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.zeros(num_tokens, dtype=torch.long).to("cuda", non_blocking=True)
+            # self._logger.info(f"executing attn {meta}")
             self.executor.execute(layer_id, positions, input_tensor, meta)
 
     @torch.inference_mode()
