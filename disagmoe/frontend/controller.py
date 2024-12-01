@@ -323,10 +323,10 @@ class Controller:
         return results
     
     def stop_workers(self):
-        self.stop_profile()
         self.end_flag = True
         tasks = [worker.terminate.remote() for worker in self.workers]
         ray.get(tasks)
+        self.stop_profile()
         
     def start_profile(self, profile_dir=None):
         self._profile_enabled = True

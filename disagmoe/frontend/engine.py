@@ -344,6 +344,9 @@ class Engine:
         dist.broadcast(self.buffer_meta, 0)
         meta = self.buffer_meta.tolist()
         layer_id = meta[0]
+        if layer_id == -1:
+            # terminated
+            return -1, None, None
         num_prefill_seqs = meta[1]
         num_prefill_tokens = meta[2]
         num_decode_tokens = meta[3]
@@ -484,6 +487,10 @@ class Engine:
         torch.cuda.set_stream(self.stream)
         while not self.end_flag:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
+            if layer_id == -1:
+                # terminated
+                self._logger.info("TP worker received termination signal, now exit")
+                break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.zeros(num_tokens, dtype=torch.long).to("cuda", non_blocking=True)
             # self._logger.info(f"executing attn {meta}")
@@ -507,6 +514,7 @@ class Engine:
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
             
+            
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
         if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
@@ -519,6 +527,12 @@ class Engine:
     
     def terminate(self):
         self.end_flag = True
+        if self._intra_group_tp_enabled and self.is_attn_driver:
+            # sending termination signal to TP workers
+            self._logger.info("TP driver sending termination signal to TP workers")
+            self.buffer_meta[0] = -1
+            torch.cuda.synchronize()
+            dist.broadcast(self.buffer_meta, 0)
         
     def get_node_ip(self) -> str:
         return get_ip()
