@@ -260,23 +260,49 @@ class Engine:
             decode_seq_lens: List[int]
         ) -> FlashAttentionMetadata:
         
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+        
         # 1. prepare block table
         block_table, slot_mapping = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
         block_table_cuda = torch.tensor(block_table, dtype=torch.int32, device="cuda")
         slot_mapping_cuda = torch.tensor(slot_mapping, dtype=torch.int64, device="cuda")
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         assert len(block_table) % num_tokens == 0
         
         # 2. prepare seqlens and start_locs
-        seq_lens = meta_py.prefill_seq_len + decode_seq_lens
-        seq_lens_cuda = torch.tensor(seq_lens, dtype=torch.int32, device="cuda")
+        # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
+        batch_infos = [0] * (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)) 
         
-        query_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_query_len)
-        seq_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_seq_len + decode_seq_lens)
-        context_lens = [seq_len - que_len for seq_len, que_len in zip(meta_py.prefill_seq_len, meta_py.prefill_query_len)] + \
-                [seq_len - 1 for seq_len in decode_seq_lens]
-        context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, device="cuda")
+        # make seq_lens
+        batch_infos[ : meta_py.num_prefill_seqs] = meta_py.prefill_seq_len
+        batch_infos[meta_py.num_prefill_seqs : num_seqs] = decode_seq_lens
+        seq_lens = batch_infos[ : num_seqs]
+        # seq_lens_cuda = torch.tensor(seq_lens, dtype=torch.int32, device="cuda")
         
+        # make context_lens
+        for i in range(meta_py.num_prefill_seqs):
+            batch_infos[num_seqs + i] = meta_py.prefill_seq_len[i] - meta_py.prefill_query_len[i]
+        for i in range(meta_py.num_decode_tokens):
+            batch_infos[num_seqs + meta_py.num_prefill_seqs + i] = decode_seq_lens[i] - 1
+            
+        # context_lens = [seq_len - que_len for seq_len, que_len in zip(meta_py.prefill_seq_len, meta_py.prefill_query_len)] + [seq_len - 1 for seq_len in decode_seq_lens]
+        # context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, device="cuda")
+        
+        # make query_start_loc
+        make_seqlens_list(meta_py.prefill_query_len, dst=batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])
+        # query_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_query_len)
+        
+        # make seq_start_loc
+        make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ])
+        # seq_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_seq_len + decode_seq_lens)
+        
+        batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
+        
+        seq_lens_cuda = batch_infos_cuda[ : num_seqs]
+        context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
+        query_start_loc = batch_infos_cuda[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1]
+        seq_start_loc = batch_infos_cuda[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ]
+
         max_query_len = max(meta_py.prefill_query_len) if len(meta_py.prefill_query_len) > 0 else 0
         max_prefill_seq_len = max(meta_py.prefill_seq_len) if len(meta_py.prefill_seq_len) > 0 else 0
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
