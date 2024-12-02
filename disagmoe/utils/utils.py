@@ -98,7 +98,7 @@ def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     seqlen = [0]
     for l in lens:
         seqlen.append(seqlen[-1] + l)
-    result = torch.IntTensor(seqlen).to("cuda", non_blocking=True)
+    result = torch.tensor(seqlen, dtype=torch.int32, device=lens.device)
     return result
 
 def make_seqlens_list(lens: Union[List[int], Tensor]) -> List[int]:
