@@ -106,7 +106,6 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             slo_stats[rid] = SloStat {rid, clock(), 0, {}};
         }
     }
-
     // Step 2. update metadata
     meta->layer_id = 0;
     Metadata new_meta = meta->at(continue_ids);
@@ -122,10 +121,10 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
     // DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
-
-    _send_once(TensorBatch{
-        torch_tensor_slice(tensor, continue_ids),
-        std::make_shared<Metadata>(new_meta)
+    if (continue_ids.size() > 0)
+        this->_send_once(TensorBatch{
+            torch_tensor_slice(tensor, continue_ids),
+            std::make_shared<Metadata>(new_meta)
     });
 
     // Step 4. sample tokens & marked finished

@@ -125,12 +125,17 @@ struct Metadata {
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0]), prefill_poss_(shape[0]);
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), prefill_poss_(shape[0], -1);
+
         for (size_t i = 0; i < ids.size(); i ++) {
             ASSERT (ids[i] < this->req_ids.size());
             req_ids_[i] = req_ids[ids[i]];
-            exp_ids_[i] = exp_ids[ids[i]];
-            prefill_poss_[i] = prefill_poss[ids[i]];
+            if (exp_ids.size() >= shape[0]) {
+                exp_ids_[i] = exp_ids[ids[i]];
+            }
+            if (prefill_poss.size() >= shape[0]) {
+                prefill_poss_[i] = prefill_poss[ids[i]];
+            }
         }
         return Metadata{
             shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_, this->prompt_lens
@@ -142,10 +147,6 @@ struct Metadata {
         archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, prompt_lens);
     }
 
-    size_t size() {
-        return sizeof(this);
-    }
-
     std::vector<int> get_expert_batch_sizes(int n_expert) {
         ASSERT(n_expert > 0);
         std::vector<int> batches(n_expert, 0);
@@ -155,7 +156,13 @@ struct Metadata {
     }
 
     TokenMetadata info_at(int i) const {
-        return TokenMetadata {req_ids[i], exp_ids[i], prefill_poss[i]};
+        int exp_id = -1;
+        if (exp_ids.size() > 0)
+            exp_id = exp_ids[i];
+        int prefill_pos = -1;
+        if (prefill_poss.size() > 0)
+            prefill_pos = prefill_poss[i];
+        return TokenMetadata {req_ids[i], exp_id, prefill_pos};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
@@ -167,7 +174,9 @@ struct Metadata {
             out << "), ";
 
             out << "layer_id=" << meta.layer_id << ", ";
-
+            out << "num_reqs=" << meta.req_ids.size() << ", ";
+            out << "size of exp_ids=" << meta.exp_ids.size() << ", ";
+            out << "size of prefill_poss=" << meta.prefill_poss.size() << ", ";
             out << "infos={";
             if (meta.req_ids.size() > 0) {
                 out << meta.info_at(0);

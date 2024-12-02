@@ -248,24 +248,34 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
-    std::vector<int> chans;
-    for (int req_id: meta->req_ids) {
-        chans.push_back(_get_attn_channel(req_id, layer_id));
-    }
 
-    auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
-        /*on_gpu=*/ !is_embedding_node(device_id));
-    // DMOE_LOG(DEBUG) << "grouped channels" << LEND;
+    // currently we only support #attn_replica=1
+    this->_send_batch(
+        _get_attn_channel(0, layer_id),
+        (uintptr_t)batch.data.data_ptr(),
+        *meta
+    );
 
-    for (auto &sub_batch: batches) {
-        auto &channel = std::get<0>(sub_batch);
-        auto &tensor = std::get<1>(sub_batch);
-        this->_send_batch(
-            channel,
-            (uintptr_t)tensor.data_ptr(),
-            std::get<2>(sub_batch)
-        );
-    }
+    // std::vector<int> chans;
+    // for (int req_id: meta->req_ids) {
+    //     chans.push_back(_get_attn_channel(req_id, layer_id));
+    // }
+
+    // std::cout << "send once: " << *meta << LEND;
+
+    // auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
+    //     /*on_gpu=*/ !is_embedding_node(device_id));
+    // // DMOE_LOG(DEBUG) << "grouped channels" << LEND;
+
+    // for (auto &sub_batch: batches) {
+    //     auto &channel = std::get<0>(sub_batch);
+    //     auto &tensor = std::get<1>(sub_batch);
+    //     this->_send_batch(
+    //         channel,
+    //         (uintptr_t)tensor.data_ptr(),
+    //         std::get<2>(sub_batch)
+    //     );
+    // }
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 

@@ -85,8 +85,7 @@ inline std::vector<std::tuple<T, torch::Tensor, Metadata>> group_by(
     const std::vector<T> &keys,
     bool on_gpu = true) {
 
-    std::map<T, std::vector<int>, T_COMP> ids;
-    ids.clear();
+    std::map<T, std::vector<int>, T_COMP> ids{};
 
     // DMOE_LOG(DEBUG) << "gather #keys=" << keys.size() << LEND;
     assert (keys.size() == metadata.req_ids.size());
@@ -103,7 +102,7 @@ inline std::vector<std::tuple<T, torch::Tensor, Metadata>> group_by(
     results.clear();
     for (auto &[key, grouped_ids]: ids) {
         // DMOE_LOG(DEBUG) << grouped_ids.size() << " #ids" << LEND;
-        Metadata sliced_meta = std::move(metadata.at(grouped_ids));
+        Metadata sliced_meta = metadata.at(grouped_ids);
         auto sliced_tensor = torch_tensor_slice(tensor, grouped_ids);
         results.push_back(std::make_tuple(
             key, 
