@@ -77,19 +77,23 @@ class Engine:
     
     @property
     def is_attn_driver(self):
-        return self.is_attn and self.rank_in_group == 0
+        return self.is_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
     
     @property
     def is_attn_worker(self):
-        return self.is_attn and (not self.is_attn_driver)
+        return self._intra_group_tp_enabled and self.rank_in_group > 0
+    
+    @property
+    def _tp_enabled(self):
+        return self.is_attn and self.model_config.tp_size > 1
     
     @property
     def _inter_group_tp_enabled(self):
-        return self.is_attn and self.model_config.tp_size > 1 and self.model_config.tp_enable_inter_group
+        return self._tp_enabled and self.model_config.tp_enable_inter_group
     
     @property
     def _intra_group_tp_enabled(self):
-        return self.is_attn and self.model_config.tp_size > 1 and (not self.model_config.tp_enable_inter_group)
+        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
         
     def init_core(
             self,
