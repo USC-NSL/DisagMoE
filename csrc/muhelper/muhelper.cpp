@@ -587,7 +587,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     // for a simple case we consider prefill sequences can only have 1 token,
     // so all sequences in tensor are complete and can be scheduled immediately
 
-    // TODO: deal with incomplete prefill sequences
+    // TODO: support prefill length larger than 1, and maybe deal with chunked prefill
 
     auto shape = meta->shape;
     auto dtype = meta->dtype;

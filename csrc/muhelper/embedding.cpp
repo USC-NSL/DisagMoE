@@ -190,7 +190,6 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
         /*prefill_pos=*/ {0},
-        /*prompt_lens=*/ {}
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }

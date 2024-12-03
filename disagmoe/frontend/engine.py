@@ -478,10 +478,7 @@ class Engine:
         
         # self._logger.info(f"process batch expert {meta_c.req_ids}")
         
-        exp_mappings, exp_cnt = get_mappings_from_exp_ids(meta_c.exp_ids, self.model_config.num_experts)
-        permuted_tensor = permute_tokens(input_tensor, exp_mappings)
-        meta_c.permute_token_infos(exp_mappings)
-        
+        # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.tensor(
@@ -491,7 +488,7 @@ class Engine:
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
-        output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
+        output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
