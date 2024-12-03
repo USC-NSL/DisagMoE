@@ -50,7 +50,7 @@ class RequestIDGenerator:
 
 class Controller:
     
-    def __init__(self, n_node: int, n_gpu_per_node: int):
+    def __init__(self, n_node: int, n_gpu_per_node: int, enable_nsys=False):
         # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
@@ -67,6 +67,7 @@ class Controller:
         self.end_flag = False
         self.request_results: Dict[int, AsyncResult] = dict()
         self.is_polling = False
+        self.enable_nsys = enable_nsys
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -93,14 +94,17 @@ class Controller:
             if n_cpus != 0:
                 worker_cls = TokenizerEngine if self.tokenizer_worker is None else SamplerEngine
                 
+            workers_env= {
+                "env_vars": ENV_VARS,
+            }
+            if self.enable_nsys:
+                workers_env["nsight"] = "default"
+                
             worker = ray.remote(
                 num_cpus=n_cpus,
                 num_gpus=n_gpus,
                 scheduling_strategy=ray_scheduling_strategy,
-                runtime_env={
-                    "env_vars": ENV_VARS,
-                    # "nsight": "default"
-                },
+                runtime_env=workers_env,
             )(worker_cls).remote()
             
             if n_cpus != 0:
