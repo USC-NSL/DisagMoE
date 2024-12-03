@@ -227,12 +227,6 @@ struct Metadata {
                 idx ++;
             }
         }
-
-        std::cout << "mappings: ";
-        for (auto &m: mappings) {
-            std::cout << m << " ";
-        }
-        std::cout << std::endl;
         return std::make_shared<Metadata>(Metadata {
             shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
         });
