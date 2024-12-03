@@ -231,7 +231,7 @@ class Engine:
     def _add_async_handle(self, handle):
         self.handles.append(handle)
         
-    @nvtx_range("engine.update_decode_seq_lens")
+    @nvtx_range("engine._update_block_table")
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
         prefill_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs : ]
@@ -264,10 +264,9 @@ class Engine:
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
         
         # 1. prepare block table
-        block_table, slot_mapping = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-        block_table_cuda = torch.tensor(block_table, dtype=torch.int32, device="cuda")
-        slot_mapping_cuda = torch.tensor(slot_mapping, dtype=torch.int64, device="cuda")
-        assert len(block_table) % num_tokens == 0
+        block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
+        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
+        slot_mapping_cuda = block_table_1d[-num_seqs : ]
         
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
@@ -277,7 +276,6 @@ class Engine:
         batch_infos[ : meta_py.num_prefill_seqs] = meta_py.prefill_seq_len
         batch_infos[meta_py.num_prefill_seqs : num_seqs] = decode_seq_lens
         seq_lens = batch_infos[ : num_seqs]
-        # seq_lens_cuda = torch.tensor(seq_lens, dtype=torch.int32, device="cuda")
         
         # make context_lens
         for i in range(meta_py.num_prefill_seqs):
@@ -285,17 +283,12 @@ class Engine:
         for i in range(meta_py.num_decode_tokens):
             batch_infos[num_seqs + meta_py.num_prefill_seqs + i] = decode_seq_lens[i] - 1
             
-        # context_lens = [seq_len - que_len for seq_len, que_len in zip(meta_py.prefill_seq_len, meta_py.prefill_query_len)] + [seq_len - 1 for seq_len in decode_seq_lens]
-        # context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, device="cuda")
-        
         # make query_start_loc
         make_seqlens_list(meta_py.prefill_query_len, dst=batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])
-        # query_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_query_len)
-        
+
         # make seq_start_loc
         make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ])
-        # seq_start_loc = make_seqlens_cuda_tensor(meta_py.prefill_seq_len + decode_seq_lens)
-        
+
         batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
         
         seq_lens_cuda = batch_infos_cuda[ : num_seqs]
@@ -307,11 +300,14 @@ class Engine:
         max_prefill_seq_len = max(meta_py.prefill_seq_len) if len(meta_py.prefill_seq_len) > 0 else 0
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
+        max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
+        assert max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
+        
         return FlashAttentionMetadata(
             meta_py.num_prefill_seqs,
             meta_py.num_prefill_tokens,
             meta_py.num_decode_tokens,
-            slot_mapping_cuda,
+            slot_mapping_cuda.to(torch.int64),
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=max_query_len,
@@ -348,10 +344,7 @@ class Engine:
             self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
             
         attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
-        
-        max_num_blocks = (max(attn_meta.seq_lens) - 1) // self.cache_config.block_size + 1
-        assert max_num_blocks == attn_meta.block_tables.shape[-1], "block table wrong"
-        
+
         if self._intra_group_tp_enabled:
             self._wait_async_handles()
             

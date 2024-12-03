@@ -135,7 +135,7 @@ void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<in
 }
 
 
-std::pair<std::vector<int>, std::vector<int>> BlockManager::prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
     AUTO_TX_RANGE;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
@@ -147,7 +147,7 @@ std::pair<std::vector<int>, std::vector<int>> BlockManager::prepare_block_table(
         block_list_t list = get_seq_block_list(id);
         m = std::max(m, list->size());
     }
-    std::vector<int> block_table_1d(n * m, -1);
+    std::vector<int> block_table_1d(n * m + n, -1);
     for (int i = 0; i < n; i++) {
         int id = meta->seq_ids[i];
         block_list_t list = get_seq_block_list(id);
@@ -159,14 +159,14 @@ std::pair<std::vector<int>, std::vector<int>> BlockManager::prepare_block_table(
     int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
 
     std::vector<int> slot_mapping(tokens_in_batch, -1);
-    int slot_idx = 0;
+    int slot_idx = n * m;
     for (int i = 0; i < meta->num_prefill_seqs; i++) {
         int q_len = meta->prefill_query_len[i];
         int seq_len = meta->prefill_seq_len[i];
         for (int idx = seq_len - q_len; idx < seq_len; idx++) {
             int block_id = idx / block_size_;
             int id_in_block = idx % block_size_;
-            slot_mapping[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
+            block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
             slot_idx ++;
         }
     }
@@ -174,9 +174,9 @@ std::pair<std::vector<int>, std::vector<int>> BlockManager::prepare_block_table(
         int last_idx = decode_seq_lens[i - meta->num_prefill_tokens] - 1; // decode_index should be decode_lens - 1
         int block_id = last_idx / block_size_;
         int id_in_block = last_idx % block_size_;
-        slot_mapping[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
+        block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
         slot_idx ++;
     }
 
-    return std::make_pair(block_table_1d, slot_mapping);
+    return torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
 }

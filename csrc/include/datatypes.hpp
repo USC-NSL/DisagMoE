@@ -340,10 +340,7 @@ struct TensorBatch {
         }
 
         std::vector<int> mappings{};
-        {
-            tx_range _{"TensorBatch::merge::merge_metadata_by_exp_ids"};
-            auto meta = Metadata::merge_by_exp_ids(metas, mappings);
-        }
+        auto meta = Metadata::merge_by_exp_ids(metas, mappings);
 
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
@@ -525,10 +522,7 @@ struct AttentionBatch {
             metas[i] = batches[i].metadata;
         }
         
-        {
-            tx_range _{"AttentionBatch::merge::merge_metadata"};
-            auto meta = AttentionBatchMetadata::merge(metas);
-        }
+        auto meta = AttentionBatchMetadata::merge(metas);
 
         int prefill_data_size = meta->prefill_data_size();
         int decode_data_size = meta->decode_data_size();

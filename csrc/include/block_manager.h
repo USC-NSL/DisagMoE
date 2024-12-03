@@ -54,7 +54,7 @@ public:
 
     void update_block_table(attn_metadata_t meta, const std::vector<int> &context_lens);
 
-    std::pair<std::vector<int>, std::vector<int>> prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    torch::Tensor prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
