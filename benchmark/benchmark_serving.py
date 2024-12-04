@@ -60,7 +60,7 @@ def launch(args):
 
     global master
 
-    master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
+    master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
     cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                                 num_gpu_blocks=NUM_BLOCKS, 

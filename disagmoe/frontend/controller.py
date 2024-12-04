@@ -346,7 +346,7 @@ class Controller:
 controller: Controller
 
 
-def init_controller(n_node: int, n_gpu_per_node: int):
+def init_controller(n_node: int, n_gpu_per_node: int, enable_nsys=False):
     global controller
-    controller = Controller(n_node, n_gpu_per_node)
+    controller = Controller(n_node, n_gpu_per_node, enable_nsys)
     return controller

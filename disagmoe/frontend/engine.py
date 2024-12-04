@@ -477,7 +477,7 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            device="cuda",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
