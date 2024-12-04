@@ -101,12 +101,20 @@ def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     result = torch.tensor(seqlen, dtype=torch.int32, device=lens.device)
     return result
 
-def make_seqlens_list(lens: Union[List[int], Tensor]) -> List[int]:
+def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()
-    if len(lens) == 0:
+    n = len(lens)
+    
+    if n == 0:
         return None
-    seqlen = [0]
-    for l in lens:
-        seqlen.append(seqlen[-1] + l)
-    return seqlen
+    
+    if dst is None:
+        dst = [0] * (n + 1)
+    else:    
+        assert len(dst) == n + 1
+    
+    dst[0] = 0
+    for i in range(n):
+        dst[i+1] = dst[i] + lens[i]
+    return dst

@@ -85,8 +85,7 @@ struct Metadata {
     std::vector<int> exp_ids;
     // std::vector<int> first_attn_ids;
     std::vector<int> prefill_poss;
-    std::map<int, int> prompt_lens;
-
+ 
     inline size_t num_element() const {
         size_t res = 1;
         for (size_t s: this->shape)
@@ -118,32 +117,32 @@ struct Metadata {
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
             slice_vector(prefill_poss, l, r),
-            this->prompt_lens
         };
     }
 
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0]), prefill_poss_(shape[0]);
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), prefill_poss_(shape[0], -1);
+
         for (size_t i = 0; i < ids.size(); i ++) {
             ASSERT (ids[i] < this->req_ids.size());
             req_ids_[i] = req_ids[ids[i]];
-            exp_ids_[i] = exp_ids[ids[i]];
-            prefill_poss_[i] = prefill_poss[ids[i]];
+            if (exp_ids.size() >= shape[0]) {
+                exp_ids_[i] = exp_ids[ids[i]];
+            }
+            if (prefill_poss.size() >= shape[0]) {
+                prefill_poss_[i] = prefill_poss[ids[i]];
+            }
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_, this->prompt_lens
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_
         };
     }
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, prompt_lens);
-    }
-
-    size_t size() {
-        return sizeof(this);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -155,7 +154,13 @@ struct Metadata {
     }
 
     TokenMetadata info_at(int i) const {
-        return TokenMetadata {req_ids[i], exp_ids[i], prefill_poss[i]};
+        int exp_id = -1;
+        if (exp_ids.size() > 0)
+            exp_id = exp_ids[i];
+        int prefill_pos = -1;
+        if (prefill_poss.size() > 0)
+            prefill_pos = prefill_poss[i];
+        return TokenMetadata {req_ids[i], exp_id, prefill_pos};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
@@ -167,7 +172,9 @@ struct Metadata {
             out << "), ";
 
             out << "layer_id=" << meta.layer_id << ", ";
-
+            out << "num_reqs=" << meta.req_ids.size() << ", ";
+            out << "size of exp_ids=" << meta.exp_ids.size() << ", ";
+            out << "size of prefill_poss=" << meta.prefill_poss.size() << ", ";
             out << "infos={";
             if (meta.req_ids.size() > 0) {
                 out << meta.info_at(0);
@@ -180,6 +187,52 @@ struct Metadata {
         return out;
     }
 
+    static metadata_t merge_by_exp_ids(const std::vector<metadata_t> &metas, std::vector<int> &mappings) {
+        AUTO_TX_RANGE;
+
+        constexpr int MAX_NUM_EXPERTS = 32;
+        std::vector<size_t> shape = metas[0]->shape;
+        auto dtype = metas[0]->dtype;
+        auto layer_id = metas[0]->layer_id;
+
+        int total_tokens = 0;
+        for (auto &meta: metas) {
+            total_tokens += meta->num_tokens();
+        }
+        shape[0] = total_tokens;
+        std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), prefill_poss(total_tokens);
+
+        std::vector<int> exp_cnts(MAX_NUM_EXPERTS, 0);
+        for (auto &meta: metas) {
+            ASSERT (meta->num_tokens() == meta->exp_ids.size());
+            for (auto &eid: meta->exp_ids) {
+                exp_cnts[eid] ++;
+            }
+        }
+        // get prefix sum of exp_cnts
+        for (int i = 1; i < MAX_NUM_EXPERTS; i ++) {
+            exp_cnts[i] += exp_cnts[i - 1];
+        }
+
+        mappings.resize(total_tokens);
+        int idx = 0;
+        for (auto &meta: metas) {
+            for (int i = 0; i < meta->num_tokens(); i ++) {
+                exp_cnts[meta->exp_ids[i]] --;
+                int j = exp_cnts[meta->exp_ids[i]];
+                mappings[idx] = j; // tokens[i] = tokens[mapping[i]]
+                req_ids[j] = meta->req_ids[i];
+                exp_ids[j] = meta->exp_ids[i];
+                prefill_poss[j] = meta->prefill_poss[i];
+                idx ++;
+            }
+        }
+        return std::make_shared<Metadata>(Metadata {
+            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
+        });
+    }
+
+    // NOTE: if exp_ids exists, merge by exp_ids; else merge by default order
     static metadata_t merge(const std::vector<metadata_t> &metas) {
         AUTO_TX_RANGE;
 
@@ -199,19 +252,15 @@ struct Metadata {
         exp_ids.reserve(total_tokens);
         prefill_poss.reserve(total_tokens);
 
-        std::map<int, int> prompt_lens;
-
         for (size_t i = 0; i < metas.size(); i ++) {
             auto meta = metas[i];
             extend(req_ids, meta->req_ids);
             extend(exp_ids, meta->exp_ids);
             extend(prefill_poss, meta->prefill_poss);
-            for (auto &[k, v]: meta->prompt_lens)
-                prompt_lens[k] = v;
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, prompt_lens
+            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
         });
     }
 
@@ -270,6 +319,7 @@ struct TensorBatch {
     torch::Tensor data;
     metadata_t metadata;
 
+    // NOTE: merge by exp_ids, this function is only called in expert worker
     static TensorBatch merge(const std::vector<TensorBatch>& batches) {
         AUTO_TX_RANGE;
 
@@ -282,25 +332,14 @@ struct TensorBatch {
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
         }
-        auto meta = Metadata::merge(metas);
+
+        std::vector<int> mappings{};
+        auto meta = Metadata::merge_by_exp_ids(metas, mappings);
 
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
-
-        // Option 1. use cudaMemcpy
-        // auto dtype = meta->get_datatype_size();
-        // void* buf = tensor.data_ptr();
-        // void* ptr = buf;
-        // for (auto &batch: batches) {
-        //     auto size = batch.metadata->num_element() * dtype;
-        //     cudaMemcpy((void*) ptr, (void*) batch.data.data_ptr(), size, 
-        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-        //     ptr += size;
-        // }
-
-        // Option 2. use gather cuda kernel
 
         std::vector<uintptr_t> srcs(meta->num_tokens());
 
@@ -312,7 +351,7 @@ struct TensorBatch {
             for (auto &batch: batches) {
                 uintptr_t cur_ptr = (uintptr_t) batch.data.data_ptr();
                 for (int i = 0; i < batch.metadata->num_tokens(); i ++) {
-                    srcs[idx] = cur_ptr;
+                    srcs[mappings[idx]] = cur_ptr;
                     cur_ptr += hidden_size_bytes;
                     idx ++;
                 }
@@ -453,7 +492,7 @@ struct AttentionBatchMetadata {
         }
         
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids_, {}, prefill_poss_, {}
+            shape, dtype, layer_id, req_ids_, {}, prefill_poss_
         });
     }
 };
@@ -476,6 +515,7 @@ struct AttentionBatch {
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
         }
+        
         auto meta = AttentionBatchMetadata::merge(metas);
 
         int prefill_data_size = meta->prefill_data_size();
@@ -486,29 +526,6 @@ struct AttentionBatch {
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
 
-        // Option 1. use cudaMemcpy
-        // void * buf = tensor.data_ptr();
-        
-        // uintptr_t buf = alloc_cuda_tensor((prefill_data_size + decode_data_size) / meta->get_datatype_size(), 0, sizeof(short), stream);
-        
-        // void* prefill_ptr = (void *)buf;
-        // void* decode_ptr = prefill_ptr + prefill_data_size;
-        // for (auto &batch: batches) {
-        //     int prefill_copy_size = batch.metadata->prefill_data_size();
-        //     int decode_copy_size = batch.metadata->decode_data_size();
-        //     cudaMemcpyAsync(prefill_ptr, (void *)batch.data, prefill_copy_size, 
-        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
-
-        //     cudaMemcpyAsync(decode_ptr, (void *)batch.data + prefill_copy_size, decode_copy_size,
-        //         cudaMemcpyKind::cudaMemcpyDeviceToDevice, stream);
-        //     prefill_ptr += prefill_copy_size;
-        //     decode_ptr += decode_copy_size;
-        //     free_cuda_tensor((void *) batch.data, stream);
-        // }
-        
-        // cudaStreamSynchronize(stream);
-
-        // Option 2. use gather cuda kernel
         int prefill_idx = 0;
         int decode_idx = meta->num_prefill_tokens;
 

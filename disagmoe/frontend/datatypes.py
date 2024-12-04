@@ -26,7 +26,6 @@ class Metadata:
     req_ids: List[int]
     exp_ids: List[int]
     prefill_poss: List[int]
-    prompt_lens: Dict[int, int]
 
     def step_layer(self) -> None:
         ...
@@ -44,6 +43,18 @@ class Metadata:
 
     def sort_by_prefill_order(self) -> List[int]:
         ...
+        
+    @staticmethod
+    def from_c(meta_c: "Metadata_C") -> "Metadata":
+        return Metadata(
+            meta_c.shape,
+            meta_c.dtype,
+            meta_c.layer_id,
+            meta_c.req_ids,
+            meta_c.exp_ids,
+            meta_c.prefill_poss
+        )
+    
 
 @dataclass
 class TensorBatch:

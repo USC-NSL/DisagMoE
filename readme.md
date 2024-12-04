@@ -1,6 +1,25 @@
 # Disag MoE
 
+## Third party
+See `.gitmodules`.
+
+* cereal
+* cppzmq/libzmq
+* nvtx
+
+
 ## Install
+
+### Build grouped_gemm
+
+CUDA 12.4 is required for grouped_gemm compilation.
+
+```bash
+git clone https://github.com/tgale96/grouped_gemm.git
+TORCH_CUDA_ARCH_LIST=8.0 GROUPED_GEMM_CUTLASS=1 pip install .
+```
+
+### Build Disag-MoE
 
 ```bash
 conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 pytorch-cuda=12.1 -c pytorch -c nvidia
@@ -10,13 +29,6 @@ git submodule update --init
 pip install -r requirements.txt
 pip install .
 ```
-
-## Third party
-See `.gitmodules`.
-
-* cereal
-* cppzmq/libzmq
-* nvtx
 
 ## Tests
 
