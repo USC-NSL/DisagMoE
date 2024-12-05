@@ -14,8 +14,8 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta
-from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel
+from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta, make_prefill_meta, CudaGraphContext
+from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
@@ -161,7 +161,11 @@ class Engine:
                                         world_size=len(self.device_group_ids), 
                                         rank=self.model_config.rank,
                                         init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
-            
+        
+        if self.model_config.enable_cuda_graph and self.engine_type not in [EngineType.TOKENIZER, EngineType.SAMPLER]:
+            self._create_cuda_graph_contexts()
+            self._cuda_graph_warmup()
+        
         self._logger.info("core launched")
         
     def _switch_scheduler(self):
@@ -224,31 +228,60 @@ class Engine:
         
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
+    def _create_cuda_graph_contexts(self):
+        assert self.model_config.enable_cuda_graph
+        self.cuda_graph_contexts: List[CudaGraphContext] = []
+        self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
+        self.static_output = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
+        if self.is_attn:
+            self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
+            self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long).to("cuda", non_blocking=True)
+        else:
+            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long).to("cpu")
+            
+        for i in range(self.model_config.num_layers):
+            ctx = CudaGraphContext(
+                torch.cuda.CUDAGraph(),
+            )
+            self.cuda_graph_contexts.append(ctx)
+
     def _create_buffers(self):
         self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
         self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
         self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
         self.buffer_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
         self.buffer_block_table = torch.zeros((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32).to("cuda", non_blocking=True)
-        
-        if self.model_config.enable_cuda_graph:
-            self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
-            if self.is_attn:
-                self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
-            else:
-                self.static_expert_mappings = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
 
-    def _warmup(self):
+    def _cuda_graph_warmup(self):
         if self.is_attn:
             self._warmup_attn()
         else:
             self._warmup_expert()
 
     def _warmup_attn(self):
-        pass
+        meta = make_prefill_meta(MAX_BATCH_SIZE, self.cache_config.block_size)
+        # warmup for CUBLAS
+        self.static_output, self.static_expert_ids = self.executor.execute(
+            0, self.static_positions, self.static_input, meta)
+        if self.model_config.tp_size > 1:
+            group_sync()
+            
+        for layer_id in range(self.model_config.num_layers):
+            self._logger.info(f"CUDA Graph warmuping layer {layer_id}")
+            ctx = self.cuda_graph_contexts[layer_id]
+            with torch.cuda.graph(ctx.graph):
+                self.static_output, self.static_expert_ids = self.executor.execute(
+                    layer_id, self.static_positions, self.static_input, meta)
+            torch.cuda.synchronize()
     
     def _warmup_expert(self):
-        pass
+        self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
+        
+        for layer_id in range(self.model_config.num_layers):
+            self._logger.info(f"CUDA Graph warmuping layer {layer_id}")
+            ctx = self.cuda_graph_contexts[layer_id]
+            with torch.cuda.graph(ctx.graph):
+                self.static_output = self.executor.execute(layer_id, self.static_input, self.static_batch_sizes)
 
     @nvtx_range("engine.pack_flash_attn_metadata")
     def _pack_flash_attn_metadata(
@@ -370,9 +403,20 @@ class Engine:
         
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
-        hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
+        if not self.model_config.enable_cuda_graph:
+            hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, tensor, attn_meta)
+        else:
+            num_tokens = tensor.shape[0]
+            self.static_input[:num_tokens].copy_(tensor)
+            self.static_input[num_tokens:].fill_(0)
+            self.cuda_graph_contexts[meta_c.layer_id].graph.replay()
+            hiddens = self.static_output[:num_tokens]
+            expert_ids = self.static_expert_ids[:num_tokens]
+            
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
+        
+        # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
         
@@ -405,8 +449,17 @@ class Engine:
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
+        torch.cuda.synchronize()
         # self._logger.info(f"executing expert {meta_c.req_ids}")
-        output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
+        if not self.model_config.enable_cuda_graph:
+            output = self.executor.execute(meta_c.layer_id, permuted_tensor, batch_sizes)
+        else:
+            num_tokens = tensor.shape[0]
+            self.static_input[:num_tokens].copy_(permuted_tensor)
+            self.static_input[num_tokens:].fill_(0)
+            self.static_batch_sizes.copy_(batch_sizes)
+            self.cuda_graph_contexts[meta_c.layer_id].graph.replay()
+            output = self.static_output[:num_tokens]
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)

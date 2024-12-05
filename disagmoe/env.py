@@ -9,7 +9,7 @@ _env_vars = {
     "CUDA_DEVICE_MAX_CONNECTIONS": "",
     "MASTER_ADDR": "localhost",
     "MASTER_PORT": "26500",
-    "NCCL_BLOCKING_WAIT": "",
+    "NCCL_BLOCKING_WAIT": "1",
 }
 
 ENV_VARS = {
