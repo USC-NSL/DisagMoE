@@ -61,11 +61,11 @@ __global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const in
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    permute_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src, mappings, hidden_size); \
+    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, hidden_size); \
 } while(0)
     
 template <class T>
-void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_tokens, int hidden_size) {
+void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_tokens, int hidden_size, cudaStream_t stream) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
@@ -79,8 +79,10 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_tokens, int hi
     }
 }
 
-torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings) {
+torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings, uintptr_t raw_cuda_stream) {
     AUTO_TX_RANGE;
+
+    cudaStream_t stream = (cudaStream_t) raw_cuda_stream;
 
     assert(tokens.dim() == 2);
     assert(mappings.dim() == 1);
@@ -90,9 +92,14 @@ torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings) 
     int hidden_size = tokens.size(1);
 
     torch::Tensor out = torch::empty_like(tokens);
+
+    // torch::cuda::synchronize(); // "cuda illegal memory access" without this line, seems to in a different stream with pytorch
    
     AT_DISPATCH_REDUCED_FLOATING_TYPES(tokens.scalar_type(), "permute_tokens_cuda", [&] {
-        _permute_tokens_cuda<scalar_t>(out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), num_tokens, hidden_size);
+        _permute_tokens_cuda<scalar_t>(
+            out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
+            num_tokens, hidden_size, stream
+        );
     });
 
     return out;

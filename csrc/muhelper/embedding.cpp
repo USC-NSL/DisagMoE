@@ -82,6 +82,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     for (int i = 0; i < meta->req_ids.size(); i ++) {
         int rid = meta->req_ids[i];
         output_lens[rid] ++;
+        this->_active_token_count ++;
 
         if (meta->prefill_poss[i] == -1) {
             // at decode phase
@@ -94,6 +95,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Finished, end.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
+                this->_active_token_count -= output_lens[rid];
                 // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                 //           << output_lens[rid] << " tokens." << LEND;
             }
@@ -104,7 +106,6 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             slo_stats[rid] = SloStat {rid, clock(), 0, {}};
         }
     }
-
     // Step 2. update metadata
     meta->layer_id = 0;
     Metadata new_meta = meta->at(continue_ids);
@@ -120,10 +121,10 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     // Step 3. send batches
     // TODO(hogura|20241007): attention id control
     // DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
-
-    _send_once(TensorBatch{
-        torch_tensor_slice(tensor, continue_ids),
-        std::make_shared<Metadata>(new_meta)
+    if (continue_ids.size() > 0)
+        this->_send_once(TensorBatch{
+            torch_tensor_slice(tensor, continue_ids),
+            std::make_shared<Metadata>(new_meta)
     });
 
     // Step 4. sample tokens & marked finished
@@ -137,7 +138,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    // DMOE_LOG(INFO) << "sampler processed one batch" << LEND;
+    DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
 
 std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
@@ -189,7 +190,6 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
         /*prefill_pos=*/ {0},
-        /*prompt_lens=*/ {}
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }

@@ -26,7 +26,7 @@ private:
 
     std::unordered_map<int , block_list_t> block_tables_{};
 
-    int get_one_block(); 
+    int get_one_free_block(); 
 
 public:
 
@@ -52,9 +52,9 @@ public:
 
     void append_tokens(int seq_id, int context_len, int num_tokens);
 
-    void update_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    void update_block_table(attn_metadata_t meta, const std::vector<int> &context_lens);
 
-    std::pair<std::vector<int>, std::vector<int>> prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    torch::Tensor prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;

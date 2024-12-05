@@ -362,7 +362,6 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
             /*req_ids=*/ std::vector<int>({2}),
             /*exp_ids=*/ std::vector<int>({3}),
             /*prefill_poss=*/ std::vector<int>({4}),
-            /*prompt_lens=*/ std::map<int, int>(),
         };
         uintptr_t buf = alloc_cuda_tensor(4, 0);
         c->send_metadata(meta);
@@ -460,7 +459,6 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                             /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
                             /*exp_ids=*/ std::vector<int>({3}),
                             /*prefill_poss=*/ std::vector<int>({4}),
-                            /*prompt_lens=*/ std::map<int, int>(),
                         });
                         DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
                         std::this_thread::sleep_for(std::chrono::milliseconds(10000));
@@ -471,7 +469,6 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                         //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
                         //     /*exp_ids=*/ std::vector<int>({3}),
                         //     /*prefill_poss=*/ std::vector<int>({4}),
-                        //     /*prompt_lens=*/ std::map<int, int>(),
                         // });
                     } else {
                         Metadata meta;

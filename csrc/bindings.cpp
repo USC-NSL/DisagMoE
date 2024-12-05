@@ -32,7 +32,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
         .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
-        // .def("prepare_block_table", &AttentionScheduler::prepare_block_table_by_meta)
         .def("schedule", &AttentionScheduler::schedule)
         .def("get_channel", &AttentionScheduler::get_channel);
 
@@ -102,7 +101,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("req_ids", &Metadata::req_ids)
         .def_readwrite("exp_ids", &Metadata::exp_ids)
         .def_readwrite("prefill_poss", &Metadata::prefill_poss)
-        .def_readwrite("prompt_lens", &Metadata::prompt_lens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)

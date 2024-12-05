@@ -28,6 +28,8 @@ protected:
 
     std::mutex result_lock;
 
+    int _active_token_count = 0;
+
     void run() override;
 
     int _get_attn_channel(int req_id, int layer_id) override;

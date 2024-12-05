@@ -1,7 +1,7 @@
 from disagmoe.frontend.controller import init_controller, Controller, AsyncResult
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral
+from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
@@ -61,15 +61,21 @@ def launch(args):
 
     global master
 
-    master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
+    master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
     cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
                                 num_gpu_blocks=NUM_BLOCKS, 
                                 num_reserved_blocks=RESERVED_BLOCKS)
 
-    master.init_engine(mp, model_config, cache_config, args.output_len)
+    sampling_config = SamplingConfig(max_output_len=args.output_len)
+    
+    master.init_engine(mp, model_config, cache_config, sampling_config)
+    
+    if args.profile_dir is not None:
+        master.start_profile(args.profile_dir)
 
     master.start_engine()
+    
    
 async def process_response(resp: AsyncResult, pbar):
     slo_stat = await resp.get()
@@ -135,12 +141,18 @@ async def benchmark_serving(args):
 def get_args():
     parser = ArgumentParser()
     
-    parser.add_argument("-r", "--rate", type=float, default=0.1, help="rate of incoming requests, seconds per request")
+    parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
     parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
+    parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
+    parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     
     args = parser.parse_args()
+    
+    if args.nsys:
+        assert args.profile_dir is None, "cannot enable both nsys and torch profiler"
+        
     return args
 
 def main():
