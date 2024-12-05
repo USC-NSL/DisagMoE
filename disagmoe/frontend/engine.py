@@ -517,6 +517,7 @@ class Engine:
             hiddens = self.static_output[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
             
+        torch.cuda.synchronize()
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
         
@@ -547,7 +548,7 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cuda",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
         torch.cuda.synchronize()
