@@ -11,7 +11,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat)
 from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid, make_seqlens_cuda_tensor, make_seqlens_list
+from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid, make_seqlens_cuda_tensor, make_seqlens_list, CUDATimer, CPUTimer
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta
@@ -429,11 +429,7 @@ class Engine:
                            input_tensor: Tensor,
                            mocking: bool = False) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
-        
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
-        
-        # TODO(hogura|20241014): fill the real positions
-        positions = torch.zeros(input_tensor.shape[0], dtype=torch.long, device="cuda")
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
@@ -446,6 +442,8 @@ class Engine:
         
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
+        # TODO(hogura|20241014): fill the real positions
+        positions = torch.zeros(input_tensor.shape[0], dtype=torch.long, device="cuda")
         # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
         hiddens, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)

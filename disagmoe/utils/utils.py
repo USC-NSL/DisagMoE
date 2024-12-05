@@ -2,12 +2,14 @@ import os
 import torch
 import ctypes
 import socket
+import time
 
 from disagmoe.utils.logger import get_logger
 
 from torch import Tensor
 from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
+
 
 def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
@@ -118,3 +120,40 @@ def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
     for i in range(n):
         dst[i+1] = dst[i] + lens[i]
     return dst
+
+
+class CUDATimer:
+    def __init__(self, name: str, enable=True):
+        self.name = name
+        self.enable = enable
+        
+    def __enter__(self):
+        if self.enable:
+            self.start = torch.cuda.Event(enable_timing=True)
+            self.end = torch.cuda.Event(enable_timing=True)
+            self.start.record()
+        return self
+    
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if not self.enable:
+            return
+        self.end.record()
+        torch.cuda.synchronize()
+        print(f"{self.name} took {self.start.elapsed_time(self.end) * 1000:.1f} us")
+
+
+class CPUTimer:
+    def __init__(self, name: str, enable=True):
+        self.name = name
+        self.enable = enable
+        
+    def __enter__(self):
+        if self.enable:
+            self.start = time.time()
+        return self
+    
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if not self.enable:
+            return
+        self.end = time.time()
+        print(f"{self.name} took {(self.end - self.start) * (10 ** 6):.1f} us")
