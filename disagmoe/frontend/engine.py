@@ -11,10 +11,11 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat)
 from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid, make_seqlens_cuda_tensor, make_seqlens_list
+from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid, make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.utils import pack_flash_attn_meta, unpack_flash_attn_meta, make_prefill_meta, CudaGraphContext
+from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
+                                   make_prefill_meta, make_dummy_meta, CudaGraphContext)
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -221,20 +222,27 @@ class Engine:
 
     def _create_cuda_graph_contexts(self):
         assert self.model_config.enable_cuda_graph
-        self.cuda_graph_contexts: List[CudaGraphContext] = []
+        self.graphs: List[List[torch.cuda.CUDAGraph]] = []
         self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
         self.static_output = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
         if self.is_attn:
             self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
             self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long).to("cuda", non_blocking=True)
+            self.static_block_table = torch.zeros(
+                (MAX_BATCH_SIZE, self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks), 
+                dtype=torch.int32).to("cuda", non_blocking=True)
+            self.static_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
+            self.static_batch_infos = torch.zeros(
+                # (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)), 
+                (MAX_BATCH_SIZE + MAX_BATCH_SIZE + (MAX_BATCH_SIZE + 1) + (MAX_BATCH_SIZE + 1)), 
+                dtype=torch.int32).to("cuda", non_blocking=True)
         else:
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long).to("cpu")
             
         for i in range(self.model_config.num_layers):
-            ctx = CudaGraphContext(
-                torch.cuda.CUDAGraph(),
-            )
-            self.cuda_graph_contexts.append(ctx)
+            self.graphs.append([
+                torch.cuda.CUDAGraph() for _ in GRAPH_BATCH_SIZES
+            ])
 
     def _create_buffers(self):
         self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
@@ -250,23 +258,29 @@ class Engine:
             self._warmup_expert()
 
     def _warmup_attn(self):
-        meta = make_prefill_meta(MAX_BATCH_SIZE, self.cache_config.block_size)
+        meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
+        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         # warmup for CUBLAS
         self.static_output, self.static_expert_ids = self.executor.execute(
             0, self.static_positions, self.static_input, meta)
         if self.model_config.tp_size > 1:
             group_sync()
             
+        meta.use_cuda_graph = True
         for layer_id in range(self.model_config.num_layers):
-            self._logger.info(f"CUDA Graph warmuping layer {layer_id}")
-            ctx = self.cuda_graph_contexts[layer_id]
-            with torch.cuda.graph(ctx.graph):
-                self.static_output, self.static_expert_ids = self.executor.execute(
-                    layer_id, self.static_positions, self.static_input, meta)
-            torch.cuda.synchronize()
+            for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
+                meta_py = make_dummy_meta(graph_batch_size, 0)
+                meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
+                self._logger.info(f"CUDA Graph warmuping layer {layer_id, graph_batch_size}")
+                with torch.cuda.graph(graph):
+                    self.static_output, self.static_expert_ids = self.executor.execute(
+                        layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
+                torch.cuda.synchronize()
     
     def _warmup_expert(self):
         self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
+        self._logger.warning("Expert CUDA Graph is not implemented yet")
+        return
         
         for layer_id in range(self.model_config.num_layers):
             self._logger.info(f"CUDA Graph warmuping layer {layer_id}")
@@ -316,16 +330,34 @@ class Engine:
             self,
             meta_c: AttentionBatchMetadata,
             meta_py: AttentionBatchMetadata,
-            decode_seq_lens: List[int]
+            decode_seq_lens: List[int],
+            mocking: bool = False,
         ) -> FlashAttentionMetadata:
         
         num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
         
         # 1. prepare block table
-        block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
-        slot_mapping_cuda = block_table_1d[-num_seqs : ]
+        if not mocking:
+            block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
+        else:
+            # mocking=True when _warmup_attn
+            block_table_1d = torch.zeros(
+                (num_tokens + num_seqs * MAX_SEQ_LEN // self.cache_config.block_size, ), 
+                dtype=torch.int32).to("cuda")
+        
+        if self.model_config.enable_cuda_graph:
+            self.static_slot_mapping[0: num_seqs].copy_(
+                block_table_1d[-num_seqs : ].to(torch.int64))
+            _max_num_blocks = (block_table_1d.numel() - num_seqs) // num_tokens
+            self.static_block_table[0: num_tokens, 0: _max_num_blocks].copy_(
+                block_table_1d[ : -num_seqs].view(num_tokens, -1)
+            )
+            slot_mapping_cuda = self.static_slot_mapping
+            block_table_cuda = self.static_block_table
+        else:
+            slot_mapping_cuda = block_table_1d[-num_seqs : ].to(torch.int64)
+            block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
         
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
@@ -349,6 +381,9 @@ class Engine:
         make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ])
 
         batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
+        if self.model_config.enable_cuda_graph:
+            self.static_batch_infos[ : len(batch_infos)].copy_(batch_infos_cuda)
+            batch_infos_cuda = self.static_batch_infos
         
         seq_lens_cuda = batch_infos_cuda[ : num_seqs]
         context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
@@ -360,13 +395,14 @@ class Engine:
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
-        assert max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
+        assert self.model_config.enable_cuda_graph  or \
+               max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
         
         return FlashAttentionMetadata(
             meta_py.num_prefill_seqs,
             meta_py.num_prefill_tokens,
             meta_py.num_decode_tokens,
-            slot_mapping_cuda.to(torch.int64),
+            slot_mapping_cuda,
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=max_query_len,
@@ -375,12 +411,12 @@ class Engine:
             query_start_loc=query_start_loc,
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
-            block_tables=block_table_cuda.view(num_tokens, -1),
-            use_cuda_graph=False,
+            block_tables=block_table_cuda,
+            use_cuda_graph=self.model_config.enable_cuda_graph,
         )
     
     @nvtx_range("engine.attn_driver_preprocess")
-    def _attn_driver_preprocess(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, FlashAttentionMetadata]:
+    def _attn_driver_preprocess(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata, input_tensor: Tensor) -> FlashAttentionMetadata:
         
         decode_seq_lens = self._update_block_table(meta_c, meta_py)
         
@@ -479,7 +515,7 @@ class Engine:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_table_cuda,
-            use_cuda_graph=False,
+            use_cuda_graph=self.model_config.enable_cuda_graph,
         )
 
     @nvtx_range("engine.process_batch_attn")
@@ -511,13 +547,14 @@ class Engine:
             hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
+            # self._logger.info(f"attn_meta: {attn_meta}")
+            graph_id, batch_size = get_graph_batch_size(num_tokens)
             self.static_input[:num_tokens].copy_(input_tensor)
-            self.static_input[num_tokens:].fill_(0)
-            self.cuda_graph_contexts[meta_c.layer_id].graph.replay()
+            self.graphs[meta_c.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
-            
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
+        
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
         
@@ -551,16 +588,16 @@ class Engine:
             device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
-        torch.cuda.synchronize()
         # self._logger.info(f"executing expert {meta_c.req_ids}")
-        if not self.model_config.enable_cuda_graph:
+        if not self.model_config.enable_cuda_graph or True:
             output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
         else:
+            torch.cuda.synchronize()
             num_tokens = input_tensor.shape[0]
             self.static_input[:num_tokens].copy_(input_tensor)
             self.static_input[num_tokens:].fill_(0)
             self.static_batch_sizes.copy_(batch_sizes)
-            self.cuda_graph_contexts[meta_c.layer_id].graph.replay()
+            self.graphs[meta_c.layer_id].replay() # FIXME
             output = self.static_output[:num_tokens]
         # 2. permute tokens back to <prefill><decode> order
         new_mappings = list(meta_c.sort_by_prefill_order())
@@ -723,6 +760,8 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         
     def process_request(self, req_id: int, input_len: int):
+        # req_id (or seq_id) must > 0
+        assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
         assert input_len == 1
         shape = (input_len, self.model_config.hidden_size)

@@ -22,7 +22,7 @@ def get_nccl_url_from_uid(uid):
 
 class Counter:
 
-    def __init__(self, start: int = 0, end: int = 1e9, step: int = 1) -> None:
+    def __init__(self, start: int = 0, end: int = 2e9, step: int = 1) -> None:
         self.counter = start
         self.end = end
         self.step = step
@@ -100,6 +100,13 @@ def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
         seqlen.append(seqlen[-1] + l)
     result = torch.tensor(seqlen, dtype=torch.int32, device="cuda")
     return result
+
+def get_graph_batch_size(batch_size: int) -> Tuple[int, int]:
+    from disagmoe.utils.constants import GRAPH_BATCH_SIZES
+    for i, size in enumerate(GRAPH_BATCH_SIZES):
+        if size >= batch_size:
+            return i, size
+    assert False, f"No available graph for batch size={batch_size}"
 
 def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
     if isinstance(lens, Tensor):

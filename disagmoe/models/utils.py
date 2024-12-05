@@ -1,4 +1,5 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from typing import Tuple
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
@@ -143,6 +144,22 @@ def make_prefill_meta(num_prefills: int, block_size: int):
         context_lens_tensor=context_lens_tensor,
         block_tables=torch.tensor([]),
         use_cuda_graph=False,
+    )
+    return meta
+
+def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int):
+    bs = num_prefill_tokens + num_decode_tokens
+    meta = AttentionBatchMetadata(
+        0,
+        [num_decode_tokens + num_prefill_tokens, 1],
+        "bf16",
+        num_prefill_tokens,
+        num_prefill_tokens,
+        num_decode_tokens,
+        [0] * bs,
+        [0] * bs,
+        [0] * bs,
+        [0] * bs
     )
     return meta
 

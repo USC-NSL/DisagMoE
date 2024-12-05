@@ -10,7 +10,7 @@ from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_grou
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat
 from disagmoe.utils.placement import ModelPlacement
-from disagmoe.utils.utils import get_nccl_unique_id
+from disagmoe.utils.utils import get_nccl_unique_id, Counter
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
 from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
@@ -39,15 +39,6 @@ class AsyncResult:
             self.finish_cond.notify()
         
 
-class RequestIDGenerator:
-        
-    def __init__(self):
-        self._req_id = 0
-        
-    def next(self) -> int:
-        self._req_id += 1
-        return self._req_id
-
 class Controller:
     
     def __init__(self, n_node: int, n_gpu_per_node: int, enable_nsys=False):
@@ -62,7 +53,7 @@ class Controller:
         self.sampler_worker = None
         self.tokenizer_worker = None
         self._profile_enabled = False
-        self.req_id_generator = RequestIDGenerator()
+        self.req_id_generator = Counter(start=1)
         self.in_flight_reqs = set()
         self.end_flag = False
         self.request_results: Dict[int, AsyncResult] = dict()
@@ -275,7 +266,7 @@ class Controller:
             ray.get(tasks)
     
     def get_new_req_id(self) -> int:
-        req_id = self.req_id_generator.next()
+        req_id = next(self.req_id_generator)
         self.in_flight_reqs.add(req_id)
         return req_id
     
