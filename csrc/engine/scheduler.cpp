@@ -2,6 +2,7 @@
 #include "utils.hpp"
 #include "block_manager.h"
 #include "cuda_utils.h"
+#include "constants.h"
 
 #include <exception>
 #include <vector>
@@ -54,8 +55,13 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
 
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE) {
     
+}
+
+void AttentionScheduler::set_max_batch_size(int max_batch_size) {
+    this->max_batch_size = max_batch_size;
+    this->pool->set_max_batch_size(max_batch_size);
 }
 
 void AttentionScheduler::start() {
