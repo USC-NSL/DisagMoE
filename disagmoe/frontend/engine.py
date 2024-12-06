@@ -154,6 +154,9 @@ class Engine:
                                         rank=self.rank_in_group,
                                         init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
         
+        if self.is_attn:
+            self.attn_scheduler.set_max_batch_size(MAX_BATCH_SIZE)
+        
         if self.model_config.enable_cuda_graph and self.engine_type not in [EngineType.TOKENIZER, EngineType.SAMPLER]:
             self._create_cuda_graph_contexts()
             self._cuda_graph_warmup()
@@ -229,7 +232,7 @@ class Engine:
             self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
             self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long).to("cuda", non_blocking=True)
             self.static_block_table = torch.zeros(
-                (MAX_BATCH_SIZE, self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks), 
+                (MAX_BATCH_SIZE, self.cache_config.num_gpu_blocks), 
                 dtype=torch.int32).to("cuda", non_blocking=True)
             self.static_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
             self.static_batch_infos = torch.zeros(
@@ -276,6 +279,9 @@ class Engine:
                     self.static_output, self.static_expert_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
                 torch.cuda.synchronize()
+                
+                dist.barrier()
+                graph.replay()
     
     def _warmup_expert(self):
         self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
@@ -295,6 +301,10 @@ class Engine:
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
         shape = (MAX_BATCH_SIZE + MAX_BATCH_SIZE * MAX_SEQ_LEN // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.empty(shape, dtype=torch.int32, device="cuda")
+        
+        self.buffer_meta.fill_(0)
+        self.buffer_tensor.fill_(0)
+        self.buffer_attn_meta.fill_(0)
         
     def _wait_async_handles(self):
         for h in self.handles:
@@ -450,8 +460,16 @@ class Engine:
             num_elems = num_tokens + max_num_blocks * num_tokens
             
             bc_attn_meta = self.buffer_attn_meta[ : num_elems]
-            bc_attn_meta[ : num_tokens].copy_(attn_meta.slot_mapping.to(torch.int32))
-            bc_attn_meta[num_tokens : ].copy_(attn_meta.block_tables.view(-1))
+            
+            if not attn_meta.use_cuda_graph:
+                bc_attn_meta[ : num_tokens].copy_(attn_meta.slot_mapping.to(torch.int32))
+                bc_attn_meta[num_tokens : ].copy_(attn_meta.block_tables.view(-1))
+            else:
+                bc_attn_meta[ : num_tokens].copy_(
+                    attn_meta.slot_mapping[ : num_tokens].to(torch.int32))
+                self._logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
+                bc_attn_meta[num_tokens : ].copy_(
+                    attn_meta.block_tables[ : num_tokens, : max_num_blocks].view(-1))
             
             dist.broadcast(bc_attn_meta, 0)
         
@@ -468,6 +486,8 @@ class Engine:
         num_prefill_seqs = meta[1]
         num_prefill_tokens = meta[2]
         num_decode_tokens = meta[3]
+        batch_size = get_graph_batch_size(num_prefill_tokens + num_decode_tokens)[1] if self.model_config.enable_cuda_graph \
+            else num_prefill_tokens + num_decode_tokens
         
         num_tokens = num_prefill_tokens + num_decode_tokens
         num_seqs = num_prefill_seqs + num_decode_tokens
@@ -476,8 +496,15 @@ class Engine:
         self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
         
         prefill_query_lens = meta[4 : 4 + num_prefill_seqs]
-        seq_lens = meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
-        seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+        if not self.model_config.enable_cuda_graph:
+            seq_lens = meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+            seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+        else:
+            # extend seq_lens to batch_size
+            seq_lens = meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+            for _ in range(batch_size - num_seqs):
+                seq_lens.append(0)
+            seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + batch_size]
         prefill_seq_lens = seq_lens[ : num_prefill_seqs]
         decode_seq_lens = seq_lens[num_prefill_seqs : ]
         
@@ -498,8 +525,15 @@ class Engine:
         
         bc_attn_meta = self.buffer_attn_meta[ : num_elems]
         dist.broadcast(bc_attn_meta, 0)
-        slot_mapping_cuda = bc_attn_meta[ : num_tokens].to(torch.int64)
-        block_table_cuda = bc_attn_meta[num_tokens : ].view(num_tokens, -1)
+        
+        if not self.model_config.enable_cuda_graph:
+            slot_mapping_cuda = bc_attn_meta[ : num_tokens].to(torch.int64)
+            block_table_cuda = bc_attn_meta[num_tokens : ].view(num_tokens, -1)
+        else:
+            self.static_slot_mapping[ : num_tokens].copy_(bc_attn_meta[ : num_tokens].to(torch.int64))
+            self.static_block_table[ : num_tokens, 0: max_num_blocks].copy_(bc_attn_meta[num_tokens : ].view(num_tokens, -1))
+            slot_mapping_cuda = self.static_slot_mapping
+            block_table_cuda = self.static_block_table
         
         return layer_id, input_tensor, FlashAttentionMetadata(
             num_prefill_seqs,
@@ -542,12 +576,11 @@ class Engine:
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
         # TODO(hogura|20241015): only top-1 expert currently
-        # self._logger.info(f"executing attn {meta_c.seq_ids, attn_meta.block_tables}")
+        # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph:
             hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
-            # self._logger.info(f"attn_meta: {attn_meta}")
             graph_id, batch_size = get_graph_batch_size(num_tokens)
             self.static_input[:num_tokens].copy_(input_tensor)
             self.graphs[meta_c.layer_id][graph_id].replay()
@@ -626,11 +659,11 @@ class Engine:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
             if layer_id == -1:
                 # terminated
-                self._logger.info("TP worker received termination signal, now exit")
+                self._logger.warning("TP worker received termination signal, now exit")
                 break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
-            # self._logger.info(f"executing attn {meta}")
+            self._logger.info(f"executing attn {meta}")
             self.executor.execute(layer_id, positions, input_tensor, meta)
 
     @torch.inference_mode()
@@ -650,7 +683,6 @@ class Engine:
             meta: Metadata = batch.metadata
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
-            
             
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver

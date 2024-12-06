@@ -33,7 +33,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
         .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
         .def("schedule", &AttentionScheduler::schedule)
-        .def("get_channel", &AttentionScheduler::get_channel);
+        .def("get_channel", &AttentionScheduler::get_channel)
+        .def("set_max_batch_size", &AttentionScheduler::set_max_batch_size);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);

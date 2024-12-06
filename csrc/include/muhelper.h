@@ -138,6 +138,8 @@ protected:
     int largest_batch_layer_id_{-1};
     std::vector<int> tokens_per_layer_;
 
+    int max_batch_size;
+
     virtual int tokens_in_layer(int lid);
 
     void recv_metadata(int &peer_id, metadata_t &meta);
@@ -208,6 +210,8 @@ public:
     void run() override;
 
     void terminate() override;
+
+    void set_max_batch_size(int max_batch_size);
 
     // for debug use only
     void __set_attn_data_queue(

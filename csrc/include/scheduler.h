@@ -43,6 +43,8 @@ typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
 
 class AttentionScheduler {
 protected:
+    int max_batch_size;
+
     mu_attn_pool_t pool;
     std::vector<int> layer_ids;
     std::string policy;
@@ -59,6 +61,8 @@ public:
     void wait_for_new_requests();
 
     void start();
+
+    void set_max_batch_size(int max_batch_size);
 
     virtual std::shared_ptr<NcclGroupChannel> get_channel() {
         return nullptr;
