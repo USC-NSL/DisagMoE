@@ -71,6 +71,9 @@ class Engine:
         self.device_group_ids = []
         self.handles = []
         self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
+        
+        # for stats usage
+        self._batch_sizes = []
 
     @property
     def is_attn(self):
@@ -677,13 +680,18 @@ class Engine:
             batch_info = self.scheduler.schedule() # using non-blocking schedule
             if batch_info.data is None:
                 continue
-                        
+            
+            self._batch_sizes.append(batch_info.data.shape[0])
             batch = TensorBatch.from_c(batch_info)
 
             meta: Metadata = batch.metadata
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
-            
+    
+    def fetch_stats(self) -> List[int]:
+        # Only have batch sizes now
+        return self._batch_sizes
+    
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
         if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):

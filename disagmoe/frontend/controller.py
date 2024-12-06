@@ -281,7 +281,10 @@ class Controller:
         for result in results:
             await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
-        
+    
+    def fetch_stat_batch_sizes(self) -> List[List[int]]:
+        return ray.get([worker.fetch_stats.remote() for worker in self.workers])
+    
     async def poll_finished_results(self) -> List[SloStat]:
         print(f"master start polling request")
         while not self.end_flag:

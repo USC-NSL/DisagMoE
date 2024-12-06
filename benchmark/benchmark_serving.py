@@ -5,12 +5,13 @@ from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, Sampli
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
+from dataclasses import dataclass
 
 import asyncio
 import time
 import tqdm
-from dataclasses import dataclass
 import numpy as np
+import pandas as pd
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
@@ -108,6 +109,17 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
 
+def analyze_batch_sizes(all_batch_sizes):
+    for i, worker_batch_sizes in enumerate(all_batch_sizes):
+        df = pd.DataFrame(worker_batch_sizes)
+        try:
+            import matplotlib.pyplot as plt
+            plt.hist(worker_batch_sizes, bins=32)
+            plt.title(f"Worker {i} batch sizes")
+            plt.savefig(f"worker_{i}_batch_sizes.png")
+        except:
+            print("matplotlib not found, skipping plotting")
+
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
     assert args.input_len == 1, "supports only 1 token as input"
@@ -134,6 +146,8 @@ async def benchmark_serving(args):
         print(metrics)
     
     await run_once()
+    
+    analyze_batch_sizes(master.fetch_stat_batch_sizes())
     
     master.stop_workers()
     
