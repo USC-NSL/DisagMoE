@@ -229,34 +229,27 @@ class Engine:
     def _create_cuda_graph_contexts(self):
         assert self.model_config.enable_cuda_graph
         self.graphs: List[List[torch.cuda.CUDAGraph]] = []
-        self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
-        self.static_output = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
+        self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
+        self.static_output = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
         if self.is_attn:
-            self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
-            self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long).to("cuda", non_blocking=True)
+            self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
+            self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long, device="cuda")
             self.static_block_table = torch.zeros(
                 (MAX_BATCH_SIZE, self.cache_config.num_gpu_blocks), 
-                dtype=torch.int32).to("cuda", non_blocking=True)
-            self.static_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
+                dtype=torch.int32, device="cuda")
+            self.static_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
             self.static_batch_infos = torch.zeros(
                 # (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)), 
                 (MAX_BATCH_SIZE + MAX_BATCH_SIZE + (MAX_BATCH_SIZE + 1) + (MAX_BATCH_SIZE + 1)), 
-                dtype=torch.int32).to("cuda", non_blocking=True)
+                dtype=torch.int32, device="cuda")
         else:
-            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long).to("cpu")
+            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cuda")
             
         for i in range(self.model_config.num_layers):
             self.graphs.append([
                 torch.cuda.CUDAGraph() for _ in GRAPH_BATCH_SIZES
             ])
-
-    def _create_buffers(self):
-        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_loc = torch.zeros((2, BROADCAST_BUFFER_SIZE_SMALL), dtype=torch.int32).to("cuda", non_blocking=True)
-        self.buffer_tensor = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size)).to("cuda", non_blocking=True)
-        self.buffer_slot_mapping = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long).to("cuda", non_blocking=True)
-        self.buffer_block_table = torch.zeros((MAX_BATCH_SIZE, self.cache_config.block_size), dtype=torch.int32).to("cuda", non_blocking=True)
-
+            
     def _cuda_graph_warmup(self):
         if self.is_attn:
             self._warmup_attn()
@@ -357,7 +350,7 @@ class Engine:
             # mocking=True when _warmup_attn
             block_table_1d = torch.zeros(
                 (num_tokens + num_seqs * MAX_SEQ_LEN // self.cache_config.block_size, ), 
-                dtype=torch.int32).to("cuda")
+                dtype=torch.int32, device="cuda")
         
         if self.model_config.enable_cuda_graph:
             self.static_slot_mapping[0: num_seqs].copy_(
@@ -621,7 +614,7 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            device="cuda",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
