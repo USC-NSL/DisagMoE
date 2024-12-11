@@ -8,6 +8,7 @@ from disagmoe.utils.logger import get_logger
 from torch import Tensor
 from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
@@ -125,3 +126,13 @@ def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
     for i in range(n):
         dst[i+1] = dst[i] + lens[i]
     return dst
+
+
+@dataclass
+class StepInfo:
+    
+    start_timestamp_ms: float
+    end_timestamp_ms: float
+    batch_size: int
+    layer_id: int
+    
