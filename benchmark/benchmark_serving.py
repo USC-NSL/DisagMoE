@@ -5,12 +5,13 @@ from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, Sampli
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
+from dataclasses import dataclass
 
 import asyncio
 import time
 import tqdm
-from dataclasses import dataclass
 import numpy as np
+import pandas as pd
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
@@ -55,6 +56,7 @@ def launch(args):
     model_config.num_experts = 8
     model_config.tp_size = 1
     model_config.tp_enable_inter_group = False
+    model_config.enable_cuda_graph = args.cuda_graph
 
     mp = get_model_placement(model_config, cluster_config, "interleave")
 
@@ -107,6 +109,17 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
 
+def analyze_batch_sizes(all_batch_sizes):
+    for i, worker_batch_sizes in enumerate(all_batch_sizes):
+        df = pd.DataFrame(worker_batch_sizes)
+        try:
+            import matplotlib.pyplot as plt
+            plt.hist(worker_batch_sizes, bins=32)
+            plt.title(f"Worker {i} batch sizes")
+            plt.savefig(f"worker_{i}_batch_sizes.png")
+        except:
+            print("matplotlib not found, skipping plotting")
+
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
     assert args.input_len == 1, "supports only 1 token as input"
@@ -134,6 +147,8 @@ async def benchmark_serving(args):
     
     await run_once()
     
+    analyze_batch_sizes(master.fetch_stat_batch_sizes())
+    
     master.stop_workers()
     
     
@@ -145,6 +160,7 @@ def get_args():
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
+    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     
     args = parser.parse_args()

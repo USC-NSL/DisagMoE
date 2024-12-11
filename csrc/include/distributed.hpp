@@ -20,8 +20,6 @@ static std::mutex mutex;
 // NOTE(hogura|20241120): local_device_id is mapped to 0.0.0.0, as in engine.py:set_hosts
 static void set_hosts_internal(int process_id, const std::map<int, std::string>& device_id_2_ip_) {
     device_id_2_ip = device_id_2_ip_;
-    DMOE_LOG(ERROR) << "set_hosts_internal " << device_id_2_ip.size() << LEND;
-
     // we have to write the config into files
     mkdir(TEMP_DIR, S_IRWXU | S_IRWXG | S_IRWXO);
     std::string filename = std::string(TEMP_DIR) + "hostfile_" + std::to_string(process_id);

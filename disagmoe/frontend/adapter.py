@@ -14,6 +14,9 @@ class Scheduler:
         
     def get_channel(self) -> "NcclGroupChannel":
         ...
+        
+    def set_max_batch_size(self, max_batch_size: int) -> None:
+        ...
 
 class MuDispatcher:
         

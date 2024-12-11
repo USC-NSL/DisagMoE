@@ -291,7 +291,8 @@ MuPool::MuPool(
     MuHelper(layer_ids, device_id, channels), 
     is_attn(is_attn),
     ctx(channels.size()),
-    mq(ctx, zmq::socket_type::pull) {
+    mq(ctx, zmq::socket_type::pull),
+    max_batch_size(MAX_BATCH_SIZE) {
     
     int num_layers = layer_ids.size();
     int max_layer_id = 0;
@@ -444,8 +445,127 @@ void MuPool::maintain_largest_batch() {
     }
 }
 
+template<class DataBatch>
+int schedule_with_limit_dp(std::vector<DataBatch> &data_list,
+                         std::vector<DataBatch> &results,
+                         int max_batch_size,
+                         bool allow_sliced = false) {
+    ASSERT(!allow_sliced);
+
+    std::vector<int> dp(max_batch_size + 1, 0), pre(max_batch_size + 1, -1), marked(data_list.size(), 0);
+    
+    // formulating this scheduling into a Knapsack problem
+    dp[0] = 1;
+    for (int i = 0; i < data_list.size(); i ++) {
+        for (int j = max_batch_size; j >= data_list[i].metadata->num_tokens(); j --) {
+            if (dp[j - data_list[i].metadata->num_tokens()] && !dp[j]) {
+                dp[j] = 1;
+                pre[j] = i;
+            }
+        }
+    }
+
+    // select the schedule results
+    int cur = max_batch_size;
+    while (!dp[cur] && cur > 0)
+        cur --;
+    if (cur == 0) {
+        DMOE_LOG(WARNING) << "MaxBatchSize=" << max_batch_size << "; Current DataBatch sizes: ";
+        for (auto &d: data_list)
+            std::cerr << d.metadata->num_tokens() << " ";
+        std::cerr << LEND;
+    }
+    int num_tokens = cur;
+    while (cur > 0) {
+        results.push_back(data_list[pre[cur]]);
+        marked[pre[cur]] = 1;
+        cur -= data_list[pre[cur]].metadata->num_tokens();
+    };
+
+    std::vector<DataBatch> data_queue;
+    int max_num_tokens = 0;
+    int max_batch_id = -1;
+    // restore the data_queue
+    for (int i = 0; i < data_list.size(); i ++)
+        if (!marked[i]) {
+            data_queue.push_back(data_list[i]);
+        }
+        else {
+            if (data_list[i].metadata->num_tokens() > max_num_tokens) {
+                max_num_tokens = data_list[i].metadata->num_tokens();
+                max_batch_id = results.size();
+            }
+        }
+    if (num_tokens < max_batch_size && max_batch_id != -1) {
+        // TODO: consider the schedule order of this max_batch
+        results.push_back(data_list[max_batch_id]);
+        marked[max_batch_id] = 1;
+        num_tokens += max_num_tokens;
+    }
+    data_list = std::move(data_queue);
+    return num_tokens;
+}
+
+template<class DataBatch = AttentionBatch>
+int schedule_with_limit_slice(std::vector<DataBatch> &data_list,
+                              std::vector<DataBatch> &results,
+                              int max_batch_size) {
+    int num_tokens = 0;
+    std::vector<DataBatch>().swap(results);
+    std::reverse(data_list.begin(), data_list.end());
+    for (int i = data_list.size() - 1; i >= 0; i --) {
+        int cur_num_tokens = data_list[i].metadata->num_tokens();
+        int next_num_tokens = num_tokens + cur_num_tokens;
+        if (next_num_tokens <= max_batch_size) {
+            results.push_back(data_list[i]);
+            num_tokens = next_num_tokens;
+            data_list.pop_back();
+            if (num_tokens == max_batch_size)
+                break;
+        } else {
+            int sliced_num_tokens = cur_num_tokens - (next_num_tokens - max_batch_size);
+            ASSERT(0 < sliced_num_tokens && sliced_num_tokens < cur_num_tokens);
+            auto pr = data_list[i].metadata->split(sliced_num_tokens);
+            auto tensor_l = data_list[i].data.slice(0, 0, sliced_num_tokens);
+            auto tensor_r = data_list[i].data.slice(0, sliced_num_tokens);
+            ASSERT(pr.second->num_tokens() > 0);
+            ASSERT(tensor_l.size(0) == pr.first->num_tokens());
+            ASSERT(tensor_r.size(0) == pr.second->num_tokens());
+            results.push_back((DataBatch) {tensor_l, pr.first});
+            data_list[i].data = tensor_r;
+            data_list[i].metadata = pr.second;
+            num_tokens += sliced_num_tokens;
+            ASSERT(num_tokens == max_batch_size);
+            break;
+        }
+    }
+    if (!data_list.empty())
+        std::reverse(data_list.begin(), data_list.end());
+    return num_tokens;
+}
+
+template<class DataBatch>
+int schedule_with_limit(std::vector<DataBatch> &data_list,
+                         std::vector<DataBatch> &results,
+                         int max_batch_size,
+                         bool allow_sliced = false,
+                         bool use_dp = false) {
+    /*
+        DataBatch: TensorBatch or AttentionBatch
+        Use DataBatch.metadata->num_tokens() to get the size of a batch
+    */
+    if (data_list.empty())
+        return 0;
+    
+    if (use_dp)
+        return schedule_with_limit_dp<DataBatch>(data_list, results, max_batch_size, allow_sliced);
+    else if (allow_sliced)
+        return schedule_with_limit_slice<DataBatch>(data_list, results, max_batch_size);
+    else
+        ASSERT(false);
+}
+
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {
-    // TODO(hogura|20240930): only considering decode first
     // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
 
     int id = -1;
@@ -489,6 +609,9 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     return result;
 }
 
+void MuAttentionPool::set_max_batch_size(int max_batch_size) {
+    this->max_batch_size = max_batch_size;
+}
 
 MuAttentionPool::MuAttentionPool(
     std::vector<int> layer_ids, 
@@ -682,7 +805,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
 
     // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
     int layer_id = -1;
-    int batched_tokens = 0;
+    int num_tokens = 0;
     std::vector<AttentionBatch> result{};
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -695,24 +818,28 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
                 *selected_layer_id = -1;
             return {};
         }
-        
-        batched_tokens = this->largest_batch_size_;
 
-        result = std::move(this->attn_data_queue[layer_id]);
-        this->attn_data_queue[layer_id].clear();
-        this->tokens_per_layer_[layer_id] = 0;
-
-        int num_layers = this->layer_ids.size();
+        if (this->max_batch_size > 0) {
+            num_tokens = schedule_with_limit<AttentionBatch>(
+                this->attn_data_queue[layer_id], result, this->max_batch_size, 
+                /*allow_sliced=*/ true, /*use_dp=*/ false);
+            this->tokens_per_layer_[layer_id] -= num_tokens;
+        } else {
+            num_tokens = this->largest_batch_size_;
+            result = std::move(this->attn_data_queue[layer_id]);
+            this->attn_data_queue[layer_id].clear();
+            this->tokens_per_layer_[layer_id] = 0;
+        }
 
         maintain_largest_batch();
     }
 
-    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << batched_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);
-    //     DMOE_LOG(WARNING) << "del cur_request_count:" << cur_request_count << " " << batched_tokens << LEND;
-    //     this->cur_request_count -= batched_tokens;
+    //     DMOE_LOG(WARNING) << "del cur_request_count:" << cur_request_count << " " << num_tokens << LEND;
+    //     this->cur_request_count -= num_tokens;
     //     ASSERT(this->cur_request_count >= 0);
     // }
 
