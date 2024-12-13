@@ -28,6 +28,7 @@ void Scheduler::start() {
 }
 
 std::vector<TensorBatch> Scheduler::_schedule() {
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
 }
 
@@ -42,8 +43,6 @@ TensorBatch Scheduler::schedule() {
 void Scheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
-
-
 
 attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
@@ -69,6 +68,7 @@ void AttentionScheduler::start() {
 }
 
 std::vector<AttentionBatch> AttentionScheduler::_schedule() {
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
 }
 
@@ -96,6 +96,7 @@ AttentionDriverScheduler::AttentionDriverScheduler(
 AttentionBatch AttentionDriverScheduler::schedule() {
     tx_range _{"AttentionDriverScheduler::schedule"};
     int layer_id;
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     std::vector<AttentionBatch> batches = pool->fetch_largest_batch(&layer_id);
     if (layer_id == -1) {
         return AttentionBatch{};

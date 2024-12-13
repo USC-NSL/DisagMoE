@@ -58,8 +58,8 @@ class Metadata:
 
 @dataclass
 class TensorBatch:
-    data: torch.Tensor       # pointer
-    metadata: int # pointer
+    data: torch.Tensor
+    metadata: Metadata
     
     @staticmethod
     def from_c(batch_c: "TensorBatch_C") -> "TensorBatch":

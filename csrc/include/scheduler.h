@@ -22,6 +22,8 @@ protected:
     std::vector<int> layer_ids;
     std::string policy;
 
+    std::vector<int> pool_snapshot_{};
+
     std::vector<TensorBatch> _schedule();
 
 public:
@@ -34,6 +36,10 @@ public:
     void wait_for_new_requests();
 
     void start();
+
+    std::vector<int> get_pool_snapshot() {
+        return pool_snapshot_;
+    };
 };
 
 
@@ -48,6 +54,8 @@ protected:
     mu_attn_pool_t pool;
     std::vector<int> layer_ids;
     std::string policy;
+
+    std::vector<int> pool_snapshot_{};
 
     virtual std::vector<AttentionBatch> _schedule();
 
@@ -66,6 +74,10 @@ public:
 
     virtual std::shared_ptr<NcclGroupChannel> get_channel() {
         return nullptr;
+    };
+
+    virtual std::vector<int> get_pool_snapshot() {
+        return pool_snapshot_;
     };
 };
 

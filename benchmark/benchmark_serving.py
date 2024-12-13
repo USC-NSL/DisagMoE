@@ -1,5 +1,6 @@
 from disagmoe.frontend.controller import init_controller, Controller, AsyncResult
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
+from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat
@@ -109,16 +110,52 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
 
-def analyze_batch_sizes(all_batch_sizes):
+def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
     for i, worker_batch_sizes in enumerate(all_batch_sizes):
-        df = pd.DataFrame(worker_batch_sizes)
+
         try:
             import matplotlib.pyplot as plt
+            plt.figure()
+            df = pd.DataFrame(worker_batch_sizes)
+            plt.plot(df)
+            plt.title(f"Worker {i} batch sizes with time")
+            plt.savefig(f"worker_{i}_batch_sizes_with_time.png")
+            plt.close()
+            
+            plt.figure()
             plt.hist(worker_batch_sizes, bins=32)
             plt.title(f"Worker {i} batch sizes")
             plt.savefig(f"worker_{i}_batch_sizes.png")
+            plt.close()
+            
         except:
             print("matplotlib not found, skipping plotting")
+            
+
+def generate_step_trace(step_stats: List[List[StepInfo]]):
+    events = []
+    
+    def ms_to_us(ms):
+        return ms * 1000
+    
+    for worker_id, worker_stats in enumerate(step_stats):
+        for step_info in worker_stats:
+            events.append({
+                "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
+                "cat": "step",
+                "ph": "X",
+                "ts": ms_to_us(step_info.start_timestamp_ms),
+                "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
+                "pid": 0,
+                "tid": worker_id,
+                "args": {
+                    "pool_snapshot": f"{step_info.pool_snapshot}"
+                }
+            })
+            
+    with open("steps_trace.json", "w") as f:
+        import json
+        json.dump(events, f)
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
@@ -147,9 +184,11 @@ async def benchmark_serving(args):
     
     await run_once()
     
-    analyze_batch_sizes(master.fetch_stat_batch_sizes())
+    step_stats = master.fetch_step_stats()
     
     master.stop_workers()
+    
+    generate_step_trace(step_stats)
     
     
 def get_args():
