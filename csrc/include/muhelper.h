@@ -170,6 +170,8 @@ public:
     std::vector<TensorBatch> fetch_largest_batch();
 
     void maintain_largest_batch();
+
+    std::vector<int> get_pool_snapshot();
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;

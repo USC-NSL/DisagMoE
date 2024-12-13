@@ -445,6 +445,11 @@ void MuPool::maintain_largest_batch() {
     }
 }
 
+std::vector<int> MuPool::get_pool_snapshot() {
+    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    return this->tokens_per_layer_;
+}
+
 template<class DataBatch>
 int schedule_with_limit_dp(std::vector<DataBatch> &data_list,
                          std::vector<DataBatch> &results,

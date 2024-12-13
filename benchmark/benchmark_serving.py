@@ -148,7 +148,9 @@ def generate_step_trace(step_stats: List[List[StepInfo]]):
                 "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
                 "pid": 0,
                 "tid": worker_id,
-                "args": {}
+                "args": {
+                    "pool_snapshot": f"{step_info.pool_snapshot}"
+                }
             })
             
     with open("steps_trace.json", "w") as f:

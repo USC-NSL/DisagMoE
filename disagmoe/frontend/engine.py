@@ -675,6 +675,7 @@ class Engine:
             if batch_info.data is None:
                 continue
             
+            pool_snapshot = self.scheduler.get_pool_snapshot()
             batch_size = batch_info.data.shape[0]
             layer_id = batch_info.metadata.layer_id
             step_start_timestamp_ms = time.time() * 1000
@@ -688,10 +689,18 @@ class Engine:
             
             step_end_timestamp_ms = time.time() * 1000
             
+            pool_snapshot_dict = dict()
+            for i, size in enumerate(pool_snapshot):
+                if size <= 0: 
+                    continue
+                layer = self.executor.layer_mappings[i]
+                pool_snapshot_dict[layer] = size
+                
             self._step_stats.append(
                 StepInfo(step_start_timestamp_ms, 
                          step_end_timestamp_ms, 
-                         batch_size, layer_id)
+                         batch_size, layer_id,
+                         pool_snapshot_dict)
             )
     
     def fetch_step_stats(self) -> List[StepInfo]:

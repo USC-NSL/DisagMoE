@@ -17,6 +17,9 @@ class Scheduler:
         
     def set_max_batch_size(self, max_batch_size: int) -> None:
         ...
+        
+    def get_pool_snapshot(self) -> List[int]:
+        ...
 
 class MuDispatcher:
         
