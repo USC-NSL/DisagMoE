@@ -5,6 +5,8 @@ from disagmoe.config import ModelConfig
 from typing import Dict, Tuple, Optional, Union, List, override
 from dataclasses import dataclass
 
+from itertools import product
+
 @dataclass
 class ParallelConfig:
     tp: int = 1
@@ -26,12 +28,16 @@ class ModelPlacement:
     
     device_groups: Dict[int, List[int]] = None
     
+    # (layer_id, expert_id) -> expert_rank_id
+    expert_ranks: Dict[Tuple[int, int], int] = None
+    
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
+        assert self.expert_ranks is not None
         ids = self.expert[device_id]
         ranks = []
         for layer_id, expert_id in ids:
-            ranks.append(expert_id // num_expert_per_rank)
+            ranks.append(self.expert_ranks[(layer_id, expert_id)])
         assert len(set(ranks)) == 1
         return ranks[0]
     
@@ -55,9 +61,9 @@ class ModelPlacement:
         return self.expert.get(device_id, [])
         
     def layer_ids_at(self, device_id: int) -> List[int]:
-        return list(set(
+        return sorted(list(set(
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
-        ))
+        )))
         
     def add_edge(self, start, end):
         assert start != end
@@ -150,12 +156,25 @@ class PlacementBase:
                     place.add_edge(dev, exp_dev)
         return place
         
+    def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
+        """
+            default EP worker rank is `expert_id // num_experts_per_rank` for each expert
+        """
+        expert_ranks = {
+            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                for layer_id, expert_id in product(range(self.num_layers), 
+                                                   range(self.model_config.num_experts))
+        }
+        place.expert_ranks = expert_ranks
+        return place
+        
     def solve(self) -> ModelPlacement:
         place = self._solve(
             self.model_config.num_layers, self.model_config.num_experts,
             self.cluster_config.n_node, self.cluster_config.n_gpu
         )
         place = self._add_edges(place)
+        place = self._update_expert_rank(place)
         return place
 
 
@@ -243,7 +262,6 @@ class InterleavePlacement(PlacementBase):
         sampler = self.cluster_config.id_sampler
         
         attn = {attn_dev: [] for attn_dev in attn_devs}
-        print(attn)
         expert = {}
         for tp in exp_devs:
             for exp_dev in tp:
@@ -265,6 +283,7 @@ class InterleavePlacement(PlacementBase):
                 expert[exp_dev].append((i, j))
         
         return pg
+        
 
 class PipelinePlacement(PlacementBase):
     """
@@ -281,6 +300,8 @@ class PipelinePlacement(PlacementBase):
         V_{p+1}:    [Expert_1, Expert_{q+1}, Expert_{2q+1}, ...]
         ...
         V_{p+q-1}:  [Expert_{q-1}, Expert_{2q-1}, Expert_{3q-1}, ...]
+        
+        The index here for Attn/Expert **stands for the layer id**.
         
         We have:
             [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE - 1}]
@@ -321,8 +342,8 @@ class PipelinePlacement(PlacementBase):
                 
             attns[attn_dev].append(i)
             
-            for j in range(self.ep_size):
-                exp_dev = p * self.tp_size + (i % q) * self.ep_size + j
+            for j in range(self.model_config.num_experts):
+                exp_dev = p * self.tp_size + (i % q) * self.ep_size + (j % self.ep_size)
                 experts[exp_dev].append((i, j))
         
         return ModelPlacement(
@@ -333,6 +354,16 @@ class PipelinePlacement(PlacementBase):
     def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
         # TODO(hogura|20241212): implement the physical mapping by minimizing the cross-node communication
         return mp
+    
+    @override
+    def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
+        expert_ranks = {
+            (layer_id, expert_id): expert_id % self.ep_size
+                for layer_id, expert_id in product(range(self.num_layers),
+                                                   range(self.model_config.num_experts))
+        }
+        place.expert_ranks = expert_ranks
+        return place
     
     @override
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
@@ -348,7 +379,7 @@ class PipelinePlacement(PlacementBase):
 _placement_cls: Dict[str, PlacementBase] = {
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
-    "pipeline": PipelinePlacement
+    "pipeline": PipelinePlacement,
 }
 
 def get_model_placement(
@@ -364,5 +395,7 @@ def get_model_placement(
 
     solver = cls(model_config, cluster_config, *args, **kwargs)
     place: ModelPlacement = solver.solve()
+    
+    print(f"Model Placement: {place}")
     
     return place

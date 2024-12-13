@@ -55,6 +55,7 @@ class Engine:
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
         self.cache_config: CacheConfig = None
+        self.layer_ids = []
         
         if device_id is not None:
             self._logger = get_logger(f"engine{device_id}")
@@ -117,6 +118,7 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
+        self.layer_ids = layer_ids
         self.device_group_ids = device_group_ids
         if not self.model_config.tp_enable_inter_group:
             device_group_ids = None
@@ -244,7 +246,7 @@ class Engine:
                 (MAX_BATCH_SIZE + MAX_BATCH_SIZE + (MAX_BATCH_SIZE + 1) + (MAX_BATCH_SIZE + 1)), 
                 dtype=torch.int32, device="cuda")
         else:
-            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cuda")
+            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cpu")
             
         for i in range(self.model_config.num_layers):
             self.graphs.append([
@@ -319,7 +321,7 @@ class Engine:
         #  if the first layer in this attention worker, update block table and decode_seq_lens
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-        if meta_py.layer_id == self.model_config.layer_ids[0]:
+        if meta_py.layer_id == self.layer_ids[0]:
             # only update block table and decode_seq_lens in the first layer
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
@@ -615,7 +617,7 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cuda",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")

@@ -47,7 +47,7 @@ class BenchmarkMetrics:
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
 
 def launch(args):
-    cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
+    cluster_config = ClusterConfig(n_node=1, n_gpu=6,
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
 
@@ -59,7 +59,8 @@ def launch(args):
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph = args.cuda_graph
 
-    mp = get_model_placement(model_config, cluster_config, "interleave")
+    mp = get_model_placement(model_config, cluster_config, "pipeline", step_attn=4, step_expert=1, zigzag_attn=True)
+    # mp = get_model_placement(model_config, cluster_config, "interleave")
 
     global master
 
