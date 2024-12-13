@@ -24,7 +24,7 @@ class Executor:
     
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
-        self.num_layers = model_config.num_layers
+        self.num_layers = len(model_config.layer_ids)
         self.layer_mappings = {
             id: i for i, id in enumerate(model_config.layer_ids)
         }
