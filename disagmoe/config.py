@@ -16,6 +16,7 @@ class ModelConfig:
     dtype: torch.dtype
     ep_size: int
     tp_size: int = 1
+    dp_size: int = 1
     rank: int = 0
     
     tp_enable_inter_group: bool = True
