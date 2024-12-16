@@ -113,7 +113,8 @@ class Engine:
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: Tuple[str, str, str] = ("", "", "")
+            group_nccl_ids: Tuple[str, str, str] = ("", "", ""),
+            expert_ranks: List[Tuple[int, int, int]] = [],
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
@@ -139,10 +140,11 @@ class Engine:
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
                 for info in out_channel_infos],
             # Parallel config
-            ParallelConfig_C(
+            ParallelConfig.from_c(
                 self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
+                expert_ranks,
             ),
             # Group Channels
             in_nccl_ids,
@@ -774,7 +776,9 @@ class SamplerEngine(Engine):
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: str = ""):
+            group_nccl_ids: str = "",
+            expert_ranks: List[Tuple[int, int, int]] = [],
+        ):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
@@ -845,7 +849,9 @@ class TokenizerEngine(Engine):
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: str = ""):
+            group_nccl_ids: str = "",
+            expert_ranks: List[Tuple[int, int, int]] = [],
+        ):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

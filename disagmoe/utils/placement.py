@@ -11,6 +11,18 @@ from itertools import product
 class ParallelConfig:
     tp: int = 1
     ep: int = 1
+    n_exp_per_rank: int = 1
+    expert_ranks: Dict[Tuple[int, int], int] = None
+    
+    @staticmethod
+    def from_c(tp: int, ep: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+        from disagmoe_c import ParallelConfig as ParallelConfig_C
+        cfg = ParallelConfig_C()
+        cfg.tp = tp
+        cfg.ep = ep
+        cfg.n_exp_per_rank = n_exp_per_rank
+        cfg.expert_ranks = expert_ranks
+        return cfg
 
 @dataclass
 class ModelPlacement:
@@ -53,6 +65,14 @@ class ModelPlacement:
             return self.expert_rank_at(device_id, *args, **kwargs)
         else:
             return self.attn_rank_at(device_id)
+    
+    def out_expert_ranks_at(self, device_id: int) -> List[Tuple[int, int, int]]:
+        result = []
+        for dev_out in self.out_device_ids[device_id]:
+            if dev_out in self.expert:
+                for layer_id, expert_id in self.expert[dev_out]:
+                    result.append((layer_id, expert_id, self.expert_ranks[(layer_id, expert_id)]))
+        return result
     
     def attn_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])

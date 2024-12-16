@@ -144,8 +144,21 @@ MuAttnDispatcher::MuAttnDispatcher(
     }
     max_exp_id ++;
     DMOE_LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
-    exp_channels.resize(_encode(max_layer_id + 1, 0), -1);
+    exp_channels.resize((max_layer_id + 1) * max_exp_id, -1);
 
+    // get expert ranks
+    _inner_expert_ranks.resize(max_layer_id + 1);
+    for (int i = 0; i <= max_layer_id; i ++)
+        _inner_expert_ranks[i].resize(max_exp_id + 1, -1);
+    for (auto &tuple: cfg.expert_ranks) {
+        int layer_id = std::get<0>(tuple);
+        int exp_id = std::get<1>(tuple);
+        int rank = std::get<2>(tuple);
+        _inner_expert_ranks[layer_id][exp_id] = rank;
+        ASSERT(rank < max_exp_id);
+    }
+
+    // get expert channels
     for (int i = 0; i < channels.size(); i ++) {
         for (auto exp_id: out_channel_infos[i].expert_ids) {
             int id = _encode(exp_id.first, exp_id.second);
@@ -154,12 +167,13 @@ MuAttnDispatcher::MuAttnDispatcher(
     }
 }
 
-inline int MuAttnDispatcher::_get_rank(int exp_id) const {
-    return exp_id / cfg.n_exp_per_rank;
+inline int MuAttnDispatcher::_get_rank(int exp_layer_id, int exp_id) const {
+    ASSERT(_inner_expert_ranks[exp_layer_id][exp_id] >= 0);
+    return _inner_expert_ranks[exp_layer_id][exp_id];
 }
 
 inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
-    return exp_layer_id * this->max_exp_id + _get_rank(exp_id);
+    return exp_layer_id * this->max_exp_id + _get_rank(exp_layer_id, exp_id);
 }
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
@@ -172,8 +186,8 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
     int lid = batch.metadata->layer_id;
     for (int i = 0; i < n;) {
         int j = i + 1;
-        int ep_rank = _get_rank(batch.metadata->exp_ids[i]);
-        while (j < n && _get_rank(batch.metadata->exp_ids[j]) == ep_rank)
+        int ep_rank = _get_rank(lid, batch.metadata->exp_ids[i]);
+        while (j < n && _get_rank(lid, batch.metadata->exp_ids[j]) == ep_rank)
             j ++;
         ASSERT(ep_rank >= 0);
         int cid = _encode(lid, batch.metadata->exp_ids[i]);
