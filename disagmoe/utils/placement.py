@@ -119,9 +119,9 @@ class ClusterConfig:
 
 class PlacementBase:
     
-    def __init__(self, 
-                 model_config: ModelConfig,
-                 cluster_config: ClusterConfig):
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
+                 step_attn: int = 0, step_expert: int = 0, 
+                 zigzag_attn: bool = True):
         self.model_config = model_config
         self.cluster_config = cluster_config
         
@@ -149,6 +149,7 @@ class PlacementBase:
         for dev, layer_ids in place.expert.items():
             for layer_id, exp_id in layer_ids:
                 exp_devs[layer_id].append(dev)
+        
         for layer_id in range(self.num_layers):
             if layer_id == 0:
                 # tokenizer to the first layer
@@ -332,7 +333,7 @@ class PipelinePlacement(PlacementBase):
     
     """
     
-    def __init__(self, model_config, cluster_config, 
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
                  step_attn: int, step_expert: int, 
                  zigzag_attn: bool = True):
         super().__init__(model_config, cluster_config)
