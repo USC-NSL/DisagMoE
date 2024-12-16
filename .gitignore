@@ -174,3 +174,5 @@ third_party/
 # reports
 *.nsys-rep
 reports/
+steps_trace.json
+*.png
