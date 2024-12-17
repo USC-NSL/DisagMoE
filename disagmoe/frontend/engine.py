@@ -112,15 +112,37 @@ class Engine:
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: Tuple[str, str, str] = ("", "", "")
+            group_nccl_ids: Tuple[str, str, str] = ("", "", ""),
+            expert_ranks: List[Tuple[int, int, int]] = [],
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
+        self.model_config.layer_ids = layer_ids
         self.device_group_ids = device_group_ids
+        
+        if self.engine_type == EngineType.ATTENTION:
+            self.executor = AttnExecutor.build(self.model_config, self.cache_config)
+            self._process_batch = self.process_batch_attn
+            self.block_mgr = BlockManager_C(
+                self.cache_config.block_size, 
+                self.cache_config.num_gpu_blocks, 
+                self.cache_config.num_reserved_blocks
+            )
+            if self._intra_group_tp_enabled:
+                self._create_broadcast_buffers()
+        elif self.engine_type == EngineType.EXPERT:
+            self.executor = ExpertsExecutor(self.model_config)
+            self._process_batch = self.process_batch_expert
+            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+            for i in range(self.model_config.num_experts_per_rank):
+                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+                
         if not self.model_config.tp_enable_inter_group:
             device_group_ids = None
             out_device_group_ids = {}
+            
         self._logger.info(f"launching core: {layer_ids, in_device_ids, \
                           out_device_ids, out_channel_infos, \
                           in_nccl_ids, out_nccl_ids, out_device_group_ids, \
@@ -137,10 +159,11 @@ class Engine:
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
                 for info in out_channel_infos],
             # Parallel config
-            ParallelConfig_C(
+            ParallelConfig.from_c(
                 self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.num_experts_per_rank,
+                expert_ranks,
             ),
             # Group Channels
             in_nccl_ids,
@@ -207,24 +230,6 @@ class Engine:
         self.model_config = model_config
         self.cache_config = cache_config
         
-        if engine_type == EngineType.ATTENTION:
-            self.executor = AttnExecutor.build(model_config, cache_config)
-            self._process_batch = self.process_batch_attn
-            self.block_mgr = BlockManager_C(
-                cache_config.block_size, 
-                cache_config.num_gpu_blocks, 
-                cache_config.num_reserved_blocks
-            )
-            if self._intra_group_tp_enabled:
-                self._create_broadcast_buffers()
-        elif engine_type == EngineType.EXPERT:
-            self.executor = ExpertsExecutor(model_config)
-            self._process_batch = self.process_batch_expert
-            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-            self.inner_exp_rank = [0 for _ in range(model_config.num_experts_per_rank)]
-            for i in range(model_config.num_experts_per_rank):
-                self.inner_exp_rank[i] = model_config.num_experts_per_rank * rank + i
-        
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
 
     def _create_cuda_graph_contexts(self):
@@ -244,7 +249,7 @@ class Engine:
                 (MAX_BATCH_SIZE + MAX_BATCH_SIZE + (MAX_BATCH_SIZE + 1) + (MAX_BATCH_SIZE + 1)), 
                 dtype=torch.int32, device="cuda")
         else:
-            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cuda")
+            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cpu")
             
         for i in range(self.model_config.num_layers):
             self.graphs.append([
@@ -261,13 +266,14 @@ class Engine:
         meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         # warmup for CUBLAS
-        self.static_output, self.static_expert_ids = self.executor.execute(
-            0, self.static_positions, self.static_input, meta)
+        for _ in range(5):
+            self.static_output, self.static_expert_ids = self.executor.execute(
+                self.model_config.layer_ids[0], self.static_positions, self.static_input, meta)
         if self.model_config.tp_size > 1:
             group_sync()
             
         meta.use_cuda_graph = True
-        for layer_id in range(self.model_config.num_layers):
+        for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
                 meta_py = make_dummy_meta(graph_batch_size, 0)
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
@@ -281,7 +287,8 @@ class Engine:
                 graph.replay()
     
     def _warmup_expert(self):
-        self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
+        for _ in range(5):
+            self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
         self._logger.warning("Expert CUDA Graph is not implemented yet")
         return
         
@@ -615,7 +622,7 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cuda",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
@@ -693,7 +700,7 @@ class Engine:
             for i, size in enumerate(pool_snapshot):
                 if size <= 0: 
                     continue
-                layer = self.executor.layer_mappings[i]
+                layer = self.model_config.layer_ids[i]
                 pool_snapshot_dict[layer] = size
                 
             self._step_stats.append(
@@ -772,7 +779,9 @@ class SamplerEngine(Engine):
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: str = ""):
+            group_nccl_ids: str = "",
+            expert_ranks: List[Tuple[int, int, int]] = [],
+        ):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
@@ -843,7 +852,9 @@ class TokenizerEngine(Engine):
             out_device_group_ids: Dict[int, List[int]],
             out_nccl_ids: Dict[int, int],
             device_group_ids: List[int] = None,
-            group_nccl_ids: str = ""):
+            group_nccl_ids: str = "",
+            expert_ranks: List[Tuple[int, int, int]] = [],
+        ):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,

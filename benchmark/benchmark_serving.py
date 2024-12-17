@@ -47,19 +47,21 @@ class BenchmarkMetrics:
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
 
 def launch(args):
-    cluster_config = ClusterConfig(n_node=1, n_gpu=3, 
+    cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
 
     model_config = duo_expert_mixtral
-    model_config.num_layers = 32
-    model_config.ep_size = 2
-    model_config.num_experts = 8
-    model_config.tp_size = 1
+    model_config.num_layers = args.num_layers
+    model_config.ep_size = args.ep_size
+    model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph = args.cuda_graph
 
-    mp = get_model_placement(model_config, cluster_config, "interleave")
+    mp = get_model_placement(model_config, cluster_config, args.placement, 
+                             step_attn=args.step_attn, step_expert=args.step_expert, 
+                             zigzag_attn=args.zigzag_attn)
+    # mp = get_model_placement(model_config, cluster_config, "interleave")
 
     global master
 
@@ -202,7 +204,23 @@ def get_args():
     parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     
+    # model config
+    parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
+    parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
+    parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
+    parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
+    parser.add_argument("--num-layers", type=int, default=32, help="number of layers")
+    
+    # placement config
+    parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
+    parser.add_argument("--zigzag-attn", action="store_true", default=True, help="enable zigzag attention placment")
+    parser.add_argument("--step-attn", type=int, default=2, help="number of steps in attention placement")
+    parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
+    
     args = parser.parse_args()
+    
+    if args.num_gpus % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
+        print("Warning: number of gpus is not divisible by the number of placement steps")
     
     if args.nsys:
         assert args.profile_dir is None, "cannot enable both nsys and torch profiler"

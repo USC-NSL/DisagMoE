@@ -82,11 +82,13 @@ protected:
     std::vector<int> exp_channels;
     int max_exp_id;
 
+    std::vector<std::vector<int>> _inner_expert_ranks;
+
     void _send_once(TensorBatch batch) override;
 
     int _encode(int exp_layer_id, int exp_id) const;
 
-    int _get_rank(int exp_id) const;
+    int _get_rank(int exp_layer_id, int exp_id) const;
 
 public:
     MuAttnDispatcher(std::vector<int> layer_ids, 

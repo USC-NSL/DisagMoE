@@ -652,6 +652,9 @@ struct ParallelConfig {
     int ep = 1;
     int n_exp_per_rank = 1;
 
-    ParallelConfig(int tp, int ep, int n_exp_per_rank): 
-        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank) {}
+    // (layer_id, expert_id, expert_rank)
+    std::vector<std::tuple<int, int, int>> expert_ranks = {};
+
+    ParallelConfig(int tp = 1, int ep = 1, int n_exp_per_rank = 1, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
+        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank), expert_ranks(expert_ranks) {}
 };

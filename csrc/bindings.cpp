@@ -1,4 +1,7 @@
 #include <pybind11/pybind11.h>
+#include <pybind11/functional.h>
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
 #include <pybind11/stl.h>
 
 #include "tests.h"
@@ -12,6 +15,8 @@
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
+
+PYBIND11_MAKE_OPAQUE(std::map<std::pair<int, int>, int>);
 
 namespace py = pybind11;
 
@@ -67,10 +72,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_STRUCT(TokenMetadata);
 
     py::class_<ParallelConfig>(m, "ParallelConfig")
-        .def(py::init<int, int, int>())
+        .def(py::init<>())
         .def_readwrite("tp", &ParallelConfig::tp)
         .def_readwrite("ep", &ParallelConfig::ep)
-        .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank);
+        .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
+        .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
 
     REGISTER_STRUCT(AttentionBatch)
         .def_readwrite("data", &AttentionBatch::data)

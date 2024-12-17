@@ -244,6 +244,7 @@ class Controller:
                 device_group_ids=model_place.device_groups.get(device_id, []),
                 group_nccl_ids=group_nccl_ids.get(
                     tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
+                expert_ranks=model_place.out_expert_ranks_at(device_id),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 
