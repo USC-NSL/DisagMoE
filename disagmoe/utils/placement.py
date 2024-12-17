@@ -5,10 +5,24 @@ from disagmoe.config import ModelConfig
 from typing import Dict, Tuple, Optional, Union, List, override
 from dataclasses import dataclass
 
+from itertools import product
+
 @dataclass
 class ParallelConfig:
     tp: int = 1
     ep: int = 1
+    n_exp_per_rank: int = 1
+    expert_ranks: Dict[Tuple[int, int], int] = None
+    
+    @staticmethod
+    def from_c(tp: int, ep: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+        from disagmoe_c import ParallelConfig as ParallelConfig_C
+        cfg = ParallelConfig_C()
+        cfg.tp = tp
+        cfg.ep = ep
+        cfg.n_exp_per_rank = n_exp_per_rank
+        cfg.expert_ranks = expert_ranks
+        return cfg
 
 @dataclass
 class ModelPlacement:
@@ -26,12 +40,16 @@ class ModelPlacement:
     
     device_groups: Dict[int, List[int]] = None
     
+    # (layer_id, expert_id) -> expert_rank_id
+    expert_ranks: Dict[Tuple[int, int], int] = None
+    
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
+        assert self.expert_ranks is not None
         ids = self.expert[device_id]
         ranks = []
         for layer_id, expert_id in ids:
-            ranks.append(expert_id // num_expert_per_rank)
+            ranks.append(self.expert_ranks[(layer_id, expert_id)])
         assert len(set(ranks)) == 1
         return ranks[0]
     
@@ -48,6 +66,14 @@ class ModelPlacement:
         else:
             return self.attn_rank_at(device_id)
     
+    def out_expert_ranks_at(self, device_id: int) -> List[Tuple[int, int, int]]:
+        result = []
+        for dev_out in self.out_device_ids[device_id]:
+            if dev_out in self.expert:
+                for layer_id, expert_id in self.expert[dev_out]:
+                    result.append((layer_id, expert_id, self.expert_ranks[(layer_id, expert_id)]))
+        return result
+    
     def attn_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])
     
@@ -55,9 +81,9 @@ class ModelPlacement:
         return self.expert.get(device_id, [])
         
     def layer_ids_at(self, device_id: int) -> List[int]:
-        return list(set(
+        return sorted(list(set(
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
-        ))
+        )))
         
     def add_edge(self, start, end):
         assert start != end
@@ -93,14 +119,84 @@ class ClusterConfig:
 
 class PlacementBase:
     
-    def __init__(self, 
-                 model_config: ModelConfig,
-                 cluster_config: ClusterConfig):
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
+                 step_attn: int = 0, step_expert: int = 0, 
+                 zigzag_attn: bool = True):
         self.model_config = model_config
         self.cluster_config = cluster_config
         
-    def solve(self) -> ModelPlacement:
+    @property
+    def tp_size(self):
+        return self.model_config.tp_size
+    
+    @property
+    def ep_size(self):
+        return self.model_config.ep_size
+    
+    @property
+    def num_layers(self):
+        return self.model_config.num_layers
+        
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         raise NotImplementedError()
+    
+    def _add_edges(self, place: ModelPlacement) -> ModelPlacement:
+        attn_devs = { layer_id: [] for layer_id in range(self.num_layers) }
+        exp_devs = { layer_id: [] for layer_id in range(self.num_layers) }
+        for dev, layer_ids in place.attn.items():
+            for layer_id in layer_ids:
+                attn_devs[layer_id].append(dev)
+        for dev, layer_ids in place.expert.items():
+            for layer_id, exp_id in layer_ids:
+                exp_devs[layer_id].append(dev)
+        
+        for layer_id in range(self.num_layers):
+            if layer_id == 0:
+                # tokenizer to the first layer
+                for dev in attn_devs[layer_id]:
+                    place.add_edge(place.tokenizer, dev)
+                    
+                # add edges from sampler back to the first attn
+                for dev in attn_devs[layer_id]:
+                    if self.model_config.tp_size > 1 and place.is_worker_device(dev):
+                        # if TP is enabled, the sampler should only connect to driver attn
+                        continue
+                    place.add_edge(place.sampler, dev)
+            else:
+                # last exp to current attn
+                for dev in attn_devs[layer_id]:
+                    for prev_dev in exp_devs[layer_id - 1]:
+                        place.add_edge(prev_dev, dev)
+            # the last layer to sampler
+            if layer_id == self.model_config.num_layers - 1:
+                for dev in exp_devs[layer_id]:
+                    place.add_edge(dev, place.sampler)
+            # current attn to current exp
+            for dev in attn_devs[layer_id]:
+                for exp_dev in exp_devs[layer_id]:
+                    place.add_edge(dev, exp_dev)
+        return place
+        
+    def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
+        """
+            default EP worker rank is `expert_id // num_experts_per_rank` for each expert
+        """
+        expert_ranks = {
+            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                for layer_id, expert_id in product(range(self.num_layers), 
+                                                   range(self.model_config.num_experts))
+        }
+        place.expert_ranks = expert_ranks
+        return place
+        
+    def solve(self) -> ModelPlacement:
+        place = self._solve(
+            self.model_config.num_layers, self.model_config.num_experts,
+            self.cluster_config.n_node, self.cluster_config.n_gpu
+        )
+        place = self._add_edges(place)
+        place = self._update_expert_rank(place)
+        return place
 
 
 class SinglePlacement(PlacementBase):
@@ -110,13 +206,10 @@ class SinglePlacement(PlacementBase):
         self.rep_attn = rep_attn
     
     @override
-    def solve(self) -> ModelPlacement:
-        n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
-        n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
-        
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         # 1 attn, n_expert experts
         # tokenizer and sampler do not use gpu.
-        assert n_layer * (self.rep_attn + n_expert) <= n_node * n_gpu
+        assert n_layer * (self.rep_attn + n_expert) <= n_node * n_gpu_per_node
         # not considering gpu_cap yet
         attn = {}
         expert = {}
@@ -132,8 +225,8 @@ class SinglePlacement(PlacementBase):
             for j in range(self.rep_attn):
                 i_attn = next(node_id)
                 attn[i_attn] = [i]
-                for i_expert in i_last_experts:
-                    pg.add_edge(i_expert, i_attn)
+                # for i_expert in i_last_experts:
+                #     pg.add_edge(i_expert, i_attn)
                 attns.append(i_attn)
             
             i_last_experts = []
@@ -141,10 +234,10 @@ class SinglePlacement(PlacementBase):
                 i_expert = next(node_id)
                 i_last_experts.append(i_expert)
                 expert[i_expert] = [(i, j)]
-                for i_attn in attns:
-                    pg.add_edge(i_attn, i_expert)
-                if i == n_layer - 1:
-                    pg.add_edge(i_expert, i_sampler)
+                # for i_attn in attns:
+                #     pg.add_edge(i_attn, i_expert)
+                # if i == n_layer - 1:
+                #     pg.add_edge(i_expert, i_sampler)
         assert len(attn) == n_layer * self.rep_attn
         assert len(pg.in_device_ids) == n_layer * (self.rep_attn + n_expert) + 1
         assert len(pg.out_device_ids) == n_layer * (self.rep_attn + n_expert) + 1
@@ -164,14 +257,12 @@ class InterleavePlacement(PlacementBase):
     """
     
     @override
-    def solve(self) -> ModelPlacement:
-        n_layer, n_expert = self.model_config.num_layers, self.model_config.num_experts
-        n_node, n_gpu = self.cluster_config.n_node, self.cluster_config.n_gpu
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         tp_size = self.model_config.tp_size
         
         # tokenizer & sampler do not use GPU.
-        assert n_node * n_gpu % (self.model_config.ep_size + tp_size) == 0
-        n_group = n_node * n_gpu // (self.model_config.ep_size + tp_size)
+        assert n_node * n_gpu_per_node % (self.model_config.ep_size + tp_size) == 0
+        n_group = n_node * n_gpu_per_node // (self.model_config.ep_size + tp_size)
 
         node_iter = Counter()
         attn_devs = []
@@ -192,7 +283,6 @@ class InterleavePlacement(PlacementBase):
         sampler = self.cluster_config.id_sampler
         
         attn = {attn_dev: [] for attn_dev in attn_devs}
-        print(attn)
         expert = {}
         for tp in exp_devs:
             for exp_dev in tp:
@@ -202,7 +292,6 @@ class InterleavePlacement(PlacementBase):
             attn, expert, tokenizer, sampler, {}, {}, device_groups
         )
         
-        last_experts = []
         for i in range(n_layer):
             # attn driver
             attn_driver = attn_devs[i % n_group * tp_size]
@@ -210,28 +299,108 @@ class InterleavePlacement(PlacementBase):
             for j in range(tp_size):
                 attn[attn_driver + j].append(i)
                 
-            if i == 0:
-                pg.add_edge(tokenizer, attn_driver)
-            for e in last_experts:
-                pg.add_edge(e, attn_driver)
-            last_experts = []
-            # NOTE(hogura|20240904): here assume ep == n_local_expert
             for j in range(n_expert):
                 exp_dev = exp_devs[i % n_group][j]
                 expert[exp_dev].append((i, j))
-                pg.add_edge(attn_driver, exp_dev)
-                last_experts.append(exp_dev)
-            if tp_size > 1:
-                pass
-                
-        for e in last_experts:
-            pg.add_edge(e, sampler)
         
         return pg
+        
+
+class PipelinePlacement(PlacementBase):
+    """
+        Parameters: p=step_attn, q=step_exp
+    
+        First we get virtual mapping:
+    
+        V_0:        [Attn_0, Attn_p, Attn_{2p}, ...]
+        V_1:        [Attn_1, Attn_{p+1}, Attn_{2p+1}, ...]
+        ...
+        V_{p-1}:    [Attn_{p-1}, Attn_{2p-1}, Attn_{3p-1}, ...]
+        
+        V_p:        [Expert_0, Expert_q, Expert_{2q}, ...]
+        V_{p+1}:    [Expert_1, Expert_{q+1}, Expert_{2q+1}, ...]
+        ...
+        V_{p+q-1}:  [Expert_{q-1}, Expert_{2q-1}, Expert_{3q-1}, ...]
+        
+        The index here for Attn/Expert **stands for the layer id**.
+        
+        We have:
+            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE - 1}]
+            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE}, G_{p * TP_SIZE + q * EP_SIZE - 1}]
+        
+        Ideally, we need a physical mapping to minimize the cross-node communication.
+        TODO(hogura|20241212): leave this auto optimization as future work.
+    
+    """
+    
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
+                 step_attn: int, step_expert: int, 
+                 zigzag_attn: bool = True):
+        super().__init__(model_config, cluster_config)
+        self.step_attn = step_attn
+        self.step_expert = step_expert
+        self.zigzag_attn = zigzag_attn
+    
+    def _solve_virtual(self) -> ModelPlacement:
+        p = self.step_attn
+        q = self.step_expert
+        
+        attns = {
+            i: [] for i in range(p * self.tp_size)
+        }
+        experts = {
+            i: [] for i in range(p * self.tp_size, p * self.tp_size + q * self.ep_size)
+        }
+        device_groups = {
+            i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p)
+        }
+        
+        for i in range(self.num_layers):
+            if self.zigzag_attn:
+                attn_dev = (i % p) * self.tp_size
+            else:
+                attn_dev = i // (self.num_layers // p) * self.tp_size
+                
+            attns[attn_dev].append(i)
+            
+            for j in range(self.model_config.num_experts):
+                exp_dev = p * self.tp_size + (i % q) * self.ep_size + (j % self.ep_size)
+                experts[exp_dev].append((i, j))
+        
+        return ModelPlacement(
+            attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, {}, {},
+            device_groups=device_groups
+        )
+    
+    def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
+        # TODO(hogura|20241212): implement the physical mapping by minimizing the cross-node communication
+        return mp
+    
+    @override
+    def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
+        expert_ranks = {
+            (layer_id, expert_id): expert_id % self.ep_size
+                for layer_id, expert_id in product(range(self.num_layers),
+                                                   range(self.model_config.num_experts))
+        }
+        place.expert_ranks = expert_ranks
+        return place
+    
+    @override
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
+        n_gpus = n_node * n_gpu_per_node
+        p = self.step_attn
+        q = self.step_expert
+        assert n_gpus >= p * self.tp_size + q * self.ep_size
+        mp = self._solve_virtual()
+        mp = self._solve_physical(mp)
+        return mp
+        
 
 _placement_cls: Dict[str, PlacementBase] = {
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
+    "pipeline": PipelinePlacement,
 }
 
 def get_model_placement(
@@ -248,15 +417,6 @@ def get_model_placement(
     solver = cls(model_config, cluster_config, *args, **kwargs)
     place: ModelPlacement = solver.solve()
     
-    # add edges from sampler back to the first attn
-    # NOTE(hogura|20241107): only connect to driver when tp_size > 1
-    for dev, layer_ids in place.attn.items():
-        if place.is_worker_device(dev):
-            continue
-        if 0 in layer_ids:
-            place.add_edge(
-                place.sampler,
-                dev
-            )
+    print(f"Model Placement: {place}")
     
     return place

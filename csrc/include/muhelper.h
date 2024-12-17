@@ -82,11 +82,13 @@ protected:
     std::vector<int> exp_channels;
     int max_exp_id;
 
+    std::vector<std::vector<int>> _inner_expert_ranks;
+
     void _send_once(TensorBatch batch) override;
 
     int _encode(int exp_layer_id, int exp_id) const;
 
-    int _get_rank(int exp_id) const;
+    int _get_rank(int exp_layer_id, int exp_id) const;
 
 public:
     MuAttnDispatcher(std::vector<int> layer_ids, 
@@ -138,6 +140,8 @@ protected:
     int largest_batch_layer_id_{-1};
     std::vector<int> tokens_per_layer_;
 
+    int max_batch_size;
+
     virtual int tokens_in_layer(int lid);
 
     void recv_metadata(int &peer_id, metadata_t &meta);
@@ -168,6 +172,8 @@ public:
     std::vector<TensorBatch> fetch_largest_batch();
 
     void maintain_largest_batch();
+
+    std::vector<int> get_pool_snapshot();
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;
@@ -208,6 +214,8 @@ public:
     void run() override;
 
     void terminate() override;
+
+    void set_max_batch_size(int max_batch_size);
 
     // for debug use only
     void __set_attn_data_queue(

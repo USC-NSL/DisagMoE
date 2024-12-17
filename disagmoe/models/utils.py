@@ -1,5 +1,9 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from typing import Tuple
+from torch.nn.utils.rnn import pad_sequence
+from dataclasses import dataclass
+from typing import Optional
 import torch.distributed as dist
 
 import torch
@@ -81,6 +85,97 @@ def unpack_flash_attn_meta(buffer_meta: torch.Tensor,
         use_cuda_graph=False
     )
     
+
+def make_seqlens(lens):
+    seqlen = [0]
+    for l in lens:
+        seqlen.append(seqlen[-1] + l)
+    return torch.tensor(seqlen, dtype=torch.int32, device=torch.get_default_device())
+
+def make_naive_mapping(block_size, lens, mode):
+    block_table = []
+    slots_table = []
+    allocated_blocks = 4
+    for l in lens:
+        num_blocks = (l + block_size) // block_size
+        start = allocated_blocks
+        end = num_blocks + allocated_blocks
+        block_list = list(range(start, end))
+        allocated_blocks = end
+        block_table.append(torch.tensor(block_list, dtype=torch.int32))
+        if mode == "prefill":
+            start_slot = start * block_size
+            end_slot = start_slot + l
+            slots_list = list(range(start_slot, end_slot))
+            slots_table.extend(slots_list)
+        elif mode == "decode":
+            end_slot = start * block_size + l - 1
+            slots_table.append(end_slot)
+        else:
+            assert False
+            
+    block_table = pad_sequence(block_table, batch_first=True, padding_value=0)
+    slots_table = torch.tensor(slots_table, dtype=torch.long)
+    return block_table, slots_table
+
+def make_prefill_meta(num_prefills: int, block_size: int):
+    lens = [1 for _ in range(num_prefills)]
+    seqlens = torch.tensor(lens)
+    num_prefill_tokens = sum(lens)
+    seqlens = torch.tensor(lens, dtype=torch.int32, device=torch.get_default_device())
+    seqlens_q = make_seqlens(lens)
+    context_lens_tensor = [0] * num_prefills
+    seqlens_kv = seqlens_q
+    max_seqlen_q = max(lens)
+    max_seqlen_kv = max_seqlen_q
+    block_table, slot_mapping = make_naive_mapping(block_size, lens, "prefill")
+    meta = FlashAttentionMetadata(
+        num_prefills=num_prefills,
+        num_prefill_tokens=num_prefill_tokens,
+        num_decode_tokens=0,
+        slot_mapping=slot_mapping,
+        seq_lens=lens,
+        seq_lens_tensor=seqlens,
+        max_query_len=max_seqlen_q,
+        max_prefill_seq_len=max_seqlen_q,
+        max_decode_seq_len=0,
+        query_start_loc=seqlens_q,
+        seq_start_loc=seqlens_kv,
+        context_lens_tensor=context_lens_tensor,
+        block_tables=torch.tensor([]),
+        use_cuda_graph=False,
+    )
+    return meta
+
+def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int):
+    bs = num_prefill_tokens + num_decode_tokens
+    meta = AttentionBatchMetadata(
+        0,
+        [num_decode_tokens + num_prefill_tokens, 1],
+        "bf16",
+        num_prefill_tokens,
+        num_prefill_tokens,
+        num_decode_tokens,
+        [0] * bs,
+        [0] * bs,
+        [0] * bs,
+        [0] * bs
+    )
+    return meta
+
+@dataclass
+class CudaGraphContext:
+    graph: torch.cuda.CUDAGraph
+    # static_input: torch.Tensor
+    # static_output: torch.Tensor
+    
+    # # attn buffers
+    # static_expert_ids: Optional[torch.Tensor] = None
+    # static_positions: Optional[torch.Tensor] = None
+    
+    # # expert buffers
+    # static_expert_mappings: Optional[torch.Tensor] = None
+
 def broadcast_pyobj(
     data: List[Any],
     rank: int,

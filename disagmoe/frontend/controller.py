@@ -10,7 +10,7 @@ from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_grou
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat
 from disagmoe.utils.placement import ModelPlacement
-from disagmoe.utils.utils import get_nccl_unique_id
+from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
 from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
@@ -39,15 +39,6 @@ class AsyncResult:
             self.finish_cond.notify()
         
 
-class RequestIDGenerator:
-        
-    def __init__(self):
-        self._req_id = 0
-        
-    def next(self) -> int:
-        self._req_id += 1
-        return self._req_id
-
 class Controller:
     
     def __init__(self, n_node: int, n_gpu_per_node: int, enable_nsys=False):
@@ -62,7 +53,7 @@ class Controller:
         self.sampler_worker = None
         self.tokenizer_worker = None
         self._profile_enabled = False
-        self.req_id_generator = RequestIDGenerator()
+        self.req_id_generator = Counter(start=1)
         self.in_flight_reqs = set()
         self.end_flag = False
         self.request_results: Dict[int, AsyncResult] = dict()
@@ -253,6 +244,7 @@ class Controller:
                 device_group_ids=model_place.device_groups.get(device_id, []),
                 group_nccl_ids=group_nccl_ids.get(
                     tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
+                expert_ranks=model_place.out_expert_ranks_at(device_id),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -275,7 +267,7 @@ class Controller:
             ray.get(tasks)
     
     def get_new_req_id(self) -> int:
-        req_id = self.req_id_generator.next()
+        req_id = next(self.req_id_generator)
         self.in_flight_reqs.add(req_id)
         return req_id
     
@@ -290,6 +282,9 @@ class Controller:
         for result in results:
             await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
+
+    def fetch_step_stats(self) -> List[List[StepInfo]]:
+        return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
     async def poll_finished_results(self) -> List[SloStat]:
         print(f"master start polling request")

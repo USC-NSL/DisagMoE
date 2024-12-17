@@ -2,6 +2,7 @@
 #include "utils.hpp"
 #include "block_manager.h"
 #include "cuda_utils.h"
+#include "constants.h"
 
 #include <exception>
 #include <vector>
@@ -27,6 +28,7 @@ void Scheduler::start() {
 }
 
 std::vector<TensorBatch> Scheduler::_schedule() {
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
 }
 
@@ -42,8 +44,6 @@ void Scheduler::wait_for_new_requests() {
     pool->wait_for_new_requests();
 }
 
-
-
 attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     if (policy == "largest") {
         return std::make_shared<AttentionScheduler>(pool, layer_ids);
@@ -54,8 +54,13 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
 
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE) {
     
+}
+
+void AttentionScheduler::set_max_batch_size(int max_batch_size) {
+    this->max_batch_size = max_batch_size;
+    this->pool->set_max_batch_size(max_batch_size);
 }
 
 void AttentionScheduler::start() {
@@ -63,6 +68,7 @@ void AttentionScheduler::start() {
 }
 
 std::vector<AttentionBatch> AttentionScheduler::_schedule() {
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
 }
 
@@ -90,6 +96,7 @@ AttentionDriverScheduler::AttentionDriverScheduler(
 AttentionBatch AttentionDriverScheduler::schedule() {
     tx_range _{"AttentionDriverScheduler::schedule"};
     int layer_id;
+    this->pool_snapshot_ = pool->get_pool_snapshot();
     std::vector<AttentionBatch> batches = pool->fetch_largest_batch(&layer_id);
     if (layer_id == -1) {
         return AttentionBatch{};

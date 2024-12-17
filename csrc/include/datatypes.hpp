@@ -21,9 +21,16 @@
 
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
-    std::vector<T> res;
-    for (int i = l; i < r; i ++)    
-        res.emplace_back(std::move(a[i]));
+    std::vector<T> res{};
+    res.clear();
+    if (r < 0)
+        r = a.size();
+    if (l == r)
+        return {};
+    ASSERT(l <= r);
+    res.reserve(r - l);
+    for (auto i = a.begin() + l; i != a.begin() + r; i ++)
+        res.emplace_back(*i);
     return res;
 }
 
@@ -418,6 +425,82 @@ struct AttentionBatchMetadata {
         return num_decode_tokens * shape[1] * get_datatype_size();
     }
 
+    std::pair<attn_metadata_t, attn_metadata_t> split(int p) {
+        /*
+            Split the Metadata into [0, p) and [p, n)
+        */
+
+        // TODO(hogura|20241206): here we assume #prefill_len=1
+        ASSERT(num_prefill_tokens == num_prefill_seqs);
+        ASSERT(p > 0);
+        if (p < num_prefill_tokens) {
+            ASSERT(seq_ids.size() >= p);
+            ASSERT(prefill_seq_len.size() >= p);
+            ASSERT(prefill_query_len.size() >= p);
+            return std::make_pair(
+                std::make_shared<AttentionBatchMetadata> (
+                    AttentionBatchMetadata {
+                        layer_id,
+                        {(size_t) p, shape[1]},
+                        dtype,
+                        p,
+                        p,
+                        0,
+                        slice_vector(seq_ids, 0, p),
+                        slice_vector(prefill_seq_len, 0, p),
+                        slice_vector(prefill_query_len, 0, p),
+                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{}
+                    }
+                ),
+                std::make_shared<AttentionBatchMetadata> (
+                    AttentionBatchMetadata {
+                        layer_id,
+                        {(size_t) (shape[0] - p), shape[1]},
+                        dtype,
+                        num_prefill_seqs - p,
+                        num_prefill_tokens - p,
+                        num_decode_tokens,
+                        slice_vector(seq_ids, p, -1),
+                        slice_vector(prefill_seq_len, p, -1),
+                        slice_vector(prefill_query_len, p, -1),
+                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{}
+                    }
+                )
+            );
+        } else {
+            return std::make_pair(
+                std::make_shared<AttentionBatchMetadata> (
+                    AttentionBatchMetadata {
+                        layer_id,
+                        {(size_t) p, shape[1]},
+                        dtype,
+                        num_prefill_seqs,
+                        num_prefill_tokens,
+                        p - num_prefill_tokens,
+                        slice_vector(seq_ids, 0, p),
+                        prefill_seq_len,
+                        prefill_query_len,
+                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{}
+                    }
+                ),
+                std::make_shared<AttentionBatchMetadata> (
+                    AttentionBatchMetadata {
+                        layer_id,
+                        {(size_t) (shape[0] - p), shape[1]},
+                        dtype,
+                        0,
+                        0,
+                        num_decode_tokens - (p - num_prefill_tokens),
+                        slice_vector(seq_ids, p, -1),
+                        std::vector<int>{},
+                        std::vector<int>{},
+                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{}
+                    }
+                )
+            );
+        }
+    }
+
     static attn_metadata_t merge(const std::vector<attn_metadata_t>& batches) {
         AUTO_TX_RANGE;
         
@@ -569,6 +652,9 @@ struct ParallelConfig {
     int ep = 1;
     int n_exp_per_rank = 1;
 
-    ParallelConfig(int tp, int ep, int n_exp_per_rank): 
-        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank) {}
+    // (layer_id, expert_id, expert_rank)
+    std::vector<std::tuple<int, int, int>> expert_ranks = {};
+
+    ParallelConfig(int tp = 1, int ep = 1, int n_exp_per_rank = 1, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
+        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank), expert_ranks(expert_ranks) {}
 };

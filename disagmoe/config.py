@@ -16,17 +16,16 @@ class ModelConfig:
     dtype: torch.dtype
     ep_size: int
     tp_size: int = 1
+    dp_size: int = 1
     rank: int = 0
+    layer_ids: Optional[List[int]] = None
     
     tp_enable_inter_group: bool = True
+    enable_cuda_graph: bool = False
     
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size
-    
-    @property
-    def layer_ids(self):
-        return list(range(self.num_layers))
     
 @dataclass
 class CacheConfig(vllm.config.CacheConfig):
