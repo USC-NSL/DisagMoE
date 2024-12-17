@@ -2,7 +2,7 @@ from disagmoe.frontend.controller import init_controller, Controller, AsyncResul
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, duo_expert_mixtral, SamplingConfig
+from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat
 from typing import List
 from argparse import ArgumentParser
@@ -51,12 +51,13 @@ def launch(args):
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)
 
-    model_config = duo_expert_mixtral
+    model_config = mixtral_config
     model_config.num_layers = args.num_layers
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph = args.cuda_graph
+    model_config.num_experts = args.num_experts
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -205,11 +206,12 @@ def get_args():
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     
     # model config
-    parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
+    parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
     parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
-    parser.add_argument("--num-layers", type=int, default=32, help="number of layers")
+    parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
+    parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
@@ -219,8 +221,11 @@ def get_args():
     
     args = parser.parse_args()
     
-    if args.num_gpus % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
+    if (args.num_nodes * args.num_gpus) % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
         print("Warning: number of gpus is not divisible by the number of placement steps")
+    
+    assert args.ep_size <= args.num_experts, "expert parallel size must be smaller than number of experts"
+    assert args.num_experts % args.ep_size == 0, "number of experts must be divisible by expert parallel size"
     
     if args.nsys:
         assert args.profile_dir is None, "cannot enable both nsys and torch profiler"

@@ -10,6 +10,7 @@ _env_vars = {
     "MASTER_ADDR": "localhost",
     "MASTER_PORT": "26500",
     "TORCH_NCCL_BLOCKING_WAIT": "0",
+    "GROUPED_GEMM_CUTLASS": "",
 }
 
 ENV_VARS = {

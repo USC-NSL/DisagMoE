@@ -17,6 +17,7 @@ from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
                                    make_prefill_meta, make_dummy_meta, CudaGraphContext)
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
+from disagmoe.env import ENV_VARS
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
@@ -249,7 +250,8 @@ class Engine:
                 (MAX_BATCH_SIZE + MAX_BATCH_SIZE + (MAX_BATCH_SIZE + 1) + (MAX_BATCH_SIZE + 1)), 
                 dtype=torch.int32, device="cuda")
         else:
-            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, device="cpu")
+            self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
+                                                  device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
             
         for i in range(self.model_config.num_layers):
             self.graphs.append([
@@ -622,7 +624,8 @@ class Engine:
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
             dtype=torch.int64,
-            device="cpu",   # NOTE(hogura|20241014): grouped_gemm requires batch_sizes to be on cpu
+            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
+            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu",
         )
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
