@@ -239,7 +239,8 @@ class Engine:
         self.static_input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
         self.static_output = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
         if self.is_attn:
-            self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, ), dtype=torch.long, device="cuda")
+            self.static_expert_ids = torch.zeros((MAX_BATCH_SIZE, self.model_config.top_k), dtype=torch.long, device="cuda")
+            self.static_expert_weights = torch.zeros((MAX_BATCH_SIZE, self.model_config.top_k), device="cuda")
             self.static_positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long, device="cuda")
             self.static_block_table = torch.zeros(
                 (MAX_BATCH_SIZE, self.cache_config.num_gpu_blocks), 
@@ -269,7 +270,7 @@ class Engine:
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         # warmup for CUBLAS
         for _ in range(5):
-            self.static_output, self.static_expert_ids = self.executor.execute(
+            self.static_output, self.static_expert_weights, self.static_expert_ids = self.executor.execute(
                 self.model_config.layer_ids[0], self.static_positions, self.static_input, meta)
         if self.model_config.tp_size > 1:
             group_sync()
@@ -281,7 +282,7 @@ class Engine:
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
                 self._logger.info(f"CUDA Graph warmuping layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
-                    self.static_output, self.static_expert_ids = self.executor.execute(
+                    self.static_output, self.static_expert_weights, self.static_expert_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
                 torch.cuda.synchronize()
                 
@@ -568,7 +569,9 @@ class Engine:
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
         # TODO(hogura|20241014): fill the real positions
-        positions = torch.zeros(input_tensor.shape[0], dtype=torch.long, device="cuda")
+
+        num_tokens = input_tensor.shape[0]
+        positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
@@ -581,21 +584,29 @@ class Engine:
         
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
-        # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph:
-            hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
+            # topk_weights and expert_ids: [batch_size, top_k]
+            hiddens, expert_weights, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
         else:
-            num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens)
             self.static_input[:num_tokens].copy_(input_tensor)
             self.graphs[meta_c.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
+            expert_weights = self.static_expert_weights[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
             torch.cuda.synchronize()
-        
-        expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
-        expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
+
+
+        # FIXME: here we randomize expert_ids and expert_weights
+        expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, self.model_config.top_k), device="cuda")
+        expert_weights = torch.rand((num_tokens, self.model_config.top_k), device="cuda")
+        expert_weights = expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+
+        print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
+
+        # FIXME: we first pick top1 expert for each token
+        expert_ids = expert_ids[:, 0].tolist()
         
         # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
