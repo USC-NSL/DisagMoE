@@ -19,6 +19,7 @@ class ModelConfig:
     dp_size: int = 1
     rank: int = 0
     layer_ids: Optional[List[int]] = None
+    top_k: int = 1
     
     tp_enable_inter_group: bool = True
     enable_cuda_graph: bool = False
@@ -63,6 +64,7 @@ mixtral_config = ModelConfig(
     intermediate_size = 14336,
     dtype = torch.bfloat16,
     ep_size = 8,
+    top_k = 2,
 )
 
 duo_expert_mixtral = ModelConfig(
