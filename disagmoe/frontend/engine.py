@@ -185,14 +185,16 @@ class Engine:
         if self.is_attn:
             self.attn_scheduler.set_max_batch_size(MAX_BATCH_SIZE)
         
-        if self.model_config.enable_cuda_graph and self.engine_type not in [EngineType.TOKENIZER, EngineType.SAMPLER]:
+        if self.model_config.enable_cuda_graph:
             self._create_cuda_graph_contexts()
-            self._cuda_graph_warmup()
+            self._cuda_graph_capture()
+
+        self._warmup()
         
         self._logger.info("core launched")
         
     def _switch_scheduler(self):
-        if self.scheduler == None:
+        if self.scheduler is None:
             self.scheduler = self.attn_scheduler
     
     def start(self):
@@ -258,13 +260,39 @@ class Engine:
                 torch.cuda.CUDAGraph() for _ in GRAPH_BATCH_SIZES
             ])
             
-    def _cuda_graph_warmup(self):
+    def _warmup(self):
         if self.is_attn:
             self._warmup_attn()
         else:
-            self._warmup_expert()
-
+            self._warmup_experts()
+            
     def _warmup_attn(self):
+        for layer_id in self.model_config.layer_ids:
+            if self.model_config.enable_cuda_graph:
+                for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
+                    meta_py = make_dummy_meta(graph_batch_size, 0)
+                    meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
+                    for _ in range(2):
+                        graph.replay()
+            else:
+                meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
+                meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
+                for _ in range(2):
+                    self.static_output, self.static_expert_ids = self.executor.execute(
+                        layer_id, self.static_positions, self.static_input, meta)
+                    
+    def _warmup_experts(self):
+        for layer_id in self.model_config.layer_ids:
+            for _ in range(2):
+                self.static_output = self.executor.execute(layer_id, self.static_input, self.static_batch_sizes)
+            
+    def _cuda_graph_capture(self):
+        if self.is_attn:
+            self._cuda_graph_capture_attn()
+        else:
+            self._cuda_graph_capture_experts()
+
+    def _cuda_graph_capture_attn(self):
         meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         # warmup for CUBLAS
@@ -279,7 +307,7 @@ class Engine:
             for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
                 meta_py = make_dummy_meta(graph_batch_size, 0)
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
-                self._logger.info(f"CUDA Graph warmuping layer {layer_id, graph_batch_size}")
+                self._logger.info(f"CUDA Graph capturing layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
                     self.static_output, self.static_expert_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
@@ -288,7 +316,7 @@ class Engine:
                 dist.barrier()
                 graph.replay()
     
-    def _warmup_expert(self):
+    def _cuda_graph_capture_experts(self):
         for _ in range(5):
             self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
         self._logger.warning("Expert CUDA Graph is not implemented yet")
