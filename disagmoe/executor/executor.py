@@ -14,8 +14,9 @@ from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range
+from disagmoe.models.utils import make_prefill_meta
 
-
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -33,6 +34,9 @@ class Executor:
         raise NotImplementedError()
     
     def forward(self, x: Tensor) -> Tensor:
+        raise NotImplementedError()
+    
+    def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
 
 class AttnExecutor(Executor):
@@ -57,11 +61,12 @@ class AttnExecutor(Executor):
             ) for _ in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
-        assert self.cache_config.num_gpu_blocks > 0, "Should specify num gpu blocks for cache config"
         
+    @override
+    def initialize_cache(self, num_blocks):
         self._make_kv_cache(
             self.num_layers,
-            self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks,
+            num_blocks,
             self.cache_config.block_size, 
             self.model_config.num_kv_heads, 
             self.model_config.hidden_size // self.model_config.num_heads,
@@ -70,6 +75,15 @@ class AttnExecutor(Executor):
     def _make_kv_cache(self, num_layers, num_blocks, block_size, num_heads, head_size):
         data_type = self.model_config.dtype
         self.cache = torch.zeros((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
+    
+    def profile_execute(self, batch_size: int):
+        attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
+        kv_cache = None
+        for layer_id in range(self.num_layers):
+            positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
+            hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
+            operator = self.operators[layer_id]
+            operator.forward(positions, hidden_states, kv_cache, attn_metadata)
 
     @override
     @nvtx_range("AttnExecutor.execute")
@@ -133,12 +147,3 @@ class ParallelAttnExecutor(AttnExecutor):
             ) for _ in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
-        assert self.cache_config.num_gpu_blocks > 0, "Should specify num gpu blocks for cache config"
-        
-        self._make_kv_cache(
-            self.num_layers,
-            self.cache_config.num_gpu_blocks + self.cache_config.num_reserved_blocks,
-            self.cache_config.block_size, 
-            self.model_config.num_kv_heads // self.model_config.tp_size, 
-            self.model_config.hidden_size // self.model_config.num_heads,
-        )
