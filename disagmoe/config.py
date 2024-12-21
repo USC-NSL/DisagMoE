@@ -47,8 +47,7 @@ class CacheConfig(vllm.config.CacheConfig):
                          swap_space, cache_dtype, num_gpu_blocks_override, 
                          sliding_window, enable_prefix_caching, cpu_offload_gb)
         self.num_reserved_blocks = num_reserved_blocks
-        self.num_gpu_blocks = num_gpu_blocks
-        
+        self.num_gpu_blocks = num_gpu_blocks        
 @dataclass
 class SamplingConfig:
     
