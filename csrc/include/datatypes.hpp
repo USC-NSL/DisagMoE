@@ -48,11 +48,13 @@ inline void extend(std::vector<T> &a, const std::vector<T> &other) {
 struct ChannelInfo {
     std::vector<ExpertId> expert_ids;
     std::vector<int> attn_layer_ids;
+    int attn_dp_rank;
 
     ChannelInfo() {}
     ChannelInfo(const std::vector<ExpertId> &expert_ids,
-                const std::vector<int> &attn_layer_ids):
-                expert_ids(expert_ids), attn_layer_ids(attn_layer_ids) 
+                const std::vector<int> &attn_layer_ids,
+                int attn_dp_rank):
+                expert_ids(expert_ids), attn_layer_ids(attn_layer_ids), attn_dp_rank(attn_dp_rank)
     {}
 
     inline bool is_sampler_channel() {
@@ -90,7 +92,7 @@ struct Metadata {
     int layer_id;
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
-    // std::vector<int> first_attn_ids;
+    std::vector<int> attn_ids;
     std::vector<int> prefill_poss;
  
     inline size_t num_element() const {
@@ -123,6 +125,7 @@ struct Metadata {
             shape, this->dtype, this->layer_id, 
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
+            slice_vector(attn_ids, l, r),
             slice_vector(prefill_poss, l, r),
         };
     }
@@ -130,11 +133,12 @@ struct Metadata {
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), prefill_poss_(shape[0], -1);
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), attn_ids(shape[0], -1), prefill_poss_(shape[0], -1);
 
         for (size_t i = 0; i < ids.size(); i ++) {
             ASSERT (ids[i] < this->req_ids.size());
             req_ids_[i] = req_ids[ids[i]];
+            attn_ids[i] = attn_ids[ids[i]];
             if (exp_ids.size() >= shape[0]) {
                 exp_ids_[i] = exp_ids[ids[i]];
             }
@@ -143,13 +147,13 @@ struct Metadata {
             }
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_ids, prefill_poss_
         };
     }
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_ids, prefill_poss);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -207,7 +211,7 @@ struct Metadata {
             total_tokens += meta->num_tokens();
         }
         shape[0] = total_tokens;
-        std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), prefill_poss(total_tokens);
+        std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), attn_ids(total_tokens), prefill_poss(total_tokens);
 
         std::vector<int> exp_cnts(MAX_NUM_EXPERTS, 0);
         for (auto &meta: metas) {
@@ -230,12 +234,13 @@ struct Metadata {
                 mappings[idx] = j; // tokens[i] = tokens[mapping[i]]
                 req_ids[j] = meta->req_ids[i];
                 exp_ids[j] = meta->exp_ids[i];
+                attn_ids[j] = meta->attn_ids[i];
                 prefill_poss[j] = meta->prefill_poss[i];
                 idx ++;
             }
         }
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
+            shape, dtype, layer_id, req_ids, exp_ids, attn_ids, prefill_poss
         });
     }
 
@@ -253,21 +258,23 @@ struct Metadata {
             total_tokens += meta->num_tokens();
         }
         shape[0] = total_tokens;
-        std::vector<int> req_ids, exp_ids, prefill_poss;
+        std::vector<int> req_ids, exp_ids, attn_ids, prefill_poss;
         
         req_ids.reserve(total_tokens);
         exp_ids.reserve(total_tokens);
+        attn_ids.reserve(total_tokens);
         prefill_poss.reserve(total_tokens);
 
         for (size_t i = 0; i < metas.size(); i ++) {
             auto meta = metas[i];
             extend(req_ids, meta->req_ids);
             extend(exp_ids, meta->exp_ids);
+            extend(attn_ids, meta->attn_ids);
             extend(prefill_poss, meta->prefill_poss);
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
+            shape, dtype, layer_id, req_ids, exp_ids, attn_ids, prefill_poss
         });
     }
 
@@ -296,6 +303,7 @@ struct Metadata {
         }
         MOVE(exp_ids);
         MOVE(req_ids);
+        MOVE(attn_ids);
         MOVE(prefill_poss);
         #undef MOVE
     }
@@ -308,11 +316,12 @@ struct Metadata {
         std::sort(
             rank.begin(), rank.end(),
             [&](const int i, const int j) {
-                return (prefill_poss[i] < 0 || prefill_poss[j] < 0) ?
-                    prefill_poss[i] > prefill_poss[j] :
-                    (prefill_poss[i] == prefill_poss[j] ? 
-                        req_ids[i] < req_ids[j] :
-                        prefill_poss[i] < prefill_poss[j]);
+                return (attn_ids[i] != attn_ids[j]) ? attn_ids[i] < attn_ids[j] : 
+                    (prefill_poss[i] < 0 || prefill_poss[j] < 0) ?
+                        prefill_poss[i] > prefill_poss[j] :
+                        (prefill_poss[i] == prefill_poss[j] ? 
+                            req_ids[i] < req_ids[j] :
+                            prefill_poss[i] < prefill_poss[j]);
             }
         );
         for (int i = 0; i < req_ids.size(); i ++)
@@ -402,8 +411,7 @@ struct AttentionBatchMetadata {
 
     std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
-    // place holder for first attention id.
-    // std::vector<uint8_t> first_attn_ids; 
+    std::vector<uint8_t> attn_ids; // per token, length of (num_prefill_seqs + num_decode_tokens)
 
     constexpr int get_datatype_size() const {
         return 2; // bf16
@@ -449,7 +457,8 @@ struct AttentionBatchMetadata {
                         slice_vector(seq_ids, 0, p),
                         slice_vector(prefill_seq_len, 0, p),
                         slice_vector(prefill_query_len, 0, p),
-                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{}
+                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
+                        slice_vector(attn_ids, 0, p)
                     }
                 ),
                 std::make_shared<AttentionBatchMetadata> (
@@ -463,7 +472,8 @@ struct AttentionBatchMetadata {
                         slice_vector(seq_ids, p, -1),
                         slice_vector(prefill_seq_len, p, -1),
                         slice_vector(prefill_query_len, p, -1),
-                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{}
+                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
+                        slice_vector(attn_ids, p, -1)
                     }
                 )
             );
@@ -480,7 +490,8 @@ struct AttentionBatchMetadata {
                         slice_vector(seq_ids, 0, p),
                         prefill_seq_len,
                         prefill_query_len,
-                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{}
+                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
+                        slice_vector(attn_ids, 0, p),
                     }
                 ),
                 std::make_shared<AttentionBatchMetadata> (
@@ -494,7 +505,8 @@ struct AttentionBatchMetadata {
                         slice_vector(seq_ids, p, -1),
                         std::vector<int>{},
                         std::vector<int>{},
-                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{}
+                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
+                        slice_vector(attn_ids, p, -1)
                     }
                 )
             );
@@ -509,6 +521,7 @@ struct AttentionBatchMetadata {
         int new_decode_tokens = 0;
 
         std::vector<int> new_seq_ids{};
+        std::vector<uint8_t> new_attn_ids{};
         std::vector<int> new_prefill_seq_len{};
         std::vector<int> new_prefill_query_len{};
 
@@ -519,6 +532,7 @@ struct AttentionBatchMetadata {
 
             for (int i = 0; i < batch->num_prefill_seqs; i++) {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
+                new_attn_ids.emplace_back(batch->attn_ids[i]);
                 new_prefill_seq_len.emplace_back(batch->prefill_seq_len[i]);
                 new_prefill_query_len.emplace_back(batch->prefill_query_len[i]);
             }
@@ -527,6 +541,7 @@ struct AttentionBatchMetadata {
         for (auto &batch: batches) {
             for (int i = batch->num_prefill_seqs; i < batch->num_prefill_seqs + batch->num_decode_tokens; i++) {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
+                new_attn_ids.emplace_back(batch->attn_ids[i]);
             }
         }
         auto new_shape = batches[0]->shape;
@@ -543,7 +558,9 @@ struct AttentionBatchMetadata {
                 new_decode_tokens,
                 new_seq_ids,
                 new_prefill_seq_len,
-                new_prefill_query_len
+                new_prefill_query_len,
+                {}, // expert_ids
+                new_attn_ids,
             }
         );
     }
@@ -553,6 +570,7 @@ struct AttentionBatchMetadata {
         auto dtype = this->dtype;
         auto layer_id = this->layer_id;
         std::vector<int> req_ids_;
+        std::vector<int> attn_ids_;
         std::vector<int> prefill_poss_;
 
         // DMOE_LOG(INFO) << "To metadata, seq_ids: ";
@@ -564,6 +582,7 @@ struct AttentionBatchMetadata {
             // TODO(hogura|20241014): modify to chunked prefill
             for (int j = 0; j < prefill_seq_len[i]; j ++) {
                 req_ids_.push_back(seq_ids[i]);
+                attn_ids_.push_back(attn_ids[i]);
                 prefill_poss_.push_back(j);
                 // TODO(hogura|20241014): add attention replica
             }
@@ -571,11 +590,12 @@ struct AttentionBatchMetadata {
 
         for (int i = 0; i < num_decode_tokens; i ++) {
             req_ids_.push_back(seq_ids[num_prefill_seqs + i]);
+            attn_ids_.push_back(attn_ids[num_prefill_seqs + i]);
             prefill_poss_.push_back(-1);
         }
         
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids_, {}, prefill_poss_
+            shape, dtype, layer_id, req_ids_, {}, attn_ids_, prefill_poss_
         });
     }
 };
@@ -650,11 +670,12 @@ struct SloStat {
 struct ParallelConfig {
     int tp = 1;
     int ep = 1;
+    int dp = 1;
     int n_exp_per_rank = 1;
 
     // (layer_id, expert_id, expert_rank)
     std::vector<std::tuple<int, int, int>> expert_ranks = {};
 
-    ParallelConfig(int tp = 1, int ep = 1, int n_exp_per_rank = 1, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
-        tp(tp), ep(ep), n_exp_per_rank(n_exp_per_rank), expert_ranks(expert_ranks) {}
+    ParallelConfig(int tp = 1, int ep = 1, int dp = 1, int n_exp_per_rank = 1, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
+        tp(tp), ep(ep), dp(dp), n_exp_per_rank(n_exp_per_rank), expert_ranks(expert_ranks) {}
 };

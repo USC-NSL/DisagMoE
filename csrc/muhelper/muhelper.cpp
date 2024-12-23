@@ -230,26 +230,31 @@ MuExpertDispatcher::MuExpertDispatcher(
     for (auto info: channel_infos)
         for (int i: info.attn_layer_ids)
             max_layer = std::max(i, max_layer);
-    this->attn_channel = std::vector<int>(max_layer + 1, 0);
+
+    // attn_channel[layer_id][dp_rank]
+    this->attn_channel.resize(max_layer + 1, {});
+    for (int i = 0; i <= max_layer; i ++)
+        this->attn_channel[i].resize(cfg.dp, -1);
 
     for (size_t i = 0; i < channels.size(); i ++) {
-        // TODO(hogura|20240930): currently, only support #attn_replica=1
         if (channel_infos[i].attn_layer_ids.empty()) {// a sampler channel 
             this->sampler_channel_id = i;
             continue;
         }
-        for (int j: channel_infos[i].attn_layer_ids) {
-            ASSERT(!this->attn_channel[j]);
-            this->attn_channel[j] = i;
+        int dp_rank = channel_infos[i].attn_dp_rank;
+        for (int j = 0; j < channel_infos[i].attn_layer_ids.size(); j ++) {
+            int lid = channel_infos[i].attn_layer_ids[j];
+            ASSERT(this->attn_channel[lid][dp_rank] == -1);
+            this->attn_channel[lid][dp_rank] = i;
         }
     }
 
     DMOE_LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
 }
 
-int MuExpertDispatcher::_get_attn_channel(int req_id, int layer_id) {
+int MuExpertDispatcher::_get_attn_channel(int layer_id, int rank) {
     // DMOE_LOG(DEBUG) << "layer_id: " << layer_id << " attn_chan.size: " << attn_channel.size() << LEND;
-    return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id] : sampler_channel_id;
+    return layer_id < this->attn_channel.size() ? this->attn_channel[layer_id][rank] : sampler_channel_id;
 }
 
 void MuExpertDispatcher::debug_put(TensorBatch batch) {
@@ -263,34 +268,38 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
 
-    // currently we only support #attn_replica=1
-    this->_send_batch(
-        _get_attn_channel(0, layer_id),
-        (uintptr_t)batch.data.data_ptr(),
-        *meta
-    );
+    // DP_SIZE == 1, or a sampler channel
+    if (this->attn_channel[0].size() == 1 || layer_id >= this->attn_channel.size()) {
+        this->_send_batch(
+            _get_attn_channel(layer_id, 0),
+            (uintptr_t)batch.data.data_ptr(),
+            *meta
+        );
+    } else {
+        auto &channels = this->attn_channel[layer_id];
+        for (int i = 0, j = 1, n = meta->attn_ids.size(); i < n; i = j) {
+            int rank = meta->attn_ids[i];
+            ASSERT(rank < channels.size());
+            while (j < n && meta->attn_ids[j] == rank)
+                j ++;
 
-    // std::vector<int> chans;
-    // for (int req_id: meta->req_ids) {
-    //     chans.push_back(_get_attn_channel(req_id, layer_id));
-    // }
-
-    // std::cout << "send once: " << *meta << LEND;
-
-    // auto batches = group_by<int, std::less<int>>(batch.data, *meta, chans, 
-    //     /*on_gpu=*/ !is_embedding_node(device_id));
-    // // DMOE_LOG(DEBUG) << "grouped channels" << LEND;
-
-    // for (auto &sub_batch: batches) {
-    //     auto &channel = std::get<0>(sub_batch);
-    //     auto &tensor = std::get<1>(sub_batch);
-    //     this->_send_batch(
-    //         channel,
-    //         (uintptr_t)tensor.data_ptr(),
-    //         std::get<2>(sub_batch)
-    //     );
-    // }
-    // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
+            // a faster path
+            if (i == 0 && j == n) {
+                this->_send_batch(
+                    channels[rank],
+                    (uintptr_t)batch.data.data_ptr(),
+                    *meta
+                );
+            } else {
+                auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), *batch.metadata, i);
+                this->_send_batch(
+                    channels[rank],
+                    buf,
+                    batch.metadata->slice(i, j)
+                );
+            }
+        }
+    }
 }
 
 /*

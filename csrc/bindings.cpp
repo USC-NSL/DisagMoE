@@ -60,9 +60,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("metadata", &TensorBatch::metadata);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
-        .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &>())
+        .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())
         .def_readwrite("expert_ids", &ChannelInfo::expert_ids)
-        .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
+        .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids)
+        .def_readwrite("attn_dp_rank", &ChannelInfo::attn_dp_rank);
 
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
 

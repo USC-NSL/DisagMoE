@@ -11,15 +11,17 @@ from itertools import product
 class ParallelConfig:
     tp: int = 1
     ep: int = 1
+    dp: int = 1
     n_exp_per_rank: int = 1
     expert_ranks: Dict[Tuple[int, int], int] = None
     
     @staticmethod
-    def from_c(tp: int, ep: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+    def from_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
         from disagmoe_c import ParallelConfig as ParallelConfig_C
         cfg = ParallelConfig_C()
         cfg.tp = tp
         cfg.ep = ep
+        cfg.dp = dp
         cfg.n_exp_per_rank = n_exp_per_rank
         cfg.expert_ranks = expert_ranks
         return cfg
@@ -42,6 +44,9 @@ class ModelPlacement:
     
     # (layer_id, expert_id) -> expert_rank_id
     expert_ranks: Dict[Tuple[int, int], int] = None
+    
+    # device_id -> attn_rank_id
+    attn_dp_ranks: Dict[int, int] = None
     
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
@@ -73,13 +78,16 @@ class ModelPlacement:
                 for layer_id, expert_id in self.expert[dev_out]:
                     result.append((layer_id, expert_id, self.expert_ranks[(layer_id, expert_id)]))
         return result
-    
-    def attn_ids_at(self, device_id: int) -> List[int]:
+        
+    def attn_layer_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])
     
     def expert_ids_at(self, device_id: int):
         return self.expert.get(device_id, [])
-        
+    
+    def attn_dp_rank_at(self, device_id: int) -> int:
+        return self.attn_dp_ranks.get(device_id, 0)
+    
     def layer_ids_at(self, device_id: int) -> List[int]:
         return sorted(list(set(
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
@@ -192,7 +200,18 @@ class PlacementBase:
         }
         place.expert_ranks = expert_ranks
         return place
-        
+    
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        """
+            DP is not enabled in default strategy
+        """
+        attn_dp_ranks = {
+            dev_id: 0
+                for dev_id in place.attn
+        }
+        place.attn_dp_ranks = attn_dp_ranks
+        return place
+    
     def solve(self) -> ModelPlacement:
         place = self._solve(
             self.model_config.num_layers, self.model_config.num_experts,
@@ -200,6 +219,7 @@ class PlacementBase:
         )
         place = self._add_edges(place)
         place = self._update_expert_rank(place)
+        place = self._update_attn_dp_rank(place)
         return place
 
 
@@ -419,7 +439,15 @@ class PipelinePlacement(PlacementBase):
         }
         place.expert_ranks = expert_ranks
         return place
-    
+        
+    @override
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        attn_dp_ranks = {}
+        for dev_id in place.attn:
+            attn_dp_ranks[dev_id] = (dev_id // self.tp_size) % self.dp_size
+        place.attn_dp_ranks = attn_dp_ranks
+        return place
+        
     @override
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         n_gpus = n_node * n_gpu_per_node
@@ -435,6 +463,7 @@ class PipelinePlacement(PlacementBase):
         
 
 _placement_cls: Dict[str, PlacementBase] = {
+    
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
     "pipeline": PipelinePlacement,

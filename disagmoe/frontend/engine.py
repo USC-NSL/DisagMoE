@@ -29,10 +29,8 @@ from torch import Tensor
 import torch.distributed as dist
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
-                        ChannelInfo as ChannelInfo_C,
                         TensorBatch as TensorBatch_C,
-                        BlockManager as BlockManager_C,
-                        ParallelConfig as ParallelConfig_C)
+                        BlockManager as BlockManager_C)
 
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
@@ -163,12 +161,12 @@ class Engine:
             # P2P Channels
             in_device_ids,
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
             # Parallel config
             ParallelConfig.from_c(
                 self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
+                self.model_config.dp_size,
                 self.model_config.num_experts_per_rank,
                 expert_ranks,
             ),
@@ -700,6 +698,7 @@ class Engine:
             self.graphs[meta_c.layer_id].replay() # FIXME
             output = self.static_output[:num_tokens]
         # 2. permute tokens back to <prefill><decode> order
+        #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
@@ -850,8 +849,7 @@ class SamplerEngine(Engine):
             self.max_output_len,
             in_device_ids,
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
         )
         self._logger.info("inited sampler")
         self._t_start = time.time()
@@ -885,7 +883,7 @@ class TokenizerEngine(Engine):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
         
-    def process_request(self, req_id: int, input_len: int):
+    def process_request(self, req_id: int, input_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
@@ -894,14 +892,14 @@ class TokenizerEngine(Engine):
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.zeros(size=shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(req_id, x)
+        self.tokenizer.put_request(req_id, x, dp_rank)
         
-    def put_single_request(self, req_id: int, input_len: int):
-        self.process_request(req_id, input_len)
+    def put_single_request(self, req_id: int, input_len: int, dp_rank: int):
+        self.process_request(req_id, input_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], input_lens: List[int]):
-        for req_id, input_len in zip(req_ids, input_lens):
-            self.process_request(req_id, input_len)
+    def put_requests(self, req_ids: List[int], input_lens: List[int], dp_ranks: List[int]):
+        for req_id, input_len, dp_rank in zip(req_ids, input_lens, dp_ranks):
+            self.process_request(req_id, input_len, dp_rank)
         
     def init_core(
             self,
@@ -921,8 +919,7 @@ class TokenizerEngine(Engine):
         self.tokenizer = init_tokenizer(
             self.device_id,
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
         )
         self._logger.info("inited tokenizer")
     

@@ -1,1 +1,1 @@
-from .dpscheduler import get_dp_scheduler
+from .dpscheduler import DPScheduler, get_dp_scheduler

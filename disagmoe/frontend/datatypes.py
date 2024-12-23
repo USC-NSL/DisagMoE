@@ -2,13 +2,23 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple
 from disagmoe.utils.constants import CPS
 import torch
+
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
+    attn_dp_rank: int
     
     def is_sampler_channel(self) -> bool:
         ...
+        
+    def to_c(self) -> "ChannelInfo_C":
+        from disagmoe_c import ChannelInfo as ChannelInfo_C
+        return ChannelInfo_C(
+            self.expert_ids,
+            self.attn_layer_ids,
+            self.attn_dp_rank
+        )
 
 @dataclass
 class TokenMetadata:
