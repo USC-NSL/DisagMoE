@@ -124,6 +124,12 @@ class Engine:
         
         if self.engine_type == EngineType.ATTENTION:
             self.executor = AttnExecutor.build(self.model_config, self.cache_config)
+            
+            if self.cache_config.num_gpu_blocks is None:
+                self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
+                self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
+            self.executor.initialize_cache(self.cache_config.num_gpu_blocks)
+            self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
             self._process_batch = self.process_batch_attn
             self.block_mgr = BlockManager_C(
                 self.cache_config.block_size, 
@@ -185,14 +191,16 @@ class Engine:
         if self.is_attn:
             self.attn_scheduler.set_max_batch_size(MAX_BATCH_SIZE)
         
-        if self.model_config.enable_cuda_graph and self.engine_type not in [EngineType.TOKENIZER, EngineType.SAMPLER]:
+        if self.model_config.enable_cuda_graph:
             self._create_cuda_graph_contexts()
-            self._cuda_graph_warmup()
+            self._cuda_graph_capture()
+
+        self._warmup()
         
         self._logger.info("core launched")
         
     def _switch_scheduler(self):
-        if self.scheduler == None:
+        if self.scheduler is None:
             self.scheduler = self.attn_scheduler
     
     def start(self):
@@ -226,12 +234,32 @@ class Engine:
             self._logger.info(f"set stream {stream}")
             self.stream = stream
             set_tensor_model_parallel_config(model_config)
-        
+            free_memory, total_memory = torch.cuda.mem_get_info()
+            self._logger.info(f"CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, Total memory: {total_memory / (1024 ** 3):.2f} GB")
+            self.init_gpu_memory = free_memory
+            
         self.engine_type = engine_type
         self.model_config = model_config
         self.cache_config = cache_config
         
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
+    
+    def determine_kv_cache_blocks(self) -> int:
+        assert isinstance(self.executor, AttnExecutor)
+        torch.cuda.empty_cache()
+        
+        self.executor.profile_execute(MAX_BATCH_SIZE)      
+        torch.cuda.synchronize()  
+        
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        peak_memory = self.init_gpu_memory - free_gpu_memory
+        cache_block_size = self.model_config.hidden_size * self.cache_config.block_size * 2 # fp16 or bf16
+        
+        num_gpu_blocks = int(
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization -
+             peak_memory) // cache_block_size)
+        
+        return num_gpu_blocks
 
     def _create_cuda_graph_contexts(self):
         assert self.model_config.enable_cuda_graph
@@ -258,13 +286,45 @@ class Engine:
                 torch.cuda.CUDAGraph() for _ in GRAPH_BATCH_SIZES
             ])
             
-    def _cuda_graph_warmup(self):
+    def _warmup(self):
         if self.is_attn:
             self._warmup_attn()
         else:
-            self._warmup_expert()
-
+            self._warmup_experts()
+            
     def _warmup_attn(self):
+        for layer_id in self.model_config.layer_ids:
+            if self.model_config.enable_cuda_graph:
+                for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
+                    meta_py = make_dummy_meta(graph_batch_size, 0)
+                    meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
+                    for _ in range(2):
+                        graph.replay()
+            else:
+                input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
+                positions = torch.zeros(MAX_BATCH_SIZE, dtype=torch.long, device="cuda")
+                meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
+                meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
+                for _ in range(2):
+                    _, _ = self.executor.execute(layer_id, positions, input, meta)
+                    
+    def _warmup_experts(self):
+        for layer_id in self.model_config.layer_ids:
+            batch_sizes = torch.tensor([MAX_BATCH_SIZE // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
+                dtype=torch.int64,
+                # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
+                device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
+            input = torch.zeros((MAX_BATCH_SIZE, self.model_config.hidden_size), device="cuda")
+            for _ in range(2):
+                self.static_output = self.executor.execute(layer_id, input, batch_sizes)
+            
+    def _cuda_graph_capture(self):
+        if self.is_attn:
+            self._cuda_graph_capture_attn()
+        else:
+            self._cuda_graph_capture_experts()
+
+    def _cuda_graph_capture_attn(self):
         meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         # warmup for CUBLAS
@@ -279,7 +339,7 @@ class Engine:
             for graph, graph_batch_size in zip(self.graphs[layer_id], GRAPH_BATCH_SIZES):
                 meta_py = make_dummy_meta(graph_batch_size, 0)
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
-                self._logger.info(f"CUDA Graph warmuping layer {layer_id, graph_batch_size}")
+                self._logger.info(f"CUDA Graph capturing layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
                     self.static_output, self.static_expert_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
@@ -288,7 +348,7 @@ class Engine:
                 dist.barrier()
                 graph.replay()
     
-    def _warmup_expert(self):
+    def _cuda_graph_capture_experts(self):
         for _ in range(5):
             self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
         self._logger.warning("Expert CUDA Graph is not implemented yet")
@@ -411,7 +471,7 @@ class Engine:
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
-        assert self.model_config.enable_cuda_graph  or \
+        assert mocking or self.model_config.enable_cuda_graph or \
                max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
         
         return FlashAttentionMetadata(

@@ -86,7 +86,7 @@ def unpack_flash_attn_meta(buffer_meta: torch.Tensor,
     )
     
 
-def make_seqlens(lens):
+def make_seqlens(lens: List[int]):
     seqlen = [0]
     for l in lens:
         seqlen.append(seqlen[-1] + l)
