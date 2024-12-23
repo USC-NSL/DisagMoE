@@ -68,8 +68,8 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
-    cache_config = CacheConfig(BLOCK_SIZE, 0.9, 2, "auto", 
-                                num_reserved_blocks=RESERVED_BLOCKS)
+    cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+                               num_reserved_blocks=RESERVED_BLOCKS)
 
     sampling_config = SamplingConfig(max_output_len=args.output_len)
     
@@ -211,6 +211,8 @@ def get_args():
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
+    parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")
+    parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")

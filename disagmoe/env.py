@@ -11,6 +11,7 @@ _env_vars = {
     "MASTER_PORT": "26500",
     "TORCH_NCCL_BLOCKING_WAIT": "0",
     "GROUPED_GEMM_CUTLASS": "",
+    "LD_LIBRARY_PATH": "",
 }
 
 ENV_VARS = {
