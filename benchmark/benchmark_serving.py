@@ -209,6 +209,7 @@ def get_args():
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
     parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
+    parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
     parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")

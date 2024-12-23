@@ -134,6 +134,10 @@ class PlacementBase:
         return self.model_config.ep_size
     
     @property
+    def dp_size(self):
+        return self.model_config.dp_size
+    
+    @property
     def num_layers(self):
         return self.model_config.num_layers
         
@@ -325,8 +329,8 @@ class PipelinePlacement(PlacementBase):
         The index here for Attn/Expert **stands for the layer id**.
         
         We have:
-            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE - 1}]
-            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE}, G_{p * TP_SIZE + q * EP_SIZE - 1}]
+            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE * DP_SIZE - 1}]
+            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE * DP_SIZE}, G_{p * TP_SIZE * DP_SIZE + q * EP_SIZE - 1}]
         
         Ideally, we need a physical mapping to minimize the cross-node communication.
         TODO(hogura|20241212): leave this auto optimization as future work.
@@ -341,40 +345,70 @@ class PipelinePlacement(PlacementBase):
         self.step_expert = step_expert
         self.zigzag_attn = zigzag_attn
     
-    def _solve_virtual(self) -> ModelPlacement:
+    def _solve_virtual(self) -> Tuple[Dict[int, int], Dict[int, int]]:
         p = self.step_attn
         q = self.step_expert
         
         attns = {
-            i: [] for i in range(p * self.tp_size)
+            i: [] for i in range(p)
         }
         experts = {
-            i: [] for i in range(p * self.tp_size, p * self.tp_size + q * self.ep_size)
-        }
-        device_groups = {
-            i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p)
+            i: [] for i in range(q)
         }
         
         for i in range(self.num_layers):
             if self.zigzag_attn:
-                attn_dev = (i % p) * self.tp_size
+                attn_dev = i % p
             else:
-                attn_dev = i // (self.num_layers // p) * self.tp_size
-                
-            attns[attn_dev].append(i)
+                attn_dev = i // (self.num_layers // p)
             
-            for j in range(self.model_config.num_experts):
-                exp_dev = p * self.tp_size + (i % q) * self.ep_size + (j % self.ep_size)
-                experts[exp_dev].append((i, j))
+            exp_dev = i % q
+
+            attns[attn_dev].append(i)
+            experts[exp_dev].append(i)
+            
+        return ModelPlacement(attns, experts, -1, -1, {}, {})
+    
+    def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
+        p = self.step_attn
+        q = self.step_expert
+        
+        attns = {
+            i: [] for i in range(p * self.tp_size * self.dp_size)
+        }
+        experts = {
+            i: [] for i in range(p * self.tp_size * self.dp_size, 
+                                 p * self.tp_size * self.dp_size + q * self.ep_size)
+        }
+        device_groups = {
+            i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p * self.dp_size)
+        }
+        
+        """
+            TODO(hogura|20241222): consider the cross-node communication as follows
+            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE * DP_SIZE - 1}]
+                1. DP in different nodes
+                    2. stride
+                        3. TP in the same node
+            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE * DP_SIZE}, G_{p * TP_SIZE * DP_SIZE + q * EP_SIZE - 1}]
+                1. ...
+        """
+        
+        for i, layers in mp.attn.items():
+            for j in range(self.dp_size):
+                attns[(i * self.dp_size + j) * self.tp_size].extend(layers)
+        
+        for i, layers in mp.expert.items():
+            for e in range(self.model_config.num_experts):
+                # expert rank: #E -> #E % EP_SIZE
+                dev_id = p * self.tp_size * self.dp_size + i * self.ep_size + e % self.ep_size
+                for l in layers:
+                    experts[dev_id].append((l, e))
         
         return ModelPlacement(
             attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, {}, {},
             device_groups=device_groups
         )
-    
-    def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
-        # TODO(hogura|20241212): implement the physical mapping by minimizing the cross-node communication
-        return mp
     
     @override
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
@@ -391,7 +425,10 @@ class PipelinePlacement(PlacementBase):
         n_gpus = n_node * n_gpu_per_node
         p = self.step_attn
         q = self.step_expert
-        assert n_gpus >= p * self.tp_size + q * self.ep_size
+        assert n_gpus >= p * self.tp_size * self.dp_size + q * self.ep_size, \
+            f"No enough GPUs for the placement, " \
+            f"requiring {p * self.tp_size * self.dp_size + q * self.ep_size}, " \
+            f"but only {n_gpus} available."
         mp = self._solve_virtual()
         mp = self._solve_physical(mp)
         return mp
