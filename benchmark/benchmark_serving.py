@@ -58,6 +58,7 @@ def launch(args):
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph = args.cuda_graph
     model_config.num_experts = args.num_experts
+    model_config.dp_size = args.dp_size
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 

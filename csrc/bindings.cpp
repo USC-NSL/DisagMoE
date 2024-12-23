@@ -76,6 +76,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def(py::init<>())
         .def_readwrite("tp", &ParallelConfig::tp)
         .def_readwrite("ep", &ParallelConfig::ep)
+        .def_readwrite("dp", &ParallelConfig::dp)
         .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
         .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
 
@@ -101,6 +102,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("prefill_seq_len", &AttentionBatchMetadata::prefill_seq_len)
         .def_readwrite("prefill_query_len", &AttentionBatchMetadata::prefill_query_len)
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
+        .def_readwrite("attn_ids", &AttentionBatchMetadata::attn_ids)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")

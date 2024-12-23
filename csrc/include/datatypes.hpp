@@ -65,17 +65,18 @@ struct ChannelInfo {
 struct TokenMetadata {
     int req_id;
     int exp_id;
+    int attn_id;
     int prefill_pos;
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(req_id, exp_id, prefill_pos);
+        archive(req_id, exp_id, attn_id, prefill_pos);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenMetadata& token) {
         out << "TokenMetadata{req_id=" << token.req_id << ", "
             << "exp_id=" << token.exp_id << ", "
-            // << "first_attn_id=" << token.first_attn_id << ", "
+            << "attn_id=" << token.attn_id << ", "
             << "prefill_pos=" << token.prefill_pos << "}";
         return out;
     }
@@ -133,12 +134,12 @@ struct Metadata {
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), attn_ids(shape[0], -1), prefill_poss_(shape[0], -1);
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), attn_ids_(shape[0], -1), prefill_poss_(shape[0], -1);
 
         for (size_t i = 0; i < ids.size(); i ++) {
             ASSERT (ids[i] < this->req_ids.size());
             req_ids_[i] = req_ids[ids[i]];
-            attn_ids[i] = attn_ids[ids[i]];
+            attn_ids_[i] = attn_ids[ids[i]];
             if (exp_ids.size() >= shape[0]) {
                 exp_ids_[i] = exp_ids[ids[i]];
             }
@@ -147,7 +148,7 @@ struct Metadata {
             }
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_ids, prefill_poss_
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_ids_, prefill_poss_
         };
     }
 
@@ -171,7 +172,7 @@ struct Metadata {
         int prefill_pos = -1;
         if (prefill_poss.size() > 0)
             prefill_pos = prefill_poss[i];
-        return TokenMetadata {req_ids[i], exp_id, prefill_pos};
+        return TokenMetadata {req_ids[i], exp_id, attn_ids[i], prefill_pos};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {

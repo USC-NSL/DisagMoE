@@ -254,6 +254,7 @@ class Controller:
                 group_nccl_ids=group_nccl_ids.get(
                     tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                 expert_ranks=model_place.out_expert_ranks_at(device_id),
+                local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -264,7 +265,7 @@ class Controller:
         ray.get(tasks)
         
         self.dp_scheduler = get_dp_scheduler(
-            model_config.dp_size, self.max_output_len, model_config.block_size, "RR"
+            model_config.dp_size, self.max_output_len, cache_config.block_size, "RR"
         )
         
     def release_kv_cache(self, req_ids: Union[int, List[int]]):

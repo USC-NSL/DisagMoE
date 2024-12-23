@@ -178,7 +178,7 @@ inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuAttnDispatcher::_send_once"};
-    // DMOE_LOG(DEBUG) << "sending a batch." << LEND;
+    DMOE_LOG(DEBUG) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
     // DMOE_LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
     //            << " info size: " << batch.metadata->infos.size() << LEND;
 
@@ -210,7 +210,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         i = j;
     }
 
-    // DMOE_LOG(DEBUG) << "sent a batch." << LEND;
+    DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
 }
 
 /*
@@ -244,6 +244,7 @@ MuExpertDispatcher::MuExpertDispatcher(
         int dp_rank = channel_infos[i].attn_dp_rank;
         for (int j = 0; j < channel_infos[i].attn_layer_ids.size(); j ++) {
             int lid = channel_infos[i].attn_layer_ids[j];
+            DMOE_LOG(DEBUG) << "channel " << i << " attn_layer_id " << lid << " dp_rank " << dp_rank << LEND;
             ASSERT(this->attn_channel[lid][dp_rank] == -1);
             this->attn_channel[lid][dp_rank] = i;
         }
@@ -263,23 +264,25 @@ void MuExpertDispatcher::debug_put(TensorBatch batch) {
 
 void MuExpertDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuExpertDispatcher::_send_once"};
-
-    // DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch" << LEND;
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
+
+    DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch: " << *meta << ", n_ele=" << batch.data.numel()  << LEND;
+    ASSERT(batch.data.sizes()[0] == meta->shape[0]);
+    ASSERT(batch.data.sizes()[1] == meta->shape[1]);
 
     // DP_SIZE == 1, or a sampler channel
     if (this->attn_channel[0].size() == 1 || layer_id >= this->attn_channel.size()) {
         this->_send_batch(
             _get_attn_channel(layer_id, 0),
-            (uintptr_t)batch.data.data_ptr(),
+            (uintptr_t) batch.data.data_ptr(),
             *meta
         );
     } else {
         auto &channels = this->attn_channel[layer_id];
         for (int i = 0, j = 1, n = meta->attn_ids.size(); i < n; i = j) {
             int rank = meta->attn_ids[i];
-            ASSERT(rank < channels.size());
+            ASSERT(0 <= rank && rank < channels.size());
             while (j < n && meta->attn_ids[j] == rank)
                 j ++;
 
@@ -287,11 +290,11 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             if (i == 0 && j == n) {
                 this->_send_batch(
                     channels[rank],
-                    (uintptr_t)batch.data.data_ptr(),
+                    (uintptr_t) batch.data.data_ptr(),
                     *meta
                 );
             } else {
-                auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), *batch.metadata, i);
+                auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), *batch.metadata, i);
                 this->_send_batch(
                     channels[rank],
                     buf,
@@ -300,6 +303,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             }
         }
     }
+
+    DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
@@ -737,7 +742,7 @@ void MuAttentionPool::terminate() {
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
     // for a simple case we consider prefill sequences can only have 1 token,
     // so all sequences in tensor are complete and can be scheduled immediately
-
+    ASSERT(meta.get() != nullptr);
     // TODO: support prefill length larger than 1, and maybe deal with chunked prefill
 
     auto shape = meta->shape;
@@ -753,6 +758,9 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     std::vector<int> seq_ids{};
     std::vector<int> prefill_seq_len{};
     std::vector<int> prefill_query_len{};
+    std::vector<uint8_t> attn_ids{};
+
+    ASSERT(meta->req_ids.size() == meta->attn_ids.size());
 
     for (int i = 0; i < meta->req_ids.size(); i ++) {
         if (meta->prefill_poss[i] != -1) {
@@ -762,6 +770,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
             num_decode_tokens ++;
         }
         seq_ids.emplace_back(meta->req_ids[i]);
+        attn_ids.emplace_back(meta->attn_ids[i]);
         prefill_seq_len.emplace_back(1);
         prefill_query_len.emplace_back(1);
     }
@@ -773,7 +782,9 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         num_decode_tokens,
         seq_ids,
         prefill_seq_len,
-        prefill_query_len
+        prefill_query_len,
+        {}, // expert_ids
+        attn_ids
     });
 
     return AttentionBatch {tensor, attn_meta};
@@ -862,7 +873,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         maintain_largest_batch();
     }
 
-    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
+    DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);

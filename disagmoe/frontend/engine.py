@@ -113,6 +113,7 @@ class Engine:
             device_group_ids: List[int] = None,
             group_nccl_ids: Tuple[str, str, str] = ("", "", ""),
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
@@ -176,6 +177,7 @@ class Engine:
             out_nccl_ids,
             device_group_ids,
             group_nccl_ids,
+            local_attn_dp_rank,
         )
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
@@ -843,10 +845,14 @@ class SamplerEngine(Engine):
             device_group_ids: List[int] = None,
             group_nccl_ids: str = "",
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
+            ParallelConfig.from_c(
+                1, 1, self.model_config.dp_size, 1, []
+            ),
             in_device_ids,
             out_device_ids,
             [info.to_c() for info in out_channel_infos],
@@ -915,9 +921,13 @@ class TokenizerEngine(Engine):
             device_group_ids: List[int] = None,
             group_nccl_ids: str = "",
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         self.tokenizer = init_tokenizer(
             self.device_id,
+            ParallelConfig.from_c(
+                1, 1, self.model_config.dp_size, 1, []
+            ),
             out_device_ids,
             [info.to_c() for info in out_channel_infos],
         )
