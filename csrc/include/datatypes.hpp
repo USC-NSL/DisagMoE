@@ -27,8 +27,12 @@ inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
         r = a.size();
     if (l == r)
         return {};
+    if (a.empty())
+        return {};
     ASSERT(l <= r);
+    ASSERT(r <= a.size());
     res.reserve(r - l);
+    DMOE_LOG(DEBUG) << "slicing " << a.size() << " " << l << " " << r << LEND;
     for (auto i = a.begin() + l; i != a.begin() + r; i ++)
         res.emplace_back(*i);
     return res;
