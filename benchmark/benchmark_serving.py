@@ -56,7 +56,8 @@ def launch(args):
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
-    model_config.enable_cuda_graph = args.cuda_graph
+    model_config.enable_cuda_graph_attn = args.cuda_graph or args.cuda_graph_attn
+    model_config.enable_cuda_graph_expert = args.cuda_graph or args.cuda_graph_expert
     model_config.num_experts = args.num_experts
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
@@ -201,7 +202,9 @@ def get_args():
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
-    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph")
+    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph for all modules")
+    parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
+    parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     
     # model config

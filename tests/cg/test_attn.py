@@ -12,7 +12,7 @@ model_config.tp_size = 1
 model_config.ep_size = 2
 model_config.num_layers = 8
 model_config.tp_enable_inter_group = False
-model_config.enable_cuda_graph = True
+model_config.enable_cuda_graph_attn = True
 n_node = 1
 
 cluster_config = ClusterConfig(

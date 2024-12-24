@@ -21,7 +21,8 @@ class ModelConfig:
     layer_ids: Optional[List[int]] = None
     
     tp_enable_inter_group: bool = True
-    enable_cuda_graph: bool = False
+    enable_cuda_graph_attn: bool = False
+    enable_cuda_graph_expert: bool = False
     
     @property
     def num_experts_per_rank(self):
