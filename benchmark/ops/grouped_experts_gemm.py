@@ -19,14 +19,14 @@ def main():
 
     torch.set_default_dtype(torch.bfloat16)
     torch.set_default_device('cuda:0')
-    torch.manual_seed(0)
+    # torch.manual_seed(0)
     args = get_args()
 
     batch_sizes = torch.rand(args.num_experts, device="cpu")
     batch_sizes = batch_sizes * args.batch_size / sum(batch_sizes) 
     batch_sizes = batch_sizes.to(torch.int64)
     batch_sizes[-1] += args.batch_size - batch_sizes.sum()
-    batch_sizes = batch_sizes.to("cuda")
+    batch_sizes = batch_sizes.to("cpu")
 
     # prof = torch.profiler.profile(
     #     activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
@@ -49,7 +49,7 @@ def main():
         end = torch.cuda.Event(enable_timing=True)
 
         t = 10
-
+        torch.cuda.synchronize()
         start.record()
         for _ in range(t):
             op(*args)
