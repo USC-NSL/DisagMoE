@@ -8,7 +8,9 @@ def get_args():
 
     parser.add_argument("-b", "--batch_size", type=int, default=64)
     parser.add_argument("-e", "--num_experts", type=int, default=8)
+    parser.add_argument("-i", "--iterations", type=int, default=10)
     parser.add_argument("--hidden_size", type=int, default=4096)
+    parser.add_argument("--skewed", action="store_true", default=False)
     
     args = parser.parse_args()
 
@@ -27,10 +29,21 @@ def main():
     # batch_sizes = batch_sizes.to(torch.int64)
     # batch_sizes[-1] += args.batch_size - batch_sizes.sum()
     # batch_sizes = batch_sizes.to("cpu")
-    batch_sizes = torch.distributions.Multinomial(args.batch_size, torch.ones(args.num_experts)).sample().to(torch.int64).to("cpu")
+    
+    if not args.skewed:
+        dist = torch.distributions.Multinomial(args.batch_size, torch.ones(args.num_experts))
+    else:
+        dist = torch.distributions.Multinomial(args.batch_size, torch.Tensor([i + 1 for i in range(args.num_experts)]))
+    
+    batch_sizes = dist.sample().to(torch.int64).to("cpu")
+    if batch_sizes.sum() > args.batch_size:
+        batch_sizes[batch_sizes.argmax().item()] -= batch_sizes.sum() - args.batch_size
+    elif batch_sizes.sum() < args.batch_size:
+        batch_sizes[batch_sizes.argmax().item()] += args.batch_size - batch_sizes.sum()
     
     sigma = batch_sizes.to(torch.float32).std().item()
     print("batch sizes sigma: ", sigma)
+    print(batch_sizes)
 
     # prof = torch.profiler.profile(
     #     activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
@@ -72,25 +85,24 @@ def main():
     def baseline():
         s = 0
         for i, b in enumerate(batch_sizes_list):
-            inputs_ = inputs[s:s + b]
+            # inputs_ = inputs[s:s + b]
+            inputs_ = inputs[:b]
             weights_ = weights[i]
             torch.matmul(inputs_, weights_)
             s += b
 
     t_serial = benchmark("serial_gemm", baseline)
 
-    print(batch_sizes)
-
     # prof.stop()
-    return sigma, t_serial, t_grouped
+    return sigma, t_serial, t_grouped, batch_sizes.min().item()
         
 
 if __name__ == '__main__':
     results = []
-    for i in range(10):
+    for i in range(get_args().iterations):
         _ = main()
         results.append([*_, 0])
     results = np.array(results)
     results[..., -1] = results[..., 1] / results[..., 2]
-    print("sigma, t_serial, t_grouped, speedup")
+    print("sigma, t_serial, t_grouped, min_bs, speedup")
     print(results)
