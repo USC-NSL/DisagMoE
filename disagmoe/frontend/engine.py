@@ -349,8 +349,6 @@ class Engine:
                 graph.replay()
     
     def _cuda_graph_capture_experts(self):
-        for _ in range(5):
-            self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
         self._logger.warning("Expert CUDA Graph is not implemented yet")
         return
         
