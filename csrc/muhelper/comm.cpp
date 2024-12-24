@@ -85,7 +85,7 @@ std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
-    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
+    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << " " << this->rank_offset << LEND;
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
@@ -363,7 +363,7 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
 }
 
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank) {
-    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender);
+    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender, rank);
     return channel;
 }
 

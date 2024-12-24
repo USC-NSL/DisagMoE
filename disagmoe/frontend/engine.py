@@ -151,8 +151,8 @@ class Engine:
             
         self._logger.info(f"launching core: {layer_ids, in_device_ids, \
                           out_device_ids, out_channel_infos, \
-                          in_nccl_ids, out_nccl_ids, out_device_group_ids, \
-                          device_group_ids, group_nccl_ids}")
+                          out_device_group_ids, \
+                          device_group_ids, expert_ranks, local_attn_dp_rank}")
         if device_group_ids is None:
             device_group_ids = []
         self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
@@ -782,9 +782,12 @@ class Engine:
         if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
-        for id in seq_ids:
+        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
+        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        self._logger.info(f"releasing seqs {seq_ids}")
+        for i in seq_ids:
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            self.decode_seq_lens.pop(id)
+            self.decode_seq_lens.pop(i)
         self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
