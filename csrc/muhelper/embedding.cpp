@@ -75,7 +75,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 
 void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    DMOE_LOG(DEBUG) << "processing batch:" << *meta << ", with shape: " << tensor.sizes()[0] << ", " << tensor.sizes()[1] << LEND;
+    // DMOE_LOG(DEBUG) << "processing batch:" << *meta << ", with shape: " << tensor.sizes()[0] << ", " << tensor.sizes()[1] << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;

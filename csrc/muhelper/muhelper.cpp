@@ -178,7 +178,7 @@ inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuAttnDispatcher::_send_once"};
-    DMOE_LOG(DEBUG) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
+    // DMOE_LOG(DEBUG) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
     // DMOE_LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
     //            << " info size: " << batch.metadata->infos.size() << LEND;
 
@@ -210,7 +210,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         i = j;
     }
 
-    DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
+    // DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
 }
 
 /*
@@ -267,7 +267,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     auto meta = batch.metadata;
     auto layer_id = meta->layer_id;
 
-    DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch: " << *meta << ", n_ele=" << batch.data.numel()  << LEND;
+    // DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch: " << *meta << ", n_ele=" << batch.data.numel()  << LEND;
     ASSERT(batch.data.sizes()[0] == meta->shape[0]);
     ASSERT(batch.data.sizes()[1] == meta->shape[1]);
 
@@ -304,7 +304,7 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         }
     }
 
-    DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
+    // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
 /*
@@ -873,7 +873,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         maintain_largest_batch();
     }
 
-    DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);
