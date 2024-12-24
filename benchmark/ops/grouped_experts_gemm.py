@@ -22,11 +22,15 @@ def main():
     # torch.manual_seed(0)
     args = get_args()
 
-    batch_sizes = torch.rand(args.num_experts, device="cpu")
-    batch_sizes = batch_sizes * args.batch_size / sum(batch_sizes) 
-    batch_sizes = batch_sizes.to(torch.int64)
-    batch_sizes[-1] += args.batch_size - batch_sizes.sum()
-    batch_sizes = batch_sizes.to("cpu")
+    # batch_sizes: torch.Tensor = torch.rand(args.num_experts, device="cpu")
+    # batch_sizes = batch_sizes * args.batch_size / sum(batch_sizes) 
+    # batch_sizes = batch_sizes.to(torch.int64)
+    # batch_sizes[-1] += args.batch_size - batch_sizes.sum()
+    # batch_sizes = batch_sizes.to("cpu")
+    batch_sizes = torch.distributions.Multinomial(args.batch_size, torch.ones(args.num_experts)).sample().to(torch.int64).to("cpu")
+    
+    sigma = batch_sizes.to(torch.float32).std().item()
+    print("batch sizes sigma: ", sigma)
 
     # prof = torch.profiler.profile(
     #     activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
@@ -56,25 +60,37 @@ def main():
         end.record()
         torch.cuda.synchronize()
 
-        print(f"{name} time: {start.elapsed_time(end) / t} ms")
+        avg = start.elapsed_time(end) / t
+        print(f"{name} time: {avg} ms")
+        return avg
 
-    benchmark("grouped_gemm", gmm, inputs, weights, batch_sizes)
+    t_grouped = benchmark("grouped_gemm", gmm, inputs, weights, batch_sizes)
 
 
     batch_sizes_list = batch_sizes.tolist()
 
     def baseline():
+        s = 0
         for i, b in enumerate(batch_sizes_list):
-            inputs_ = inputs[:b]
+            inputs_ = inputs[s:s + b]
             weights_ = weights[i]
             torch.matmul(inputs_, weights_)
+            s += b
 
-    benchmark("serial_gemm", baseline)
+    t_serial = benchmark("serial_gemm", baseline)
 
     print(batch_sizes)
 
     # prof.stop()
+    return sigma, t_serial, t_grouped
         
 
 if __name__ == '__main__':
-    main()
+    results = []
+    for i in range(10):
+        _ = main()
+        results.append([*_, 0])
+    results = np.array(results)
+    results[..., -1] = results[..., 1] / results[..., 2]
+    print("sigma, t_serial, t_grouped, speedup")
+    print(results)
