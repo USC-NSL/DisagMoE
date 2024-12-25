@@ -918,3 +918,33 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
 
     return result;
 }
+
+std::vector<TokenTopKPool> TokenTopKPool::fetch_ready_tokens() {
+    std::vector<TokenTopKPool> result(std::move(this->ready_tokens));
+    return result;
+}
+
+void TokenTopKPool::put_batch(TensorBatch batch) {
+    auto meta = batch.metadata;
+    int n = meta->num_tokens();
+    
+    for (int i = 0; i < n; i++) {
+        int seq_id = meta->seq_ids[i];
+        auto it = this->pool_.find(seq_id);
+        if (it == this->pool_.end()) {
+            this->pool_[seq_id] = TokenTopKInfo(
+                seq_id, 
+                meta->prefill_poss[i], 
+                meta->topk_weights[i],
+                batch.tensor[i],
+            );
+        } else {
+            it->second.append_tensor(meta->topk_weights[i], batch.tensor[i]);
+        }
+
+        if it->second.count() == this->top_k {
+            this->ready_tokens.emplace_back(it->second);
+            this->pool_.erase(it);
+        }
+    }
+}

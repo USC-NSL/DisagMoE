@@ -42,7 +42,6 @@ class MoEAttention(nn.Module):
         self.num_heads = self.total_num_heads // tp_size
         self.total_num_kv_heads = num_kv_heads
         self.num_experts = num_heads
-        assert top_k == 1, "Only supports top_1 gating for now"
         self.top_k = top_k
         if self.total_num_kv_heads >= tp_size:
             # Number of KV heads is greater than TP size, so we partition
@@ -113,17 +112,18 @@ class MoEAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
         output, _ = self.o_proj(attn_output)
         router_logits, _ = self.gate(hidden_states)
+
+        print(f"router logits {router_logits}")
         
-        # (shaoyuw): We only consider top_1 at first
-        _, topk_ids = fused_topk(hidden_states=hidden_states,
+        topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
                                 gating_output=router_logits,
                                 topk=self.top_k,
                                 renormalize=True)
-        return output, topk_ids
+        return output, topk_weights, topk_ids
