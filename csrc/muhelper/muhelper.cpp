@@ -280,10 +280,10 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         );
     } else {
         auto &channels = this->attn_channel[layer_id];
-        for (int i = 0, j = 1, n = meta->attn_ids.size(); i < n; i = j) {
-            int rank = meta->attn_ids[i];
+        for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
+            int rank = meta->attn_dp_ranks[i];
             ASSERT(0 <= rank && rank < channels.size());
-            while (j < n && meta->attn_ids[j] == rank)
+            while (j < n && meta->attn_dp_ranks[j] == rank)
                 j ++;
 
             // a faster path
@@ -758,9 +758,9 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     std::vector<int> seq_ids{};
     std::vector<int> prefill_seq_len{};
     std::vector<int> prefill_query_len{};
-    std::vector<uint8_t> attn_ids{};
+    std::vector<uint8_t> attn_dp_ranks{};
 
-    ASSERT(meta->req_ids.size() == meta->attn_ids.size());
+    ASSERT(meta->req_ids.size() == meta->attn_dp_ranks.size());
 
     for (int i = 0; i < meta->req_ids.size(); i ++) {
         if (meta->prefill_poss[i] != -1) {
@@ -770,7 +770,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
             num_decode_tokens ++;
         }
         seq_ids.emplace_back(meta->req_ids[i]);
-        attn_ids.emplace_back(meta->attn_ids[i]);
+        attn_dp_ranks.emplace_back(meta->attn_dp_ranks[i]);
         prefill_seq_len.emplace_back(1);
         prefill_query_len.emplace_back(1);
     }
@@ -784,7 +784,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         prefill_seq_len,
         prefill_query_len,
         {}, // expert_ids
-        attn_ids
+        attn_dp_ranks
     });
 
     return AttentionBatch {tensor, attn_meta};
