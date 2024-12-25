@@ -68,18 +68,18 @@ struct ChannelInfo {
 struct TokenMetadata {
     int req_id;
     int exp_id;
-    int attn_id;
+    int attn_dp_rank;
     int prefill_pos;
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(req_id, exp_id, attn_id, prefill_pos);
+        archive(req_id, exp_id, attn_dp_rank, prefill_pos);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenMetadata& token) {
         out << "TokenMetadata{req_id=" << token.req_id << ", "
             << "exp_id=" << token.exp_id << ", "
-            << "attn_id=" << token.attn_id << ", "
+            << "attn_dp_rank=" << token.attn_dp_rank << ", "
             << "prefill_pos=" << token.prefill_pos << "}";
         return out;
     }
