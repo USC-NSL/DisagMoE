@@ -639,6 +639,26 @@ struct AttentionBatch {
     }
 };
 
+struct TokenTopKInfo {
+    int seq_id;
+    int prefill_pos; // -1 for decoding
+    vector<float> topk_weights;
+    vector<torch::Tensor> topk_tensors;
+
+    TokenTopKInfo(int seq_id, int prefill_pos, int top_k = 1):
+        seq_id(seq_id), prefill_pos(prefill_pos) {}
+
+    int count() {
+        ASSERT (top_k_weights.size() == top_k_tensors.size());
+        return topk_weights.size();
+    }
+
+    void append_tensor(float weight, torch::Tensor tensor) {
+        topk_weights.emplace_back(weight);
+        topk_tensors.emplace_back(tensor);
+    }
+};
+
 struct SloStat {
     int req_id;
     clock_t t_prefill;  // time to all finished prefill tokens
