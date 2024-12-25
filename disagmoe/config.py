@@ -23,6 +23,7 @@ class ModelConfig:
     tp_enable_inter_group: bool = True
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
+    enable_grouped_gemm: bool = True
     
     @property
     def num_experts_per_rank(self):
@@ -49,10 +50,12 @@ class CacheConfig(vllm.config.CacheConfig):
                          sliding_window, enable_prefix_caching, cpu_offload_gb)
         self.num_reserved_blocks = num_reserved_blocks
         self.num_gpu_blocks = num_gpu_blocks        
+
+
 @dataclass
-class SamplingConfig:
-    
+class SamplingConfig:    
     max_output_len: int
+
 
 mixtral_config = ModelConfig(
     hidden_size = 4096,
@@ -67,7 +70,7 @@ mixtral_config = ModelConfig(
 
 duo_expert_mixtral = ModelConfig(
     hidden_size = 4096,
-    num_layers = 3,
+    num_layers = 32,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 2,

@@ -73,9 +73,12 @@ results = []
 
 for exp_name, exp_cls in [("MoEExperts", MoEExperts), ("MoEExpertsSerial", MoEExpertsSerial)]:
     for enable_cuda_graph in [False, True]:
-        t, out = benchmark(exp_cls, hiddens, batch_sizes, enable_cuda_graph)
-        results.append(out)
-        print(f"{exp_name, enable_cuda_graph}: {t:.2f} ms")
+        try:
+            t, out = benchmark(exp_cls, hiddens, batch_sizes, enable_cuda_graph)
+            results.append(out)
+            print(f"{exp_name, enable_cuda_graph}: {t:.2f} ms")
+        except:
+            pass
     
 for result in results[1:]:
     print(result - results[0])
