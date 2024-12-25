@@ -64,6 +64,7 @@ struct TokenMetadata {
     int req_id;
     int exp_id;
     int prefill_pos;
+    int topk_weight;
 
     template<class Archive>
     void serialize(Archive &archive) {
@@ -92,6 +93,7 @@ struct Metadata {
     std::vector<int> exp_ids;
     // std::vector<int> first_attn_ids;
     std::vector<int> prefill_poss;
+    std::vector<float> topk_weights;
  
     inline size_t num_element() const {
         size_t res = 1;
@@ -167,7 +169,10 @@ struct Metadata {
         int prefill_pos = -1;
         if (prefill_poss.size() > 0)
             prefill_pos = prefill_poss[i];
-        return TokenMetadata {req_ids[i], exp_id, prefill_pos};
+        float topk_weight = 0;
+        if (topk_weights.size() > 0)
+            topk_weight = topk_weights[i];
+        return TokenMetadata {req_ids[i], exp_id, prefill_pos, topk_weight};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
@@ -182,6 +187,7 @@ struct Metadata {
             out << "num_reqs=" << meta.req_ids.size() << ", ";
             out << "size of exp_ids=" << meta.exp_ids.size() << ", ";
             out << "size of prefill_poss=" << meta.prefill_poss.size() << ", ";
+            out << "size of topk_weights=" << meta.topk_weights.size() << ", ";
             out << "infos={";
             if (meta.req_ids.size() > 0) {
                 out << meta.info_at(0);
@@ -194,6 +200,7 @@ struct Metadata {
         return out;
     }
 
+    // This function is only called in expert worker, so topk_weights should be empty
     static metadata_t merge_by_exp_ids(const std::vector<metadata_t> &metas, std::vector<int> &mappings) {
         AUTO_TX_RANGE;
 
@@ -239,37 +246,38 @@ struct Metadata {
         });
     }
 
-    // NOTE: if exp_ids exists, merge by exp_ids; else merge by default order
-    static metadata_t merge(const std::vector<metadata_t> &metas) {
-        AUTO_TX_RANGE;
+    // NOTE: This function is not called for now.
+    // static metadata_t merge(const std::vector<metadata_t> &metas) {
+    //     AUTO_TX_RANGE;
 
-        ASSERT(metas.size() > 0);
-        std::vector<size_t> shape = metas[0]->shape;
-        auto dtype = metas[0]->dtype;
-        auto layer_id = metas[0]->layer_id;
+    //     ASSERT(metas.size() > 0);
+    //     std::vector<size_t> shape = metas[0]->shape;
+    //     auto dtype = metas[0]->dtype;
+    //     auto layer_id = metas[0]->layer_id;
 
-        int total_tokens = 0;
-        for (auto &meta: metas) {
-            total_tokens += meta->num_tokens();
-        }
-        shape[0] = total_tokens;
-        std::vector<int> req_ids, exp_ids, prefill_poss;
+    //     int total_tokens = 0;
+    //     for (auto &meta: metas) {
+    //         total_tokens += meta->num_tokens();
+    //     }
+    //     shape[0] = total_tokens;
+    //     std::vector<int> req_ids, exp_ids, prefill_poss;
         
-        req_ids.reserve(total_tokens);
-        exp_ids.reserve(total_tokens);
-        prefill_poss.reserve(total_tokens);
+    //     req_ids.reserve(total_tokens);
+    //     exp_ids.reserve(total_tokens);
+    //     prefill_poss.reserve(total_tokens);
 
-        for (size_t i = 0; i < metas.size(); i ++) {
-            auto meta = metas[i];
-            extend(req_ids, meta->req_ids);
-            extend(exp_ids, meta->exp_ids);
-            extend(prefill_poss, meta->prefill_poss);
-        }
+    //     for (size_t i = 0; i < metas.size(); i ++) {
+    //         auto meta = metas[i];
+    //         extend(req_ids, meta->req_ids);
+    //         extend(exp_ids, meta->exp_ids);
+    //         extend(prefill_poss, meta->prefill_poss);
+    //         extend(topk_weights, meta->topk_weights);
+    //     }
 
-        return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
-        });
-    }
+    //     return std::make_shared<Metadata>(Metadata {
+    //         shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, topk_weights
+    //     });
+    // }
 
     void step_layer() {
         this->layer_id ++;
@@ -297,6 +305,9 @@ struct Metadata {
         MOVE(exp_ids);
         MOVE(req_ids);
         MOVE(prefill_poss);
+        if (!topk_weights.empty()) {
+            MOVE(topk_weights);
+        }
         #undef MOVE
     }
 
@@ -647,6 +658,11 @@ struct TokenTopKInfo {
 
     TokenTopKInfo(int seq_id, int prefill_pos, int top_k = 1):
         seq_id(seq_id), prefill_pos(prefill_pos) {}
+
+    TokenTopKInfo(int seq_id, int prefill_pos, float weight, torch::Tensor tensor):
+        seq_id(seq_id), prefill_pos(prefill_pos), 
+        topk_weights(vector<float>{weight}), 
+        topk_tensors(vector<torch::Tensor>{tensor}) {}
 
     int count() {
         ASSERT (top_k_weights.size() == top_k_tensors.size());
