@@ -190,6 +190,8 @@ class Engine:
         
         if self.is_attn:
             self.attn_scheduler.set_max_batch_size(self.max_batch_size)
+        else:
+            self.scheduler.set_max_batch_size(self.max_batch_size)
         
         self._warmup()
         if self.model_config.enable_cuda_graph_attn or self.model_config.enable_cuda_graph_expert:
@@ -520,8 +522,10 @@ class Engine:
         )
     
     @nvtx_range("engine.attn_driver_preprocess")
-    def _attn_driver_preprocess(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata, input_tensor: Tensor) -> FlashAttentionMetadata:
-        
+    def _attn_driver_preprocess(self, 
+                                meta_c: AttentionBatchMetadata, 
+                                meta_py: AttentionBatchMetadata, 
+                                input_tensor: Tensor) -> FlashAttentionMetadata:
         decode_seq_lens = self._update_block_table(meta_c, meta_py)
         
         if self._intra_group_tp_enabled:

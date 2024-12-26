@@ -333,6 +333,35 @@ struct Metadata {
         update_exp_ids({}, mapping);
         return mapping;
     }
+
+    std::pair<metadata_t, metadata_t> split(int p) {
+        ASSERT(p > 0);
+        ASSERT(p < shape[0]);
+        return std::make_pair(
+            std::make_shared<Metadata> (
+                Metadata {
+                    {(size_t) p, shape[1]},
+                    dtype,
+                    layer_id,
+                    slice_vector(req_ids, 0, p),
+                    slice_vector(exp_ids, 0, p),
+                    slice_vector(attn_dp_ranks, 0, p),
+                    slice_vector(prefill_poss, 0, p)
+                }
+            ),
+            std::make_shared<Metadata> (
+                Metadata {
+                    {(size_t) (shape[0] - p), shape[1]},
+                    dtype,
+                    layer_id,
+                    slice_vector(req_ids, p, -1),
+                    slice_vector(exp_ids, p, -1),
+                    slice_vector(attn_dp_ranks, p, -1),
+                    slice_vector(prefill_poss, p, -1)
+                }
+            )
+        );
+    }
 };
 
 struct TensorBatch {

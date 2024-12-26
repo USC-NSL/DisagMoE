@@ -21,6 +21,7 @@ protected:
     mu_pool_t pool;
     std::vector<int> layer_ids;
     std::string policy;
+    int max_batch_size;
 
     std::vector<int> pool_snapshot_{};
 
@@ -36,6 +37,8 @@ public:
     void wait_for_new_requests();
 
     void start();
+
+    void set_max_batch_size(int max_batch_size);
 
     std::vector<int> get_pool_snapshot() {
         return pool_snapshot_;
