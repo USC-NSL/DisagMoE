@@ -11,7 +11,7 @@ from vllm.attention import AttentionMetadata
 from vllm.config import CacheConfig as VllmCacheConfig
 
 from disagmoe.models.attention import MoEAttention
-from disagmoe.models.experts import MoEExperts
+from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range
 from disagmoe.models.utils import make_prefill_meta
@@ -113,10 +113,11 @@ class ExpertsExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig):
         super().__init__(model_config)
+        expert_cls = MoEExperts if model_config.enable_grouped_gemm else MoEExpertsSerial
         self.type = ExecutorType.EXPERTS_EXEC
         self.operators = [
-            MoEExperts(
-                self.model_config.hidden_size, 
+            expert_cls(
+                self.model_config.hidden_size,
                 self.model_config.intermediate_size,
                 self.model_config.num_experts_per_rank,
             ) for _ in range(self.num_layers)
