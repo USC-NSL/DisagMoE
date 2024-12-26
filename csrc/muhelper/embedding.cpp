@@ -11,13 +11,14 @@
 
 Sampler::Sampler(int device_id, 
                 int max_output_len,
+                ParallelConfig cfg,
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos):
     MuExpertDispatcher(
         /*layer_ids=*/ {0}, 
         device_id, 
-        ParallelConfig(1, 1, 1, {}),
+        ParallelConfig(1, 1, cfg.dp, 1, {}),
         out_channels, 
         out_channel_infos
     ) {
@@ -56,7 +57,7 @@ void Sampler::run() {
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
         torch::Tensor tensor = torch::empty(
-            {metadata->num_element()}, 
+            {metadata->num_tokens(), metadata->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)
         );
         // auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
@@ -74,7 +75,7 @@ int Sampler::_get_attn_channel(int req_id, int layer_id) {
 
 void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
-    // DMOE_LOG(DEBUG) << "processing batch:" << *meta << LEND;
+    // DMOE_LOG(DEBUG) << "processing batch:" << *meta << ", with shape: " << tensor.sizes()[0] << ", " << tensor.sizes()[1] << LEND;
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
@@ -119,11 +120,15 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     }
 
     // Step 3. send batches
-    // TODO(hogura|20241007): attention id control
     // DMOE_LOG(DEBUG) << "sampler send once with new meta: " << new_meta << LEND;
+    std::vector<int>().swap(new_meta.exp_ids);
     if (continue_ids.size() > 0)
         this->_send_once(TensorBatch{
             torch_tensor_slice(tensor, continue_ids),
+            // torch::zeros(
+            //     {new_meta.num_tokens(), new_meta.token_hidden_dim()}, 
+            //     torch::TensorOptions().dtype(tensor.dtype()).device(tensor.device())
+            // ),
             std::make_shared<Metadata>(new_meta)
     });
 
@@ -174,12 +179,13 @@ void Sampler::start() {
 }
 
 Tokenizer::Tokenizer(int device_id, 
+              ParallelConfig cfg,
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos):
-    MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, 1, {}), channels, out_channel_infos) {
+    MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, cfg.dp, 1, {}), channels, out_channel_infos) {
 }
 
-void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
+void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
     // TODO(hogura|20241007): set the first attn
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
@@ -189,6 +195,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
         /*layer_id=*/ 0, 
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
+        /*attn_ids=*/ {dp_rank},
         /*prefill_pos=*/ {0},
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);

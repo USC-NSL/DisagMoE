@@ -2,19 +2,29 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple
 from disagmoe.utils.constants import CPS
 import torch
+
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
+    attn_dp_rank: int
     
     def is_sampler_channel(self) -> bool:
         ...
+        
+    def to_c(self) -> "ChannelInfo_C":
+        from disagmoe_c import ChannelInfo as ChannelInfo_C
+        return ChannelInfo_C(
+            self.expert_ids,
+            self.attn_layer_ids,
+            self.attn_dp_rank
+        )
 
 @dataclass
 class TokenMetadata:
     req_id: int
     exp_id: int
-    first_attn_id: int
+    attn_dp_rank: int
     prefill_pos: int
 
 @dataclass
@@ -25,6 +35,7 @@ class Metadata:
     # infos: List[TokenMetadata]
     req_ids: List[int]
     exp_ids: List[int]
+    attn_dp_ranks: List[int]
     prefill_poss: List[int]
 
     def step_layer(self) -> None:
@@ -83,6 +94,7 @@ class AttentionBatchMetadata:
     prefill_query_len: List[int]
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
+    attn_dp_ranks: List[int]
     
     def to_metadata(self) -> Metadata:
         ...
@@ -100,6 +112,7 @@ class AttentionBatchMetadata:
         attn_meta.prefill_seq_len = self.prefill_seq_len
         attn_meta.prefill_query_len = self.prefill_query_len
         attn_meta.expert_ids = self.expert_ids
+        attn_meta.attn_dp_ranks = self.attn_dp_ranks
         return attn_meta
     
     @staticmethod
@@ -114,7 +127,8 @@ class AttentionBatchMetadata:
             meta_c.seq_ids,
             meta_c.prefill_seq_len,
             meta_c.prefill_query_len,
-            meta_c.expert_ids
+            meta_c.expert_ids,
+            meta_c.attn_dp_ranks
         )
         
 @dataclass

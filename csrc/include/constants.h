@@ -5,9 +5,10 @@
 #include <stdexcept>
 
 const int ZMQ_PORT_BASE = 24000;
-const int ZMQ_CPU_PORT_BASE = 25000;
-const int ZMQ_GROUP_PORT = 26000;
+const int ZMQ_CPU_PORT_BASE = 35000;
+const int ZMQ_GROUP_PORT = 46000;
 const int ZMQ_MAGIC_MOD = 1007;
+const int ZMQ_OFFSET_BASE = 16;
 
 #ifndef N_EXPERTS
 #define N_EXPERTS 8

@@ -29,10 +29,8 @@ from torch import Tensor
 import torch.distributed as dist
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
-                        ChannelInfo as ChannelInfo_C,
                         TensorBatch as TensorBatch_C,
-                        BlockManager as BlockManager_C,
-                        ParallelConfig as ParallelConfig_C)
+                        BlockManager as BlockManager_C)
 
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
@@ -115,6 +113,7 @@ class Engine:
             device_group_ids: List[int] = None,
             group_nccl_ids: Tuple[str, str, str] = ("", "", ""),
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
@@ -152,8 +151,8 @@ class Engine:
             
         self._logger.info(f"launching core: {layer_ids, in_device_ids, \
                           out_device_ids, out_channel_infos, \
-                          in_nccl_ids, out_nccl_ids, out_device_group_ids, \
-                          device_group_ids, group_nccl_ids}")
+                          out_device_group_ids, \
+                          device_group_ids, expert_ranks, local_attn_dp_rank}")
         if device_group_ids is None:
             device_group_ids = []
         self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
@@ -163,12 +162,12 @@ class Engine:
             # P2P Channels
             in_device_ids,
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
             # Parallel config
             ParallelConfig.from_c(
                 self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
+                self.model_config.dp_size,
                 self.model_config.num_experts_per_rank,
                 expert_ranks,
             ),
@@ -178,6 +177,7 @@ class Engine:
             out_nccl_ids,
             device_group_ids,
             group_nccl_ids,
+            local_attn_dp_rank,
         )
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
@@ -349,8 +349,6 @@ class Engine:
                 graph.replay()
     
     def _cuda_graph_capture_experts(self):
-        for _ in range(5):
-            self.static_output = self.executor.execute(0, self.static_input, self.static_batch_sizes)
         self._logger.warning("Expert CUDA Graph is not implemented yet")
         return
         
@@ -700,6 +698,7 @@ class Engine:
             self.graphs[meta_c.layer_id].replay() # FIXME
             output = self.static_output[:num_tokens]
         # 2. permute tokens back to <prefill><decode> order
+        #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
         new_mappings = list(meta_c.sort_by_prefill_order())
         output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
@@ -781,9 +780,12 @@ class Engine:
         if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
-        for id in seq_ids:
+        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
+        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        self._logger.info(f"releasing seqs {seq_ids}")
+        for i in seq_ids:
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            self.decode_seq_lens.pop(id)
+            self.decode_seq_lens.pop(i)
         self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
@@ -844,14 +846,17 @@ class SamplerEngine(Engine):
             device_group_ids: List[int] = None,
             group_nccl_ids: str = "",
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
+            ParallelConfig.from_c(
+                1, 1, self.model_config.dp_size, 1, []
+            ),
             in_device_ids,
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
         )
         self._logger.info("inited sampler")
         self._t_start = time.time()
@@ -885,7 +890,7 @@ class TokenizerEngine(Engine):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
         
-    def process_request(self, req_id: int, input_len: int):
+    def process_request(self, req_id: int, input_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
@@ -894,14 +899,14 @@ class TokenizerEngine(Engine):
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.zeros(size=shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(req_id, x)
+        self.tokenizer.put_request(req_id, x, dp_rank)
         
-    def put_single_request(self, req_id: int, input_len: int):
-        self.process_request(req_id, input_len)
+    def put_single_request(self, req_id: int, input_len: int, dp_rank: int):
+        self.process_request(req_id, input_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], input_lens: List[int]):
-        for req_id, input_len in zip(req_ids, input_lens):
-            self.process_request(req_id, input_len)
+    def put_requests(self, req_ids: List[int], input_lens: List[int], dp_ranks: List[int]):
+        for req_id, input_len, dp_rank in zip(req_ids, input_lens, dp_ranks):
+            self.process_request(req_id, input_len, dp_rank)
         
     def init_core(
             self,
@@ -917,12 +922,15 @@ class TokenizerEngine(Engine):
             device_group_ids: List[int] = None,
             group_nccl_ids: str = "",
             expert_ranks: List[Tuple[int, int, int]] = [],
+            local_attn_dp_rank: int = 0,
         ):
         self.tokenizer = init_tokenizer(
             self.device_id,
+            ParallelConfig.from_c(
+                1, 1, self.model_config.dp_size, 1, []
+            ),
             out_device_ids,
-            [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
-                for info in out_channel_infos],
+            [info.to_c() for info in out_channel_infos],
         )
         self._logger.info("inited tokenizer")
     
