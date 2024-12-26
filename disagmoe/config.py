@@ -25,6 +25,10 @@ class ModelConfig:
     enable_cuda_graph_expert: bool = False
     enable_grouped_gemm: bool = True
     
+    graph_stride: int = 8
+    max_batch_size_attn: int = 256
+    max_batch_size_expert: int = 384
+    
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size

@@ -102,9 +102,8 @@ def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     result = torch.tensor(seqlen, dtype=torch.int32, device="cuda")
     return result
 
-def get_graph_batch_size(batch_size: int) -> Tuple[int, int]:
-    from disagmoe.utils.constants import GRAPH_BATCH_SIZES
-    for i, size in enumerate(GRAPH_BATCH_SIZES):
+def get_graph_batch_size(batch_size: int, graph_batch_sizes: List[int]) -> Tuple[int, int]:
+    for i, size in enumerate(graph_batch_sizes):
         if size >= batch_size:
             return i, size
     assert False, f"No available graph for batch size={batch_size}"
