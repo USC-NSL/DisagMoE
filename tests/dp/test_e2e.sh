@@ -1,0 +1,1 @@
+python benchmark/benchmark_serving.py -o 128 -n 800 -c --step-attn 1 --step-exp 1 --ep-size 2 -L 4 -E 4 --dp-size 4 -g 6

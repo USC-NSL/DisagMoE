@@ -14,7 +14,9 @@
 #include "nccl.h"
 
 inline torch::Tensor torch_tensor_slice(torch::Tensor tensor, const std::vector<int> &ids) {
-    return tensor.index_select(0, torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt32).device(tensor.device())));
+    return tensor.index({
+        torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt32).device(tensor.device()))
+    });
 }
 
 inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {

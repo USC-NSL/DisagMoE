@@ -81,10 +81,12 @@ protected:
     bool is_sender;
     char device_id_str[3];
 
+    int rank_offset;
+
     void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
 
 public:
-    ZmqChannel(int party_local, int party_other, bool is_sender);
+    ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
 
     void instantiate() override;
 
@@ -136,7 +138,7 @@ public:
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
 
-Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender);
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 
 Channel_t create_nccl_group_channel(int party_local, const std::vector<int> &party_all, void *nccl_id_raw);
 

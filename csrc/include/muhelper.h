@@ -101,7 +101,7 @@ public:
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
-    std::vector<int> attn_channel;
+    std::vector<std::vector<int>> attn_channel;
     int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
