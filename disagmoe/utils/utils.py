@@ -129,10 +129,11 @@ def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
 
 @dataclass
 class StepInfo:
-    
     start_timestamp_ms: float
     end_timestamp_ms: float
     batch_size: int
     layer_id: int
     pool_snapshot: Dict[int, int]
     
+    thread_id: int = -1
+    process_id: int = -1
