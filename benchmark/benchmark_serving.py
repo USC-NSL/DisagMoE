@@ -13,6 +13,7 @@ import time
 import tqdm
 import numpy as np
 import pandas as pd
+import os
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
@@ -21,18 +22,17 @@ master: Controller = None
 
 @dataclass
 class BenchmarkMetrics:
+    e2e_duration: float = -1
+    req_throughput: float = -1
+    token_throughput: float = -1
     
-    e2e_duration: float
-    req_throughput: float
-    token_throughput: float
+    req_latency_median_ms: float = -1
+    req_latency_p90_ms: float = -1
+    req_latency_p99_ms: float = -1
     
-    req_latency_median_ms: float
-    req_latency_p90_ms: float
-    req_latency_p99_ms: float
-    
-    itl_latency_median_ms: float
-    itl_latency_p90_ms: float
-    itl_latency_p99_ms: float
+    itl_latency_median_ms: float = -1
+    itl_latency_p90_ms: float = -1
+    itl_latency_p99_ms: float = -1
     
     def __repr__(self):
         return f"Metrics: \n" \
@@ -45,6 +45,43 @@ class BenchmarkMetrics:
                 f"itl_latency_median: {self.itl_latency_median_ms:.2f}ms\n" \
                 f"itl_latency_p90: {self.itl_latency_p90_ms:.2f}ms\n" \
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
+
+    def write_to_file(self, args):
+        filename = args.file
+        try:
+            import pandas as pd
+            if not os.path.exists(filename):
+                df = pd.DataFrame(columns=["num_requests", "output_len",
+                                           "step_attn", "DP_size", "max_batch_size_attn", 
+                                           "step_expert", "EP_size", "max_batch_size_expert",
+                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
+            else:
+                if filename.endswith(".csv"):
+                    df = pd.read_csv(filename)
+                else:
+                    df = pd.read_excel(filename)
+            new_row = {
+                "num_requests": args.num_requests,
+                "output_len": args.output_len,
+                "step_attn": args.step_attn,
+                "DP_size": args.dp_size,
+                "max_batch_size_attn": args.max_batch_size_attn,
+                "step_expert": args.step_expert,
+                "EP_size": args.ep_size,
+                "max_batch_size_expert": args.max_batch_size_expert,
+                "num_nodes": args.num_nodes,
+                "num_gpus": args.num_gpus,
+                "num_experts": args.num_experts,
+                "num_layers": args.num_layers,
+                **self.__dict__
+            }
+            df.loc[len(df)] = new_row
+            if filename.endswith(".csv"):
+                df.to_csv(filename, index=False)
+            else:
+                df.to_excel(filename, index=False)
+        except Exception as e:
+            print("Error: failed to write to file, with exception:", e)
 
 def launch(args):
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
@@ -103,7 +140,6 @@ def analyze_results(results: List[SloStat], duration: float):
         itls.extend(result.t_tokens)
         req_latency.append(result.t_decode)
         
-    
     return BenchmarkMetrics(
         e2e_duration=duration,
         req_throughput=num_reqs / duration,
@@ -187,8 +223,10 @@ async def benchmark_serving(args):
         pbar.close()
 
         metrics = analyze_results(results, benchmark_duration)
-        
+
         print(metrics)
+
+        metrics.write_to_file(args)
     
     await run_once()
     
@@ -212,6 +250,7 @@ def get_args():
     parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
+    parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
@@ -249,9 +288,13 @@ def get_args():
 def main():
     args = get_args()
     
-    launch(args)
-    
-    asyncio.run(benchmark_serving(args))
+    try:
+        launch(args)
+        asyncio.run(benchmark_serving(args))
+    except Exception as e:
+        print("Error: failed to run benchmark, with exception:", e)
+    finally:
+        BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":
     main()
