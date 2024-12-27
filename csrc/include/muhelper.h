@@ -186,9 +186,6 @@ private:
 
     // large device group: [previous_dispatcher; current_driver; current_workers]
     // small device group: [current_driver; current_workers]
-    std::vector<int> device_group_ids;
-    std::shared_ptr<NcclGroupChannel> group_comm;
-
     std::thread pool_thread;
     std::vector<std::thread> group_threads;
 
@@ -199,6 +196,11 @@ private:
     int tokens_in_layer(int lid) override;
 
     void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+protected:
+
+    std::vector<int> device_group_ids;
+    std::shared_ptr<NcclGroupChannel> group_comm;
 
 public:
 
@@ -236,9 +238,9 @@ class TokenTopKPool {
 
     int top_k;
 
-    std::unordered_map<int, TokenTopKInfo> pool_; // mapping from seq_id to corresponding TokenTopKInfo
+    std::unordered_map<int, TokenTopKInfo> pool_{}; // mapping from seq_id to corresponding TokenTopKInfo
 
-    std::vector<TokenTopKInfo> ready_tokens;
+    std::vector<TokenTopKInfo> ready_tokens{};
 
 public:
 

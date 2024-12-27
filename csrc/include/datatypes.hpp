@@ -86,7 +86,9 @@ struct TokenTopKInfo {
     std::vector<float> topk_weights;
     std::vector<torch::Tensor> topk_tensors;
 
-    TokenTopKInfo(int seq_id, int prefill_pos, int top_k = 1):
+    TokenTopKInfo() {}
+
+    TokenTopKInfo(int seq_id, int prefill_pos):
         seq_id(seq_id), prefill_pos(prefill_pos) {}
 
     TokenTopKInfo(int seq_id, int prefill_pos, float weight, torch::Tensor tensor):
@@ -318,22 +320,33 @@ struct Metadata {
         if (exp_mappings.empty())
             return;
         ASSERT (req_ids.size() == exp_mappings.size());
-        std::vector<int> tmp(exp_mappings.size());
-        #define MOVE(a) { \
+        std::vector<int> tmp_int(exp_mappings.size());
+        #define MOVE_INT(a) { \
             for (int i = 0; i < exp_mappings.size(); i ++) {    \
                 int j = exp_mappings[i];                        \
-                ASSERT(0 <= j && j < tmp.size());               \
-                tmp[j] = a[i];                                  \
+                ASSERT(0 <= j && j < tmp_int.size());               \
+                tmp_int[j] = a[i];                                  \
             }                                                   \
-            a = tmp;                                            \
+            a = tmp_int;                                            \
         }
-        MOVE(exp_ids);
-        MOVE(req_ids);
-        MOVE(prefill_poss);
+
+        std::vector<float> tmp_float(exp_mappings.size());
+        #define MOVE_FLOAT(a) { \
+            for (int i = 0; i < exp_mappings.size(); i ++) {    \
+                int j = exp_mappings[i];                        \
+                ASSERT(0 <= j && j < tmp_float.size());               \
+                tmp_float[j] = a[i];                                  \
+            }                                                   \
+            a = tmp_float;                                            \
+        }
+        MOVE_INT(exp_ids);
+        MOVE_INT(req_ids);
+        MOVE_INT(prefill_poss);
         if (!topk_weights.empty()) {
-            MOVE(topk_weights);
+            MOVE_FLOAT(topk_weights);
         }
-        #undef MOVE
+        #undef MOVE_INT
+        #undef MOVE_FLOAT
     }
 
     std::vector<int> sort_by_prefill_order() {

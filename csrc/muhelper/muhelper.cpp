@@ -919,8 +919,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
     return result;
 }
 
-std::vector<TokenTopKPool> TokenTopKPool::fetch_ready_tokens() {
-    std::vector<TokenTopKPool> result(std::move(this->ready_tokens));
+std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
+    std::vector<TokenTopKInfo> result(std::move(this->ready_tokens));
     return result;
 }
 
@@ -929,20 +929,20 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
     int n = meta->num_tokens();
     
     for (int i = 0; i < n; i++) {
-        int seq_id = meta->seq_ids[i];
+        int seq_id = meta->req_ids[i];
         auto it = this->pool_.find(seq_id);
         if (it == this->pool_.end()) {
             this->pool_[seq_id] = TokenTopKInfo(
                 seq_id, 
                 meta->prefill_poss[i], 
                 meta->topk_weights[i],
-                batch.tensor[i],
+                batch.data[i]
             );
         } else {
-            it->second.append_tensor(meta->topk_weights[i], batch.tensor[i]);
+            it->second.append_tensor(meta->topk_weights[i], batch.data[i]);
         }
 
-        if it->second.count() == this->top_k {
+        if (it->second.count() == this->top_k) {
             // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
             this->ready_tokens.emplace_back(it->second);
             this->pool_.erase(it);
@@ -1010,7 +1010,7 @@ std::vector<TokenTopKInfo> MuAttentionTopKPool::schedule_with_limit() {
 }
 
 
-std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {
+std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
     // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
     int layer_id = -1;
     int num_tokens = 0;
