@@ -943,8 +943,115 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
         }
 
         if it->second.count() == this->top_k {
+            // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
             this->ready_tokens.emplace_back(it->second);
             this->pool_.erase(it);
         }
     }
+}
+
+MuAttentionTopKPool::MuAttentionTopKPool(
+    std::vector<int> layer_ids, 
+    int device_id,
+    std::vector<Channel_t> channels,
+    std::vector<int> device_group_ids,
+    Channel_t group_comm,
+    int top_k
+): MuAttentionPool(layer_ids, device_id, channels, device_group_ids, group_comm), top_k(top_k) {
+    int num_layers = layer_ids.size();
+    this->attn_token_queues = std::vector<std::vector<TokenTopKInfo>>(num_layers);
+    this->topk_pools = std::vector<TokenTopKPool>{};
+    for (auto &layer_id: layer_ids) {
+        this->topk_pools.emplace_back(TokenTopKPool(layer_id, top_k));
+    }
+}
+
+void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
+    // DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << meta << LEND;
+    if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
+        // since only driver can have the pool, we can send the data from layer 0 to other workers here.
+        // NOTE: group_comm is only used when send_from_zmq, so it should be thread-safe
+        // DMOE_LOG(DEBUG) << "Broadcasting attn batch to workers" << LEND;
+        group_comm->send_metadata(*meta);
+        group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
+        // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
+    }
+
+    int lid = this->inner_layer_id[meta->layer_id];
+    this->topk_pools[lid].put_batch((TensorBatch) {tensor, meta});
+    auto ready_tokens = this->topk_pools[lid].fetch_ready_tokens();
+    int batched_tokens = ready_tokens.size();
+
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+        int &tokens_cur_layer = this->tokens_per_layer_[lid];
+        tokens_cur_layer += batched_tokens;
+        if (tokens_cur_layer > this->largest_batch_size_) {
+            this->largest_batch_size_ = tokens_cur_layer;
+            this->largest_batch_layer_id_ = lid;
+        }
+        for (auto &token: ready_tokens) {
+            this->attn_token_queues[lid].emplace_back(token);
+        }
+    }
+}
+
+int MuAttentionTopKPool::tokens_in_layer(int lid) {
+    return this->attn_token_queues[lid].size();
+}
+
+std::vector<TokenTopKInfo> MuAttentionTopKPool::schedule_with_limit() {
+    std::vector<TokenTopKInfo> result{};
+    int layer_id = this->largest_batch_layer_id_;
+    // move tokens from queue to result
+
+    return result;
+}
+
+
+std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {
+    // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
+    int layer_id = -1;
+    int num_tokens = 0;
+    std::vector<AttentionBatch> result{};
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+        layer_id = this->largest_batch_layer_id_;
+
+        if (layer_id == -1) {
+            // DMOE_LOG(INFO) << "No available batch" << LEND;
+            if (selected_layer_id)
+                *selected_layer_id = -1;
+            return {};
+        }
+
+        if (this->max_batch_size > 0) {
+            auto tokens = this->schedule_with_limit();
+            this->tokens_per_layer_[layer_id] -= tokens.size();
+            result.emplace_back(AttentionBatch::merge_tokens(tokens));
+        } else {
+            num_tokens = this->largest_batch_size_;
+            auto tokens = std::move(this->attn_token_queues[layer_id]);
+            this->attn_token_queues[layer_id].clear();
+            this->tokens_per_layer_[layer_id] = 0;
+            result.emplace_back(AttentionBatch::merge_tokens(tokens));
+        }
+
+        maintain_largest_batch();
+    }
+
+    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
+
+    // {
+    //     std::lock_guard<std::mutex> lock(this->request_mutex);
+    //     DMOE_LOG(WARNING) << "del cur_request_count:" << cur_request_count << " " << num_tokens << LEND;
+    //     this->cur_request_count -= num_tokens;
+    //     ASSERT(this->cur_request_count >= 0);
+    // }
+
+    if (selected_layer_id)
+        *selected_layer_id = layer_id;
+    return result;
 }

@@ -80,6 +80,31 @@ struct TokenMetadata {
     }
 };
 
+struct TokenTopKInfo {
+    int seq_id;
+    int prefill_pos; // -1 for decoding
+    std::vector<float> topk_weights;
+    std::vector<torch::Tensor> topk_tensors;
+
+    TokenTopKInfo(int seq_id, int prefill_pos, int top_k = 1):
+        seq_id(seq_id), prefill_pos(prefill_pos) {}
+
+    TokenTopKInfo(int seq_id, int prefill_pos, float weight, torch::Tensor tensor):
+        seq_id(seq_id), prefill_pos(prefill_pos), 
+        topk_weights(std::vector<float>{weight}), 
+        topk_tensors(std::vector<torch::Tensor>{tensor}) {}
+
+    int count() {
+        ASSERT (topk_weights.size() == topk_tensors.size());
+        return topk_weights.size();
+    }
+
+    void append_tensor(float weight, torch::Tensor tensor) {
+        topk_weights.emplace_back(weight);
+        topk_tensors.emplace_back(tensor);
+    }
+};
+
 struct Metadata;
 
 typedef std::shared_ptr<Metadata> metadata_t;
@@ -559,6 +584,12 @@ struct AttentionBatchMetadata {
         );
     }
 
+    static attn_metadata_t merge_tokens(const std::vector<TokenTopKInfo>& tokens) {
+        return std::make_shared<AttentionBatchMetadata> (
+            AttentionBatchMetadata {}
+        );
+    }
+
     metadata_t to_metadata() {
         auto shape = this->shape;
         auto dtype = this->dtype;
@@ -648,31 +679,11 @@ struct AttentionBatch {
 
         return AttentionBatch {tensor, meta};
     }
-};
 
-struct TokenTopKInfo {
-    int seq_id;
-    int prefill_pos; // -1 for decoding
-    vector<float> topk_weights;
-    vector<torch::Tensor> topk_tensors;
-
-    TokenTopKInfo(int seq_id, int prefill_pos, int top_k = 1):
-        seq_id(seq_id), prefill_pos(prefill_pos) {}
-
-    TokenTopKInfo(int seq_id, int prefill_pos, float weight, torch::Tensor tensor):
-        seq_id(seq_id), prefill_pos(prefill_pos), 
-        topk_weights(vector<float>{weight}), 
-        topk_tensors(vector<torch::Tensor>{tensor}) {}
-
-    int count() {
-        ASSERT (top_k_weights.size() == top_k_tensors.size());
-        return topk_weights.size();
+    static AttentionBatch merge_tokens(const std::vector<TokenTopKInfo>& tokens) {
+        return AttentionBatch{};
     }
 
-    void append_tensor(float weight, torch::Tensor tensor) {
-        topk_weights.emplace_back(weight);
-        topk_tensors.emplace_back(tensor);
-    }
 };
 
 struct SloStat {

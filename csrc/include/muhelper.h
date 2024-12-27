@@ -251,4 +251,33 @@ public:
     int get_layer_id() const {
         return layer_id;
     }
-}
+};
+
+class MuAttentionTopKPool: MuAttentionPool {
+
+    int top_k;
+
+    std::vector<std::vector<TokenTopKInfo>> attn_token_queues;
+
+    std::vector<TokenTopKPool> topk_pools;
+
+    int tokens_in_layer(int lid) override;
+
+    std::vector<TokenTopKInfo> schedule_with_limit();
+
+    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+public:
+
+    MuAttentionTopKPool(std::vector<int> layer_ids,
+           int device_id,
+           std::vector<Channel_t> channels,
+           std::vector<int> device_group_ids = {},
+           Channel_t group_comm = nullptr,
+           int top_k = 1);
+
+    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
+
+    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
+
+};
