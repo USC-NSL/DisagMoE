@@ -73,7 +73,7 @@ def get_ip():
 
 
 @contextmanager
-def nvtx_range(msg, *args, **kwargs):
+def nvtx_range_cuda(msg, *args, **kwargs):
     """ 
     From vLLM: https://github.com/vllm-project/vllm/blob/7abba39ee64c1e2c84f48d7c38b2cd1c24bb0ebb/vllm/spec_decode/util.py#L238
     Context manager / decorator that pushes an NVTX range at the beginning
@@ -90,7 +90,18 @@ def nvtx_range(msg, *args, **kwargs):
         yield
     finally:
         torch.cuda.nvtx.range_pop()
-        
+
+
+@contextmanager
+def nvtx_range(msg, *args, **kwargs):
+    from disagmoe_c import range_push, range_pop
+    range_push(msg.format(*args, **kwargs))
+    try:
+        yield
+    finally:
+        range_pop()
+
+
 def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()

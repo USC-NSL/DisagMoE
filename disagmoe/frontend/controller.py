@@ -8,7 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
-from disagmoe.frontend.datatypes import ChannelInfo, SloStat
+from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.logger import get_logger
@@ -298,7 +298,7 @@ class Controller:
             await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
 
-    def fetch_step_stats(self) -> List[List[StepInfo]]:
+    def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]]]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
     async def poll_finished_results(self) -> List[SloStat]:

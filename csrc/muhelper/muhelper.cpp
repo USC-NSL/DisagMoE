@@ -14,6 +14,7 @@
 #include "logging.h"
 #include "constants.h"
 #include "cuda_utils.h"
+#include "profiler.hpp"
 
 #include "zmq.hpp"
 #include "zmq_addon.hpp"
@@ -31,8 +32,9 @@ void MuHelper::start() {
     DMOE_LOG(INFO) << "muhelper@" << device_id << " start" << LEND;
     this->thread = std::thread(
         [&](MuHelper* helper) {
+            Recorder::create();
             helper->init_cuda_device();
-            helper->run(); 
+            helper->run();
         }, 
         this
     );
@@ -648,6 +650,7 @@ MuAttentionPool::MuAttentionPool(
 
 void MuAttentionPool::run() {
     pool_thread = std::thread([&]() {
+        Recorder::create();
         MuPool::run();
     });
 
@@ -659,6 +662,7 @@ void MuAttentionPool::run() {
     if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
         DMOE_LOG(INFO) << "Running ATTN Worker pool (intra-group)" << LEND;
         group_threads.emplace_back(std::thread([&]() {
+            Recorder::create();
             at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
             at::cuda::CUDAStreamGuard guard(c10_stream);
             while (!end_flag) {
@@ -690,6 +694,7 @@ void MuAttentionPool::run() {
         ASSERT(group_c.get() != nullptr);
         group_threads.emplace_back(std::thread(
             [&](std::shared_ptr<NcclGroupChannel> c) {
+                Recorder::create();
                 // recv messages from multiple dispatchers
                 at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
                 at::cuda::CUDAStreamGuard guard(c10_stream);
@@ -918,3 +923,8 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
 
     return result;
 }
+
+
+#include <profiler.hpp>
+std::shared_mutex Recorder::mtx = std::shared_mutex();
+recorder_t Recorder::instance = std::make_shared<Recorder>();

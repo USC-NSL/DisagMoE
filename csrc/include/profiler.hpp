@@ -1,3 +1,5 @@
+#pragma once
+
 #include <shared_mutex>
 #include <thread>
 #include <memory>
@@ -11,80 +13,93 @@ class Recorder;
 
 typedef std::shared_ptr<Recorder> recorder_t;
 
-struct ProfileContext {
+struct TraceContext {
     std::string msg;
 
     float t_start;  // in ms
     float t_dur;    // in ms
+    int track_id;
 };
+
+static float walltime_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
 
 class Recorder {
 protected:
-    std::map<std::thread::id, std::vector<ProfileContext>> ctx;
+    std::map<std::thread::id, std::vector<TraceContext>> ctx;
 
     // stack: [(time_stamp_ms, message)]
     std::map<std::thread::id, std::stack<std::pair<float, std::string>>> stack;
-    std::shared_mutex mtx;
+    
+    // define in `muhelper.cpp`
+    static std::shared_mutex mtx;
+    static recorder_t instance;
 
 public:
-    Recorder(const Recorder&) = delete;
-    Recorder& operator=(const Recorder&) = delete;
+
+    Recorder() {}
 
     void create_thread() {
         auto tid = std::this_thread::get_id();
-        std::lock_guard<std::shared_mutex> lock(mtx);
-        ctx[tid] = std::vector<ProfileContext>();
+        ctx[tid] = std::vector<TraceContext>();
         stack[tid] = std::stack<std::pair<float, std::string>>();
     }
 
-    void push(const std::string &msg) {
+    void push_(const std::string &msg) {
         /*
             ! NOTE(hogura|20241226): we assume all threads are created initially, 
             ! which means the map are read-only during runtime, therefore no lock is required.
         */
         auto tid = std::this_thread::get_id();
-        std::shared_lock<std::shared_mutex> lock(mtx);
-        stack[tid].push(std::make_pair(1000.0 * clock() / CLOCKS_PER_SEC, msg));
+        stack.at(tid).push(std::make_pair(walltime_ms(), msg));
     }
 
-    void pop() {
-        float ts = 1000.0 * clock() / CLOCKS_PER_SEC;
+    void pop_() {
+        float ts = walltime_ms();
         auto tid = std::this_thread::get_id();
-        auto top = stack[tid].top();
+        auto top = stack.at(tid).top();
 
-        std::shared_lock<std::shared_mutex> lock(mtx);
-        stack[tid].pop();
-        ctx.at(tid).push_back(ProfileContext{top.second, top.first, ts - top.first});
+        stack.at(tid).pop();
+        ctx.at(tid).push_back(TraceContext{top.second, top.first, ts - top.first, (int) stack.at(tid).size()});
     }
 
-    std::map<std::thread::id, std::vector<ProfileContext>> output() {
+    std::map<size_t, std::vector<TraceContext>> output_() {
         /*
             ! NOTE(hogura|20241226): this function should only be called at the end of the program.
         */
-        std::unique_lock<std::shared_mutex> lock(mtx);
-        return ctx;
-    }
-
-    static recorder_t instance() {
-        static recorder_t recorder = std::make_shared<Recorder>();
-        return recorder;
+        std::map<size_t, std::vector<TraceContext>> res;
+        for (auto &pr: ctx) {
+            auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            res[tid] = pr.second;
+        }
+        return res;
     }
 
     static void create() {
-        auto recorder = instance();
-        recorder->create_thread();
+        std::unique_lock lock(mtx);
+
+        instance->create_thread();
     }
 
     static void push(const std::string &msg) {
-        instance()->push(msg);
+        std::shared_lock lock(mtx);
+
+        instance->push_(msg);
     }
 
     static void pop() {
-        instance()->pop();
+        std::shared_lock lock(mtx);
+
+        instance->pop_();
     }
 
-    static std::map<std::thread::id, std::vector<ProfileContext>> output() {
-        return instance()->output();
+    static std::map<size_t, std::vector<TraceContext>> output() {
+        std::unique_lock lock(mtx);
+
+        return instance->output_();
     }
 };
 
