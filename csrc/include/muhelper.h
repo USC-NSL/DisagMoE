@@ -160,6 +160,8 @@ public:
 
     void wait_for_new_requests();
 
+    void set_max_batch_size(int max_batch_size);
+
     /* 
 
     for attention, consider waiting sequences,
@@ -214,8 +216,6 @@ public:
     void run() override;
 
     void terminate() override;
-
-    void set_max_batch_size(int max_batch_size);
 
     // for debug use only
     void __set_attn_data_queue(

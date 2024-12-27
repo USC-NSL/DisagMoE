@@ -61,6 +61,9 @@ def launch(args):
     model_config.enable_grouped_gemm = not args.serial_gemm
     model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
+    model_config.max_batch_size_attn = args.max_batch_size_attn
+    model_config.max_batch_size_expert = args.max_batch_size_expert
+    model_config.graph_stride = args.graph_stride
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -220,6 +223,9 @@ def get_args():
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
     parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
+    parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
+    parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
+    parser.add_argument("--max-batch-size-expert", type=int, default=384, help="max batch size for experts")
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")

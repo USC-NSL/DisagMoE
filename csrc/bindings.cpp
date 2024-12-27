@@ -34,6 +34,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("schedule", &Scheduler::schedule)
+        .def("set_max_batch_size", &Scheduler::set_max_batch_size)
         .def("get_pool_snapshot", &Scheduler::get_pool_snapshot);
 
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")

@@ -19,7 +19,7 @@ scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::st
 
 
 Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE) {
     
 }
 
@@ -30,6 +30,11 @@ void Scheduler::start() {
 std::vector<TensorBatch> Scheduler::_schedule() {
     this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
+}
+
+void Scheduler::set_max_batch_size(int max_batch_size) {
+    this->max_batch_size = max_batch_size;
+    this->pool->set_max_batch_size(max_batch_size);
 }
 
 TensorBatch Scheduler::schedule() {
