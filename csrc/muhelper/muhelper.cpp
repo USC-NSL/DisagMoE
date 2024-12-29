@@ -1007,11 +1007,17 @@ int MuAttentionTopKPool::tokens_in_layer(int lid) {
 }
 
 std::vector<TokenTopKInfo> MuAttentionTopKPool::schedule_with_limit() {
-    std::vector<TokenTopKInfo> result{};
+    std::vector<TokenTopKInfo> results{};
     int layer_id = this->largest_batch_layer_id_;
     // move tokens from queue to result
-
-    return result;
+    auto &queue = this->attn_token_queues[layer_id];
+    int n = this->max_batch_size;
+    results.reserve(std::min(n, static_cast<int>(queue.size())));
+    for (int i = 0; !queue.empty() && i < n; i++) {
+        results.emplace_back(queue.back());
+        queue.pop_back();
+    }
+    return results;
 }
 
 std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
