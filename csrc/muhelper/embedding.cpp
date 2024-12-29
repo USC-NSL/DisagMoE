@@ -185,7 +185,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
     auto meta_t = std::make_shared<Metadata>(Metadata {
         shape, 
-        "fp16", 
+        "bf16", 
         /*layer_id=*/ 0, 
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},

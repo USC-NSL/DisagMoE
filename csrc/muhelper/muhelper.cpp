@@ -312,10 +312,14 @@ MuPool::MuPool(
     int max_layer_id = 0;
     for (auto id: layer_ids)
         max_layer_id = std::max(max_layer_id, id);
-    this->inner_layer_id = std::vector<int>(max_layer_id + 1);
+    this->layer_id_P2V = std::vector<int>(max_layer_id + 1);
+    this->layer_id_V2P = std::vector<int>(num_layers);
+
     this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers);
-    for (size_t i = 0; i < num_layers; i ++)
-        this->inner_layer_id[layer_ids[i]] = i;
+    for (size_t i = 0; i < num_layers; i ++) {
+        this->layer_id_P2V[layer_ids[i]] = i;
+        this->layer_id_V2P[i] = layer_ids[i];
+    }
 
     this->cur_request_count = 0;
 
@@ -373,7 +377,7 @@ void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_fro
     running_queue[layers]
 
     */
-    int lid = this->inner_layer_id[meta->layer_id];
+    int lid = this->layer_id_P2V[meta->layer_id];
     int num_tokens = meta->num_tokens();
 
     // {
@@ -752,6 +756,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         } else {
             num_decode_tokens ++;
         }
+        // NOTE: Only considered for prefill length = 1
         seq_ids.emplace_back(meta->req_ids[i]);
         prefill_seq_len.emplace_back(1);
         prefill_query_len.emplace_back(1);
@@ -781,7 +786,7 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
         // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
     }
 
-    int lid = this->inner_layer_id[meta->layer_id];
+    int lid = this->layer_id_P2V[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor, meta);
     int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
 
@@ -977,7 +982,7 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
         // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
     }
 
-    int lid = this->inner_layer_id[meta->layer_id];
+    int lid = this->layer_id_P2V[meta->layer_id];
     this->topk_pools[lid].put_batch((TensorBatch) {tensor, meta});
     auto ready_tokens = this->topk_pools[lid].fetch_ready_tokens();
     int batched_tokens = ready_tokens.size();
@@ -1009,7 +1014,6 @@ std::vector<TokenTopKInfo> MuAttentionTopKPool::schedule_with_limit() {
     return result;
 }
 
-
 std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
     // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
     int layer_id = -1;
@@ -1030,13 +1034,13 @@ std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *select
         if (this->max_batch_size > 0) {
             auto tokens = this->schedule_with_limit();
             this->tokens_per_layer_[layer_id] -= tokens.size();
-            result.emplace_back(AttentionBatch::merge_tokens(tokens));
+            result.emplace_back(AttentionBatch::pack_tokens(this->layer_id_V2P[layer_id], tokens));
         } else {
             num_tokens = this->largest_batch_size_;
             auto tokens = std::move(this->attn_token_queues[layer_id]);
             this->attn_token_queues[layer_id].clear();
             this->tokens_per_layer_[layer_id] = 0;
-            result.emplace_back(AttentionBatch::merge_tokens(tokens));
+            result.emplace_back(AttentionBatch::pack_tokens(this->layer_id_V2P[layer_id], tokens));
         }
 
         maintain_largest_batch();

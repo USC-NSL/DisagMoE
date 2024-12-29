@@ -96,7 +96,7 @@ struct TokenTopKInfo {
         topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
-    int count() {
+    int count() const {
         ASSERT (topk_weights.size() == topk_tensors.size());
         return topk_weights.size();
     }
@@ -451,6 +451,8 @@ struct AttentionBatchMetadata {
 
     std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
+    std::vector<float> weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
+
     // place holder for first attention id.
     // std::vector<uint8_t> first_attn_ids; 
 
@@ -597,9 +599,54 @@ struct AttentionBatchMetadata {
         );
     }
 
-    static attn_metadata_t merge_tokens(const std::vector<TokenTopKInfo>& tokens) {
+    static attn_metadata_t merge_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+        int new_prefills_seqs = 0;
+        int new_prefill_tokens = 0;
+        int new_decode_tokens = 0;
+
+        int topk = tokens[0].count();
+        int n = tokens.size();
+
+        std::vector<int> new_seq_ids{};
+        std::vector<int> new_prefill_seq_len{};
+        std::vector<int> new_prefill_query_len{};
+
+        // weights memory layout: [top1, ..., top1, top2, ..., top2, ..., topk, ..., topk]
+        std::vector<float> new_weights(n * topk);
+
+        for (int i = 0; i < n; i++) {
+            auto &token = tokens[i];
+            // NOTE: Only considered for prefill length = 1
+            new_seq_ids.emplace_back(token.seq_id);
+            if (token.prefill_pos == -1) {
+                new_decode_tokens ++;
+            } else {
+                new_prefill_tokens ++;
+                new_prefill_seq_len.emplace_back(token.prefill_pos);
+                new_prefill_query_len.emplace_back(token.prefill_pos);
+            }
+
+            for (int k = 0; k < topk; k++) {
+                new_weights[k * n + i] = token.topk_weights[k];
+            }
+        }
+
+        std::vector<size_t> new_shape{n * topk, tokens[0].topk_tensors[0].size(-1)};
+
         return std::make_shared<AttentionBatchMetadata> (
-            AttentionBatchMetadata {}
+            AttentionBatchMetadata {
+                layer_id,
+                new_shape,
+                "bf16",
+                new_prefills_seqs,
+                new_prefill_tokens,
+                new_decode_tokens,
+                new_seq_ids,
+                new_prefill_seq_len,
+                new_prefill_query_len,
+                {}, // expert_ids
+                new_weights
+            }
         );
     }
 
@@ -643,6 +690,9 @@ struct AttentionBatch {
     static AttentionBatch merge(const std::vector<AttentionBatch>& batches) {
         if (batches.empty()) {
             return AttentionBatch {};
+        }
+        if (batches.size() == 1) {
+            return batches[0];
         }
         at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
         cudaStream_t stream = c10_stream.stream();
@@ -693,8 +743,46 @@ struct AttentionBatch {
         return AttentionBatch {tensor, meta};
     }
 
-    static AttentionBatch merge_tokens(const std::vector<TokenTopKInfo>& tokens) {
-        return AttentionBatch{};
+    static AttentionBatch pack_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
+
+        std::sort(tokens.begin(), tokens.end(), 
+            [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
+                if (a.prefill_pos == -1) {
+                    return false;
+                }
+                if (b.prefill_pos == -1) {
+                    return true;
+                }
+                if (a.seq_id != b.seq_id)
+                    return a.seq_id < b.seq_id;
+                return a.prefill_pos < b.prefill_pos;
+            }
+        );
+
+        at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
+        cudaStream_t stream = c10_stream.stream();
+        at::cuda::CUDAStreamGuard guard(c10_stream);
+
+        auto meta = AttentionBatchMetadata::merge_tokens(layer_id, tokens);
+
+        torch::Tensor gathered_topk_tensor = torch::empty(
+            {meta->num_tokens(), meta->token_hidden_dim()}, 
+            torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+        );
+        // tensor memory layout: [top1, ..., top1, top2, ..., top2, ..., topk, ..., topk]
+        std::vector<uintptr_t> src_ptrs(meta->num_tokens());
+
+        int n = tokens.size();
+        int topk = tokens[0].count();
+
+        for (int i = 0; i < n; i++) {
+            for (int k = 0; k < topk; k++) {
+                src_ptrs[k * n + i] = (uintptr_t) tokens[i].topk_tensors[k].data_ptr();
+            }
+        }
+        gather_tokens_cuda(gathered_topk_tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
+        
+        return AttentionBatch{gathered_topk_tensor, meta};
     }
 
 };

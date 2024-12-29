@@ -129,7 +129,8 @@ protected:
     zmq::socket_t mq;
 
     std::vector<std::vector<TensorBatch>> data_queue;
-    std::vector<int> inner_layer_id;
+    std::vector<int> layer_id_P2V; // physical layer id to virtual layer id (within this worker)
+    std::vector<int> layer_id_V2P; // virtual layer id (within this worker) to physical layer id
 
     std::mutex request_mutex;
     std::mutex batch_mutex;
