@@ -31,7 +31,8 @@ import torch.distributed as dist
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
-                        recorder_create as disagmoe_recorder_create)
+                        recorder_create as disagmoe_recorder_create,
+                        recorder_output as disagmoe_recorder_output)
 
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
@@ -810,17 +811,24 @@ class Engine:
                          batch_size, layer_id,
                          pool_snapshot_dict)
             )
+        # self.recorder_output = disagmoe_recorder_output()
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]]]:
         """
             return: step_stats, profile_contexts
         """
-        from disagmoe_c import recorder_output, TraceContext as TraceContext_C
+        from disagmoe_c import TraceContext as TraceContext_C
         
-        output: Dict[int, List[TraceContext_C]] = recorder_output()
+        output: Dict[int, List[TraceContext_C]] = disagmoe_recorder_output()
         result = {}
         for key in output:
             result[key] = [TraceContext.from_c(c) for c in output[key]]
+        
+        # if self.engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
+        #     while self.recorder_output is None:
+        #         time.sleep(0.1)
+        #     for key in self.recorder_output:
+        #         result[key] = [TraceContext.from_c(c) for c in self.recorder_output[key]]
         
         return self._step_stats, result
     

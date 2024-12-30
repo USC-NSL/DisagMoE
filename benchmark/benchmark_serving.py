@@ -167,8 +167,11 @@ def generate_step_trace(args,
             })
             
         for tid, t_traces in p_traces.items():
+            print("outputing thread", tid)
             tid = tid % (1 << 32)
             for trace in t_traces:
+                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
+                    continue
                 events.append({
                     "name": trace.msg,
                     "cat": "trace",
@@ -176,7 +179,7 @@ def generate_step_trace(args,
                     "ts": ms_to_us(trace.t_start),
                     "dur": ms_to_us(trace.t_dur),
                     "pid": pid,
-                    "tid": tid * 10 + trace.track_id,
+                    "tid": (tid * 10 + trace.track_id) % (1 << 31),
                 })
 
     with gzip.open(f"{trace_name}.json.gz", "w") as f:
@@ -210,9 +213,9 @@ async def benchmark_serving(args):
     
     await run_once()
     
-    step_stats = master.fetch_step_stats()
-    
     master.stop_workers()
+    
+    step_stats = master.fetch_step_stats()
     
     generate_step_trace(args, step_stats)
     

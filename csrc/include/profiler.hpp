@@ -1,5 +1,8 @@
 #pragma once
 
+#include "logging.h"
+#include "constants.h"
+
 #include <shared_mutex>
 #include <thread>
 #include <memory>
@@ -16,12 +19,12 @@ typedef std::shared_ptr<Recorder> recorder_t;
 struct TraceContext {
     std::string msg;
 
-    float t_start;  // in ms
-    float t_dur;    // in ms
+    double t_start;  // in ms
+    double t_dur;    // in ms
     int track_id;
 };
 
-static float walltime_ms() {
+static double walltime_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
@@ -32,7 +35,7 @@ protected:
     std::map<std::thread::id, std::vector<TraceContext>> ctx;
 
     // stack: [(time_stamp_ms, message)]
-    std::map<std::thread::id, std::stack<std::pair<float, std::string>>> stack;
+    std::map<std::thread::id, std::stack<std::pair<double, std::string>>> stack;
     
     // define in `muhelper.cpp`
     static std::shared_mutex mtx;
@@ -44,8 +47,10 @@ public:
 
     void create_thread() {
         auto tid = std::this_thread::get_id();
+        DMOE_LOG(DEBUG) << "Creating thread " << tid << LEND;
+        ASSERT(ctx.find(tid) == ctx.end());
         ctx[tid] = std::vector<TraceContext>();
-        stack[tid] = std::stack<std::pair<float, std::string>>();
+        stack[tid] = std::stack<std::pair<double, std::string>>();
     }
 
     void push_(const std::string &msg) {
@@ -58,7 +63,7 @@ public:
     }
 
     void pop_() {
-        float ts = walltime_ms();
+        double ts = walltime_ms();
         auto tid = std::this_thread::get_id();
         auto top = stack.at(tid).top();
 
@@ -72,7 +77,8 @@ public:
         */
         std::map<size_t, std::vector<TraceContext>> res;
         for (auto &pr: ctx) {
-            auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
+            DMOE_LOG(DEBUG) << "Thread " << pr.first << " has " << pr.second.size() << " records" << LEND;
+            auto tid = std::hash<std::thread::id>{}(pr.first);
             res[tid] = pr.second;
         }
         return res;
