@@ -36,6 +36,8 @@ protected:
 
     // stack: [(time_stamp_ms, message)]
     std::map<std::thread::id, std::stack<std::pair<double, std::string>>> stack;
+
+    bool enabled;
     
     // define in `muhelper.cpp`
     static std::shared_mutex mtx;
@@ -43,9 +45,13 @@ protected:
 
 public:
 
-    Recorder() {}
+    Recorder(const char *enabled) {
+        this->enabled = enabled && strcmp(enabled, "1") == 0;
+    }
 
     void create_thread() {
+        if (!enabled)
+            return;
         auto tid = std::this_thread::get_id();
         DMOE_LOG(DEBUG) << "Creating thread " << tid << LEND;
         ASSERT(ctx.find(tid) == ctx.end());
@@ -58,23 +64,30 @@ public:
             ! NOTE(hogura|20241226): we assume all threads are created initially, 
             ! which means the map are read-only during runtime, therefore no lock is required.
         */
+       if (!enabled)
+           return;
         auto tid = std::this_thread::get_id();
         stack.at(tid).push(std::make_pair(walltime_ms(), msg));
     }
 
     void pop_() {
+        if (!enabled)
+            return;
         double ts = walltime_ms();
         auto tid = std::this_thread::get_id();
         auto top = stack.at(tid).top();
 
         stack.at(tid).pop();
-        ctx.at(tid).push_back(TraceContext{top.second, top.first, ts - top.first, (int) stack.at(tid).size()});
+        if ((ts - top.first) * 1000 > 10) // only > 10us is commited
+            ctx.at(tid).push_back(TraceContext{top.second, top.first, ts - top.first, (int) stack.at(tid).size()});
     }
 
     std::map<size_t, std::vector<TraceContext>> output_() {
         /*
             ! NOTE(hogura|20241226): this function should only be called at the end of the program.
         */
+       if (!enabled)
+           return {};
         std::map<size_t, std::vector<TraceContext>> res;
         for (auto &pr: ctx) {
             DMOE_LOG(DEBUG) << "Thread " << pr.first << " has " << pr.second.size() << " records" << LEND;

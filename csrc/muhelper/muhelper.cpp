@@ -926,5 +926,6 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
 
 
 #include <profiler.hpp>
+#include <cstdlib>
 std::shared_mutex Recorder::mtx = std::shared_mutex();
-recorder_t Recorder::instance = std::make_shared<Recorder>();
+recorder_t Recorder::instance = std::make_shared<Recorder>(getenv("ENABLE_NVTX"));

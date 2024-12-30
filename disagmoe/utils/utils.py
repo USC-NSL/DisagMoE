@@ -10,6 +10,11 @@ from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+try:
+    from disagmoe_c import range_push, range_pop
+except:
+    from torch.cuda.nvtx import range_push, range_pop
+
 def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
     return unique_id()
@@ -91,10 +96,8 @@ def nvtx_range_cuda(msg, *args, **kwargs):
     finally:
         torch.cuda.nvtx.range_pop()
 
-
 @contextmanager
 def nvtx_range(msg, *args, **kwargs):
-    from disagmoe_c import range_push, range_pop
     range_push(msg.format(*args, **kwargs))
     try:
         yield
