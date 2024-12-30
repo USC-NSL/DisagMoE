@@ -177,3 +177,4 @@ reports/
 steps_trace.json
 steps_trace*
 *.png
+*.gz
