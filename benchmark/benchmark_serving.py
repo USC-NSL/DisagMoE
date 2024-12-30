@@ -314,7 +314,6 @@ def main():
         asyncio.run(benchmark_serving(args))
     except Exception as e:
         print("Error: failed to run benchmark, with exception:", e)
-    finally:
         BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":
