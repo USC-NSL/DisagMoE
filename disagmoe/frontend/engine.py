@@ -7,11 +7,13 @@ import asyncio
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
-from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch, 
-                                         AttentionBatchMetadata, SloStat)
+from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
+                                         AttentionBatchMetadata, SloStat, TraceContext)
 from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import get_ip, nvtx_range, get_nccl_url_from_uid, make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size, StepInfo
+from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, 
+                                  make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size, StepInfo, 
+                                  nvtx_range, range_push, range_pop)
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
@@ -30,7 +32,9 @@ import torch.distributed as dist
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
                         TensorBatch as TensorBatch_C,
-                        BlockManager as BlockManager_C)
+                        BlockManager as BlockManager_C,
+                        recorder_create as disagmoe_recorder_create,
+                        recorder_output as disagmoe_recorder_output)
 
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
@@ -118,6 +122,8 @@ class Engine:
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
+        disagmoe_recorder_create()
+        
         self.model_config.layer_ids = layer_ids
         self.device_group_ids = device_group_ids
         
@@ -681,10 +687,12 @@ class Engine:
             num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
             self.static_input[:num_tokens].copy_(input_tensor)
+            range_push("engine.graph_replay")
             self.graphs[meta_c.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
             torch.cuda.synchronize()
+            range_pop()
         
         expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
         expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
@@ -773,6 +781,7 @@ class Engine:
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
+        disagmoe_recorder_create()
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             batch_info = self.scheduler.schedule() # using non-blocking schedule
@@ -806,9 +815,26 @@ class Engine:
                          batch_size, layer_id,
                          pool_snapshot_dict)
             )
+        # self.recorder_output = disagmoe_recorder_output()
     
-    def fetch_step_stats(self) -> List[StepInfo]:
-        return self._step_stats
+    def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]]]:
+        """
+            return: step_stats, profile_contexts
+        """
+        from disagmoe_c import TraceContext as TraceContext_C
+        
+        output: Dict[int, List[TraceContext_C]] = disagmoe_recorder_output()
+        result = {}
+        for key in output:
+            result[key] = [TraceContext.from_c(c) for c in output[key]]
+        
+        # if self.engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
+        #     while self.recorder_output is None:
+        #         time.sleep(0.1)
+        #     for key in self.recorder_output:
+        #         result[key] = [TraceContext.from_c(c) for c in self.recorder_output[key]]
+        
+        return self._step_stats, result
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver

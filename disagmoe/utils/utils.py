@@ -10,6 +10,11 @@ from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+try:
+    from disagmoe_c import range_push, range_pop
+except:
+    from torch.cuda.nvtx import range_push, range_pop
+
 def get_nccl_unique_id():
     from torch.cuda.nccl import unique_id
     return unique_id()
@@ -73,7 +78,7 @@ def get_ip():
 
 
 @contextmanager
-def nvtx_range(msg, *args, **kwargs):
+def nvtx_range_cuda(msg, *args, **kwargs):
     """ 
     From vLLM: https://github.com/vllm-project/vllm/blob/7abba39ee64c1e2c84f48d7c38b2cd1c24bb0ebb/vllm/spec_decode/util.py#L238
     Context manager / decorator that pushes an NVTX range at the beginning
@@ -90,7 +95,16 @@ def nvtx_range(msg, *args, **kwargs):
         yield
     finally:
         torch.cuda.nvtx.range_pop()
-        
+
+@contextmanager
+def nvtx_range(msg, *args, **kwargs):
+    range_push(msg.format(*args, **kwargs))
+    try:
+        yield
+    finally:
+        range_pop()
+
+
 def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()
@@ -129,10 +143,11 @@ def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
 
 @dataclass
 class StepInfo:
-    
     start_timestamp_ms: float
     end_timestamp_ms: float
     batch_size: int
     layer_id: int
     pool_snapshot: Dict[int, int]
     
+    thread_id: int = -1
+    process_id: int = -1

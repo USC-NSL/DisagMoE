@@ -146,3 +146,19 @@ class SloStat:
             (stat_c.t_decode - stat_c.t_prefill) / CPS,
             [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )
+        
+@dataclass
+class TraceContext:
+    msg: str
+    t_start: float
+    t_dur: float
+    track_id: int
+    
+    @staticmethod
+    def from_c(ctx_c: "TraceContext_C") -> "TraceContext":
+        return TraceContext(
+            ctx_c.msg,
+            ctx_c.t_start,
+            ctx_c.t_dur,
+            ctx_c.track_id
+        )

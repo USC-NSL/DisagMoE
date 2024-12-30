@@ -3,11 +3,13 @@ from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_pl
 from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
-from disagmoe.frontend.datatypes import SloStat
-from typing import List
+from disagmoe.frontend.datatypes import SloStat, TraceContext
+from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass
 
+import gzip
+import json
 import asyncio
 import time
 import tqdm
@@ -155,34 +157,37 @@ def analyze_results(results: List[SloStat], duration: float):
     )
 
 def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
+    try:
+        import matplotlib.pyplot as plt 
+    except:
+        print("matplotlib not found, skipping plotting")
+    
     for i, worker_batch_sizes in enumerate(all_batch_sizes):
+        plt.figure()
+        df = pd.DataFrame(worker_batch_sizes)
+        plt.plot(df)
+        plt.title(f"Worker {i} batch sizes with time")
+        plt.savefig(f"worker_{i}_batch_sizes_with_time.png")
+        plt.close()
+        
+        plt.figure()
+        plt.hist(worker_batch_sizes, bins=32)
+        plt.title(f"Worker {i} batch sizes")
+        plt.savefig(f"worker_{i}_batch_sizes.png")
+        plt.close()
 
-        try:
-            import matplotlib.pyplot as plt
-            plt.figure()
-            df = pd.DataFrame(worker_batch_sizes)
-            plt.plot(df)
-            plt.title(f"Worker {i} batch sizes with time")
-            plt.savefig(f"worker_{i}_batch_sizes_with_time.png")
-            plt.close()
-            
-            plt.figure()
-            plt.hist(worker_batch_sizes, bins=32)
-            plt.title(f"Worker {i} batch sizes")
-            plt.savefig(f"worker_{i}_batch_sizes.png")
-            plt.close()
-            
-        except:
-            print("matplotlib not found, skipping plotting")
-            
 
-def generate_step_trace(step_stats: List[List[StepInfo]]):
+def generate_step_trace(args,
+                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]]] ]):
+    trace_name = f"trace_step-attn={args.step_attn}_dp-size={args.dp_size}_step-exp={args.step_expert}_ep-size={args.ep_size}" \
+                 f"_layers={args.num_layers}_experts={args.num_experts}" \
+                 f"_max-batch-attn={args.max_batch_size_attn}_max-batch-exp={args.max_batch_size_expert}"
     events = []
     
     def ms_to_us(ms):
         return ms * 1000
     
-    for worker_id, worker_stats in enumerate(step_stats):
+    for pid, (worker_stats, p_traces) in enumerate(step_stats):
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -190,16 +195,32 @@ def generate_step_trace(step_stats: List[List[StepInfo]]):
                 "ph": "X",
                 "ts": ms_to_us(step_info.start_timestamp_ms),
                 "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
-                "pid": 0,
-                "tid": worker_id,
+                "pid": pid,
+                "tid": 0,
                 "args": {
                     "pool_snapshot": f"{step_info.pool_snapshot}"
                 }
             })
             
-    with open("steps_trace.json", "w") as f:
-        import json
-        json.dump(events, f)
+        for tid, t_traces in p_traces.items():
+            print("outputing thread", tid)
+            tid = tid % (1 << 32)
+            for trace in t_traces:
+                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
+                    continue
+                events.append({
+                    "name": trace.msg,
+                    "cat": "trace",
+                    "ph": "X",
+                    "ts": ms_to_us(trace.t_start),
+                    "dur": ms_to_us(trace.t_dur),
+                    "pid": pid,
+                    "tid": (tid * 10 + trace.track_id) % (1 << 31),
+                })
+
+    with gzip.open(f"{trace_name}.json.gz", "w") as f:
+        f.write(json.dumps(events).encode("utf-8"))
+
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
@@ -230,11 +251,11 @@ async def benchmark_serving(args):
     
     await run_once()
     
-    step_stats = master.fetch_step_stats()
-    
     master.stop_workers()
     
-    generate_step_trace(step_stats)
+    step_stats = master.fetch_step_stats()
+    
+    generate_step_trace(args, step_stats)
     
     
 def get_args():

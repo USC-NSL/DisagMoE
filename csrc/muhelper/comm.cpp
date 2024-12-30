@@ -102,6 +102,7 @@ void ZmqChannel::instantiate() {
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
     if (is_embedding_node(this->local))
         return (void*) data;
+    tx_range _{"ZmqChannel::_tensor_copy"};
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     uintptr_t buf;
     if (!to_gpu) {

@@ -12,6 +12,7 @@
 #include "permute.h"
 #include "binding_helper.h"
 #include "binding_tests.hpp"
+#include "profiler.hpp"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
@@ -141,6 +142,18 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     // custom ops
     m.def("permute_tokens_cuda", &permute_tokens_cuda);
+
+    // profiler functions
+    m.def("recorder_output", &Recorder::output);
+    m.def("recorder_create", &Recorder::create);
+    m.def("range_push", &Recorder::push);
+    m.def("range_pop", &Recorder::pop);
+
+    py::class_<TraceContext>(m, "TraceContext")
+        .def_readwrite("msg", &TraceContext::msg)
+        .def_readwrite("t_start", &TraceContext::t_start)
+        .def_readwrite("t_dur", &TraceContext::t_dur)
+        .def_readwrite("track_id", &TraceContext::track_id);
 
     // static function calls
     m.def("create_channel", &create_channel);
