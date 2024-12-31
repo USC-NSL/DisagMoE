@@ -273,7 +273,7 @@ class Engine:
         return num_gpu_blocks
 
     def _create_cuda_graph_contexts(self):
-        assert self.model_config.enable_cuda_graph_attn or self.model_config.enable_cuda_graph_expert
+        # assert self.model_config.enable_cuda_graph_attn or self.model_config.enable_cuda_graph_expert
         batch_size = self.max_batch_size
         self.graphs: List[List[torch.cuda.CUDAGraph]] = []
         self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
@@ -292,6 +292,7 @@ class Engine:
         else:
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
                                                   device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
+            self.static_mappings_gpu = torch.zeros((batch_size, ), dtype=torch.int32, device="cuda")
             
         self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
                                             batch_size + 1,
@@ -709,6 +710,74 @@ class Engine:
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         return hiddens, new_meta_c
+    
+    @nvtx_range("engine.process_batch_expert")
+    def process_batch_expert_optimized(self, 
+                             meta_c: Metadata, 
+                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        assert isinstance(self.executor, ExpertsExecutor)
+        
+        # self._logger.info(f"process batch expert {meta_c.req_ids}")
+        
+        # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
+        batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
+        batch_sizes = torch.tensor(
+            [batch_sizes[i] for i in self.inner_exp_rank],
+            dtype=torch.int64,
+            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
+            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu",
+        )
+        
+        # self._logger.info(f"executing expert {meta_c.req_ids}")
+        execution_event = torch.cuda.Event()
+        if not self.model_config.enable_cuda_graph_expert:
+            range_push("engine.execute")
+            output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
+            execution_event.record()
+            range_pop()
+        else:
+            torch.cuda.synchronize()
+            
+            range_push("engine.input_copy")
+            num_tokens = input_tensor.shape[0]
+            self.static_input[:num_tokens].copy_(input_tensor)
+            self.static_input[num_tokens:].fill_(0)
+            self.static_batch_sizes.copy_(batch_sizes)
+            graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
+            range_pop()
+            
+            range_push("engine.graph_replay")
+            self._logger.info(f"layer id {meta_c.layer_id}, graph_id {graph_id}, graph_batch_size {graph_batch_size}")
+            self.graphs[meta_c.layer_id][graph_id].replay()
+            output = self.static_output[:num_tokens]
+            execution_event.record()
+            range_pop()
+            
+        # 2. permute tokens back to <prefill><decode> order
+        #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
+        h2d_stream = torch.cuda.Stream()
+        h2d_event = torch.cuda.Event()
+                
+        range_push("engine.sort_by_prefill_order")
+        new_mappings = list(meta_c.sort_by_prefill_order())
+        range_pop()
+        
+        with torch.cuda.stream(h2d_stream):
+            new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
+            self.static_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+            h2d_event.record(h2d_stream)
+
+        range_push("engine.h2d_event")
+        h2d_event.wait(h2d_stream)
+        range_pop()
+        
+        output = permute_tokens(output, self.static_mappings_gpu)
+        meta_c.update_exp_ids([], [])
+        meta_c.step_layer()
+
+        # self._logger.info(f"processed batch expert {meta_c.req_ids}")
+        return output, meta_c
     
     @nvtx_range("engine.process_batch_expert")
     def process_batch_expert(self, 
