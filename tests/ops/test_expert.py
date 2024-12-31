@@ -16,10 +16,11 @@ T = 10
 engine = Engine()
 
 cfg = mixtral_config
-cfg.enable_cuda_graph_expert = True
+cfg.enable_cuda_graph_expert = False
 cfg.num_layers = 1
 cfg.layer_ids = [0]
 cfg.graph_stride = 256
+cfg.ep_size = 8
 
 engine.model_config = cfg
 
@@ -54,7 +55,7 @@ meta = Metadata(
     "bf16",
     0,
     list(range(bs)),
-    [i % engine.model_config.num_experts for i in range(bs)],
+    [i % engine.model_config.num_experts_per_rank for i in range(bs)],
     [0 for i in range(bs)],
     [0 for i in range(bs)],
 )

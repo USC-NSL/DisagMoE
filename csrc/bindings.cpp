@@ -120,6 +120,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
+        .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
         .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")

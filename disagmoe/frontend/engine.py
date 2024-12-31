@@ -327,6 +327,8 @@ class Engine:
         self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
 
     def _warmup_experts(self):
+        self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
+        
         input = torch.zeros((self.max_batch_size, self.model_config.hidden_size), device="cuda")
         batch_sizes = torch.tensor([self.max_batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
             dtype=torch.int64,
@@ -720,14 +722,20 @@ class Engine:
         # self._logger.info(f"process batch expert {meta_c.req_ids}")
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
-        batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
-        batch_sizes = torch.tensor(
-            [batch_sizes[i] for i in self.inner_exp_rank],
-            dtype=torch.int64,
-            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
-            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu",
-        )
+        range_push("engine.copy_batch_sizes")
+        if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+            meta_c.get_expert_batch_sizes_cuda(
+                self.model_config.num_experts, self.inner_exp_rank,
+                self._static_bs_cuda
+            )
+            batch_sizes = self._static_bs_cuda
+        else:
+            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            batch_sizes = torch.tensor(
+                [batch_sizes[i] for i in self.inner_exp_rank],
+                dtype=torch.int64, device="cuda"
+            )
+        range_pop()
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         execution_event = torch.cuda.Event()
@@ -737,26 +745,19 @@ class Engine:
             execution_event.record()
             range_pop()
         else:
-            copy_event = CudaRangeEvent()
-            replay_event = CudaRangeEvent()
             torch.cuda.synchronize()
             
             range_push("engine.input_copy")
-            copy_event.start()
             num_tokens = input_tensor.shape[0]
             self.static_input[:num_tokens].copy_(input_tensor)
             self.static_batch_sizes.copy_(batch_sizes)
             graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
-            copy_event.end()
             range_pop()
             
             range_push("engine.graph_replay")
-            replay_event.start()
             self._logger.info(f"layer id {meta_c.layer_id}, graph_id {graph_id}, graph_batch_size {graph_batch_size}")
             self.graphs[meta_c.layer_id][graph_id].replay()
             output = self.static_output[:num_tokens]
-            replay_event.end()
-            
             execution_event.record()
             range_pop()
             
