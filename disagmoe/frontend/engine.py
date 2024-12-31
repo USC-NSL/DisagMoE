@@ -13,7 +13,7 @@ from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda a
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, 
                                   make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size, StepInfo, 
-                                  nvtx_range, range_push, range_pop)
+                                  nvtx_range, range_push, range_pop, CudaRangeEvent)
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
@@ -737,20 +737,26 @@ class Engine:
             execution_event.record()
             range_pop()
         else:
+            copy_event = CudaRangeEvent()
+            replay_event = CudaRangeEvent()
             torch.cuda.synchronize()
             
             range_push("engine.input_copy")
+            copy_event.start()
             num_tokens = input_tensor.shape[0]
             self.static_input[:num_tokens].copy_(input_tensor)
-            self.static_input[num_tokens:].fill_(0)
             self.static_batch_sizes.copy_(batch_sizes)
             graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
+            copy_event.end()
             range_pop()
             
             range_push("engine.graph_replay")
+            replay_event.start()
             self._logger.info(f"layer id {meta_c.layer_id}, graph_id {graph_id}, graph_batch_size {graph_batch_size}")
             self.graphs[meta_c.layer_id][graph_id].replay()
             output = self.static_output[:num_tokens]
+            replay_event.end()
+            
             execution_event.record()
             range_pop()
             
@@ -758,7 +764,7 @@ class Engine:
         #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
         h2d_stream = torch.cuda.Stream()
         h2d_event = torch.cuda.Event()
-                
+        
         range_push("engine.sort_by_prefill_order")
         new_mappings = list(meta_c.sort_by_prefill_order())
         range_pop()
@@ -778,7 +784,7 @@ class Engine:
 
         # self._logger.info(f"processed batch expert {meta_c.req_ids}")
         return output, meta_c
-    
+
     @nvtx_range("engine.process_batch_expert")
     def process_batch_expert(self, 
                              meta_c: Metadata, 
