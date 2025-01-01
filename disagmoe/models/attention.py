@@ -120,7 +120,7 @@ class MoEAttention(nn.Module):
         output, _ = self.o_proj(attn_output)
         router_logits, _ = self.gate(hidden_states)
 
-        print(f"router logits {router_logits}")
+        # print(f"router logits {router_logits}")
         
         topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
                                 gating_output=router_logits,

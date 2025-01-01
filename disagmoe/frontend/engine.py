@@ -307,7 +307,7 @@ class Engine:
                 meta_py = make_dummy_meta(MAX_BATCH_SIZE, 0)
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
                 for _ in range(2):
-                    _, _ = self.executor.execute(layer_id, positions, input, meta)
+                    _, _, _ = self.executor.execute(layer_id, positions, input, meta)
                     
     def _warmup_experts(self):
         for layer_id in self.model_config.layer_ids:
@@ -424,18 +424,18 @@ class Engine:
                 dtype=torch.int32, device="cuda")
         
         if self.model_config.enable_cuda_graph:
-            self.static_slot_mapping[0: num_seqs].copy_(
-                block_table_1d[-num_seqs : ].to(torch.int64))
-            _max_num_blocks = (block_table_1d.numel() - num_seqs) // num_tokens
+            self.static_slot_mapping[0: num_tokens].copy_(
+                block_table_1d[-num_tokens : ].to(torch.int64))
+            _max_num_blocks = (block_table_1d.numel() - num_tokens) // num_tokens
             self.static_block_table[0: num_tokens, 0: _max_num_blocks].copy_(
                 block_table_1d[ : -num_seqs].view(num_tokens, -1)
             )
             slot_mapping_cuda = self.static_slot_mapping
             block_table_cuda = self.static_block_table
         else:
-            slot_mapping_cuda = block_table_1d[-num_seqs : ].to(torch.int64)
+            slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
             block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
-        
+
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
         batch_infos = [0] * (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)) 
@@ -473,7 +473,7 @@ class Engine:
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
         assert mocking or self.model_config.enable_cuda_graph or \
-               max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
+               max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
         
         return FlashAttentionMetadata(
             meta_py.num_prefill_seqs,
@@ -495,6 +495,8 @@ class Engine:
     @nvtx_range("engine.attn_driver_preprocess")
     def _attn_driver_preprocess(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata, input_tensor: Tensor) -> FlashAttentionMetadata:
         
+        # print(f"device {self.device_id}, pack attn meta {meta_py}")
+
         decode_seq_lens = self._update_block_table(meta_c, meta_py)
         
         if self._intra_group_tp_enabled:
@@ -630,8 +632,7 @@ class Engine:
         
         # TODO(hogura|20241014): fill the real positions
 
-        num_tokens = input_tensor.shape[0]
-        positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
+        
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
@@ -641,7 +642,17 @@ class Engine:
         else:
             meta_py = AttentionBatchMetadata.from_c(meta_c)
             assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
-        
+
+        num_tokens = input_tensor.shape[0]
+
+        if self.model_config.top_k > 1 and len(meta_py.topk_weights) > 0:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            num_tokens = num_tokens // self.model_config.top_k
+            topk_weights = torch.tensor(meta_py.topk_weights, dtype=torch.bfloat16, device="cuda")
+            print(meta_py, topk_weights)
+            input_tensor = input_tensor[: num_tokens] * topk_weights[: num_tokens] + input_tensor[num_tokens :] * topk_weights[num_tokens :]
+
+        positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
@@ -657,17 +668,22 @@ class Engine:
             expert_ids = self.static_expert_ids[:num_tokens]
             torch.cuda.synchronize()
 
+        if self.model_config.top_k == 1:
+            # FIXME: here we randomize expert_ids and expert_weights
+            expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, ), device="cuda")
+            expert_ids = expert_ids[:, 0].tolist()
+        else:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            expert_ids = torch.cat(
+                (torch.zeros((num_tokens, ), dtype=torch.int, device="cuda"), 
+                torch.randint(1, self.model_config.num_experts, (num_tokens, ), device="cuda")), 
+                dim=0
+            ).tolist()
+            expert_weights = torch.rand((num_tokens * self.model_config.top_k, ), device="cuda")
+            hiddens = torch.cat([hiddens, hiddens], dim=0)
 
-        # FIXME: here we randomize expert_ids and expert_weights
-        expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, self.model_config.top_k), device="cuda")
-        expert_weights = torch.rand((num_tokens, self.model_config.top_k), device="cuda")
-        expert_weights = expert_weights / expert_weights.sum(dim=-1, keepdim=True)
+        # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
 
-        print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
-
-        # FIXME: we first pick top1 expert for each token
-        expert_ids = expert_ids[:, 0].tolist()
-        
         # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
@@ -676,9 +692,13 @@ class Engine:
             new_meta_c = meta_py
         else:
             new_meta_c = meta_c.to_metadata()
+            new_meta_c.duplicate_topk(self.model_config.top_k)
+            if self.model_config.top_k > 1:
+                new_meta_c.topk_weights = expert_weights.tolist()
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
+        print(f"device {self.device_id}: {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}")
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")

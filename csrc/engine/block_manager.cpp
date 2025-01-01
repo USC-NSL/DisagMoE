@@ -97,6 +97,7 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
     tx_range _{"BlockManager::append_tokens"};
     ASSERT (num_tokens >= 1);
     ASSERT (has_seq_block_list(seq_id));
+    ASSERT (context_len > 0);
 
     int remain_slots = block_size_ - context_len % block_size_; 
     if (remain_slots == block_size_) { 
@@ -158,7 +159,6 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
 
     int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
 
-    std::vector<int> slot_mapping(tokens_in_batch, -1);
     int slot_idx = n * m;
     for (int i = 0; i < meta->num_prefill_seqs; i++) {
         int q_len = meta->prefill_query_len[i];

@@ -100,6 +100,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("prefill_seq_len", &AttentionBatchMetadata::prefill_seq_len)
         .def_readwrite("prefill_query_len", &AttentionBatchMetadata::prefill_query_len)
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
+        .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
@@ -110,11 +111,13 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("req_ids", &Metadata::req_ids)
         .def_readwrite("exp_ids", &Metadata::exp_ids)
         .def_readwrite("prefill_poss", &Metadata::prefill_poss)
+        .def_readwrite("topk_weights", &Metadata::topk_weights)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
-        .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order);
+        .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
+        .def("duplicate_topk", &Metadata::duplicate_topk);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)

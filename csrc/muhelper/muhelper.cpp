@@ -951,6 +951,7 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
             // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
             this->ready_tokens.emplace_back(it->second);
             this->pool_.erase(it);
+            DMOE_LOG(INFO) << "ready token: " << it->second << LEND;
         }
     }
 }

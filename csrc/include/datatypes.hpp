@@ -105,6 +105,19 @@ struct TokenTopKInfo {
         topk_weights.emplace_back(weight);
         topk_tensors.emplace_back(tensor);
     }
+
+    friend std::ostream& operator<<(std::ostream &out, const TokenTopKInfo& token) {
+        out << "TokenTopKInfo{seq_id=" << token.seq_id << ", "
+            << "prefill_pos=" << token.prefill_pos << ", "
+            << "topk_weights={";
+        if (token.topk_weights.size() > 0) {
+            out << token.topk_weights[0];
+            for (size_t i = 1; i < token.topk_weights.size(); i ++)
+                out << ", " << token.topk_weights[i];
+        }
+        out << "}";
+        return out;
+    }
 };
 
 struct Metadata;
@@ -316,6 +329,25 @@ struct Metadata {
         permute_token_infos(exp_mappings);
     }
 
+    void duplicate_topk(int topk) {
+        if (topk == 1)
+            return;
+        std::vector<int> new_exp_ids, new_req_ids, new_prefill_poss;
+        int n = req_ids.size();
+        new_req_ids.reserve(n * 2);
+        new_prefill_poss.reserve(n * 2);
+
+        for (int j = 0; j < topk; j++) {
+            for (int i = 0; i < n; i++) {
+                new_req_ids.push_back(req_ids[i]);
+                new_prefill_poss.push_back(prefill_poss[i]);
+            }
+        }
+        req_ids = std::move(new_req_ids);
+        prefill_poss = std::move(new_prefill_poss);
+        shape[0] *= topk;
+    }
+
     void permute_token_infos(const std::vector<int> &exp_mappings) {
         if (exp_mappings.empty())
             return;
@@ -451,7 +483,7 @@ struct AttentionBatchMetadata {
 
     std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
-    std::vector<float> weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
+    std::vector<float> topk_weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
 
     // place holder for first attention id.
     // std::vector<uint8_t> first_attn_ids; 
@@ -611,7 +643,7 @@ struct AttentionBatchMetadata {
         std::vector<int> new_prefill_seq_len{};
         std::vector<int> new_prefill_query_len{};
 
-        // weights memory layout: [top1, ..., top1, top2, ..., top2, ..., topk, ..., topk]
+        // topk_ memory layout: [top1, ..., top1, top2, ..., top2, ..., topk, ..., topk]
         std::vector<float> new_weights(n * topk);
 
         for (int i = 0; i < n; i++) {
