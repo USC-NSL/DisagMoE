@@ -643,9 +643,11 @@ class Engine:
             meta_py = AttentionBatchMetadata.from_c(meta_c)
             assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
 
-        num_tokens = input_tensor.shape[0]
+        num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
 
-        if self.model_config.top_k > 1 and len(meta_py.topk_weights) > 0:
+        if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+            assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+            assert meta_py.topk_weights is not None and len(meta_py.topk_weights) == input_tensor.shape[0], f"incorrect topk_weights: {meta_py.topk_weights}"
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             num_tokens = num_tokens // self.model_config.top_k
             topk_weights = torch.tensor(meta_py.topk_weights, dtype=torch.bfloat16, device="cuda")
@@ -834,7 +836,7 @@ class Engine:
         
         if profile_dir is None:
             self._logger.info("profiling directory not specified, using default")
-            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
+            profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
         self._logger.info(f"enable profiler, results stored at {profile_dir}")
     
@@ -917,15 +919,13 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         
     def process_request(self, req_id: int, input_len: int):
-        # req_id (or seq_id) must > 0
         assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
         assert input_len == 1
-        shape = (input_len, self.model_config.hidden_size)
+        token_ids_shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.zeros(size=shape).type(self.model_config.dtype)
-        # self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(req_id, x)
+        token_ids = torch.zeros(token_ids_shape).type(self.model_config.dtype)
+        self.tokenizer.put_request(req_id, token_ids)
         
     def put_single_request(self, req_id: int, input_len: int):
         self.process_request(req_id, input_len)

@@ -179,7 +179,7 @@ Tokenizer::Tokenizer(int device_id,
     MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, 1, {}), channels, out_channel_infos) {
 }
 
-void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
+void Tokenizer::put_request(int req_id, torch::Tensor token_ids) {
     // TODO(hogura|20241007): set the first attn
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
@@ -191,7 +191,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor) {
         /*exp_ids=*/ {-1},
         /*prefill_pos=*/ {0},
     });
-    this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
+    this->put(TensorBatch {token_ids.clone().detach(), meta_t}, 0);
 }
 
 void Tokenizer::start() {
