@@ -20,7 +20,7 @@ cfg.enable_cuda_graph_expert = False
 cfg.num_layers = 1
 cfg.layer_ids = [0]
 cfg.graph_stride = 256
-cfg.ep_size = 8
+cfg.ep_size = 2
 
 engine.model_config = cfg
 
