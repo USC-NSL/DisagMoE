@@ -80,6 +80,7 @@ protected:
     static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
     mq_t mq;
+    cudaStream_t stream;
 
     std::string other_ip;
     bool is_sender;

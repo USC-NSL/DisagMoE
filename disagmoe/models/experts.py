@@ -102,7 +102,7 @@ class MoEExperts(torch.nn.Module):
         range_pop()
         return down[:bs]
         
-    def forward_slow(self, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+    def forward_slow(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         # Here use grouped gemm, tokens must be permuted by corresponding expert_id
         from disagmoe.utils.utils import range_push, range_pop
 
@@ -129,15 +129,17 @@ class MoEExperts(torch.nn.Module):
 
 class MoEExpertsSerial(MoEExperts):
     
-    def __init__(self, hidden_size, intermediate_size, num_experts, tp_size = 1):
+    def __init__(self, hidden_size, intermediate_size, num_experts, tp_size = 1, 
+                 max_batch_size: int = MAX_BATCH_SIZE):
         super().__init__(hidden_size, intermediate_size, num_experts, tp_size)
         
     @override
-    def forward(self, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+    def forward(self, num_tokens: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         results = []
         s = 0
+        single = batch_sizes.shape[0] == 1
         for i, bs in enumerate(batch_sizes):
-            if batch_sizes.shape[0] == 1:
+            if single:
                 cur_hiddens = hiddens
             else:
                 cur_hiddens = hiddens[s: s + bs]

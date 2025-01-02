@@ -240,6 +240,7 @@ class Engine:
             torch.cuda.set_stream(stream)
             self._logger.info(f"set stream {stream}")
             self.stream = stream
+            self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
             free_memory, total_memory = torch.cuda.mem_get_info()
             self._logger.info(f"CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
@@ -864,7 +865,7 @@ class Engine:
         disagmoe_recorder_create()
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
-            batch_info = self.scheduler.schedule() # using non-blocking schedule
+            batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
             

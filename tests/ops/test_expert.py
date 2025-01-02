@@ -19,9 +19,10 @@ cfg = mixtral_config
 cfg.enable_cuda_graph_expert = False
 cfg.num_layers = 1
 cfg.layer_ids = [0]
-cfg.graph_stride = 256
-cfg.ep_size = 2
-cfg.max_batch_size_expert = 512
+cfg.graph_stride = bs
+cfg.ep_size = 1
+cfg.max_batch_size_expert = bs
+cfg.enable_grouped_gemm = True
 
 engine.model_config = cfg
 
@@ -33,7 +34,7 @@ engine.device_id = 0
 engine._logger = logging.getLogger("engine")
 engine.engine_type = EngineType.EXPERT
 engine.executor = ExpertsExecutor(engine.model_config)
-engine._process_batch = engine.process_batch_expert_optimized
+engine._process_batch = engine.process_batch_expert
 # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
 engine.inner_exp_rank = [0 for _ in range(engine.model_config.num_experts_per_rank)]
 for i in range(engine.model_config.num_experts_per_rank):
