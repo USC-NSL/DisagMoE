@@ -756,6 +756,7 @@ class Engine:
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
+        self.stream.synchronize()
         self.dispatcher.put(batch, 0)
 
     @torch.inference_mode()
