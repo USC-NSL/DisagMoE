@@ -26,9 +26,9 @@ class Executor:
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
         self.num_layers = len(model_config.layer_ids)
-        self.layer_mappings = {
-            id: i for i, id in enumerate(model_config.layer_ids)
-        }
+        self.layer_mappings = [0 for _ in range(max(model_config.layer_ids) + 1)]
+        for i, id in enumerate(model_config.layer_ids):
+            self.layer_mappings[id] = i
     
     def execute(self, x: Tensor) -> Tensor:
         raise NotImplementedError()
@@ -125,10 +125,12 @@ class ExpertsExecutor(Executor):
 
     @override
     @nvtx_range("ExpertsExecutor.execute")
-    def execute(self, layer_id: int, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
+    def execute(self, layer_id: int, num_tokens: int, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
+        from disagmoe.utils.utils import range_push
+        range_push("executor.entry_point")
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
-        outputs = operator.forward(hidden_states, batch_sizes)
+        outputs = operator.forward(num_tokens, hidden_states, batch_sizes)
         return outputs
     
 class ParallelAttnExecutor(AttnExecutor):

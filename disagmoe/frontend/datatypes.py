@@ -32,11 +32,13 @@ class Metadata:
     shape: List[int]
     dtype: str
     layer_id: int
-    # infos: List[TokenMetadata]
     req_ids: List[int]
     exp_ids: List[int]
     attn_dp_ranks: List[int]
     prefill_poss: List[int]
+
+    def num_tokens(self) -> int:
+        ...
 
     def step_layer(self) -> None:
         ...

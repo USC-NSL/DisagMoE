@@ -56,9 +56,9 @@ class MoEExperts(torch.nn.Module):
         
         self.act_fn = torch.nn.SiLU()
 
-        self.cache_up = torch.empty((MAX_BATCH_SIZE, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_up_r = torch.empty((MAX_BATCH_SIZE, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_down = torch.empty((MAX_BATCH_SIZE, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_up = torch.empty((768, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_up_r = torch.empty((768, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_down = torch.empty((768, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
         if enable_cutlass_cache:
             self.cutlass_workspace_size, self.arguments_ptr = get_arguments(
                 self.num_experts, torch.device("cuda"))
@@ -72,17 +72,17 @@ class MoEExperts(torch.nn.Module):
         else:
             self.gmm = gmm
         
-    def forward(self, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+    def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         # Here use grouped gemm, tokens must be permuted by corresponding expert_id
         from disagmoe.utils.utils import range_push, range_pop
-        bs = hiddens.shape[0]
+        range_pop()
 
         range_push("w1")
         up = self.gmm(hiddens, self.w1_weight, batch_sizes, c=self.cache_up)
         range_pop()
         
         range_push("act")
-        up = self.act_fn(up)
+        up[:bs] = self.act_fn(up[:bs])
         range_pop()
         
         range_push("w3")
@@ -90,11 +90,36 @@ class MoEExperts(torch.nn.Module):
         range_pop()
         
         range_push("dot")
-        up = up * up_r
+        up[:bs] *= up_r[:bs]
         range_pop()
         
         range_push("w2")
         down = self.gmm(up, self.w2_weight, batch_sizes, c=self.cache_down)
+        range_pop()
+        return down[:bs]
+        
+    def forward_slow(self, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        # Here use grouped gemm, tokens must be permuted by corresponding expert_id
+        from disagmoe.utils.utils import range_push, range_pop
+
+        range_push("w1")
+        up = gmm(hiddens, self.w1_weight, batch_sizes)
+        range_pop()
+        
+        range_push("act")
+        up = self.act_fn(up)
+        range_pop()
+        
+        range_push("w3")
+        up_r = gmm(hiddens, self.w3_weight, batch_sizes)
+        range_pop()
+        
+        range_push("dot")
+        up = up * up_r
+        range_pop()
+        
+        range_push("w2")
+        down = gmm(up, self.w2_weight, batch_sizes)
         range_pop()
         return down
 

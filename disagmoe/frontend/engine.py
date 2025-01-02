@@ -336,7 +336,7 @@ class Engine:
             device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _ = self.executor.execute(layer_id, input, batch_sizes)
+                _ = self.executor.execute(layer_id, self.max_batch_size, input, batch_sizes)
             
     def _cuda_graph_capture(self):
         if self.is_attn:
@@ -723,6 +723,8 @@ class Engine:
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         range_push("engine.copy_batch_sizes")
+        # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
+        num_tokens = meta_c.num_tokens()
         if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
             meta_c.get_expert_batch_sizes_cuda(
                 self.model_config.num_experts, self.inner_exp_rank,
@@ -741,14 +743,13 @@ class Engine:
         execution_event = torch.cuda.Event()
         if not self.model_config.enable_cuda_graph_expert:
             range_push("engine.execute")
-            output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
+            output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
             execution_event.record()
             range_pop()
         else:
             torch.cuda.synchronize()
             
             range_push("engine.input_copy")
-            num_tokens = input_tensor.shape[0]
             self.static_input[:num_tokens].copy_(input_tensor)
             self.static_batch_sizes.copy_(batch_sizes)
             graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
@@ -796,6 +797,7 @@ class Engine:
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
+        num_tokens = meta_c.shape[0]
         batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
         batch_sizes = torch.tensor(
             [batch_sizes[i] for i in self.inner_exp_rank],
@@ -809,7 +811,6 @@ class Engine:
             output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
         else:
             torch.cuda.synchronize()
-            num_tokens = input_tensor.shape[0]
             self.static_input[:num_tokens].copy_(input_tensor)
             self.static_input[num_tokens:].fill_(0)
             self.static_batch_sizes.copy_(batch_sizes)
