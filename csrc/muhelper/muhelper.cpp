@@ -968,7 +968,7 @@ MuAttentionTopKPool::MuAttentionTopKPool(
     this->attn_token_queues = std::vector<std::vector<TokenTopKInfo>>(num_layers);
     this->topk_pools = std::vector<TokenTopKPool>{};
     for (auto &layer_id: layer_ids) {
-        this->topk_pools.emplace_back(TokenTopKPool(layer_id, top_k));
+        this->topk_pools.emplace_back(TokenTopKPool(top_k));
     }
 }
 

@@ -55,6 +55,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("wait_slo_stats", &Sampler::wait_slo_stats)
         .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats);
 
+    py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
+        .def("start", &TopKSampler::start)
+        .def("wait_slo_stats", &TopKSampler::wait_slo_stats)
+        .def("fetch_finished_slo_stats", &TopKSampler::fetch_finished_slo_stats);
+
     REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
         .def_readwrite("metadata", &TensorBatch::metadata);

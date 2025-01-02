@@ -235,7 +235,6 @@ public:
 typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
 
 class TokenTopKPool {
-    int layer_id;
 
     int top_k;
 
@@ -245,15 +244,14 @@ class TokenTopKPool {
 
 public:
 
-    TokenTopKPool(int layer_id, int top_k): layer_id(layer_id), top_k(top_k) {}
+    TokenTopKPool(int top_k): top_k(top_k) {}
 
     void put_batch(TensorBatch batch);
 
     std::vector<TokenTopKInfo> fetch_ready_tokens();
 
-    int get_layer_id() const {
-        return layer_id;
-    }
+    int get_top_k() { return top_k; }
+
 };
 
 class MuAttentionTopKPool: MuAttentionPool {

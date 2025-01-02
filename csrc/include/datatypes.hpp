@@ -401,6 +401,30 @@ struct Metadata {
         update_exp_ids({}, mapping);
         return mapping;
     }
+
+    static metadata_t pack_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+        int topk = tokens[0].count();
+        int n = tokens.size();
+
+        std::vector<int> req_ids, exp_ids, prefill_poss;
+        std::vector<float> topk_weights(n * topk);
+        std::vector<size_t> shape = {n * topk, tokens[0].topk_tensors[0].size(0)};
+        std::string dtype = "bf16";
+
+        for (int i = 0; i < n; i++) {
+            auto &token = tokens[i];
+            req_ids.push_back(token.seq_id);
+            exp_ids.push_back(token.prefill_pos);
+            prefill_poss.push_back(token.prefill_pos);
+            for (int k = 0; k < topk; k ++) {
+                topk_weights[k * n + i] = token.topk_weights[k];
+            }
+        }
+
+        return std::make_shared<Metadata>(Metadata {
+            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, topk_weights
+        });
+    }
 };
 
 struct TensorBatch {
@@ -446,6 +470,40 @@ struct TensorBatch {
             }
         }
         
+        gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
+
+        return TensorBatch {tensor, meta};
+    }
+
+    static TensorBatch pack_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+        metadata_t meta = Metadata::pack_tokens(layer_id, tokens);
+
+        torch::Tensor tensor = torch::empty(
+            {meta->num_tokens(), meta->token_hidden_dim()}, 
+            torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+        );
+
+        std::vector<uintptr_t> srcs(meta->num_tokens());
+
+        at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
+        cudaStream_t stream = c10_stream.stream();
+        at::cuda::CUDAStreamGuard guard(c10_stream);
+
+        int idx = 0;
+        int hidden_size_bytes = meta->token_hidden_dim() * meta->get_datatype_size();
+
+        {
+            tx_range _{"TensorBatch::pack_tokens::perpare_for_gather_cuda"};
+            for (auto &token: tokens) {
+                uintptr_t cur_ptr = (uintptr_t) token.topk_tensors[0].data_ptr();
+                for (int i = 0; i < token.topk_tensors.size(); i ++) {
+                    srcs[idx] = cur_ptr;
+                    cur_ptr += hidden_size_bytes;
+                    idx ++;
+                }
+            }
+        }
+
         gather_tokens_cuda(tensor, srcs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream);
 
         return TensorBatch {tensor, meta};
@@ -631,7 +689,7 @@ struct AttentionBatchMetadata {
         );
     }
 
-    static attn_metadata_t merge_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+    static attn_metadata_t pack_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
         int new_prefills_seqs = 0;
         int new_prefill_tokens = 0;
         int new_decode_tokens = 0;
@@ -795,7 +853,7 @@ struct AttentionBatch {
         cudaStream_t stream = c10_stream.stream();
         at::cuda::CUDAStreamGuard guard(c10_stream);
 
-        auto meta = AttentionBatchMetadata::merge_tokens(layer_id, tokens);
+        auto meta = AttentionBatchMetadata::pack_tokens(layer_id, tokens);
 
         torch::Tensor gathered_topk_tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
