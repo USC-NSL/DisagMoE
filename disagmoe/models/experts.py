@@ -14,6 +14,7 @@ class MoEExperts(torch.nn.Module):
                  num_experts: int, 
                  tp_size: int = 1,
                  enable_cutlass_cache: bool = True,
+                 max_batch_size: int = MAX_BATCH_SIZE
                 ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -24,9 +25,12 @@ class MoEExperts(torch.nn.Module):
         if self.tp_size > 1:
             assert self.intermediate_size % self.tp_size == 0
             self.intermediate_size //= self.tp_size
-        self.create_weights(enable_cutlass_cache=enable_cutlass_cache)
+        self.create_weights(enable_cutlass_cache=enable_cutlass_cache,
+                            max_batch_size=max_batch_size)
         
-    def create_weights(self, params_dtype: torch.dtype = None, enable_cutlass_cache: bool = False):
+    def create_weights(self, params_dtype: torch.dtype = None, 
+                       enable_cutlass_cache: bool = False,
+                       max_batch_size: int = MAX_BATCH_SIZE):
         if params_dtype == None:
             # FIXME(hogura|20241014): maybe use torch.get_default_dtype
             params_dtype = torch.bfloat16
@@ -56,9 +60,9 @@ class MoEExperts(torch.nn.Module):
         
         self.act_fn = torch.nn.SiLU()
 
-        self.cache_up = torch.empty((768, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_up_r = torch.empty((768, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_down = torch.empty((768, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_up = torch.empty((max_batch_size, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_up_r = torch.empty((max_batch_size, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_down = torch.empty((max_batch_size, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
         if enable_cutlass_cache:
             self.cutlass_workspace_size, self.arguments_ptr = get_arguments(
                 self.num_experts, torch.device("cuda"))

@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 bs = 256
 hs = 4096
-T = 10
+T = 30
 
 engine = Engine()
 
@@ -21,6 +21,7 @@ cfg.num_layers = 1
 cfg.layer_ids = [0]
 cfg.graph_stride = 256
 cfg.ep_size = 2
+cfg.max_batch_size_expert = 512
 
 engine.model_config = cfg
 
@@ -37,7 +38,7 @@ engine._process_batch = engine.process_batch_expert_optimized
 engine.inner_exp_rank = [0 for _ in range(engine.model_config.num_experts_per_rank)]
 for i in range(engine.model_config.num_experts_per_rank):
     engine.inner_exp_rank[i] = engine.model_config.num_experts_per_rank * engine.rank_in_group + i
-engine.max_batch_size = 256
+engine.max_batch_size = cfg.max_batch_size_expert
 
 print("init engine")
 

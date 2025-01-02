@@ -11,7 +11,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 try:
-    assert False
     from disagmoe_c import range_push, range_pop
 except:
     from torch.cuda.nvtx import range_push, range_pop

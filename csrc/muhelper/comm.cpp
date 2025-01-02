@@ -60,6 +60,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
@@ -74,6 +75,11 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
+void NcclChannel::sync() {
+    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):

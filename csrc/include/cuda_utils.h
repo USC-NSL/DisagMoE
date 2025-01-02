@@ -101,8 +101,8 @@ inline cudaStream_t get_current_torch_stream(int device_id = 0) {
 #include "nvtx3/nvtx3.hpp"
 #include "profiler.hpp"
 
-using tx_range = nvtx3::scoped_range;
-// using tx_range = ScopedRange;
+// using tx_range = nvtx3::scoped_range;
+using tx_range = ScopedRange;
 
 #define AUTO_TX_RANGE tx_range __{__FUNCTION__}
 

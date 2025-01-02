@@ -120,6 +120,7 @@ class ExpertsExecutor(Executor):
                 self.model_config.hidden_size,
                 self.model_config.intermediate_size,
                 self.model_config.num_experts_per_rank,
+                max_batch_size=self.model_config.max_batch_size_expert
             ) for _ in range(self.num_layers)
         ]
 

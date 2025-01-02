@@ -714,7 +714,7 @@ class Engine:
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")
-    def process_batch_expert_optimized(self, 
+    def process_batch_expert(self, 
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
@@ -773,14 +773,14 @@ class Engine:
         
         with torch.cuda.stream(h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
-            self.static_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+            self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
             h2d_event.record(h2d_stream)
 
         range_push("engine.h2d_event")
         h2d_event.wait(h2d_stream)
         range_pop()
         
-        output = permute_tokens(output, self.static_mappings_gpu)
+        output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 
@@ -788,7 +788,7 @@ class Engine:
         return output, meta_c
 
     @nvtx_range("engine.process_batch_expert")
-    def process_batch_expert(self, 
+    def process_batch_expert_slow(self, 
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
@@ -833,6 +833,9 @@ class Engine:
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
+        range_push("Engine.stream_sync")
+        self.stream.synchronize()
+        range_pop()
         self.dispatcher.put(batch, 0)
 
     @torch.inference_mode()
@@ -864,6 +867,10 @@ class Engine:
             batch_info = self.scheduler.schedule() # using non-blocking schedule
             if batch_info.data is None:
                 continue
+            
+            range_push("Engine.schedule_stream_sync")
+            self.stream.synchronize()
+            range_pop()
             
             pool_snapshot = self.scheduler.get_pool_snapshot()
             batch_size = batch_info.data.shape[0]

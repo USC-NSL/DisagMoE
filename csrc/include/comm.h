@@ -41,6 +41,8 @@ public:
     int get_peer_id() const {
         return this->other;
     }
+
+    virtual void sync() {}
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -67,6 +69,8 @@ public:
     void send(uintptr_t data, const Metadata& metadata) override;
 
     void recv(uintptr_t data, const Metadata& metadata) override;
+
+    void sync() override;
 };
 
 typedef std::shared_ptr<zmq::socket_t> mq_t;
