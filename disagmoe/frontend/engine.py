@@ -414,6 +414,8 @@ class Engine:
         
         num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+        print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
         
         # 1. prepare block table
         if not mocking:
@@ -453,8 +455,6 @@ class Engine:
             batch_infos[num_seqs + meta_py.num_prefill_seqs + i] = decode_seq_lens[i] - 1
             
         # make query_start_loc
-        print(f"prefill_query_len: {meta_py.prefill_query_len}, {len(batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])}")
-        print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
         make_seqlens_list(meta_py.prefill_query_len, dst=batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])
 
         # make seq_start_loc
@@ -649,10 +649,7 @@ class Engine:
             assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
             assert meta_py.topk_weights is not None and len(meta_py.topk_weights) == input_tensor.shape[0], f"incorrect topk_weights: {meta_py.topk_weights}"
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-            num_tokens = num_tokens // self.model_config.top_k
-            topk_weights = torch.tensor(meta_py.topk_weights, dtype=torch.bfloat16, device="cuda")
-            print(meta_py, topk_weights)
-            input_tensor = input_tensor[: num_tokens] * topk_weights[: num_tokens] + input_tensor[num_tokens :] * topk_weights[num_tokens :]
+            input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
 
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
@@ -701,7 +698,7 @@ class Engine:
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
-        print(f"device {self.device_id}: {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}")
+        print(f"attn send out: device {self.device_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")
@@ -710,7 +707,7 @@ class Engine:
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        self._logger.info(f"process batch expert {meta_c.req_ids}")
+        self._logger.info(f"process batch expert {meta_c.req_ids}, {meta_c.topk_weights}")
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
@@ -725,6 +722,7 @@ class Engine:
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph or True:
             output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
+            output = output * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
         else:
             torch.cuda.synchronize()
             num_tokens = input_tensor.shape[0]

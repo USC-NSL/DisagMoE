@@ -161,11 +161,18 @@ struct Metadata {
     inline Metadata slice(int l, int r) {
         auto shape = this->shape;
         shape[0] = r - l;
+
+        std::vector<float> sliced_topk_weights;
+        if (topk_weights.size() > 0) {
+            sliced_topk_weights = slice_vector(topk_weights, l, r);
+        }
+
         return Metadata{
             shape, this->dtype, this->layer_id, 
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
             slice_vector(prefill_poss, l, r),
+            sliced_topk_weights,
         };
     }
 
@@ -173,6 +180,7 @@ struct Metadata {
         auto shape = this->shape;
         shape[0] = ids.size();
         std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), prefill_poss_(shape[0], -1);
+        std::vector<float> topk_weights_(shape[0]);
 
         for (size_t i = 0; i < ids.size(); i ++) {
             ASSERT (ids[i] < this->req_ids.size());
@@ -183,15 +191,21 @@ struct Metadata {
             if (prefill_poss.size() >= shape[0]) {
                 prefill_poss_[i] = prefill_poss[ids[i]];
             }
+            if (topk_weights.size() != 0) {
+                topk_weights_[i] = topk_weights[ids[i]];
+            }
+        }
+        if (topk_weights.size() == 0) {
+            topk_weights_.clear();
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, prefill_poss_, topk_weights_
         };
     }
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, topk_weights);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -255,6 +269,7 @@ struct Metadata {
         }
         shape[0] = total_tokens;
         std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), prefill_poss(total_tokens);
+        std::vector<float> topk_weights(total_tokens);
 
         std::vector<int> exp_cnts(MAX_NUM_EXPERTS, 0);
         for (auto &meta: metas) {
@@ -271,6 +286,7 @@ struct Metadata {
         mappings.resize(total_tokens);
         int idx = 0;
         for (auto &meta: metas) {
+            DMOE_LOG(INFO) << "merging expert metadata: " << *meta << LEND;
             for (int i = 0; i < meta->num_tokens(); i ++) {
                 exp_cnts[meta->exp_ids[i]] --;
                 int j = exp_cnts[meta->exp_ids[i]];
@@ -278,11 +294,12 @@ struct Metadata {
                 req_ids[j] = meta->req_ids[i];
                 exp_ids[j] = meta->exp_ids[i];
                 prefill_poss[j] = meta->prefill_poss[i];
+                topk_weights[j] = meta->topk_weights[i];
                 idx ++;
             }
         }
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss
+            shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, topk_weights
         });
     }
 
@@ -724,8 +741,8 @@ struct AttentionBatchMetadata {
                 // NOTE: Only considered for prefill length = 1
                 new_prefill_tokens ++;
                 new_prefills_seqs ++;
-                new_prefill_seq_len.emplace_back(token.prefill_pos);
-                new_prefill_query_len.emplace_back(token.prefill_pos);
+                new_prefill_seq_len.emplace_back(1);
+                new_prefill_query_len.emplace_back(1);
             }
             if (topk > 1) {
                 // for topk == 1, there is no weights
@@ -851,7 +868,7 @@ struct AttentionBatch {
     }
 
     static AttentionBatch pack_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
-        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, tokens.size=" << tokens.size() << LEND;
+        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, layer_id=" << layer_id << ", tokens.size=" << tokens.size() << LEND;
 
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
@@ -872,6 +889,8 @@ struct AttentionBatch {
         at::cuda::CUDAStreamGuard guard(c10_stream);
 
         auto meta = AttentionBatchMetadata::pack_tokens(layer_id, tokens);
+
+        DMOE_LOG(INFO) << "tokens packed in to attn batch, meta=" << meta->seq_ids[0] << LEND;
 
         torch::Tensor gathered_topk_tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 

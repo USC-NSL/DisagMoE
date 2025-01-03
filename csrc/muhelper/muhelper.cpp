@@ -348,6 +348,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
+    DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
@@ -932,6 +933,8 @@ std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
 void TokenTopKPool::put_batch(TensorBatch batch) {
     auto meta = batch.metadata;
     int n = meta->num_tokens();
+
+    DMOE_LOG(INFO) << "TokenTopKPool putting batch: " << *meta << LEND;
     
     for (int i = 0; i < n; i++) {
         int seq_id = meta->req_ids[i];
@@ -945,13 +948,12 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
             );
         } else {
             it->second.append_tensor(meta->topk_weights[i], batch.data[i]);
-        }
-
-        if (it->second.count() == this->top_k) {
-            // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
-            this->ready_tokens.emplace_back(it->second);
-            this->pool_.erase(it);
-            DMOE_LOG(INFO) << "ready token: " << it->second << LEND;
+            if (it->second.count() == this->top_k) {
+                // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
+                this->ready_tokens.emplace_back(it->second);
+                this->pool_.erase(it);
+                DMOE_LOG(INFO) << "ready token: " << it->second << LEND;
+            }
         }
     }
 }
