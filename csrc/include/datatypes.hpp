@@ -168,7 +168,7 @@ struct Metadata {
         return batches;
     }
 
-    void get_expert_batch_sizes_cuda(int n_expert, const std::vector<int> &inner_exp_rank, torch::Tensor tensor_cuda, cudaStream_t stream) {
+    void get_expert_batch_sizes_cuda(int n_expert, const std::vector<int> &inner_exp_rank, torch::Tensor tensor_cuda, uintptr_t stream_ptr) {
         AUTO_TX_RANGE;
         ASSERT(n_expert > 0);
         auto batch_sizes = get_expert_batch_sizes(n_expert);
@@ -178,7 +178,7 @@ struct Metadata {
             ASSERT(0 <= inner_exp_rank[i] && inner_exp_rank[i] < n_expert);
             batches[i] = batch_sizes[inner_exp_rank[i]];
         }
-        CUDACHECK(cudaMemcpyAsync(tensor_cuda.data_ptr(), batches, m * sizeof(int64_t), cudaMemcpyHostToDevice, stream));
+        CUDACHECK(cudaMemcpyAsync(tensor_cuda.data_ptr(), batches, m * sizeof(int64_t), cudaMemcpyHostToDevice, cudaStream_t(stream_ptr)));
     }
 
     TokenMetadata info_at(int i) const {
