@@ -38,6 +38,11 @@ const int ZMQ_OFFSET_BASE = 16;
 #define MAX_BATCH_SIZE 512
 #endif
 
+#ifndef MAX_N_EXPERTS
+#define MAX_N_EXPERTS 8
+
+#endif
+
 #define ASSERT(condition) do {if (!(condition)) { \
     throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
 }} while(0)

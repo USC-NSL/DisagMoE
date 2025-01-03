@@ -15,7 +15,8 @@ See `.gitmodules`.
 CUDA 12.4 is required for grouped_gemm compilation.
 
 ```bash
-git clone https://github.com/tgale96/grouped_gemm.git
+git submodule update --init
+cd third_party/grouped_gemm
 TORCH_CUDA_ARCH_LIST=8.0 GROUPED_GEMM_CUTLASS=1 pip install .
 ```
 

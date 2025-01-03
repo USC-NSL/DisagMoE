@@ -53,6 +53,21 @@ def get_mappings_from_exp_ids(exp_ids: Union[torch.Tensor, List[int]], num_exper
         
     return mappings, exp_cnt
 
+@nvtx_range("memory.get_mappings_from_exp_ids_cuda")
+def get_mappings_from_exp_ids_cuda(exp_ids: torch.Tensor, num_experts: int):
+    assert isinstance(exp_ids, torch.Tensor)
+    
+    _, rankings = exp_ids.view(-1).sort()
+    
+    mappings = torch.ones_like(rankings, dtype=torch.int32)
+    mappings = mappings.cumsum(0) - 1
+    idx = mappings.clone()
+    
+    mappings[rankings] = idx
+    
+    mappings = mappings.to(torch.int32)
+    return mappings, []
+
 @nvtx_range("memory.permute_tokens_triton")
 def permute_tokens_triton(tokens: torch.Tensor, 
                    mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
