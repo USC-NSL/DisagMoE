@@ -740,6 +740,8 @@ class Engine:
                 dtype=torch.int64, device="cuda"
             )
         range_pop()
+        # sync for batch_sizes
+        torch.cuda.default_stream().synchronize()
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
