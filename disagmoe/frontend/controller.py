@@ -265,8 +265,10 @@ class Controller:
         ray.get(tasks)
         
         self.dp_scheduler = get_dp_scheduler(
-            model_config.dp_size, self.max_output_len, cache_config.block_size, "RR"
+            model_config.dp_size, self.max_output_len, cache_config.block_size, "max"
         )
+        
+        self.model_place: ModelPlacement = model_place
         
     def release_kv_cache(self, req_ids: Union[int, List[int]]):
         if not isinstance(req_ids, list):
@@ -317,8 +319,14 @@ class Controller:
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
-        dp_rank = self.dp_scheduler.schedule([req_id])[0]
-        self.tokenizer_worker.put_single_request.remote(req_id, input_len, dp_rank)
+        self.dp_scheduler.put_request(
+            self.tokenizer_worker.put_single_request.remote, req_id, input_len)
+        # dp_rank = self.dp_scheduler.schedule([req_id])[0]
+        # if dp_rank >= 0:
+        #     self.tokenizer_worker.put_single_request.remote(req_id, input_len, dp_rank)
+        # else:
+        #     self.dp_scheduler.put_request(
+        #         self.tokenizer_worker.put_single_request.remote, req_id, input_len)
         return res
         
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
@@ -354,6 +362,17 @@ class Controller:
             return
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)
+        
+    async def start_scheduler(self):
+        stats = {device_id: 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
+        for worker, device_id in zip(self.workers, self.device_ids):
+            if self.model_place.is_attn(device_id):
+                rank = self.model_place.attn_dp_rank_at(device_id)
+                stats[rank] = min(stats[rank], ray.get(worker.get_configured_kv_cache_blocks.remote()))
+        self.dp_scheduler.start(stats)
+    
+    async def stop_scheduler(self):
+        await self.dp_scheduler.terminate()
 
 controller: Controller
 
