@@ -730,7 +730,7 @@ class Engine:
         if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
             meta_c.get_expert_batch_sizes_cuda(
                 self.model_config.num_experts, self.inner_exp_rank,
-                self._static_bs_cuda
+                self._static_bs_cuda, self.stream.cuda_stream
             )
             batch_sizes = self._static_bs_cuda
         else:
@@ -740,8 +740,6 @@ class Engine:
                 dtype=torch.int64, device="cuda"
             )
         range_pop()
-        # sync for batch_sizes
-        torch.cuda.default_stream().synchronize()
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
@@ -767,7 +765,6 @@ class Engine:
         
         new_mappings = list(meta_c.sort_by_prefill_order())
         
-        self.stream.synchronize()
         with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
