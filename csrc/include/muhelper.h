@@ -211,7 +211,7 @@ public:
            std::vector<int> device_group_ids = {},
            Channel_t group_comm = nullptr);
 
-    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
+    virtual std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
     std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
 
@@ -254,7 +254,7 @@ public:
 
 };
 
-class MuAttentionTopKPool: MuAttentionPool {
+class MuAttentionTopKPool: public MuAttentionPool {
 
     int top_k;
 
@@ -277,8 +277,6 @@ public:
            Channel_t group_comm = nullptr,
            int top_k = 1);
 
-    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
-
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
+    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr) override;
 
 };

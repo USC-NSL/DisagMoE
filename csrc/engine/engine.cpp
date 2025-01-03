@@ -243,6 +243,7 @@ void init_all_channels(
 
 std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
+    int top_k,
     bool is_attn,
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
@@ -286,7 +287,12 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     attn_scheduler_t attn_scheduler;
 
     if (is_attn) {
-        mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1);
+        mu_attn_pool_t pool;
+        if (top_k == 1) {
+            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1);
+        } else {
+            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k);
+        }
         if (cfg.tp == 1) {
             attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
         } else {
@@ -297,8 +303,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
                 attn_scheduler = std::make_shared<AttentionWorkerScheduler>(pool, layer_ids, intra_group_channel_2, intra_group_channel_3);
             }
         }
-    }
-    else {
+    } else {
         mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
         scheduler = Scheduler::build(pool, layer_ids, "largest");
     }
@@ -326,6 +331,7 @@ void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dis
 Sampler_t init_sampler(
     int local,
     int max_output_len,
+    int top_k,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos
@@ -344,9 +350,16 @@ Sampler_t init_sampler(
     for (auto &t: threads)
         t.join();
 
-    Sampler_t sampler = std::make_shared<Sampler>(
-        local, max_output_len, in_channels, out_channels, out_channel_infos
-    );
+    Sampler_t sampler;
+    if (top_k == 1) {
+        sampler = std::make_shared<Sampler>(
+            local, max_output_len, in_channels, out_channels, out_channel_infos
+        );
+    } else {
+        sampler = std::make_shared<TopKSampler>(
+            local, max_output_len, top_k, in_channels, out_channels, out_channel_infos
+        );
+    }
     return sampler;
 }
 

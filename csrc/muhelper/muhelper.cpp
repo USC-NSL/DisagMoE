@@ -753,13 +753,13 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         if (meta->prefill_poss[i] != -1) {
             num_prefill_tokens ++;
             num_prefill_seqs ++;
+            prefill_seq_len.emplace_back(1);
+            prefill_query_len.emplace_back(1);
         } else {
             num_decode_tokens ++;
         }
         // NOTE: Only considered for prefill length = 1
         seq_ids.emplace_back(meta->req_ids[i]);
-        prefill_seq_len.emplace_back(1);
-        prefill_query_len.emplace_back(1);
     }
 
     auto attn_meta = std::make_shared<AttentionBatchMetadata> (AttentionBatchMetadata {
@@ -776,7 +776,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << meta << LEND;
+    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
@@ -973,7 +973,7 @@ MuAttentionTopKPool::MuAttentionTopKPool(
 }
 
 void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << meta << LEND;
+    DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE: group_comm is only used when send_from_zmq, so it should be thread-safe
@@ -989,15 +989,23 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
         // NOTE: the first layer receives directly from tokenizer and sampler so there is no topk
         ASSERT (meta->topk_weights.size() == 0);
         std::vector<TokenTopKInfo> tokens = meta->unpack_tokens();
-        int n = tokens.size();
-        for (int i = 0; i < n; i++) {
+        int batched_tokens = tokens.size();
+        for (int i = 0; i < batched_tokens; i++) {
             tokens[i].topk_tensors.emplace_back(tensor[i]);
         }
 
         {
             std::lock_guard<std::mutex> lock(this->batch_mutex);
+
+            int &tokens_cur_layer = this->tokens_per_layer_[lid];
+            tokens_cur_layer += batched_tokens;
+            if (tokens_cur_layer > this->largest_batch_size_) {
+                this->largest_batch_size_ = tokens_cur_layer;
+                this->largest_batch_layer_id_ = lid;
+            }
             for (auto &token: tokens) {
                 this->attn_token_queues[lid].emplace_back(token);
+                DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
             }
         }
         
@@ -1017,9 +1025,11 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
             }
             for (auto &token: ready_tokens) {
                 this->attn_token_queues[lid].emplace_back(token);
+                DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
             }
         }
     }
+    DMOE_LOG(INFO) << "largest batch size: " << this->largest_batch_size_ << LEND;
     
 }
 
@@ -1042,7 +1052,6 @@ std::vector<TokenTopKInfo> MuAttentionTopKPool::schedule_with_limit() {
 }
 
 std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
-    // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
     int layer_id = -1;
     int num_tokens = 0;
     std::vector<AttentionBatch> result{};
@@ -1060,7 +1069,8 @@ std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *select
 
         if (this->max_batch_size > 0) {
             auto tokens = this->schedule_with_limit();
-            this->tokens_per_layer_[layer_id] -= tokens.size();
+            num_tokens = tokens.size();
+            this->tokens_per_layer_[layer_id] -= num_tokens;
             result.emplace_back(AttentionBatch::pack_tokens(this->layer_id_V2P[layer_id], tokens));
         } else {
             num_tokens = this->largest_batch_size_;
@@ -1073,7 +1083,7 @@ std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *select
         maintain_largest_batch();
     }
 
-    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
+    DMOE_LOG(INFO) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
 
     // {
     //     std::lock_guard<std::mutex> lock(this->request_mutex);

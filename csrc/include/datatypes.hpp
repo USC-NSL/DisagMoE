@@ -97,8 +97,8 @@ struct TokenTopKInfo {
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
     int count() const {
-        ASSERT (topk_weights.size() == topk_tensors.size());
-        return topk_weights.size();
+        ASSERT (topk_weights.size() == 0 || topk_weights.size() == topk_tensors.size());
+        return topk_tensors.size();
     }
 
     void append_tensor(float weight, torch::Tensor tensor) {
@@ -717,12 +717,13 @@ struct AttentionBatchMetadata {
 
         for (int i = 0; i < n; i++) {
             auto &token = tokens[i];
-            // NOTE: Only considered for prefill length = 1
             new_seq_ids.emplace_back(token.seq_id);
             if (token.prefill_pos == -1) {
                 new_decode_tokens ++;
             } else {
+                // NOTE: Only considered for prefill length = 1
                 new_prefill_tokens ++;
+                new_prefills_seqs ++;
                 new_prefill_seq_len.emplace_back(token.prefill_pos);
                 new_prefill_query_len.emplace_back(token.prefill_pos);
             }
@@ -850,6 +851,7 @@ struct AttentionBatch {
     }
 
     static AttentionBatch pack_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
+        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, tokens.size=" << tokens.size() << LEND;
 
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {

@@ -158,6 +158,7 @@ class Engine:
             device_group_ids = []
         self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
             self.device_id,
+            self.model_config.top_k,
             self.is_attn,
             layer_ids,
             # P2P Channels
@@ -388,7 +389,7 @@ class Engine:
             
         #  if the first layer in this attention worker, update block table and decode_seq_lens
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
+
         if meta_py.layer_id == self.model_config.layer_ids[0]:
             # only update block table and decode_seq_lens in the first layer
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
@@ -452,6 +453,8 @@ class Engine:
             batch_infos[num_seqs + meta_py.num_prefill_seqs + i] = decode_seq_lens[i] - 1
             
         # make query_start_loc
+        print(f"prefill_query_len: {meta_py.prefill_query_len}, {len(batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])}")
+        print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
         make_seqlens_list(meta_py.prefill_query_len, dst=batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])
 
         # make seq_start_loc
@@ -630,10 +633,7 @@ class Engine:
         
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
-        # TODO(hogura|20241014): fill the real positions
-
-        
-        # self._logger.info(f"process batch attn {meta_c.seq_ids}")
+        self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
@@ -654,6 +654,7 @@ class Engine:
             print(meta_py, topk_weights)
             input_tensor = input_tensor[: num_tokens] * topk_weights[: num_tokens] + input_tensor[num_tokens :] * topk_weights[num_tokens :]
 
+        # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
@@ -673,7 +674,7 @@ class Engine:
         if self.model_config.top_k == 1:
             # FIXME: here we randomize expert_ids and expert_weights
             expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, ), device="cuda")
-            expert_ids = expert_ids[:, 0].tolist()
+            expert_ids = expert_ids.tolist()
         else:
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             expert_ids = torch.cat(
@@ -709,7 +710,7 @@ class Engine:
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        # self._logger.info(f"process batch expert {meta_c.req_ids}")
+        self._logger.info(f"process batch expert {meta_c.req_ids}")
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
@@ -881,6 +882,7 @@ class SamplerEngine(Engine):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
+            self.model_config.top_k,
             in_device_ids,
             out_device_ids,
             [ChannelInfo_C(info.expert_ids, info.attn_layer_ids) 
