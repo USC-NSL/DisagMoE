@@ -359,7 +359,7 @@ class Controller:
         ray.get(tasks)
         
     async def start_scheduler(self):
-        stats = {device_id: 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
+        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
         for worker, device_id in zip(self.workers, self.device_ids):
             if self.model_place.is_attn(device_id):
                 rank = self.model_place.attn_dp_rank_at(device_id)
