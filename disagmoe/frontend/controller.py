@@ -321,15 +321,10 @@ class Controller:
         self.request_results[req_id] = res
         self.dp_scheduler.put_request(
             self.tokenizer_worker.put_single_request.remote, req_id, input_len)
-        # dp_rank = self.dp_scheduler.schedule([req_id])[0]
-        # if dp_rank >= 0:
-        #     self.tokenizer_worker.put_single_request.remote(req_id, input_len, dp_rank)
-        # else:
-        #     self.dp_scheduler.put_request(
-        #         self.tokenizer_worker.put_single_request.remote, req_id, input_len)
         return res
         
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
+        raise NotImplementedError("DP Scheduler not implemented here")
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         results = [AsyncResult(req_id) for req_id in req_ids]
         for r in results:
