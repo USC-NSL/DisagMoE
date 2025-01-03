@@ -425,6 +425,17 @@ struct Metadata {
             shape, dtype, layer_id, req_ids, exp_ids, prefill_poss, topk_weights
         });
     }
+
+    std::vector<TokenTopKInfo> unpack_tokens() {
+        ASSERT (topk_weights.size() == 0);
+        int topk = topk_weights.size() / req_ids.size();
+        std::vector<TokenTopKInfo> tokens;
+        tokens.reserve(req_ids.size());
+        for (int i = 0; i < req_ids.size(); i ++) {
+            tokens.emplace_back(req_ids[i], prefill_poss[i]);
+        }
+        return tokens;
+    }
 };
 
 struct TensorBatch {
@@ -715,10 +726,15 @@ struct AttentionBatchMetadata {
                 new_prefill_seq_len.emplace_back(token.prefill_pos);
                 new_prefill_query_len.emplace_back(token.prefill_pos);
             }
-
-            for (int k = 0; k < topk; k++) {
-                new_weights[k * n + i] = token.topk_weights[k];
+            if (topk > 1) {
+                // for topk == 1, there is no weights
+                for (int k = 0; k < topk; k++) {
+                    new_weights[k * n + i] = token.topk_weights[k];
+                }
             }
+        }
+        if (topk == 1) {
+            new_weights = {};
         }
 
         std::vector<size_t> new_shape{n * topk, tokens[0].topk_tensors[0].size(-1)};
