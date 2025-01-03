@@ -127,8 +127,6 @@ class ExpertsExecutor(Executor):
     @override
     @nvtx_range("ExpertsExecutor.execute")
     def execute(self, layer_id: int, num_tokens: int, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
-        from disagmoe.utils.utils import range_push
-        range_push("executor.entry_point")
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
         outputs = operator.forward(num_tokens, hidden_states, batch_sizes)

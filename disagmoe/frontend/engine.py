@@ -741,12 +741,8 @@ class Engine:
         range_pop()
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
-        execution_event = torch.cuda.Event()
         if not self.model_config.enable_cuda_graph_expert:
-            range_push("engine.execute")
             output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-            execution_event.record()
-            range_pop()
         else:
             torch.cuda.synchronize()
             
@@ -760,7 +756,6 @@ class Engine:
             self._logger.info(f"layer id {meta_c.layer_id}, graph_id {graph_id}, graph_batch_size {graph_batch_size}")
             self.graphs[meta_c.layer_id][graph_id].replay()
             output = self.static_output[:num_tokens]
-            execution_event.record()
             range_pop()
             
         # 2. permute tokens back to <prefill><decode> order
@@ -768,60 +763,16 @@ class Engine:
         h2d_stream = torch.cuda.Stream()
         h2d_event = torch.cuda.Event()
         
-        range_push("engine.sort_by_prefill_order")
         new_mappings = list(meta_c.sort_by_prefill_order())
-        range_pop()
         
         with torch.cuda.stream(h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
             h2d_event.record(h2d_stream)
 
-        range_push("engine.h2d_event")
         h2d_event.wait(h2d_stream)
-        range_pop()
         
         output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
-        meta_c.update_exp_ids([], [])
-        meta_c.step_layer()
-
-        # self._logger.info(f"processed batch expert {meta_c.req_ids}")
-        return output, meta_c
-
-    @nvtx_range("engine.process_batch_expert")
-    def process_batch_expert_slow(self, 
-                             meta_c: Metadata, 
-                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        assert isinstance(self.executor, ExpertsExecutor)
-        
-        # self._logger.info(f"process batch expert {meta_c.req_ids}")
-        
-        # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
-        num_tokens = meta_c.shape[0]
-        batch_sizes = meta_c.get_expert_batch_sizes(self.model_config.num_experts)
-        batch_sizes = torch.tensor(
-            [batch_sizes[i] for i in self.inner_exp_rank],
-            dtype=torch.int64,
-            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
-            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu",
-        )
-        
-        # self._logger.info(f"executing expert {meta_c.req_ids}")
-        if not self.model_config.enable_cuda_graph_expert:
-            output = self.executor.execute(meta_c.layer_id, input_tensor, batch_sizes)
-        else:
-            torch.cuda.synchronize()
-            self.static_input[:num_tokens].copy_(input_tensor)
-            self.static_input[num_tokens:].fill_(0)
-            self.static_batch_sizes.copy_(batch_sizes)
-            graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
-            self.graphs[meta_c.layer_id][graph_id].replay()
-            output = self.static_output[:num_tokens]
-        # 2. permute tokens back to <prefill><decode> order
-        #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
-        new_mappings = list(meta_c.sort_by_prefill_order())
-        output = permute_tokens(output, new_mappings)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 

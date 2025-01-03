@@ -12,7 +12,7 @@ _env_vars = {
     "TORCH_NCCL_BLOCKING_WAIT": "0",
     "GROUPED_GEMM_CUTLASS": "",
     "LD_LIBRARY_PATH": "",
-    "ENABLE_NVTX": "1",
+    "ENABLE_NVTX": "0",
 }
 
 ENV_VARS = {
