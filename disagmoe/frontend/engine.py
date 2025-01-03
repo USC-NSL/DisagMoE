@@ -240,6 +240,7 @@ class Engine:
             torch.cuda.set_stream(stream)
             self._logger.info(f"set stream {stream}")
             self.stream = stream
+            self.h2d_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
             free_memory, total_memory = torch.cuda.mem_get_info()
@@ -760,17 +761,17 @@ class Engine:
             
         # 2. permute tokens back to <prefill><decode> order
         #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
-        h2d_stream = torch.cuda.Stream()
         h2d_event = torch.cuda.Event()
         
         new_mappings = list(meta_c.sort_by_prefill_order())
         
-        with torch.cuda.stream(h2d_stream):
+        self.stream.synchronize()
+        with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
-            h2d_event.record(h2d_stream)
+            h2d_event.record(self.h2d_stream)
 
-        h2d_event.wait(h2d_stream)
+        h2d_event.wait(self.h2d_stream)
         
         output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
         meta_c.update_exp_ids([], [])
