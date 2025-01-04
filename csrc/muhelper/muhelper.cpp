@@ -178,7 +178,7 @@ inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuAttnDispatcher::_send_once"};
-    // DMOE_LOG(DEBUG) << "sending a batch." << LEND;
+    DMOE_LOG(INFO) << "attn call sending a batch: " << *batch.metadata << LEND;
     // DMOE_LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
     //            << " info size: " << batch.metadata->infos.size() << LEND;
 
@@ -201,13 +201,17 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             break;
         }
 
+        auto sliced_meta = batch.metadata->slice(i, j);
+
         auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), *batch.metadata, i);
         this->_send_batch(
             this->exp_channels[cid],
             buf,
-            batch.metadata->slice(i, j)
+            sliced_meta
         );
         i = j;
+
+        DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
 
     // DMOE_LOG(DEBUG) << "sent a batch." << LEND;
@@ -269,6 +273,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
         (uintptr_t)batch.data.data_ptr(),
         *meta
     );
+
+    DMOE_LOG(INFO) << "expert send a batch to attn: " << *meta << LEND;
 
     // std::vector<int> chans;
     // for (int req_id: meta->req_ids) {
@@ -348,7 +354,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
-    DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
@@ -951,8 +957,8 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
             if (it->second.count() == this->top_k) {
                 // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
                 this->ready_tokens.emplace_back(it->second);
-                this->pool_.erase(it);
                 DMOE_LOG(INFO) << "ready token: " << it->second << LEND;
+                this->pool_.erase(it);
             }
         }
     }

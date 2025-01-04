@@ -633,7 +633,7 @@ class Engine:
         
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
-        self._logger.info(f"process batch attn {meta_c.seq_ids}")
+        # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
             # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
@@ -650,6 +650,8 @@ class Engine:
             assert meta_py.topk_weights is not None and len(meta_py.topk_weights) == input_tensor.shape[0], f"incorrect topk_weights: {meta_py.topk_weights}"
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
+            meta_c.shrink_topk(self.model_config.top_k)
+            meta_py.shape[0] = meta_py.shape[0] // self.model_config.top_k
 
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
@@ -698,7 +700,8 @@ class Engine:
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
-        print(f"attn send out: device {self.device_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
+        # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
+        assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")
@@ -707,7 +710,7 @@ class Engine:
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        self._logger.info(f"process batch expert {meta_c.req_ids}, {meta_c.topk_weights}")
+        # self._logger.info(f"process batch expert: layer {meta_c.layer_id}, {meta_c.req_ids}, {meta_c.exp_ids}, {meta_c.topk_weights}")
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # OPTIMIZE(shaoyuw): use exp_cnt to get batch_sizes
@@ -737,7 +740,7 @@ class Engine:
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 
-        # self._logger.info(f"processed batch expert {meta_c.req_ids}")
+        # self._logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
         return output, meta_c
 
     @nvtx_range("Engine.post_process")

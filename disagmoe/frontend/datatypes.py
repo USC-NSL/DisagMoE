@@ -45,7 +45,10 @@ class Metadata:
     def sort_by_prefill_order(self) -> List[int]:
         ...
 
-    def duplicate_topk(self) -> None:
+    def duplicate_topk(self, topk) -> None:
+        ...
+    
+    def shrink_topk(self, topk: int) -> None:
         ...
         
     @staticmethod
@@ -123,6 +126,9 @@ class AttentionBatchMetadata:
             meta_c.expert_ids,
             meta_c.topk_weights
         )
+
+    def shrink_topk(self, topk: int) -> None:
+        ...
         
 @dataclass
 class SloStat:

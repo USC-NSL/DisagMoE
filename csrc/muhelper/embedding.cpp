@@ -56,7 +56,7 @@ void Sampler::run() {
         int peer_id = std::stoi(recv_msgs[0].to_string());
         auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
         torch::Tensor tensor = torch::empty(
-            {metadata->num_element()}, 
+            {metadata->num_tokens(), metadata->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)
         );
         // auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
@@ -193,6 +193,10 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     this->token_pool.put_batch((TensorBatch) {tensor, meta});
 
     auto ready_tokens = this->token_pool.fetch_ready_tokens();
+
+    if (ready_tokens.empty()) {
+        return;
+    }
 
     int n = ready_tokens.size();
 

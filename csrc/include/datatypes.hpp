@@ -162,7 +162,7 @@ struct Metadata {
         auto shape = this->shape;
         shape[0] = r - l;
 
-        std::vector<float> sliced_topk_weights;
+        std::vector<float> sliced_topk_weights{};
         if (topk_weights.size() > 0) {
             sliced_topk_weights = slice_vector(topk_weights, l, r);
         }
@@ -346,10 +346,16 @@ struct Metadata {
         permute_token_infos(exp_mappings);
     }
 
+    void shrink_topk(int topk) {
+        if (topk == 1)
+            return;
+        this->shape[0] /= topk;
+    }
+
     void duplicate_topk(int topk) {
         if (topk == 1)
             return;
-        std::vector<int> new_exp_ids, new_req_ids, new_prefill_poss;
+        std::vector<int> new_req_ids, new_prefill_poss;
         int n = req_ids.size();
         new_req_ids.reserve(n * 2);
         new_prefill_poss.reserve(n * 2);
@@ -670,6 +676,12 @@ struct AttentionBatchMetadata {
         }
     }
 
+    void shrink_topk(int topk) {
+        if (topk == 1)
+            return;
+        this->shape[0] /= topk;
+    }
+
     static attn_metadata_t merge(const std::vector<attn_metadata_t>& batches) {
         AUTO_TX_RANGE;
         
@@ -868,7 +880,7 @@ struct AttentionBatch {
     }
 
     static AttentionBatch pack_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
-        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, layer_id=" << layer_id << ", tokens.size=" << tokens.size() << LEND;
+        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, layer_id=" << layer_id << ", tokens " << tokens[0].seq_id << LEND;
 
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
@@ -883,6 +895,8 @@ struct AttentionBatch {
                 return a.prefill_pos < b.prefill_pos;
             }
         );
+
+        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens after sorting, layer_id=" << layer_id << ", tokens " << tokens[0].seq_id << LEND;
 
         at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
         cudaStream_t stream = c10_stream.stream();
