@@ -27,12 +27,17 @@ protected:
         return local < other ? 1 : 0;
     }
 
+    void _delay_release_tensor(torch::Tensor tensor, cudaStream_t stream) {ASSERT(0);}
+
+    void _release_tensor_loop() {ASSERT(0);}
+
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
+    ~Channel() {}
 
     virtual void instantiate() = 0;
-    virtual void send(uintptr_t data, const Metadata& metadata) = 0;
-    virtual void recv(uintptr_t data, const Metadata& metadata) = 0;
+    virtual void send(torch::Tensor tensor, const Metadata& metadata) = 0;
+    virtual void recv(torch::Tensor tensor, const Metadata& metadata) = 0;
 
     void _debug_print() {
         printf("%d %d\n", local, other);
@@ -66,9 +71,9 @@ public:
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(torch::Tensor tensor, const Metadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata& metadata) override;
+    void recv(torch::Tensor tensor, const Metadata& metadata) override;
 
     void sync() override;
 };
@@ -88,16 +93,20 @@ protected:
 
     int rank_offset;
 
+    void* pin_buffer;
+
     void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
+
+    void _pipeline_comm(void* data, size_t num_tokens, size_t token_size, cudaMemcpyKind flag);
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(torch::Tensor tensor, const Metadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata &metadata) override;
+    void recv(torch::Tensor tensor, const Metadata &metadata) override;
 };
 
 class NcclGroupChannel: public NcclChannel {
@@ -117,20 +126,20 @@ protected:
 
     int root() const;
 
-    void broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream=nullptr);
+    void broadcast(torch::Tensor send_tensor, torch::Tensor recv_tensor, size_t count, ncclDataType_t type, cudaStream_t stream=nullptr);
 
 public:
     NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(torch::Tensor tensor, const Metadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata& metadata) override;
+    void recv(torch::Tensor tensor, const Metadata& metadata) override;
 
     void synchronize();
 
-    void send_recv(uintptr_t data, const Metadata& metadata);
+    void send_recv(torch::Tensor tensor, const Metadata& metadata);
 
     void bcast_obj(void* &buf, size_t &size);
 
@@ -138,7 +147,7 @@ public:
 
     void recv_metadata(Metadata& metadata);
 
-    void all_reduce(uintptr_t data, const std::vector<int> &shape);
+    void all_reduce(torch::Tensor tensor, const std::vector<int> &shape);
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);

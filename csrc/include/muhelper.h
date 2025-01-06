@@ -59,7 +59,7 @@ protected:
 
     virtual void _send_once(TensorBatch batch) = 0;
 
-    void _send_batch(int cid, uintptr_t buf, const Metadata& meta);
+    void _send_batch(int cid, torch::Tensor tensor, const Metadata& meta);
 
     void run() override;
 
@@ -146,7 +146,7 @@ protected:
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
-    void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
+    void recv_tensor(int peer_id, torch::Tensor tensor, metadata_t &meta);
 
     virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true);
 

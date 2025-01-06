@@ -62,7 +62,7 @@ void Sampler::run() {
         );
         // auto tensor_buf = (uintptr_t) std::malloc(metadata->num_element() * metadata->get_datatype_size());
 
-        this->peer_channels[peer_id]->recv((uintptr_t)tensor.data_ptr(), *metadata);
+        this->peer_channels[peer_id]->recv(tensor, *metadata);
         
         this->process_batch(tensor, metadata);
     }

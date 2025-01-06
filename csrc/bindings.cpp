@@ -10,7 +10,6 @@
 #include "datatypes.hpp"
 #include "block_manager.h"
 #include "permute.h"
-#include "binding_helper.h"
 #include "binding_tests.hpp"
 #include "profiler.hpp"
 
@@ -179,12 +178,12 @@ PYBIND11_MODULE(disagmoe_c, m) {
     /********
         Test functions
     ********/
-    m.def("test_nccl_p2p", &test_nccl_p2p);
-    m.def("test_nccl_group", &test_nccl_group);
-    m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
-    m.def("test_multi_launch", &test_multi_launch);
+    // m.def("test_nccl_p2p", &test_nccl_p2p);
+    // m.def("test_nccl_group", &test_nccl_group);
+    // m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
+    // m.def("test_multi_launch", &test_multi_launch);
 
-    REGISTER_FUNC(test_op_overlap);
+    // REGISTER_FUNC(test_op_overlap);
     // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
     // m.def("test_attn_dispatcher", &test_attn_dispatcher);
     // m.def("test_expert_dispatcher", &test_expert_dispatcher);

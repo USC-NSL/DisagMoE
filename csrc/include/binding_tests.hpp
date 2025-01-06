@@ -12,22 +12,22 @@
 #include <memory>
 #include <cstdlib>
 
-void test_nccl_p2p(Channel_t c1, uintptr_t p1, Channel_t c2, uintptr_t p2, const Metadata& metadata) {
-    auto t1 = std::thread([&]{c1->send(p1, metadata);});
-    auto t2 = std::thread([&]{c2->recv(p2, metadata);});
-    t1.join();
-    t2.join();
-}
+// void test_nccl_p2p(Channel_t c1, uintptr_t p1, Channel_t c2, uintptr_t p2, const Metadata& metadata) {
+//     auto t1 = std::thread([&]{c1->send(p1, metadata);});
+//     auto t2 = std::thread([&]{c2->recv(p2, metadata);});
+//     t1.join();
+//     t2.join();
+// }
 
-std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
-    auto uid = get_nccl_unique_id();
-    auto c1 = create_channel(s, r, uid);
-    auto c2 = create_channel(r, s, uid);
+// std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
+//     auto uid = get_nccl_unique_id();
+//     auto c1 = create_channel(s, r, uid);
+//     auto c2 = create_channel(r, s, uid);
 
-    auto t1 = std::thread([&]{ c1->instantiate(); }), t2 = std::thread([&]{ c2->instantiate(); });
-    t1.join(); t2.join();
-    return std::make_pair(c1, c2);
-}
+//     auto t1 = std::thread([&]{ c1->instantiate(); }), t2 = std::thread([&]{ c2->instantiate(); });
+//     t1.join(); t2.join();
+//     return std::make_pair(c1, c2);
+// }
 
 // void test_zmq_sub_pub() {
 //     auto pr = _init_channel();
@@ -347,150 +347,150 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     exit(0);
 // }
 
-void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
-    auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
-    auto c = static_cast<NcclGroupChannel*>(c_raw.get());
-    c->instantiate();
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+// void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
+//     auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+//     auto c = static_cast<NcclGroupChannel*>(c_raw.get());
+//     c->instantiate();
+//     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+//     DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
     
-    if (rank == 0) {
-        Metadata meta = Metadata {
-            /*shape=*/ std::vector<size_t>({1, 4}),
-            /*dtype=*/ "fp16",
-            /*layer_id=*/ 1,
-            /*req_ids=*/ std::vector<int>({2}),
-            /*exp_ids=*/ std::vector<int>({3}),
-            /*prefill_poss=*/ std::vector<int>({4}),
-        };
-        uintptr_t buf = alloc_cuda_tensor(4, 0);
-        c->send_metadata(meta);
-        DMOE_LOG(INFO) << "Send metadata." << LEND;
-        c->send(buf, meta);
-    } else {
-        Metadata meta;
-        c->recv_metadata(meta);
-        DMOE_LOG(INFO) << "Got metadata: " << meta << LEND;
-        ASSERT(meta.num_element() == 4);
-        uintptr_t buf = alloc_cuda_tensor(meta.num_element(), 0);
-        c->recv(buf, meta);
-        ASSERT(meta.req_ids[0] == 2);
-        ASSERT(meta.exp_ids[0] == 3);
-        ASSERT(meta.prefill_poss[0] == 4);
-    }
+//     if (rank == 0) {
+//         Metadata meta = Metadata {
+//             /*shape=*/ std::vector<size_t>({1, 4}),
+//             /*dtype=*/ "fp16",
+//             /*layer_id=*/ 1,
+//             /*req_ids=*/ std::vector<int>({2}),
+//             /*exp_ids=*/ std::vector<int>({3}),
+//             /*prefill_poss=*/ std::vector<int>({4}),
+//         };
+//         uintptr_t buf = alloc_cuda_tensor(4, 0);
+//         c->send_metadata(meta);
+//         DMOE_LOG(INFO) << "Send metadata." << LEND;
+//         c->send(buf, meta);
+//     } else {
+//         Metadata meta;
+//         c->recv_metadata(meta);
+//         DMOE_LOG(INFO) << "Got metadata: " << meta << LEND;
+//         ASSERT(meta.num_element() == 4);
+//         uintptr_t buf = alloc_cuda_tensor(meta.num_element(), 0);
+//         c->recv(buf, meta);
+//         ASSERT(meta.req_ids[0] == 2);
+//         ASSERT(meta.exp_ids[0] == 3);
+//         ASSERT(meta.prefill_poss[0] == 4);
+//     }
 
-    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
-}
+//     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
+// }
 
-void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string uid) {
-    auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
-    auto c = static_cast<NcclGroupChannel*>(c_raw.get());
-    c->instantiate();
-    DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
+// void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string uid) {
+//     auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+//     auto c = static_cast<NcclGroupChannel*>(c_raw.get());
+//     c->instantiate();
+//     DMOE_LOG(INFO) << "rank " << rank << " instantiated" << LEND;
 
-    std::vector<int> layer_ids{0, 1};
-    std::vector<Channel_t> channels{};
-    mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(
-        layer_ids,
-        rank, 
-        channels
-    );
+//     std::vector<int> layer_ids{0, 1};
+//     std::vector<Channel_t> channels{};
+//     mu_attn_pool_t pool = std::make_shared<MuAttentionPool>(
+//         layer_ids,
+//         rank, 
+//         channels
+//     );
 
-    torch::Tensor dummy_tensor = torch::empty({0}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
+//     torch::Tensor dummy_tensor = torch::empty({0}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
 
-    std::vector<std::vector<AttentionBatch>> data_queue(2);
-    data_queue[0] = std::vector<AttentionBatch>{
-        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
-            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {0}, {1}, {1}, {}}
-        )},
-        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
-            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {1}, {1}, {1}, {}}
-        )},
-    };
-    data_queue[1] = std::vector<AttentionBatch>{
-        AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
-            AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {2}, {1}, {1}, {}}
-        )}
-    };
-    std::vector<int> token_per_layer {2, 1};
-    pool->__set_attn_data_queue(data_queue, token_per_layer, 0);
+//     std::vector<std::vector<AttentionBatch>> data_queue(2);
+//     data_queue[0] = std::vector<AttentionBatch>{
+//         AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
+//             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {0}, {1}, {1}, {}}
+//         )},
+//         AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
+//             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {1}, {1}, {1}, {}}
+//         )},
+//     };
+//     data_queue[1] = std::vector<AttentionBatch>{
+//         AttentionBatch{dummy_tensor, std::make_shared<AttentionBatchMetadata>(
+//             AttentionBatchMetadata{0, {1, 4}, "fp16", 1, 1, 0, /*seq_ids=*/ {2}, {1}, {1}, {}}
+//         )}
+//     };
+//     std::vector<int> token_per_layer {2, 1};
+//     pool->__set_attn_data_queue(data_queue, token_per_layer, 0);
 
-    AttentionBatch result;
+//     AttentionBatch result;
 
-    if (rank == 0) {
-        // driver scheduler
-        AttentionDriverScheduler scheduler(pool, layer_ids, c_raw, c_raw);
-        result = scheduler.schedule();
-    } else {
-        // worker scheduler
-        AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw, c_raw);
-        result = scheduler.schedule();
-    }
+//     if (rank == 0) {
+//         // driver scheduler
+//         AttentionDriverScheduler scheduler(pool, layer_ids, c_raw, c_raw);
+//         result = scheduler.schedule();
+//     } else {
+//         // worker scheduler
+//         AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw, c_raw);
+//         result = scheduler.schedule();
+//     }
 
-    ASSERT(result.metadata.get() != nullptr);
-    auto &seq_ids = result.metadata->seq_ids;
+//     ASSERT(result.metadata.get() != nullptr);
+//     auto &seq_ids = result.metadata->seq_ids;
 
-    for (int i: seq_ids)
-        DMOE_LOG(DEBUG) << "seq_id: " << i << LEND;
+//     for (int i: seq_ids)
+//         DMOE_LOG(DEBUG) << "seq_id: " << i << LEND;
 
-    ASSERT(seq_ids.size() == 2);
-    ASSERT(seq_ids[0] == 0 && seq_ids[1] == 1);
+//     ASSERT(seq_ids.size() == 2);
+//     ASSERT(seq_ids[0] == 0 && seq_ids[1] == 1);
 
-    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
-}
+//     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
+// }
 
-void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string> uids) {
-    std::vector<std::thread> threads;
-    for (int i = 0; i < uids.size(); i ++) {
-        threads.push_back(std::thread(
-            [&](std::string uid, int i) {
-                auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
-                auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
-                c->instantiate();
-                cudaStream_t stream;
-                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -2);
-                if (i == 0) {
-                    if (rank == 0) {
-                        DMOE_LOG(DEBUG) << "sending metadata" << LEND;
-                        c->send_metadata(Metadata {
-                            /*shape=*/ std::vector<size_t>({1, 4}),
-                            /*dtype=*/ "fp16",
-                            /*layer_id=*/ 1,
-                            /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
-                            /*exp_ids=*/ std::vector<int>({3}),
-                            /*prefill_poss=*/ std::vector<int>({4}),
-                        });
-                        DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
-                        std::this_thread::sleep_for(std::chrono::milliseconds(10000));
-                        // c->send_metadata(Metadata {
-                        //     /*shape=*/ std::vector<size_t>({1, 4}),
-                        //     /*dtype=*/ "fp16",
-                        //     /*layer_id=*/ 1,
-                        //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
-                        //     /*exp_ids=*/ std::vector<int>({3}),
-                        //     /*prefill_poss=*/ std::vector<int>({4}),
-                        // });
-                    } else {
-                        Metadata meta;
-                        DMOE_LOG(DEBUG) << "receiving metadata" << LEND;
-                        c->recv_metadata(meta);
-                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
-                        c->recv_metadata(meta);
-                        DMOE_LOG(DEBUG) << "get " << meta << LEND;
-                    }
-                } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                    DMOE_LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
-                    void* data;
-                    CUDACHECK(cudaMallocAsync(&data, 4096, stream));
-                    CUDACHECK(cudaStreamSynchronize(stream));
-                    // c->all_reduce(data, {1, 4096});
-                    DMOE_LOG(WARNING) << "allocated tensor" << LEND;
-                }
-            }, uids[i], i
-        ));
-    }
-    for (auto &t: threads)
-        t.join();
-    DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
-}
+// void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string> uids) {
+//     std::vector<std::thread> threads;
+//     for (int i = 0; i < uids.size(); i ++) {
+//         threads.push_back(std::thread(
+//             [&](std::string uid, int i) {
+//                 auto c_raw = create_nccl_group_channel(rank, ranks, (void*) uid.c_str());
+//                 auto c = std::dynamic_pointer_cast<NcclGroupChannel>(c_raw);
+//                 c->instantiate();
+//                 cudaStream_t stream;
+//                 cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, -2);
+//                 if (i == 0) {
+//                     if (rank == 0) {
+//                         DMOE_LOG(DEBUG) << "sending metadata" << LEND;
+//                         c->send_metadata(Metadata {
+//                             /*shape=*/ std::vector<size_t>({1, 4}),
+//                             /*dtype=*/ "fp16",
+//                             /*layer_id=*/ 1,
+//                             /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
+//                             /*exp_ids=*/ std::vector<int>({3}),
+//                             /*prefill_poss=*/ std::vector<int>({4}),
+//                         });
+//                         DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
+//                         std::this_thread::sleep_for(std::chrono::milliseconds(10000));
+//                         // c->send_metadata(Metadata {
+//                         //     /*shape=*/ std::vector<size_t>({1, 4}),
+//                         //     /*dtype=*/ "fp16",
+//                         //     /*layer_id=*/ 1,
+//                         //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
+//                         //     /*exp_ids=*/ std::vector<int>({3}),
+//                         //     /*prefill_poss=*/ std::vector<int>({4}),
+//                         // });
+//                     } else {
+//                         Metadata meta;
+//                         DMOE_LOG(DEBUG) << "receiving metadata" << LEND;
+//                         c->recv_metadata(meta);
+//                         DMOE_LOG(DEBUG) << "get " << meta << LEND;
+//                         c->recv_metadata(meta);
+//                         DMOE_LOG(DEBUG) << "get " << meta << LEND;
+//                     }
+//                 } else {
+//                     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+//                     DMOE_LOG(WARNING) << "thread " << i << " trying to allocate tensor" << LEND;
+//                     void* data;
+//                     CUDACHECK(cudaMallocAsync(&data, 4096, stream));
+//                     CUDACHECK(cudaStreamSynchronize(stream));
+//                     // c->all_reduce(data, {1, 4096});
+//                     DMOE_LOG(WARNING) << "allocated tensor" << LEND;
+//                 }
+//             }, uids[i], i
+//         ));
+//     }
+//     for (auto &t: threads)
+//         t.join();
+//     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
+// }
