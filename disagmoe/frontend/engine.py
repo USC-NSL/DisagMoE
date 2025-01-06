@@ -415,7 +415,7 @@ class Engine:
         num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
 
-        print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
+        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
         
         # 1. prepare block table
         if not mocking:

@@ -254,7 +254,7 @@ struct Metadata {
         return out;
     }
 
-    // This function is only called in expert worker, so topk_weights should be empty
+    // This function is only called in expert worker, so topk_weights should not be empty while using topk
     static metadata_t merge_by_exp_ids(const std::vector<metadata_t> &metas, std::vector<int> &mappings) {
         AUTO_TX_RANGE;
 
@@ -286,7 +286,7 @@ struct Metadata {
         mappings.resize(total_tokens);
         int idx = 0;
         for (auto &meta: metas) {
-            DMOE_LOG(INFO) << "merging expert metadata: " << *meta << LEND;
+            // DMOE_LOG(INFO) << "merging expert metadata: " << *meta << LEND;
             for (int i = 0; i < meta->num_tokens(); i ++) {
                 exp_cnts[meta->exp_ids[i]] --;
                 int j = exp_cnts[meta->exp_ids[i]];
@@ -294,7 +294,9 @@ struct Metadata {
                 req_ids[j] = meta->req_ids[i];
                 exp_ids[j] = meta->exp_ids[i];
                 prefill_poss[j] = meta->prefill_poss[i];
-                topk_weights[j] = meta->topk_weights[i];
+                if (!meta->topk_weights.empty()) {
+                    topk_weights[j] = meta->topk_weights[i];
+                }
                 idx ++;
             }
         }
@@ -880,8 +882,12 @@ struct AttentionBatch {
     }
 
     static AttentionBatch pack_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
-        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens, layer_id=" << layer_id << ", tokens " << tokens[0].seq_id << LEND;
 
+        // std::cerr << "AttentionBatch::pack_tokens, tokens before sorting: ";
+        // for (auto &token: tokens) {
+        //     std::cerr << token << " ";
+        // }
+        // std::cerr << std::endl;
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
                 if (a.prefill_pos == -1) {
@@ -896,7 +902,13 @@ struct AttentionBatch {
             }
         );
 
-        DMOE_LOG(INFO) << "AttentionBatch::pack_tokens after sorting, layer_id=" << layer_id << ", tokens " << tokens[0].seq_id << LEND;
+        // std::cerr << "AttentionBatch::pack_tokens, tokens after sorting: ";
+        // for (auto &token: tokens) {
+        //     std::cerr << token << " ";
+        // }
+        // std::cerr << std::endl;
+
+        // DMOE_LOG(INFO) << "AttentionBatch::pack_tokens after sorting, layer_id=" << layer_id << ", tokens " << tokens[0].seq_id << LEND;
 
         at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
         cudaStream_t stream = c10_stream.stream();
@@ -904,7 +916,7 @@ struct AttentionBatch {
 
         auto meta = AttentionBatchMetadata::pack_tokens(layer_id, tokens);
 
-        DMOE_LOG(INFO) << "tokens packed in to attn batch, meta=" << meta->seq_ids[0] << LEND;
+        // DMOE_LOG(INFO) << "tokens packed in to attn batch, meta=" << meta->seq_ids[0] << LEND;
 
         torch::Tensor gathered_topk_tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 

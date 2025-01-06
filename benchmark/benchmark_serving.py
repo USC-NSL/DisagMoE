@@ -58,6 +58,7 @@ def launch(args):
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph = args.cuda_graph
     model_config.num_experts = args.num_experts
+    model_config.top_k = args.topk
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -211,6 +212,7 @@ def get_args():
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
+    parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
     parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     
@@ -221,6 +223,8 @@ def get_args():
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
     
     args = parser.parse_args()
+    
+    assert args.num_experts >= args.topk, "number of experts must be greater than topk"
     
     if (args.num_nodes * args.num_gpus) % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
         print("Warning: number of gpus is not divisible by the number of placement steps")
