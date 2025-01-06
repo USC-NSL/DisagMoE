@@ -105,6 +105,21 @@ def nvtx_range(msg, *args, **kwargs):
         range_pop()
 
 
+class CudaRangeEvent:
+    
+    def __init__(self, enable_timing: bool = False):
+        self._start = torch.cuda.Event(enable_timing=enable_timing)
+        self._end = torch.cuda.Event(enable_timing=enable_timing)
+    
+    def start(self):
+        self._start.record()
+    
+    def end(self):
+        self._end.record()
+        
+    def timing(self):
+        return self._start.elapsed_time(self._end)
+
 def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()

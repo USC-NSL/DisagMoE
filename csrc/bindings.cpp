@@ -114,11 +114,14 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("layer_id", &Metadata::layer_id)
         .def_readwrite("req_ids", &Metadata::req_ids)
         .def_readwrite("exp_ids", &Metadata::exp_ids)
+        .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
         .def_readwrite("prefill_poss", &Metadata::prefill_poss)
+        .def("num_tokens", &Metadata::num_tokens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
+        .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
         .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")

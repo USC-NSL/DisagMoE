@@ -420,8 +420,8 @@ class PipelinePlacement(PlacementBase):
         
         for i, layers in mp.expert.items():
             for e in range(self.model_config.num_experts):
-                # expert rank: #E -> #E % EP_SIZE
-                dev_id = p * self.tp_size * self.dp_size + i * self.ep_size + e % self.ep_size
+                # expert rank: #E -> #E // num_experts_per_rank
+                dev_id = p * self.tp_size * self.dp_size + i * self.ep_size + e // self.model_config.num_experts_per_rank
                 for l in layers:
                     experts[dev_id].append((l, e))
         
@@ -433,7 +433,7 @@ class PipelinePlacement(PlacementBase):
     @override
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
         expert_ranks = {
-            (layer_id, expert_id): expert_id % self.ep_size
+            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
                 for layer_id, expert_id in product(range(self.num_layers),
                                                    range(self.model_config.num_experts))
         }

@@ -32,11 +32,13 @@ class Metadata:
     shape: List[int]
     dtype: str
     layer_id: int
-    # infos: List[TokenMetadata]
     req_ids: List[int]
     exp_ids: List[int]
     attn_dp_ranks: List[int]
     prefill_poss: List[int]
+
+    def num_tokens(self) -> int:
+        ...
 
     def step_layer(self) -> None:
         ...
@@ -63,8 +65,20 @@ class Metadata:
             meta_c.layer_id,
             meta_c.req_ids,
             meta_c.exp_ids,
+            meta_c.attn_dp_ranks,
             meta_c.prefill_poss
         )
+        
+    def to_c(self) -> "Metadata_C":
+        from disagmoe_c import Metadata as Metadata_C
+        meta_c = Metadata_C(self.shape)
+        meta_c.dtype = self.dtype
+        meta_c.layer_id = self.layer_id
+        meta_c.req_ids = self.req_ids
+        meta_c.exp_ids = self.exp_ids
+        meta_c.attn_dp_ranks = self.attn_dp_ranks
+        meta_c.prefill_poss = self.prefill_poss
+        return meta_c
     
 
 @dataclass

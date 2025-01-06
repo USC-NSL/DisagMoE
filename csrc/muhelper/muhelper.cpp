@@ -107,13 +107,18 @@ void MuDispatcher::run() {
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
         // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
-        std::unique_lock<std::mutex> lock(this->mtx);
-        this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
-        // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
-        auto pr = this->send_queue.front();
-        auto batch = pr.first;
-        int rank = pr.second;
-        this->send_queue.pop();
+        TensorBatch batch;
+        {
+            // Fetch a batch from the queue, lock required (for the send_queue).
+            std::unique_lock<std::mutex> lock(this->mtx);
+            this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+            // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
+            auto pr = this->send_queue.front();
+            batch = pr.first;
+            // pr.second(i.e. rank) is not used for now
+            this->send_queue.pop();
+        }
+        // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
     }
 }

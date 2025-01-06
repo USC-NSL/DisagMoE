@@ -60,6 +60,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    // CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
@@ -74,11 +75,21 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
+void NcclChannel::sync() {
+    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):
     Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
         sprintf(device_id_str, "%d", party_local);
+        if (!is_embedding_node(party_local)) {
+            CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
+        } else {
+            this->stream = 0;
+        }
     }
 
 std::map<int, mq_t> ZmqChannel::global_mq = {};
@@ -103,18 +114,35 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
     if (is_embedding_node(this->local))
         return (void*) data;
     tx_range _{"ZmqChannel::_tensor_copy"};
-    size_t size = metadata.num_element() * metadata.get_datatype_size();
     uintptr_t buf;
+    cudaMemcpyKind flag;
     if (!to_gpu) {
+        size_t size = metadata.num_element() * metadata.get_datatype_size();
         buf = !dst ? (uintptr_t) std::malloc(size) : dst;
-        // TODO(hogura|20241007): overlap this memcpy
-        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
-            cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        flag = cudaMemcpyKind::cudaMemcpyDeviceToHost;
     } else {
         buf = dst;
-        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
-            cudaMemcpyKind::cudaMemcpyHostToDevice));
+        flag = cudaMemcpyKind::cudaMemcpyHostToDevice;
     }
+
+    {
+        tx_range __{"ZmqChannel::_tensor_copy_memcpy_submit"};
+        const size_t step = 4;
+        const size_t dim_stride = metadata.get_datatype_size() * metadata.token_hidden_dim();
+        size_t num_tokens = metadata.shape[0];
+        for (size_t i = 0; i < metadata.shape[0]; i += step) {
+            size_t cur_step = std::min(step, metadata.shape[0] - i);
+            CUDACHECK(cudaMemcpyAsync(
+                (void*) (buf + i * dim_stride),
+                (void*) (data + i * dim_stride),
+                cur_step * dim_stride,
+                flag,
+                this->stream
+            ));
+        }
+    }
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+
     return (void*) buf;
 }
 

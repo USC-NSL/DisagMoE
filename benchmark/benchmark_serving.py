@@ -114,6 +114,7 @@ def launch(args):
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
     cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+                               num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
     sampling_config = SamplingConfig(max_output_len=args.output_len)
@@ -249,7 +250,11 @@ async def benchmark_serving(args):
 
         metrics.write_to_file(args)
     
+    await master.start_scheduler()
+    
     await run_once()
+    
+    await master.stop_scheduler()
     
     master.stop_workers()
     
@@ -281,7 +286,7 @@ def get_args():
     parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
-    parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")
+    parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
     parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
@@ -289,13 +294,13 @@ def get_args():
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
-    parser.add_argument("--zigzag-attn", action="store_true", default=True, help="enable zigzag attention placment")
+    parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
     parser.add_argument("--step-attn", type=int, default=2, help="number of steps in attention placement")
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
     
     args = parser.parse_args()
     
-    if (args.num_nodes * args.num_gpus) % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
+    if (args.num_nodes * args.num_gpus) % (args.tp_size * args.dp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
         print("Warning: number of gpus is not divisible by the number of placement steps")
     
     assert args.ep_size <= args.num_experts, "expert parallel size must be smaller than number of experts"
