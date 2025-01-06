@@ -198,6 +198,7 @@ class Engine:
             self.attn_scheduler.set_max_batch_size(self.max_batch_size)
         else:
             self.scheduler.set_max_batch_size(self.max_batch_size)
+            self.static_mappings_gpu = torch.zeros((self.max_batch_size, ), dtype=torch.int32, device="cuda")
         
         self._warmup()
         if self.model_config.enable_cuda_graph_attn or self.model_config.enable_cuda_graph_expert:
@@ -257,6 +258,9 @@ class Engine:
         
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
     
+    def get_configured_kv_cache_blocks(self) -> int:
+        return self.cache_config.num_gpu_blocks
+    
     def determine_kv_cache_blocks(self) -> int:
         assert isinstance(self.executor, AttnExecutor)
         torch.cuda.empty_cache()
@@ -294,7 +298,6 @@ class Engine:
         else:
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
                                                   device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
-            self.static_mappings_gpu = torch.zeros((batch_size, ), dtype=torch.int32, device="cuda")
             
         self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
                                             batch_size + 1,
