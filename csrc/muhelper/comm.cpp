@@ -50,6 +50,17 @@ void NcclChannel::instantiate() {
     ));
 }
 
+void NcclChannel::_delay_release_tensor(Tensor tensor, cudaStream_t stream) {
+    struct TensorWarp {
+        Tensor tensor;
+    };
+    TensorWarp* warp = new TensorWarp{std::move(tensor)};
+    CUDACHECK(cudaStreamAddCallback(stream, [](cudaStream_t stream, cudaError_t status, void* data) {
+        TensorWarp* warp = (TensorWarp*) data;
+        delete warp;
+    }, (void*) warp, 0));
+}
+
 void NcclChannel::send(Tensor tensor, const Metadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
@@ -168,8 +179,8 @@ void ZmqChannel::_pipeline_comm(void* data, size_t num_tokens, size_t token_size
         }
 
         CUDACHECK(cudaMemcpyAsync(
-            src_buf,
             dst_buf,
+            src_buf,
             cur_step * token_size,
             flag,
             this->stream

@@ -27,10 +27,6 @@ protected:
         return local < other ? 1 : 0;
     }
 
-    void _delay_release_tensor(torch::Tensor tensor, cudaStream_t stream) {ASSERT(0);}
-
-    void _release_tensor_loop() {ASSERT(0);}
-
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
     ~Channel() {}
@@ -63,6 +59,8 @@ protected:
     ncclUniqueId comm_id;
     ncclComm_t comm;
     cudaStream_t stream;
+
+    void _delay_release_tensor(torch::Tensor tensor, cudaStream_t stream);
 
 public:
     NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
