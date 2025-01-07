@@ -171,11 +171,12 @@ void ZmqChannel::_pipeline_comm(void* data, size_t num_tokens, size_t token_size
         size_t cur_step = std::min(step, num_tokens - i);
 
         void* src_buf = data + i * token_size;
-        void* dst_buf = cpu_buf;
+        void* dst_buf = cpu_buf + i * token_size;
         if (flag == cudaMemcpyHostToDevice) {
             std::swap(src_buf, dst_buf);
-            zmq::message_t msg(src_buf, cur_step * token_size);
+            zmq::message_t msg;
             this->mq->recv(msg);
+            src_buf = msg.data();
         }
 
         CUDACHECK(cudaMemcpyAsync(
