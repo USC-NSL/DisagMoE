@@ -992,49 +992,34 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
     }
 
     int lid = this->layer_id_P2V[meta->layer_id];
-
+    std::vector<TokenTopKInfo> ready_tokens{};
+    int batched_tokens = 0;
     if (meta->layer_id == 0) {
         // NOTE: the first layer receives directly from tokenizer and sampler so there is no topk
         ASSERT (meta->topk_weights.size() == 0);
-        std::vector<TokenTopKInfo> tokens = meta->unpack_tokens();
-        int batched_tokens = tokens.size();
+        ready_tokens = meta->unpack_tokens();
+        batched_tokens = ready_tokens.size();
         for (int i = 0; i < batched_tokens; i++) {
-            tokens[i].topk_tensors.emplace_back(tensor[i]);
+            ready_tokens[i].topk_tensors.emplace_back(tensor[i]);
         }
-
-        {
-            std::lock_guard<std::mutex> lock(this->batch_mutex);
-
-            int &tokens_cur_layer = this->tokens_per_layer_[lid];
-            tokens_cur_layer += batched_tokens;
-            if (tokens_cur_layer > this->largest_batch_size_) {
-                this->largest_batch_size_ = tokens_cur_layer;
-                this->largest_batch_layer_id_ = lid;
-            }
-            for (auto &token: tokens) {
-                this->attn_token_queues[lid].emplace_back(token);
-                // DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
-            }
-        }
-        
     } else {
         this->topk_pools[lid].put_batch((TensorBatch) {tensor, meta});
-        auto ready_tokens = this->topk_pools[lid].fetch_ready_tokens();
-        int batched_tokens = ready_tokens.size();
+        ready_tokens = this->topk_pools[lid].fetch_ready_tokens();
+        batched_tokens = ready_tokens.size();
+    }
 
-        {
-            std::lock_guard<std::mutex> lock(this->batch_mutex);
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-            int &tokens_cur_layer = this->tokens_per_layer_[lid];
-            tokens_cur_layer += batched_tokens;
-            if (tokens_cur_layer > this->largest_batch_size_) {
-                this->largest_batch_size_ = tokens_cur_layer;
-                this->largest_batch_layer_id_ = lid;
-            }
-            for (auto &token: ready_tokens) {
-                this->attn_token_queues[lid].emplace_back(token);
-                // DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
-            }
+        int &tokens_cur_layer = this->tokens_per_layer_[lid];
+        tokens_cur_layer += batched_tokens;
+        if (tokens_cur_layer > this->largest_batch_size_) {
+            this->largest_batch_size_ = tokens_cur_layer;
+            this->largest_batch_layer_id_ = lid;
+        }
+        for (auto &token: ready_tokens) {
+            this->attn_token_queues[lid].emplace_back(token);
+            // DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
         }
     }
     // DMOE_LOG(INFO) << "largest batch size: " << this->largest_batch_size_ << LEND;

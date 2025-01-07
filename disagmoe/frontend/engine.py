@@ -676,12 +676,10 @@ class Engine:
             expert_ids = expert_ids.tolist()
         else:
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-            expert_ids = torch.cat(
-                (torch.zeros((num_tokens, ), dtype=torch.int, device="cuda"), 
-                torch.randint(1, self.model_config.num_experts, (num_tokens, ), device="cuda")), 
-                dim=0
-            ).tolist()
-            expert_weights = torch.rand((num_tokens * self.model_config.top_k, ), device="cuda")
+            expert_weights = torch.rand((num_tokens, self.model_config.num_experts), device="cuda", dtype=torch.bfloat16)
+            topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
+            topk_weights = topk_weights.transpose(0, 1).reshape(-1).tolist()
+            expert_ids = expert_ids.transpose(0, 1).reshape(-1).tolist()
             hiddens = torch.cat([hiddens, hiddens], dim=0)
 
         # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
@@ -694,9 +692,9 @@ class Engine:
             new_meta_c = meta_py
         else:
             new_meta_c = meta_c.to_metadata()
-            new_meta_c.duplicate_topk(self.model_config.top_k)
             if self.model_config.top_k > 1:
-                new_meta_c.topk_weights = expert_weights.tolist()
+                new_meta_c.duplicate_topk(self.model_config.top_k)
+                new_meta_c.topk_weights = topk_weights
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
