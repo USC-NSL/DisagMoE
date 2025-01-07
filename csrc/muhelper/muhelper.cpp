@@ -793,6 +793,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         prefill_seq_len,
         prefill_query_len,
         {}, // expert_ids
+        {}, // topk_weights
         attn_dp_ranks
     });
 
@@ -959,6 +960,7 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
             this->pool_[seq_id] = TokenTopKInfo(
                 seq_id, 
                 meta->prefill_poss[i], 
+                meta->attn_dp_ranks[i],
                 meta->topk_weights[i],
                 batch.data[i]
             );

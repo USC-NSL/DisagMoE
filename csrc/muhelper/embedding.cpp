@@ -181,11 +181,12 @@ void Sampler::start() {
 TopKSampler::TopKSampler(int device_id, 
                 int max_output_len,
                 int top_k,
+                ParallelConfig cfg,
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos):
     top_k(top_k), token_pool(TokenTopKPool(top_k)),
-    Sampler(device_id, max_output_len, in_channels, out_channels, out_channel_infos) {
+    Sampler(device_id, max_output_len, cfg, in_channels, out_channels, out_channel_infos) {
 }
 
 void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
@@ -286,8 +287,8 @@ Tokenizer::Tokenizer(int device_id,
 
 void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
     // TODO(hogura|20241007): set the first attn
-    ASSERT (token_ids.dim() == 2);
-    std::vector<size_t> shape{token_ids.size(0), token_ids.size(1)};
+    ASSERT (tensor.dim() == 2);
+    std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
     auto meta_t = std::make_shared<Metadata>(Metadata {
         shape, 
         "bf16", 
@@ -297,7 +298,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
         /*attn_ids=*/ {dp_rank},
         /*prefill_pos=*/ {0},
     });
-    this->put(TensorBatch {token_ids.clone().detach(), meta_t}, 0);
+    this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }
 
 void Tokenizer::start() {

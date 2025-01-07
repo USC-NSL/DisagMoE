@@ -66,6 +66,7 @@ public:
     TopKSampler(int device_id, 
                 int max_output_len,
                 int top_k,
+                ParallelConfig cfg,
                 std::vector<Channel_t> in_channels, 
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos);

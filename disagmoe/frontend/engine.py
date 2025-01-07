@@ -1028,9 +1028,9 @@ class TokenizerEngine(Engine):
         assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
         assert input_len == 1
-        token_ids_shape = (input_len, self.model_config.hidden_size)
+        tensor_shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.zeros(size=shape).type(self.model_config.dtype)
+        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, x, dp_rank)
         
