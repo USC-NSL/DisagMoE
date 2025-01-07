@@ -40,7 +40,10 @@ const int ZMQ_OFFSET_BASE = 16;
 
 #ifndef MAX_N_EXPERTS
 #define MAX_N_EXPERTS 8
+#endif
 
+#ifndef PIPE_COMM_STEP
+#define PIPE_COMM_STEP 4
 #endif
 
 #define ASSERT(condition) do {if (!(condition)) { \

@@ -46,7 +46,12 @@ static std::string get_ip_of_device(int device_id) {
         }
         ifs.close();
     }
-    return device_id_2_ip.at(device_id);
+    if (device_id_2_ip.find(device_id) == device_id_2_ip.end()) {
+        DMOE_LOG(ERROR) << "device_id " << device_id << " not found" << LEND;
+        return "0.0.0.0";
+    } else {
+        return device_id_2_ip.at(device_id);
+    }
 }
 
 inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_port = -1, int offset = 0) {
