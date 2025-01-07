@@ -25,10 +25,12 @@ void test_zmq_overlap(int rank) {
         auto c_recv = create_zmq_channel(rank, 1, false);
         c_send->instantiate();
         c_recv->instantiate();
-        c_recv->recv(a, meta);
-        DMOE_LOG(INFO) << "Sampler Received from <1>: " << a.mean().item<float>() << LEND;
-        c_send->send(a, meta);
-        DMOE_LOG(INFO) << "Sampler Sent to <0>" << LEND;
+        for (int i = 0; i < 5; i ++) {
+            c_recv->recv(a, meta);
+            DMOE_LOG(INFO) << "Sampler Received from <1>: " << a.mean().item<float>() << LEND;
+            c_send->send(a, meta);
+            DMOE_LOG(INFO) << "Sampler Sent to <0>" << LEND;
+        }
     } else {
         Tensor a = torch::ones(
             {bs, hs}, 
@@ -38,14 +40,19 @@ void test_zmq_overlap(int rank) {
             // receive from zmq
             auto c = create_zmq_channel(0, SAMPLER_DEV_ID, false);
             c->instantiate();
-            c->recv(a, meta);
-            DMOE_LOG(INFO) << "<0> Received from sampler: " << a.mean().item<float>() << LEND;
+            for (int i = 0; i < 5; i ++) {
+                c->recv(a, meta);
+                DMOE_LOG(INFO) << "<0> Received from sampler: " << a.mean().item<float>() << LEND;
+            }
         } else if (rank == 1) {
             // send to zmq
             auto c = create_zmq_channel(1, SAMPLER_DEV_ID, true);
             c->instantiate();
-            c->send(a, meta);
-            DMOE_LOG(INFO) << "<1> Sent to sampler: " << a.mean().item<float>() << LEND;
+            for (int i = 0; i < 5; i ++) {
+                c->send(a, meta);
+                DMOE_LOG(INFO) << "<1> Sent to sampler: " << a.mean().item<float>() << LEND;
+            }
         }
     }
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 }

@@ -83,7 +83,7 @@ protected:
     static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
     mq_t mq;
-    cudaStream_t stream;
+    cudaStream_t stream_send, stream_recv;
 
     std::string other_ip;
     bool is_sender;
@@ -92,10 +92,6 @@ protected:
     int rank_offset;
 
     void* pin_buffer;
-
-    void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
-
-    void _pipeline_comm(void* data, size_t num_tokens, size_t token_size, cudaMemcpyKind flag);
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);

@@ -3,8 +3,12 @@
 #include "utils.hpp"
 #include "distributed.hpp"
 
+#include <condition_variable>
 #include <iomanip>
+#include <thread>
+#include <queue>
 #include <mutex>
+#include <map>
 
 using Tensor = torch::Tensor;
 
@@ -99,9 +103,15 @@ ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int ran
     Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
         sprintf(device_id_str, "%d", party_local);
         if (!is_embedding_node(party_local)) {
-            CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
+            CUDACHECK(cudaStreamCreateWithPriority(&this->stream_send, cudaStreamNonBlocking, 10));
+            CUDACHECK(cudaStreamCreateWithPriority(&this->stream_recv, cudaStreamNonBlocking, 10));
         } else {
-            this->stream = 0;
+            this->stream_send = 0;
+            this->stream_recv = 0;
+        }
+
+        if (!is_embedding_node(local)) {
+            CUDACHECK(cudaMallocHost(&this->pin_buffer, 1024 * 4096 * 4));
         }
     }
 
@@ -121,81 +131,114 @@ void ZmqChannel::instantiate() {
         this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
     }
     DMOE_LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
-
-    // CUDACHECK(cudaMallocHost(&this->pin_buffer, 512 * 4096 * 4));
-    this->pin_buffer = (void*) std::malloc(512 * 4096 * 4);
 }
 
-void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
-    if (is_embedding_node(this->local))
-        return (void*) data;
-    tx_range _{"ZmqChannel::_tensor_copy"};
-    uintptr_t buf;
-    cudaMemcpyKind flag;
-    if (!to_gpu) {
-        size_t size = metadata.num_element() * metadata.get_datatype_size();
-        buf = !dst ? (uintptr_t) std::malloc(size) : dst;
-        flag = cudaMemcpyKind::cudaMemcpyDeviceToHost;
-    } else {
-        buf = dst;
-        flag = cudaMemcpyKind::cudaMemcpyHostToDevice;
-    }
-
-    {
-        tx_range __{"ZmqChannel::_tensor_copy_memcpy_submit"};
-        const size_t step = 2;
-        const size_t dim_stride = metadata.get_datatype_size() * metadata.token_hidden_dim();
-        size_t num_tokens = metadata.shape[0];
-        for (size_t i = 0; i < metadata.shape[0]; i += step) {
-            size_t cur_step = std::min(step, metadata.shape[0] - i);
-            CUDACHECK(cudaMemcpyAsync(
-                (void*) (buf + i * dim_stride),
-                (void*) (data + i * dim_stride),
-                cur_step * dim_stride,
-                flag,
-                this->stream
-            ));
-        }
-    }
-    CUDACHECK(cudaStreamSynchronize(this->stream));
-
-    return (void*) buf;
-}
-
-void ZmqChannel::_pipeline_comm(void* data, size_t num_tokens, size_t token_size, cudaMemcpyKind flag) {
+void _pipeline_recv(void* data, void* pin_buf, size_t num_tokens, size_t token_size, cudaStream_t stream, mq_t &mq) {
     tx_range _{"ZmqChannel::_pipeline_comm"};
 
     const size_t step = PIPE_COMM_STEP;
-    void* cpu_buf = std::malloc(num_tokens * token_size);
+
+    zmq::message_t msg[(num_tokens + step - 1) / step];
     for (size_t i = 0; i < num_tokens; i += step) {
         size_t cur_step = std::min(step, num_tokens - i);
 
-        void* src_buf = data + i * token_size;
-        void* dst_buf = cpu_buf + i * token_size;
-        if (flag == cudaMemcpyHostToDevice) {
-            std::swap(src_buf, dst_buf);
-            zmq::message_t msg;
-            this->mq->recv(msg);
-            src_buf = msg.data();
+        void* dst_buf = data + i * token_size;
+        void* src_buf;
+        {
+            tx_range __{"ZmqChannel::_pipeline_comm_recv"};
+            mq->recv(msg[i / step], zmq::recv_flags::none);
+            src_buf = msg[i / step].data();
         }
 
         CUDACHECK(cudaMemcpyAsync(
-            dst_buf,
+            pin_buf + i * token_size,
             src_buf,
             cur_step * token_size,
-            flag,
-            this->stream
+            cudaMemcpyHostToHost,
+            stream
         ));
-
-        if (flag == cudaMemcpyDeviceToHost) {
-            // TODO(hogura|20250106): optimize this stream
-            CUDACHECK(cudaStreamSynchronize(this->stream));
-            zmq::message_t msg(dst_buf, cur_step * token_size);
-            this->mq->send(msg);
-        }
+        CUDACHECK(cudaMemcpyAsync(
+            dst_buf,
+            pin_buf + i * token_size,
+            cur_step * token_size,
+            cudaMemcpyHostToDevice,
+            stream
+        ));
     }
+
+    tx_range __{"ZmqChannel::_pipeline_comm_sync"};
+    cudaStreamSynchronize(stream);
+}
+
+void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_size, cudaStream_t stream, mq_t &mq) {
+    tx_range _{"ZmqChannel::_pipeline_comm"};
+
+    const size_t step = PIPE_COMM_STEP;
+    void* cpu_buf = std::malloc(step * token_size);
+
+    struct SendItem {
+        void* buf;
+        size_t size;
+        cudaEvent_t event;
+    };
+
+    std::queue<SendItem> send_queue;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::thread t_copy([&] {
+        for (size_t i = 0; i < num_tokens; i += step) {
+            size_t cur_step = std::min(step, num_tokens - i);
+
+            void* src_buf = data + i * token_size;
+            void* dst_buf = cpu_buf + i * token_size;
+
+            DMOE_LOG(DEBUG) << "{A} copying " << i << " " << cur_step << LEND;
+            CUDACHECK(cudaMemcpyAsync(
+                pin_buf + i * token_size,
+                src_buf,
+                cur_step * token_size,
+                cudaMemcpyDeviceToHost,
+                stream
+            ));
+            DMOE_LOG(DEBUG) << "{B} copying " << i << " " << cur_step << LEND;
+            CUDACHECK(cudaMemcpyAsync(
+                dst_buf,
+                pin_buf + i * token_size,
+                cur_step * token_size,
+                cudaMemcpyHostToHost,
+                stream
+            ));
+
+            cudaEvent_t event;
+            CUDACHECK(cudaEventCreate(&event));
+            CUDACHECK(cudaEventRecord(event, stream));
+
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                send_queue.push({dst_buf, cur_step * token_size, event});
+                cv.notify_one();
+            }
+        }
+    });
+
+    SendItem item;
+    for (size_t i = 0; i < num_tokens; i += step) {
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [&] { return !send_queue.empty(); });
+            item = send_queue.front();
+            send_queue.pop();
+        }
+        DMOE_LOG(DEBUG) << "{C} waiting stream " << i << LEND;
+        CUDACHECK(cudaStreamWaitEvent(stream, item.event));
+        DMOE_LOG(DEBUG) << "{C} copying " << i << LEND;
+        tx_range __{"ZmqChannel::_pipeline_comm_send"};
+        mq->send(zmq::buffer(item.buf, item.size));
+        CUDACHECK(cudaEventDestroy(item.event));
+    }
+
     std::free(cpu_buf);
-    cudaStreamSynchronize(this->stream);
+    t_copy.join();
 }
 
 void ZmqChannel::send(Tensor tensor, const Metadata& metadata) {
@@ -212,11 +255,13 @@ void ZmqChannel::send(Tensor tensor, const Metadata& metadata) {
             this->mq->send(zmq::buffer(buf + i, std::min(step_size, size - i)));
         }
     } else {
-        this->_pipeline_comm(
+        _pipeline_send(
             (void*) tensor.data_ptr(),
+            this->pin_buffer,
             metadata.num_tokens(),
             metadata.token_hidden_dim() * metadata.get_datatype_size(),
-            cudaMemcpyKind::cudaMemcpyDeviceToHost
+            this->stream_send,
+            this->mq
         );
     }
 
@@ -238,11 +283,13 @@ void ZmqChannel::recv(Tensor tensor, const Metadata &metadata) {
             memcpy(buf + i, msg.data(), std::min(step_size, size - i));
         }
     } else {
-        this->_pipeline_comm(
+        _pipeline_recv(
             (void*) tensor.data_ptr(),
+            this->pin_buffer,
             metadata.num_tokens(),
             metadata.token_hidden_dim() * metadata.get_datatype_size(),
-            cudaMemcpyKind::cudaMemcpyHostToDevice
+            this->stream_recv,
+            this->mq
         );
     }
 

@@ -43,7 +43,7 @@ const int ZMQ_OFFSET_BASE = 16;
 #endif
 
 #ifndef PIPE_COMM_STEP
-#define PIPE_COMM_STEP 2
+#define PIPE_COMM_STEP 4
 #endif
 
 #define ASSERT(condition) do {if (!(condition)) { \
