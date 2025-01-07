@@ -183,6 +183,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     // m.def("test_parallel_attn_scheduler", &test_parallel_attn_scheduler);
     // m.def("test_multi_launch", &test_multi_launch);
 
+    REGISTER_FUNC(test_zmq_overlap);
     // REGISTER_FUNC(test_op_overlap);
     // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
     // m.def("test_attn_dispatcher", &test_attn_dispatcher);

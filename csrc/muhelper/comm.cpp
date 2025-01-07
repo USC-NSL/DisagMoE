@@ -165,7 +165,7 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
 void ZmqChannel::_pipeline_comm(void* data, size_t num_tokens, size_t token_size, cudaMemcpyKind flag) {
     tx_range _{"ZmqChannel::_pipeline_comm"};
 
-    const size_t step = num_tokens;
+    const size_t step = PIPE_COMM_STEP;
     void* cpu_buf = std::malloc(num_tokens * token_size);
     for (size_t i = 0; i < num_tokens; i += step) {
         size_t cur_step = std::min(step, num_tokens - i);
@@ -194,6 +194,7 @@ void ZmqChannel::_pipeline_comm(void* data, size_t num_tokens, size_t token_size
         }
     }
     std::free(cpu_buf);
+    cudaStreamSynchronize(this->stream);
 }
 
 void ZmqChannel::send(Tensor tensor, const Metadata& metadata) {
@@ -202,9 +203,13 @@ void ZmqChannel::send(Tensor tensor, const Metadata& metadata) {
     // DMOE_LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
 
     if (is_embedding_node(this->local)) {
+        const int step = PIPE_COMM_STEP;
         void* buf = (void*) tensor.data_ptr();
         size_t size = metadata.num_element() * metadata.get_datatype_size();
-        this->mq->send(zmq::buffer(buf, size));
+        size_t step_size = step * metadata.token_hidden_dim() * metadata.get_datatype_size();
+        for (size_t i = 0; i < size; i += step_size) {
+            this->mq->send(zmq::buffer(buf + i, std::min(step_size, size - i)));
+        }
     } else {
         this->_pipeline_comm(
             (void*) tensor.data_ptr(),
@@ -224,9 +229,13 @@ void ZmqChannel::recv(Tensor tensor, const Metadata &metadata) {
 
     if (is_embedding_node(this->local)) {
         size_t size = metadata.num_element() * metadata.get_datatype_size();
+        size_t step_size = PIPE_COMM_STEP * metadata.token_hidden_dim() * metadata.get_datatype_size();
         zmq::message_t msg(size);
-        auto err = this->mq->recv(msg, zmq::recv_flags::none);
-        memcpy((void*) tensor.data_ptr(), msg.data(), size);
+        void* buf = (void*) tensor.data_ptr();
+        for (size_t i = 0; i < size; i += step_size) {
+            auto err = this->mq->recv(msg, zmq::recv_flags::none);
+            memcpy(buf + i, msg.data(), std::min(step_size, size - i));
+        }
     } else {
         this->_pipeline_comm(
             (void*) tensor.data_ptr(),
