@@ -2,19 +2,29 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple
 from disagmoe.utils.constants import CPS
 import torch
+
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
+    attn_dp_rank: int
     
     def is_sampler_channel(self) -> bool:
         ...
+        
+    def to_c(self) -> "ChannelInfo_C":
+        from disagmoe_c import ChannelInfo as ChannelInfo_C
+        return ChannelInfo_C(
+            self.expert_ids,
+            self.attn_layer_ids,
+            self.attn_dp_rank
+        )
 
 @dataclass
 class TokenMetadata:
     req_id: int
     exp_id: int
-    first_attn_id: int
+    attn_dp_rank: int
     prefill_pos: int
 
 @dataclass
@@ -22,11 +32,14 @@ class Metadata:
     shape: List[int]
     dtype: str
     layer_id: int
-    # infos: List[TokenMetadata]
     req_ids: List[int]
     exp_ids: List[int]
+    attn_dp_ranks: List[int]
     prefill_poss: List[int]
     topk_weights: List[float]
+
+    def num_tokens(self) -> int:
+        ...
 
     def step_layer(self) -> None:
         ...
@@ -59,9 +72,22 @@ class Metadata:
             meta_c.layer_id,
             meta_c.req_ids,
             meta_c.exp_ids,
+            meta_c.attn_dp_ranks,
             meta_c.prefill_poss
         )
+        
+    def to_c(self) -> "Metadata_C":
+        from disagmoe_c import Metadata as Metadata_C
+        meta_c = Metadata_C(self.shape)
+        meta_c.dtype = self.dtype
+        meta_c.layer_id = self.layer_id
+        meta_c.req_ids = self.req_ids
+        meta_c.exp_ids = self.exp_ids
+        meta_c.attn_dp_ranks = self.attn_dp_ranks
+        meta_c.prefill_poss = self.prefill_poss
+        return meta_c
     
+
 @dataclass
 class TensorBatch:
     data: torch.Tensor
@@ -91,6 +117,7 @@ class AttentionBatchMetadata:
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
 
     topk_weights: List[float]
+    attn_dp_ranks: List[int]
     
     def to_metadata(self) -> Metadata:
         ...
@@ -109,6 +136,7 @@ class AttentionBatchMetadata:
         attn_meta.prefill_query_len = self.prefill_query_len
         attn_meta.expert_ids = self.expert_ids
         attn_meta.topk_weights = self.topk_weights
+        attn_meta.attn_dp_ranks = self.attn_dp_ranks
         return attn_meta
     
     @staticmethod
@@ -124,7 +152,8 @@ class AttentionBatchMetadata:
             meta_c.prefill_seq_len,
             meta_c.prefill_query_len,
             meta_c.expert_ids,
-            meta_c.topk_weights
+            meta_c.topk_weights,
+            meta_c.attn_dp_ranks
         )
 
     def shrink_topk(self, topk: int) -> None:
@@ -144,4 +173,20 @@ class SloStat:
             stat_c.t_prefill / CPS, # NOTE: consider how to deal with prefill time
             (stat_c.t_decode - stat_c.t_prefill) / CPS,
             [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
+        )
+        
+@dataclass
+class TraceContext:
+    msg: str
+    t_start: float
+    t_dur: float
+    track_id: int
+    
+    @staticmethod
+    def from_c(ctx_c: "TraceContext_C") -> "TraceContext":
+        return TraceContext(
+            ctx_c.msg,
+            ctx_c.t_start,
+            ctx_c.t_dur,
+            ctx_c.track_id
         )

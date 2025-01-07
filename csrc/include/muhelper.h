@@ -102,7 +102,7 @@ public:
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
-    std::vector<int> attn_channel;
+    std::vector<std::vector<int>> attn_channel;
     int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
@@ -162,6 +162,8 @@ public:
 
     void wait_for_new_requests();
 
+    void set_max_batch_size(int max_batch_size);
+
     /* 
 
     for attention, consider waiting sequences,
@@ -218,8 +220,6 @@ public:
     void run() override;
 
     void terminate() override;
-
-    void set_max_batch_size(int max_batch_size);
 
     // for debug use only
     void __set_attn_data_queue(

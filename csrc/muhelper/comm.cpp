@@ -60,6 +60,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    // CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
@@ -74,27 +75,37 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
-ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender):
-    Channel(party_local, party_other), is_sender(is_sender) {
+void NcclChannel::sync() {
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
+ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):
+    Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
         sprintf(device_id_str, "%d", party_local);
+        if (!is_embedding_node(party_local)) {
+            CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
+        } else {
+            this->stream = 0;
+        }
     }
 
 std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
-    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << LEND;
+    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << " " << this->rank_offset << LEND;
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
     if (is_sender) {
-        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false));
+        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
     } else {
-        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false));
+        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
     }
     DMOE_LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
 }
@@ -102,18 +113,36 @@ void ZmqChannel::instantiate() {
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
     if (is_embedding_node(this->local))
         return (void*) data;
-    size_t size = metadata.num_element() * metadata.get_datatype_size();
+    tx_range _{"ZmqChannel::_tensor_copy"};
     uintptr_t buf;
+    cudaMemcpyKind flag;
     if (!to_gpu) {
+        size_t size = metadata.num_element() * metadata.get_datatype_size();
         buf = !dst ? (uintptr_t) std::malloc(size) : dst;
-        // TODO(hogura|20241007): overlap this memcpy
-        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
-            cudaMemcpyKind::cudaMemcpyDeviceToHost));
+        flag = cudaMemcpyKind::cudaMemcpyDeviceToHost;
     } else {
         buf = dst;
-        CUDACHECK(cudaMemcpy((void*) buf, (void*) data, size, 
-            cudaMemcpyKind::cudaMemcpyHostToDevice));
+        flag = cudaMemcpyKind::cudaMemcpyHostToDevice;
     }
+
+    {
+        tx_range __{"ZmqChannel::_tensor_copy_memcpy_submit"};
+        const size_t step = 4;
+        const size_t dim_stride = metadata.get_datatype_size() * metadata.token_hidden_dim();
+        size_t num_tokens = metadata.shape[0];
+        for (size_t i = 0; i < metadata.shape[0]; i += step) {
+            size_t cur_step = std::min(step, metadata.shape[0] - i);
+            CUDACHECK(cudaMemcpyAsync(
+                (void*) (buf + i * dim_stride),
+                (void*) (data + i * dim_stride),
+                cur_step * dim_stride,
+                flag,
+                this->stream
+            ));
+        }
+    }
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+
     return (void*) buf;
 }
 
@@ -124,6 +153,7 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
 
     void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
     size_t size = metadata.num_element() * metadata.get_datatype_size();
+    // DMOE_LOG(DEBUG) << "send size: " << size << " rank: " << this->rank_offset << LEND;
     this->mq->send(zmq::buffer(buf, size));
     
     // if (data != (uintptr_t) buf)
@@ -139,6 +169,7 @@ void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
 
     size_t size = metadata.num_element() * metadata.get_datatype_size();
     zmq::message_t msg(size);
+    // DMOE_LOG(DEBUG) << "recv size: " << size << " rank: " << this->rank_offset << LEND;
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
     this->_tensor_copy((uintptr_t) msg.data(), metadata, 
         /*to_gpu=*/ !is_embedding_node(local), data);
@@ -360,8 +391,8 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
     return channel;
 }
 
-Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender) {
-    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender);
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank) {
+    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender, rank);
     return channel;
 }
 

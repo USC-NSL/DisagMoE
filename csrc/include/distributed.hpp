@@ -49,8 +49,8 @@ static std::string get_ip_of_device(int device_id) {
     return device_id_2_ip.at(device_id);
 }
 
-inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_port = -1) {
-    int port = device_id +
+inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_port = -1, int offset = 0) {
+    int port = device_id * ZMQ_OFFSET_BASE + offset + \
         (manual_port == -1 \
             ? (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE)
             : manual_port);

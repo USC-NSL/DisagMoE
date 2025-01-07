@@ -37,6 +37,7 @@ protected:
 public:
     Sampler(int device_id, 
             int max_output_len,
+            ParallelConfig cfg,
             std::vector<Channel_t> in_channels, 
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
@@ -78,10 +79,11 @@ protected:
 
 public:
     Tokenizer(int device_id, 
+              ParallelConfig cfg,
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos);
 
-    void put_request(int req_id, torch::Tensor token_ids);
+    void put_request(int req_id, torch::Tensor tensor, int dp_rank);
 
     void start();
 };

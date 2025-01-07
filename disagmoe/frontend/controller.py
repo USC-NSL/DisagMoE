@@ -8,13 +8,16 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
-from disagmoe.frontend.datatypes import ChannelInfo, SloStat
+from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
+from disagmoe.scheduler import get_dp_scheduler, DPScheduler
 from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
 from disagmoe.env import ENV_VARS
+
+from asyncio import Future
 
 from typing import List, Dict, Optional, Union, Tuple
 
@@ -59,6 +62,8 @@ class Controller:
         self.request_results: Dict[int, AsyncResult] = dict()
         self.is_polling = False
         self.enable_nsys = enable_nsys
+        
+        self.dp_scheduler: DPScheduler = None
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
@@ -187,7 +192,7 @@ class Controller:
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
-            if len(model_place.attn_ids_at(device_id)) > 0:
+            if len(model_place.attn_layer_ids_at(device_id)) > 0:
                 self.attn_workers.append(worker)
         
         # broadcast the host ips of all devices
@@ -201,6 +206,7 @@ class Controller:
                 for worker in self.all_workers
         ])
         
+        # setup attention & expert
         ray.get([
             worker.setup_engine.remote(
                 EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
@@ -210,6 +216,7 @@ class Controller:
             )
                 for worker, device_id in zip(self.workers, self.device_ids)
         ])
+        # setup tokenizer & sampler
         ray.get([
             worker.setup_engine.remote(
                 worker_type,
@@ -223,6 +230,7 @@ class Controller:
         
         ray.get(self.sampler_worker.set_sampling_params.remote(self.max_output_len))
         
+        # init core
         tasks = [
             worker.init_core.remote(
                 layer_ids=model_place.layer_ids_at(device_id),
@@ -231,7 +239,8 @@ class Controller:
                 out_channel_infos=[
                     ChannelInfo(
                         model_place.expert_ids_at(out),
-                        model_place.attn_ids_at(out)
+                        model_place.attn_layer_ids_at(out),
+                        model_place.attn_dp_rank_at(out),
                     )
                         for out in model_place.out_device_ids.get(device_id, [])
                 ],
@@ -245,6 +254,7 @@ class Controller:
                 group_nccl_ids=group_nccl_ids.get(
                     tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                 expert_ranks=model_place.out_expert_ranks_at(device_id),
+                local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
             )
                 for worker, device_id in zip(
                     self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -253,6 +263,12 @@ class Controller:
         ]
         self._logger.info("launched all tasks")
         ray.get(tasks)
+        
+        self.dp_scheduler = get_dp_scheduler(
+            model_config.dp_size, self.max_output_len, cache_config.block_size, "max"
+        )
+        
+        self.model_place: ModelPlacement = model_place
         
     def release_kv_cache(self, req_ids: Union[int, List[int]]):
         if not isinstance(req_ids, list):
@@ -277,13 +293,14 @@ class Controller:
         self.release_kv_cache(finished_req_ids)
         for req_id in finished_req_ids:
             self.in_flight_reqs.remove(req_id)
+            self.dp_scheduler.del_seq(req_id)
         
         # deal with request results
         for result in results:
             await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
 
-    def fetch_step_stats(self) -> List[List[StepInfo]]:
+    def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]]]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
     async def poll_finished_results(self) -> List[SloStat]:
@@ -302,15 +319,18 @@ class Controller:
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
-        self.tokenizer_worker.put_single_request.remote(req_id, input_len)
+        self.dp_scheduler.put_request(
+            self.tokenizer_worker.put_single_request.remote, req_id, input_len)
         return res
         
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
+        raise NotImplementedError("DP Scheduler not implemented here")
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         results = [AsyncResult(req_id) for req_id in req_ids]
         for r in results:
             self.request_results[r.req_id] = r
-        self.tokenizer_worker.put_requests.remote(req_ids, input_lens)
+        dp_ranks = self.dp_scheduler.schedule(req_ids)
+        self.tokenizer_worker.put_requests.remote(req_ids, input_lens, dp_ranks)
         return results
         
     def wait_for_requests(self, n_request: int) -> Dict[int, SloStat]:
@@ -337,6 +357,17 @@ class Controller:
             return
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)
+        
+    async def start_scheduler(self):
+        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
+        for worker, device_id in zip(self.workers, self.device_ids):
+            if self.model_place.is_attn(device_id):
+                rank = self.model_place.attn_dp_rank_at(device_id)
+                stats[rank] = min(stats[rank], ray.get(worker.get_configured_kv_cache_blocks.remote()))
+        self.dp_scheduler.start(stats)
+    
+    async def stop_scheduler(self):
+        await self.dp_scheduler.terminate()
 
 controller: Controller
 

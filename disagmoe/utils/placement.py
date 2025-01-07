@@ -11,15 +11,17 @@ from itertools import product
 class ParallelConfig:
     tp: int = 1
     ep: int = 1
+    dp: int = 1
     n_exp_per_rank: int = 1
     expert_ranks: Dict[Tuple[int, int], int] = None
     
     @staticmethod
-    def from_c(tp: int, ep: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+    def from_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
         from disagmoe_c import ParallelConfig as ParallelConfig_C
         cfg = ParallelConfig_C()
         cfg.tp = tp
         cfg.ep = ep
+        cfg.dp = dp
         cfg.n_exp_per_rank = n_exp_per_rank
         cfg.expert_ranks = expert_ranks
         return cfg
@@ -42,6 +44,9 @@ class ModelPlacement:
     
     # (layer_id, expert_id) -> expert_rank_id
     expert_ranks: Dict[Tuple[int, int], int] = None
+    
+    # device_id -> attn_rank_id
+    attn_dp_ranks: Dict[int, int] = None
     
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
@@ -73,13 +78,16 @@ class ModelPlacement:
                 for layer_id, expert_id in self.expert[dev_out]:
                     result.append((layer_id, expert_id, self.expert_ranks[(layer_id, expert_id)]))
         return result
-    
-    def attn_ids_at(self, device_id: int) -> List[int]:
+        
+    def attn_layer_ids_at(self, device_id: int) -> List[int]:
         return self.attn.get(device_id, [])
     
     def expert_ids_at(self, device_id: int):
         return self.expert.get(device_id, [])
-        
+    
+    def attn_dp_rank_at(self, device_id: int) -> int:
+        return self.attn_dp_ranks.get(device_id, 0)
+    
     def layer_ids_at(self, device_id: int) -> List[int]:
         return sorted(list(set(
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
@@ -132,6 +140,10 @@ class PlacementBase:
     @property
     def ep_size(self):
         return self.model_config.ep_size
+    
+    @property
+    def dp_size(self):
+        return self.model_config.dp_size
     
     @property
     def num_layers(self):
@@ -188,7 +200,18 @@ class PlacementBase:
         }
         place.expert_ranks = expert_ranks
         return place
-        
+    
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        """
+            DP is not enabled in default strategy
+        """
+        attn_dp_ranks = {
+            dev_id: 0
+                for dev_id in place.attn
+        }
+        place.attn_dp_ranks = attn_dp_ranks
+        return place
+    
     def solve(self) -> ModelPlacement:
         place = self._solve(
             self.model_config.num_layers, self.model_config.num_experts,
@@ -196,6 +219,7 @@ class PlacementBase:
         )
         place = self._add_edges(place)
         place = self._update_expert_rank(place)
+        place = self._update_attn_dp_rank(place)
         return place
 
 
@@ -325,8 +349,8 @@ class PipelinePlacement(PlacementBase):
         The index here for Attn/Expert **stands for the layer id**.
         
         We have:
-            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE - 1}]
-            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE}, G_{p * TP_SIZE + q * EP_SIZE - 1}]
+            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE * DP_SIZE - 1}]
+            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE * DP_SIZE}, G_{p * TP_SIZE * DP_SIZE + q * EP_SIZE - 1}]
         
         Ideally, we need a physical mapping to minimize the cross-node communication.
         TODO(hogura|20241212): leave this auto optimization as future work.
@@ -341,63 +365,105 @@ class PipelinePlacement(PlacementBase):
         self.step_expert = step_expert
         self.zigzag_attn = zigzag_attn
     
-    def _solve_virtual(self) -> ModelPlacement:
+    def _solve_virtual(self) -> Tuple[Dict[int, int], Dict[int, int]]:
         p = self.step_attn
         q = self.step_expert
         
         attns = {
-            i: [] for i in range(p * self.tp_size)
+            i: [] for i in range(p)
         }
         experts = {
-            i: [] for i in range(p * self.tp_size, p * self.tp_size + q * self.ep_size)
-        }
-        device_groups = {
-            i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p)
+            i: [] for i in range(q)
         }
         
         for i in range(self.num_layers):
             if self.zigzag_attn:
-                attn_dev = (i % p) * self.tp_size
+                attn_dev = i % p
             else:
-                attn_dev = i // (self.num_layers // p) * self.tp_size
-                
-            attns[attn_dev].append(i)
+                attn_dev = i // (self.num_layers // p)
             
-            for j in range(self.model_config.num_experts):
-                exp_dev = p * self.tp_size + (i % q) * self.ep_size + (j % self.ep_size)
-                experts[exp_dev].append((i, j))
+            exp_dev = i % q
+
+            attns[attn_dev].append(i)
+            experts[exp_dev].append(i)
+            
+        return ModelPlacement(attns, experts, -1, -1, {}, {})
+    
+    def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
+        p = self.step_attn
+        q = self.step_expert
+        
+        attns = {
+            i: [] for i in range(p * self.tp_size * self.dp_size)
+        }
+        experts = {
+            i: [] for i in range(p * self.tp_size * self.dp_size, 
+                                 p * self.tp_size * self.dp_size + q * self.ep_size)
+        }
+        device_groups = {
+            i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p * self.dp_size)
+        }
+        
+        """
+            TODO(hogura|20241222): consider the cross-node communication as follows
+            [V_0, V_{p-1}] -> [G_0, G_{p * TP_SIZE * DP_SIZE - 1}]
+                1. DP in different nodes
+                    2. stride
+                        3. TP in the same node
+            [V_p, V_{p+q-1}] -> [G_{p * TP_SIZE * DP_SIZE}, G_{p * TP_SIZE * DP_SIZE + q * EP_SIZE - 1}]
+                1. ...
+        """
+        
+        for i, layers in mp.attn.items():
+            for j in range(self.dp_size):
+                attns[(i * self.dp_size + j) * self.tp_size].extend(layers)
+        
+        for i, layers in mp.expert.items():
+            for e in range(self.model_config.num_experts):
+                # expert rank: #E -> #E // num_experts_per_rank
+                dev_id = p * self.tp_size * self.dp_size + i * self.ep_size + e // self.model_config.num_experts_per_rank
+                for l in layers:
+                    experts[dev_id].append((l, e))
         
         return ModelPlacement(
             attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, {}, {},
             device_groups=device_groups
         )
     
-    def _solve_physical(self, mp: ModelPlacement) -> ModelPlacement:
-        # TODO(hogura|20241212): implement the physical mapping by minimizing the cross-node communication
-        return mp
-    
     @override
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
         expert_ranks = {
-            (layer_id, expert_id): expert_id % self.ep_size
+            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
                 for layer_id, expert_id in product(range(self.num_layers),
                                                    range(self.model_config.num_experts))
         }
         place.expert_ranks = expert_ranks
         return place
-    
+        
+    @override
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        attn_dp_ranks = {}
+        for dev_id in place.attn:
+            attn_dp_ranks[dev_id] = (dev_id // self.tp_size) % self.dp_size
+        place.attn_dp_ranks = attn_dp_ranks
+        return place
+        
     @override
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         n_gpus = n_node * n_gpu_per_node
         p = self.step_attn
         q = self.step_expert
-        assert n_gpus >= p * self.tp_size + q * self.ep_size
+        assert n_gpus >= p * self.tp_size * self.dp_size + q * self.ep_size, \
+            f"No enough GPUs for the placement, " \
+            f"requiring {p * self.tp_size * self.dp_size + q * self.ep_size}, " \
+            f"but only {n_gpus} available."
         mp = self._solve_virtual()
         mp = self._solve_physical(mp)
         return mp
         
 
 _placement_cls: Dict[str, PlacementBase] = {
+    
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
     "pipeline": PipelinePlacement,

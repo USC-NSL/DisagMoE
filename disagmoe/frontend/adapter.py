@@ -2,14 +2,14 @@ import torch
 
 from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata, SloStat
 
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 
 class Scheduler:
 
     def wait_for_new_requests(self) -> None:
         ...
 
-    def schedule(self) -> TensorBatch:
+    def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TensorBatch:
         ...
         
     def get_channel(self) -> "NcclGroupChannel":
@@ -28,7 +28,7 @@ class MuDispatcher:
 
 class Tokenizer:
     
-    def put_request(self, req_id: int, token_ids: torch.Tensor):
+    def put_request(self, req_id: int, tensor: torch.Tensor, dp_rank: int) -> None:
         ...
         
     def start(self):

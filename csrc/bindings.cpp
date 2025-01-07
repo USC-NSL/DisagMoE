@@ -12,6 +12,7 @@
 #include "permute.h"
 #include "binding_helper.h"
 #include "binding_tests.hpp"
+#include "profiler.hpp"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
@@ -34,6 +35,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("schedule", &Scheduler::schedule)
+        .def("set_max_batch_size", &Scheduler::set_max_batch_size)
         .def("get_pool_snapshot", &Scheduler::get_pool_snapshot);
 
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
@@ -65,9 +67,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("metadata", &TensorBatch::metadata);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
-        .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &>())
+        .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())
         .def_readwrite("expert_ids", &ChannelInfo::expert_ids)
-        .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids);
+        .def_readwrite("attn_layer_ids", &ChannelInfo::attn_layer_ids)
+        .def_readwrite("attn_dp_rank", &ChannelInfo::attn_dp_rank);
 
     py::class_<Channel, std::shared_ptr<Channel>>(m, "Channel");
 
@@ -80,6 +83,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def(py::init<>())
         .def_readwrite("tp", &ParallelConfig::tp)
         .def_readwrite("ep", &ParallelConfig::ep)
+        .def_readwrite("dp", &ParallelConfig::dp)
         .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
         .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
 
@@ -105,6 +109,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("prefill_seq_len", &AttentionBatchMetadata::prefill_seq_len)
         .def_readwrite("prefill_query_len", &AttentionBatchMetadata::prefill_query_len)
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
+        .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
         .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
         .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
@@ -116,12 +121,15 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("layer_id", &Metadata::layer_id)
         .def_readwrite("req_ids", &Metadata::req_ids)
         .def_readwrite("exp_ids", &Metadata::exp_ids)
+        .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
         .def_readwrite("prefill_poss", &Metadata::prefill_poss)
         .def_readwrite("topk_weights", &Metadata::topk_weights)
+        .def("num_tokens", &Metadata::num_tokens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
+        .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
         .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
         .def("duplicate_topk", &Metadata::duplicate_topk)
         .def("shrink_topk", &Metadata::shrink_topk);
@@ -147,6 +155,18 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     // custom ops
     m.def("permute_tokens_cuda", &permute_tokens_cuda);
+
+    // profiler functions
+    m.def("recorder_output", &Recorder::output);
+    m.def("recorder_create", &Recorder::create);
+    m.def("range_push", &Recorder::push);
+    m.def("range_pop", &Recorder::pop);
+
+    py::class_<TraceContext>(m, "TraceContext")
+        .def_readwrite("msg", &TraceContext::msg)
+        .def_readwrite("t_start", &TraceContext::t_start)
+        .def_readwrite("t_dur", &TraceContext::t_dur)
+        .def_readwrite("track_id", &TraceContext::track_id);
 
     // static function calls
     m.def("create_channel", &create_channel);

@@ -3,16 +3,19 @@ from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_pl
 from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
-from disagmoe.frontend.datatypes import SloStat
-from typing import List
+from disagmoe.frontend.datatypes import SloStat, TraceContext
+from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass
 
+import gzip
+import json
 import asyncio
 import time
 import tqdm
 import numpy as np
 import pandas as pd
+import os
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
@@ -21,18 +24,17 @@ master: Controller = None
 
 @dataclass
 class BenchmarkMetrics:
+    e2e_duration: float = -1
+    req_throughput: float = -1
+    token_throughput: float = -1
     
-    e2e_duration: float
-    req_throughput: float
-    token_throughput: float
+    req_latency_median_ms: float = -1
+    req_latency_p90_ms: float = -1
+    req_latency_p99_ms: float = -1
     
-    req_latency_median_ms: float
-    req_latency_p90_ms: float
-    req_latency_p99_ms: float
-    
-    itl_latency_median_ms: float
-    itl_latency_p90_ms: float
-    itl_latency_p99_ms: float
+    itl_latency_median_ms: float = -1
+    itl_latency_p90_ms: float = -1
+    itl_latency_p99_ms: float = -1
     
     def __repr__(self):
         return f"Metrics: \n" \
@@ -46,6 +48,43 @@ class BenchmarkMetrics:
                 f"itl_latency_p90: {self.itl_latency_p90_ms:.2f}ms\n" \
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
 
+    def write_to_file(self, args):
+        filename = args.file
+        try:
+            import pandas as pd
+            if not os.path.exists(filename):
+                df = pd.DataFrame(columns=["num_requests", "output_len",
+                                           "step_attn", "DP_size", "max_batch_size_attn", 
+                                           "step_expert", "EP_size", "max_batch_size_expert",
+                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
+            else:
+                if filename.endswith(".csv"):
+                    df = pd.read_csv(filename)
+                else:
+                    df = pd.read_excel(filename)
+            new_row = {
+                "num_requests": args.num_requests,
+                "output_len": args.output_len,
+                "step_attn": args.step_attn,
+                "DP_size": args.dp_size,
+                "max_batch_size_attn": args.max_batch_size_attn,
+                "step_expert": args.step_expert,
+                "EP_size": args.ep_size,
+                "max_batch_size_expert": args.max_batch_size_expert,
+                "num_nodes": args.num_nodes,
+                "num_gpus": args.num_gpus,
+                "num_experts": args.num_experts,
+                "num_layers": args.num_layers,
+                **self.__dict__
+            }
+            df.loc[len(df)] = new_row
+            if filename.endswith(".csv"):
+                df.to_csv(filename, index=False)
+            else:
+                df.to_excel(filename, index=False)
+        except Exception as e:
+            print("Error: failed to write to file, with exception:", e)
+
 def launch(args):
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
                                 id_tokenizer=tokenizer, 
@@ -56,8 +95,14 @@ def launch(args):
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
-    model_config.enable_cuda_graph = args.cuda_graph
+    model_config.enable_cuda_graph_attn = args.cuda_graph or args.cuda_graph_attn
+    model_config.enable_cuda_graph_expert = args.cuda_graph or args.cuda_graph_expert
+    model_config.enable_grouped_gemm = not args.serial_gemm
     model_config.num_experts = args.num_experts
+    model_config.dp_size = args.dp_size
+    model_config.max_batch_size_attn = args.max_batch_size_attn
+    model_config.max_batch_size_expert = args.max_batch_size_expert
+    model_config.graph_stride = args.graph_stride
     model_config.top_k = args.topk
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
@@ -70,6 +115,7 @@ def launch(args):
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
     cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+                               num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
     sampling_config = SamplingConfig(max_output_len=args.output_len)
@@ -98,7 +144,6 @@ def analyze_results(results: List[SloStat], duration: float):
         itls.extend(result.t_tokens)
         req_latency.append(result.t_decode)
         
-    
     return BenchmarkMetrics(
         e2e_duration=duration,
         req_throughput=num_reqs / duration,
@@ -114,34 +159,37 @@ def analyze_results(results: List[SloStat], duration: float):
     )
 
 def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
+    try:
+        import matplotlib.pyplot as plt 
+    except:
+        print("matplotlib not found, skipping plotting")
+    
     for i, worker_batch_sizes in enumerate(all_batch_sizes):
+        plt.figure()
+        df = pd.DataFrame(worker_batch_sizes)
+        plt.plot(df)
+        plt.title(f"Worker {i} batch sizes with time")
+        plt.savefig(f"worker_{i}_batch_sizes_with_time.png")
+        plt.close()
+        
+        plt.figure()
+        plt.hist(worker_batch_sizes, bins=32)
+        plt.title(f"Worker {i} batch sizes")
+        plt.savefig(f"worker_{i}_batch_sizes.png")
+        plt.close()
 
-        try:
-            import matplotlib.pyplot as plt
-            plt.figure()
-            df = pd.DataFrame(worker_batch_sizes)
-            plt.plot(df)
-            plt.title(f"Worker {i} batch sizes with time")
-            plt.savefig(f"worker_{i}_batch_sizes_with_time.png")
-            plt.close()
-            
-            plt.figure()
-            plt.hist(worker_batch_sizes, bins=32)
-            plt.title(f"Worker {i} batch sizes")
-            plt.savefig(f"worker_{i}_batch_sizes.png")
-            plt.close()
-            
-        except:
-            print("matplotlib not found, skipping plotting")
-            
 
-def generate_step_trace(step_stats: List[List[StepInfo]]):
+def generate_step_trace(args,
+                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]]] ]):
+    trace_name = f"trace_step-attn={args.step_attn}_dp-size={args.dp_size}_step-exp={args.step_expert}_ep-size={args.ep_size}" \
+                 f"_layers={args.num_layers}_experts={args.num_experts}" \
+                 f"_max-batch-attn={args.max_batch_size_attn}_max-batch-exp={args.max_batch_size_expert}"
     events = []
     
     def ms_to_us(ms):
         return ms * 1000
     
-    for worker_id, worker_stats in enumerate(step_stats):
+    for pid, (worker_stats, p_traces) in enumerate(step_stats):
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -149,16 +197,32 @@ def generate_step_trace(step_stats: List[List[StepInfo]]):
                 "ph": "X",
                 "ts": ms_to_us(step_info.start_timestamp_ms),
                 "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
-                "pid": 0,
-                "tid": worker_id,
+                "pid": pid,
+                "tid": 0,
                 "args": {
                     "pool_snapshot": f"{step_info.pool_snapshot}"
                 }
             })
             
-    with open("steps_trace.json", "w") as f:
-        import json
-        json.dump(events, f)
+        for tid, t_traces in p_traces.items():
+            print("outputing thread", tid)
+            tid = tid % (1 << 32)
+            for trace in t_traces:
+                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
+                    continue
+                events.append({
+                    "name": trace.msg,
+                    "cat": "trace",
+                    "ph": "X",
+                    "ts": ms_to_us(trace.t_start),
+                    "dur": ms_to_us(trace.t_dur),
+                    "pid": pid,
+                    "tid": (tid * 10 + trace.track_id) % (1 << 31),
+                })
+
+    with gzip.open(f"{trace_name}.json.gz", "w") as f:
+        f.write(json.dumps(events).encode("utf-8"))
+
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
@@ -182,16 +246,22 @@ async def benchmark_serving(args):
         pbar.close()
 
         metrics = analyze_results(results, benchmark_duration)
-        
+
         print(metrics)
+
+        metrics.write_to_file(args)
+    
+    await master.start_scheduler()
     
     await run_once()
     
-    step_stats = master.fetch_step_stats()
+    await master.stop_scheduler()
     
     master.stop_workers()
     
-    generate_step_trace(step_stats)
+    step_stats = master.fetch_step_stats()
+    
+    generate_step_trace(args, step_stats)
     
     
 def get_args():
@@ -202,23 +272,31 @@ def get_args():
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
-    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph")
+    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph for all modules")
+    parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
+    parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
+    parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
+    parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
     parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
+    parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
     parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
-    parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS, help="number of blocks in cache; deprycated due to auto-num-blocks")
+    parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
+    parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
+    parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
+    parser.add_argument("--max-batch-size-expert", type=int, default=384, help="max batch size for experts")
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
-    parser.add_argument("--zigzag-attn", action="store_true", default=True, help="enable zigzag attention placment")
+    parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
     parser.add_argument("--step-attn", type=int, default=2, help="number of steps in attention placement")
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
     
@@ -226,7 +304,7 @@ def get_args():
     
     assert args.num_experts >= args.topk, "number of experts must be greater than topk"
     
-    if (args.num_nodes * args.num_gpus) % (args.tp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
+    if (args.num_nodes * args.num_gpus) % (args.tp_size * args.dp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
         print("Warning: number of gpus is not divisible by the number of placement steps")
     
     assert args.ep_size <= args.num_experts, "expert parallel size must be smaller than number of experts"
@@ -240,9 +318,12 @@ def get_args():
 def main():
     args = get_args()
     
-    launch(args)
-    
-    asyncio.run(benchmark_serving(args))
+    try:
+        launch(args)
+        asyncio.run(benchmark_serving(args))
+    except Exception as e:
+        print("Error: failed to run benchmark, with exception:", e)
+        BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":
     main()

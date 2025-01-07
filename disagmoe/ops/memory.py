@@ -3,9 +3,11 @@ import torch
 import triton
 import triton.language as tl
 
-from disagmoe.utils.utils import nvtx_range
+from disagmoe.utils.utils import nvtx_range, range_push, range_pop
 from typing import List, Tuple, Union
+
 from disagmoe_c import permute_tokens_cuda as _permute_tokens_cuda
+
 @triton.jit
 def _permute_tokens_kernel(
     out_ptr, # buffer for permuted tokens 
@@ -28,7 +30,7 @@ def _permute_tokens_kernel(
     
     tl.store(out_ptr + target_offsets, src_data)
 
-@nvtx_range("get_mappings_from_exp_ids")
+@nvtx_range("memory.get_mappings_from_exp_ids")
 def get_mappings_from_exp_ids(exp_ids: Union[torch.Tensor, List[int]], num_experts: int) -> Tuple[List[int], List[int]]:
     if torch.is_tensor(exp_ids):
         exp_ids = exp_ids.view(-1).tolist()
@@ -51,7 +53,22 @@ def get_mappings_from_exp_ids(exp_ids: Union[torch.Tensor, List[int]], num_exper
         
     return mappings, exp_cnt
 
-@nvtx_range("permute_tokens_triton")
+@nvtx_range("memory.get_mappings_from_exp_ids_cuda")
+def get_mappings_from_exp_ids_cuda(exp_ids: torch.Tensor, num_experts: int):
+    assert isinstance(exp_ids, torch.Tensor)
+    
+    _, rankings = exp_ids.view(-1).sort()
+    
+    mappings = torch.ones_like(rankings, dtype=torch.int32)
+    mappings = mappings.cumsum(0) - 1
+    idx = mappings.clone()
+    
+    mappings[rankings] = idx
+    
+    mappings = mappings.to(torch.int32)
+    return mappings, []
+
+@nvtx_range("memory.permute_tokens_triton")
 def permute_tokens_triton(tokens: torch.Tensor, 
                    mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
     # permute tokens according to its expert id
@@ -73,9 +90,13 @@ def permute_tokens_triton(tokens: torch.Tensor,
     )
     return permuted_tokens
 
-@nvtx_range("permute_tokens_cuda")
+@nvtx_range("memory.permute_tokens_cuda")
 def permute_tokens_cuda(tokens: torch.Tensor, 
                    mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
+    range_push("memory.move_mappings")
     if not torch.is_tensor(mappings):
         mappings = torch.tensor(mappings, dtype=torch.int32, device=tokens.device)
-    return _permute_tokens_cuda(tokens, mappings.to(tokens.device), torch.cuda.current_stream().cuda_stream)
+    mappings_device = mappings.to(tokens.device)
+    range_pop()
+    
+    return _permute_tokens_cuda(tokens, mappings_device, torch.cuda.current_stream().cuda_stream)

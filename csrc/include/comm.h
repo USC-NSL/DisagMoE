@@ -41,6 +41,8 @@ public:
     int get_peer_id() const {
         return this->other;
     }
+
+    virtual void sync() {}
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -67,6 +69,8 @@ public:
     void send(uintptr_t data, const Metadata& metadata) override;
 
     void recv(uintptr_t data, const Metadata& metadata) override;
+
+    void sync() override;
 };
 
 typedef std::shared_ptr<zmq::socket_t> mq_t;
@@ -76,15 +80,18 @@ protected:
     static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
     mq_t mq;
+    cudaStream_t stream;
 
     std::string other_ip;
     bool is_sender;
     char device_id_str[3];
 
+    int rank_offset;
+
     void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
 
 public:
-    ZmqChannel(int party_local, int party_other, bool is_sender);
+    ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
 
     void instantiate() override;
 
@@ -136,7 +143,7 @@ public:
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
 
-Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender);
+Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 
 Channel_t create_nccl_group_channel(int party_local, const std::vector<int> &party_all, void *nccl_id_raw);
 
