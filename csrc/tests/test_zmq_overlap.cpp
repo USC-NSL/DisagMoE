@@ -23,8 +23,8 @@ void test_zmq_overlap(int rank) {
         );
         auto c_send = create_zmq_channel(rank, 0, true);
         auto c_recv = create_zmq_channel(rank, 1, false);
-        c_send->instantiate();
         c_recv->instantiate();
+        c_send->instantiate();
         for (int i = 0; i < 5; i ++) {
             c_recv->recv(a, meta);
             DMOE_LOG(INFO) << "Sampler Received from <1>: " << a.mean().item<float>() << LEND;

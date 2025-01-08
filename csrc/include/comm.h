@@ -5,6 +5,8 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
 
 #include "cuda_runtime.h"
 #include "zmq.hpp"
@@ -78,12 +80,67 @@ public:
 
 typedef std::shared_ptr<zmq::socket_t> mq_t;
 
+class ZmqChannelHelper {
+public:
+    struct Item;
+
+protected:
+    std::thread t;
+    bool end_flag;
+    mq_t mq;
+    cudaStream_t stream;
+
+    std::queue<Item> queue;
+    std::mutex mutex, mtx_end;
+    std::condition_variable cv, cv_end;
+
+    virtual void run(Item &item) = 0;
+
+public:
+    struct Item {
+        void* dst {0};
+        size_t size {0};
+        void* src {0};
+        void* event {0};
+    };
+
+    ZmqChannelHelper(mq_t mq, cudaStream_t stream);
+
+    void terminate();
+
+    void put(void* dst, size_t size, void* src = nullptr, void* event = 0);
+
+    Item get();
+
+    void start();
+
+    void sync();
+};
+
+class ZmqChannelSender: public ZmqChannelHelper {
+protected:
+    void run(Item &item) override;
+
+public:
+    ZmqChannelSender(mq_t mq, cudaStream_t stream): ZmqChannelHelper(mq, stream) {}
+};
+
+class ZmqChannelRecver: public ZmqChannelHelper {
+protected:
+    void run(Item &item) override;
+
+public:
+    ZmqChannelRecver(mq_t mq, cudaStream_t stream): ZmqChannelHelper(mq, stream) {}
+};
+
 class ZmqChannel: public Channel {
+
 protected:
     static std::map<int, mq_t> global_mq;
     zmq::context_t ctx;
     mq_t mq;
     cudaStream_t stream_send, stream_recv;
+    ZmqChannelHelper* helper;
 
     std::string other_ip;
     bool is_sender;
@@ -95,6 +152,7 @@ protected:
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
+    ~ZmqChannel();
 
     void instantiate() override;
 

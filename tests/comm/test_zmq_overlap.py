@@ -33,8 +33,9 @@ def func(rank: int):
 def main():
     ray.init("auto")
     env = {
-        "runtime_env": {
+        "env_vars": {
             # "CUDA_LAUNCH_BLOCKING": "1",
+            "ENABLE_NVTX": "1",
         }
     }
     tasks = [
@@ -50,8 +51,6 @@ def main():
             print("outputing thread", tid)
             tid = tid % (1 << 32)
             for trace in t_traces:
-                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
-                    continue
                 events.append({
                     "name": trace.msg,
                     "cat": "trace",

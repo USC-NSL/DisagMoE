@@ -46,6 +46,7 @@ protected:
 public:
 
     Recorder(const char *enabled) {
+        DMOE_LOG(DEBUG) << "Recorder enable status: " << enabled << LEND;
         this->enabled = enabled && strcmp(enabled, "1") == 0;
     }
 
@@ -54,7 +55,10 @@ public:
             return;
         auto tid = std::this_thread::get_id();
         DMOE_LOG(DEBUG) << "Creating thread " << tid << LEND;
-        ASSERT(ctx.find(tid) == ctx.end());
+        if (ctx.find(tid) != ctx.end()) {
+            DMOE_LOG(WARNING) << "Thread " << tid << " already exists" << LEND;
+            return;
+        }
         ctx[tid] = std::vector<TraceContext>();
         stack[tid] = std::stack<std::pair<double, std::string>>();
     }
@@ -78,7 +82,7 @@ public:
         auto top = stack.at(tid).top();
 
         stack.at(tid).pop();
-        if ((ts - top.first) * 1000 > 10) // only > 10us is commited
+        if ((ts - top.first) * 1000 > TRACER_GAP_US) // only time > gap is commited
             ctx.at(tid).push_back(TraceContext{top.second, top.first, ts - top.first, (int) stack.at(tid).size()});
     }
 
