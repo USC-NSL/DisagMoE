@@ -780,8 +780,6 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         // NOTE: Only considered for prefill length = 1
         seq_ids.emplace_back(meta->req_ids[i]);
         attn_dp_ranks.emplace_back(meta->attn_dp_ranks[i]);
-        prefill_seq_len.emplace_back(1);
-        prefill_query_len.emplace_back(1);
     }
 
     auto attn_meta = std::make_shared<AttentionBatchMetadata> (AttentionBatchMetadata {
