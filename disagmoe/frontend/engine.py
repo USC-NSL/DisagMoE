@@ -691,11 +691,9 @@ class Engine:
 
         if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
             assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-            assert meta_py.topk_weights is not None and len(meta_py.topk_weights) == input_tensor.shape[0], f"incorrect topk_weights: {meta_py.topk_weights}"
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
             meta_c.shrink_topk(self.model_config.top_k)
-            meta_py.shape[0] = meta_py.shape[0] // self.model_config.top_k
 
         # TODO(hogura|20241014): fill the real positions
         positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
@@ -704,13 +702,13 @@ class Engine:
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
             self.static_input[:num_tokens].copy_(input_tensor)
             range_push("engine.graph_replay")
-            self.graphs[meta_c.layer_id][graph_id].replay()
+            self.graphs[meta_py.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
             expert_weights = self.static_expert_weights[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
