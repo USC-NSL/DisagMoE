@@ -174,7 +174,7 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
     tx_range _{"ZmqChannel::_pipeline_comm"};
 
     const size_t step = PIPE_COMM_STEP;
-    void* cpu_buf = std::malloc(step * token_size);
+    void* cpu_buf = std::malloc(num_tokens * token_size);
 
     struct SendItem {
         void* buf;
@@ -192,7 +192,6 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
             void* src_buf = data + i * token_size;
             void* dst_buf = cpu_buf + i * token_size;
 
-            DMOE_LOG(DEBUG) << "{A} copying " << i << " " << cur_step << LEND;
             CUDACHECK(cudaMemcpyAsync(
                 pin_buf + i * token_size,
                 src_buf,
@@ -200,7 +199,6 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
                 cudaMemcpyDeviceToHost,
                 stream
             ));
-            DMOE_LOG(DEBUG) << "{B} copying " << i << " " << cur_step << LEND;
             CUDACHECK(cudaMemcpyAsync(
                 dst_buf,
                 pin_buf + i * token_size,
@@ -229,9 +227,7 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
             item = send_queue.front();
             send_queue.pop();
         }
-        DMOE_LOG(DEBUG) << "{C} waiting stream " << i << LEND;
-        CUDACHECK(cudaStreamWaitEvent(stream, item.event));
-        DMOE_LOG(DEBUG) << "{C} copying " << i << LEND;
+        CUDACHECK(cudaEventSynchronize(item.event));
         tx_range __{"ZmqChannel::_pipeline_comm_send"};
         mq->send(zmq::buffer(item.buf, item.size));
         CUDACHECK(cudaEventDestroy(item.event));

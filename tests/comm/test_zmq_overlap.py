@@ -16,8 +16,8 @@ def func(rank: int):
                 ],
                 # with_stack=True,
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                    dir_name="./reports/", 
-                    worker_name=f"engine-{rank}",
+                    dir_name="/home/hogura1999/DisagMoE/reports/zmq_overlap/", 
+                    worker_name=f"worker-{rank}",
                     use_gzip=True,))
     profiler.start()
     test_zmq_overlap(rank)
@@ -25,12 +25,16 @@ def func(rank: int):
 
 def main():
     ray.init("auto")
+    env = {
+        "runtime_env": {
+            # "CUDA_LAUNCH_BLOCKING": "1",
+        }
+    }
     tasks = [
-        ray.remote(func).options(num_gpus=1).remote(0),
-        ray.remote(func).options(num_gpus=1).remote(1),
-        ray.remote(func).options(num_gpus=0).remote(82)
+        ray.remote(func).options(num_gpus=1, runtime_env=env).remote(0),
+        ray.remote(func).options(num_gpus=1, runtime_env=env).remote(1),
+        ray.remote(func).options(num_gpus=0, runtime_env=env).remote(82)
     ]
     ray.get(tasks)
-    ray.shutdown()
 
 main()
