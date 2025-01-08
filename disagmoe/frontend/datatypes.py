@@ -36,6 +36,7 @@ class Metadata:
     exp_ids: List[int]
     attn_dp_ranks: List[int]
     prefill_poss: List[int]
+    topk_weights: List[float]
 
     def num_tokens(self) -> int:
         ...
@@ -55,6 +56,12 @@ class Metadata:
         ...
 
     def sort_by_prefill_order(self) -> List[int]:
+        ...
+
+    def duplicate_topk(self, topk) -> None:
+        ...
+    
+    def shrink_topk(self, topk: int) -> None:
         ...
         
     @staticmethod
@@ -108,6 +115,8 @@ class AttentionBatchMetadata:
     prefill_query_len: List[int]
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
+
+    topk_weights: List[float]
     attn_dp_ranks: List[int]
     
     def to_metadata(self) -> Metadata:
@@ -126,6 +135,7 @@ class AttentionBatchMetadata:
         attn_meta.prefill_seq_len = self.prefill_seq_len
         attn_meta.prefill_query_len = self.prefill_query_len
         attn_meta.expert_ids = self.expert_ids
+        attn_meta.topk_weights = self.topk_weights
         attn_meta.attn_dp_ranks = self.attn_dp_ranks
         return attn_meta
     
@@ -142,8 +152,12 @@ class AttentionBatchMetadata:
             meta_c.prefill_seq_len,
             meta_c.prefill_query_len,
             meta_c.expert_ids,
+            meta_c.topk_weights,
             meta_c.attn_dp_ranks
         )
+
+    def shrink_topk(self, topk: int) -> None:
+        ...
         
 @dataclass
 class SloStat:

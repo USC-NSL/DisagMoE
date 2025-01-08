@@ -163,6 +163,7 @@ class Engine:
             device_group_ids = []
         self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
             self.device_id,
+            self.model_config.top_k,
             self.is_attn,
             layer_ids,
             # P2P Channels
@@ -285,7 +286,8 @@ class Engine:
         self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         self.static_output = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         if self.is_attn:
-            self.static_expert_ids = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
+            self.static_expert_ids = torch.zeros((batch_size, self.model_config.top_k), dtype=torch.long, device="cuda")
+            self.static_expert_weights = torch.zeros((batch_size, self.model_config.top_k), device="cuda")
             self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
             self.static_block_table = torch.zeros(
                 (batch_size, self.cache_config.num_gpu_blocks), 
@@ -326,7 +328,7 @@ class Engine:
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _, _ = self.executor.execute(layer_id, positions, input, meta)
+                _, _, _ = self.executor.execute(layer_id, positions, input, meta)
         
         # restore the original setting
         self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
@@ -366,7 +368,7 @@ class Engine:
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [], mocking=True)
                 self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
-                    self.static_output, self.static_expert_ids = self.executor.execute(
+                    self.static_output, self.static_expert_weights, self.static_expert_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
                 torch.cuda.synchronize()
                 
@@ -431,7 +433,7 @@ class Engine:
             
         #  if the first layer in this attention worker, update block table and decode_seq_lens
         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
+
         if meta_py.layer_id == self.model_config.layer_ids[0]:
             # only update block table and decode_seq_lens in the first layer
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
@@ -456,6 +458,8 @@ class Engine:
         
         num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
         
         # 1. prepare block table
         if not mocking:
@@ -467,18 +471,18 @@ class Engine:
                 dtype=torch.int32, device="cuda")
         
         if self.model_config.enable_cuda_graph_attn:
-            self.static_slot_mapping[0: num_seqs].copy_(
-                block_table_1d[-num_seqs : ].to(torch.int64))
-            _max_num_blocks = (block_table_1d.numel() - num_seqs) // num_tokens
+            self.static_slot_mapping[0: num_tokens].copy_(
+                block_table_1d[-num_tokens : ].to(torch.int64))
+            _max_num_blocks = (block_table_1d.numel() - num_tokens) // num_tokens
             self.static_block_table[0: num_tokens, 0: _max_num_blocks].copy_(
                 block_table_1d[ : -num_seqs].view(num_tokens, -1)
             )
             slot_mapping_cuda = self.static_slot_mapping
             block_table_cuda = self.static_block_table
         else:
-            slot_mapping_cuda = block_table_1d[-num_seqs : ].to(torch.int64)
+            slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
             block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
-        
+
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
         batch_infos = [0] * (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)) 
@@ -516,7 +520,7 @@ class Engine:
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
         assert mocking or self.model_config.enable_cuda_graph_attn or \
-               max_num_blocks == block_table_cuda.shape[-1], "block table wrong"
+               max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
         
         return FlashAttentionMetadata(
             meta_py.num_prefill_seqs,
@@ -673,8 +677,6 @@ class Engine:
         
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
-        # TODO(hogura|20241014): fill the real positions
-        positions = torch.zeros(input_tensor.shape[0], dtype=torch.long, device="cuda")
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
         if mocking:
@@ -684,27 +686,49 @@ class Engine:
         else:
             meta_py = AttentionBatchMetadata.from_c(meta_c)
             assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
-        
+
+        num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+
+        if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+            assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
+            meta_c.shrink_topk(self.model_config.top_k)
+
+        # TODO(hogura|20241014): fill the real positions
+        positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
-        # TODO(hogura|20241015): only top-1 expert currently
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
-            hiddens, expert_ids = self.executor.execute(meta_c.layer_id, positions, input_tensor, attn_meta)
+            # topk_weights and expert_ids: [batch_size, top_k]
+            hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
             self.static_input[:num_tokens].copy_(input_tensor)
             range_push("engine.graph_replay")
-            self.graphs[meta_c.layer_id][graph_id].replay()
+            self.graphs[meta_py.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
+            expert_weights = self.static_expert_weights[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
             torch.cuda.synchronize()
             range_pop()
-        
-        expert_ids = torch.randint(0, self.model_config.num_experts, (meta_c.shape[0], )) # FIXME: remove the dummy expert
-        expert_ids = expert_ids.view((meta_c.shape[0],)).tolist()
-        
+
+        if self.model_config.top_k == 1:
+            # FIXME: here we randomize expert_ids and expert_weights
+            expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, ), device="cuda")
+            expert_ids = expert_ids.tolist()
+        else:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            expert_weights = torch.rand((num_tokens, self.model_config.num_experts), device="cuda", dtype=torch.bfloat16)
+            topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
+            topk_weights = topk_weights.transpose(0, 1).reshape(-1).tolist()
+            expert_ids = expert_ids.transpose(0, 1).reshape(-1).tolist()
+            hiddens = torch.cat([hiddens, hiddens], dim=0)
+
+        # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
+
         # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
         hiddens = permute_tokens(hiddens, exp_mappings)
@@ -713,9 +737,14 @@ class Engine:
             new_meta_c = meta_py
         else:
             new_meta_c = meta_c.to_metadata()
+            if self.model_config.top_k > 1:
+                new_meta_c.duplicate_topk(self.model_config.top_k)
+                new_meta_c.topk_weights = topk_weights
             new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
+        # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
+        assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
     
     @nvtx_range("engine.process_batch_expert")
@@ -724,7 +753,7 @@ class Engine:
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, ExpertsExecutor)
         
-        # self._logger.info(f"process batch expert {meta_c.req_ids}")
+        # self._logger.info(f"process batch expert: layer {meta_c.layer_id}, {meta_c.req_ids}, {meta_c.exp_ids}, {meta_c.topk_weights}")
         
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         range_push("engine.copy_batch_sizes")
@@ -747,6 +776,7 @@ class Engine:
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
             output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
+            output = output * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
         else:
             torch.cuda.synchronize()
             
@@ -779,7 +809,7 @@ class Engine:
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 
-        # self._logger.info(f"processed batch expert {meta_c.req_ids}")
+        # self._logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
         return output, meta_c
 
     @nvtx_range("Engine.post_process")
@@ -905,7 +935,7 @@ class Engine:
         
         if profile_dir is None:
             self._logger.info("profiling directory not specified, using default")
-            profile_dir = os.environ.get("DMOE_PROFILE_DIR", f"torch_profile")
+            profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
         self._logger.info(f"enable profiler, results stored at {profile_dir}")
     
@@ -951,6 +981,7 @@ class SamplerEngine(Engine):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
+            self.model_config.top_k,
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
@@ -995,9 +1026,9 @@ class TokenizerEngine(Engine):
         assert req_id > 0
         # TODO(hogura|20241008): only #prefill = 1 now
         assert input_len == 1
-        shape = (input_len, self.model_config.hidden_size)
+        tensor_shape = (input_len, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.zeros(size=shape).type(self.model_config.dtype)
+        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, x, dp_rank)
         

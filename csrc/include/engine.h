@@ -12,6 +12,7 @@ using std::string;
 
 std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
+    int top_k,
     bool is_attn,
     const std::vector<int> &layer_ids,
     // P2P Channels
@@ -35,6 +36,7 @@ void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dis
 Sampler_t init_sampler(
     int device_id,
     int max_output_len,
+    int top_k,
     ParallelConfig cfg,
     const vector<int> &in_device_ids,
     const vector<int> &out_device_ids,

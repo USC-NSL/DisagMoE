@@ -1,6 +1,6 @@
 import torch
 from typing import override
-from grouped_gemm.backend import gmm, get_arguments, gmm_with_arguments
+from grouped_gemm.backend import gmm
 from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_reduce)
@@ -64,6 +64,8 @@ class MoEExperts(torch.nn.Module):
         self.cache_up_r = torch.empty((max_batch_size, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
         self.cache_down = torch.empty((max_batch_size, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
         if enable_cutlass_cache:
+            from grouped_gemm.backend import get_arguments, gmm_with_arguments
+
             self.cutlass_workspace_size, self.arguments_ptr = get_arguments(
                 self.num_experts, torch.device("cuda"))
             self.cutlass_workspace = torch.empty(

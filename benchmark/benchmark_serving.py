@@ -103,6 +103,7 @@ def launch(args):
     model_config.max_batch_size_attn = args.max_batch_size_attn
     model_config.max_batch_size_expert = args.max_batch_size_expert
     model_config.graph_stride = args.graph_stride
+    model_config.top_k = args.topk
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -286,6 +287,7 @@ def get_args():
     parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
+    parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
     parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
@@ -299,6 +301,8 @@ def get_args():
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
     
     args = parser.parse_args()
+    
+    assert args.num_experts >= args.topk, "number of experts must be greater than topk"
     
     if (args.num_nodes * args.num_gpus) % (args.tp_size * args.dp_size * args.step_attn + args.ep_size * args.step_expert) != 0:
         print("Warning: number of gpus is not divisible by the number of placement steps")

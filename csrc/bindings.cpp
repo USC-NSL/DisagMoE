@@ -57,6 +57,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("wait_slo_stats", &Sampler::wait_slo_stats)
         .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats);
 
+    py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
+        .def("start", &TopKSampler::start)
+        .def("wait_slo_stats", &TopKSampler::wait_slo_stats)
+        .def("fetch_finished_slo_stats", &TopKSampler::fetch_finished_slo_stats);
+
     REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
         .def_readwrite("metadata", &TensorBatch::metadata);
@@ -105,6 +110,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("prefill_query_len", &AttentionBatchMetadata::prefill_query_len)
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
         .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
+        .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
+        .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
@@ -116,13 +123,16 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("exp_ids", &Metadata::exp_ids)
         .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
         .def_readwrite("prefill_poss", &Metadata::prefill_poss)
+        .def_readwrite("topk_weights", &Metadata::topk_weights)
         .def("num_tokens", &Metadata::num_tokens)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
         .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
-        .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order);
+        .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
+        .def("duplicate_topk", &Metadata::duplicate_topk)
+        .def("shrink_topk", &Metadata::shrink_topk);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)

@@ -57,6 +57,7 @@ class AttnExecutor(Executor):
                 self.model_config.num_heads, 
                 self.model_config.num_kv_heads, 
                 self.model_config.num_experts,
+                self.model_config.top_k,
                 cache_config=self.vllm_cache_config,
             ) for _ in range(self.num_layers)
         ]
@@ -91,16 +92,16 @@ class AttnExecutor(Executor):
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor]:
+                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
-        outputs, topk_experts = operator.forward(
+        outputs, top_k_weights, topk_experts = operator.forward(
             positions, 
             hidden_states, 
             self.cache[vid], 
             attn_metadata
         )
-        return outputs, topk_experts
+        return outputs, top_k_weights, topk_experts
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":

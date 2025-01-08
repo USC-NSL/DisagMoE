@@ -160,6 +160,7 @@ def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int):
         [0] * bs,
         [0] * bs,
         [0] * bs,
+        [],
         [0] * bs,
     )
     return meta

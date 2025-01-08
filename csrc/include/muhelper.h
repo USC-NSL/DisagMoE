@@ -5,6 +5,7 @@
 #include <queue>
 #include <condition_variable>
 #include <set>
+#include <unordered_map>
 
 #include "datatypes.hpp"
 #include "comm.h"
@@ -128,7 +129,8 @@ protected:
     zmq::socket_t mq;
 
     std::vector<std::vector<TensorBatch>> data_queue;
-    std::vector<int> inner_layer_id;
+    std::vector<int> layer_id_P2V; // physical layer id to virtual layer id (within this worker)
+    std::vector<int> layer_id_V2P; // virtual layer id (within this worker) to physical layer id
 
     std::mutex request_mutex;
     std::mutex batch_mutex;
@@ -187,9 +189,6 @@ private:
 
     // large device group: [previous_dispatcher; current_driver; current_workers]
     // small device group: [current_driver; current_workers]
-    std::vector<int> device_group_ids;
-    std::shared_ptr<NcclGroupChannel> group_comm;
-
     std::thread pool_thread;
     std::vector<std::thread> group_threads;
 
@@ -201,6 +200,11 @@ private:
 
     void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
+protected:
+
+    std::vector<int> device_group_ids;
+    std::shared_ptr<NcclGroupChannel> group_comm;
+
 public:
 
     MuAttentionPool(std::vector<int> layer_ids,
@@ -209,7 +213,7 @@ public:
            std::vector<int> device_group_ids = {},
            Channel_t group_comm = nullptr);
 
-    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
+    virtual std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
     std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
 
@@ -229,3 +233,50 @@ public:
 };
 
 typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
+
+class TokenTopKPool {
+
+    int top_k;
+
+    std::unordered_map<int, TokenTopKInfo> pool_{}; // mapping from seq_id to corresponding TokenTopKInfo
+
+    std::vector<TokenTopKInfo> ready_tokens{};
+
+public:
+
+    TokenTopKPool(int top_k): top_k(top_k) {}
+
+    void put_batch(TensorBatch batch);
+
+    std::vector<TokenTopKInfo> fetch_ready_tokens();
+
+    int get_top_k() { return top_k; }
+
+};
+
+class MuAttentionTopKPool: public MuAttentionPool {
+
+    int top_k;
+
+    std::vector<std::vector<TokenTopKInfo>> attn_token_queues;
+
+    std::vector<TokenTopKPool> topk_pools;
+
+    int tokens_in_layer(int lid) override;
+
+    std::vector<TokenTopKInfo> schedule_with_limit();
+
+    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+public:
+
+    MuAttentionTopKPool(std::vector<int> layer_ids,
+           int device_id,
+           std::vector<Channel_t> channels,
+           std::vector<int> device_group_ids = {},
+           Channel_t group_comm = nullptr,
+           int top_k = 1);
+
+    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr) override;
+
+};

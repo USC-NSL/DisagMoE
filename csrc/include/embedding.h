@@ -42,7 +42,7 @@ public:
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
 
-    void process_batch(torch::Tensor data, metadata_t meta);
+    virtual void process_batch(torch::Tensor data, metadata_t meta);
 
     int sample(uintptr_t buf, metadata_t meta);
 
@@ -53,6 +53,26 @@ public:
     std::vector<SloStat> fetch_finished_slo_stats();
 
     std::map<int, SloStat> wait_slo_stats(int n_request);
+};
+
+class TopKSampler: public Sampler {
+private:
+    TokenTopKPool token_pool;
+
+    int top_k;
+
+public:
+
+    TopKSampler(int device_id, 
+                int max_output_len,
+                int top_k,
+                ParallelConfig cfg,
+                std::vector<Channel_t> in_channels, 
+                std::vector<Channel_t> out_channels,
+                std::vector<ChannelInfo> out_channel_infos);
+
+    void process_batch(torch::Tensor data, metadata_t meta) override;
+
 };
 
 class Tokenizer: public MuExpertDispatcher {
