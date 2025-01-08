@@ -179,7 +179,6 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
     struct SendItem {
         void* buf;
         size_t size;
-        cudaEvent_t event;
     };
 
     std::queue<SendItem> send_queue;
@@ -187,33 +186,23 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
     std::condition_variable cv;
     std::thread t_copy([&] {
         for (size_t i = 0; i < num_tokens; i += step) {
+            tx_range __{"ZmqChannel::_pipeline_comm_async_copy"};
             size_t cur_step = std::min(step, num_tokens - i);
 
             void* src_buf = data + i * token_size;
             void* dst_buf = cpu_buf + i * token_size;
 
             CUDACHECK(cudaMemcpyAsync(
-                pin_buf + i * token_size,
+                dst_buf,
                 src_buf,
                 cur_step * token_size,
                 cudaMemcpyDeviceToHost,
                 stream
             ));
-            CUDACHECK(cudaMemcpyAsync(
-                dst_buf,
-                pin_buf + i * token_size,
-                cur_step * token_size,
-                cudaMemcpyHostToHost,
-                stream
-            ));
-
-            cudaEvent_t event;
-            CUDACHECK(cudaEventCreate(&event));
-            CUDACHECK(cudaEventRecord(event, stream));
 
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                send_queue.push({dst_buf, cur_step * token_size, event});
+                send_queue.push({dst_buf, cur_step * token_size});
                 cv.notify_one();
             }
         }
@@ -227,10 +216,8 @@ void _pipeline_send(void* data, void* pin_buf, size_t num_tokens, size_t token_s
             item = send_queue.front();
             send_queue.pop();
         }
-        CUDACHECK(cudaEventSynchronize(item.event));
-        tx_range __{"ZmqChannel::_pipeline_comm_send"};
+        tx_range __{"ZmqChannel::_pipeline_comm_async_send"};
         mq->send(zmq::buffer(item.buf, item.size));
-        CUDACHECK(cudaEventDestroy(item.event));
     }
 
     std::free(cpu_buf);
