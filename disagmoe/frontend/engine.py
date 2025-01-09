@@ -775,8 +775,9 @@ class Engine:
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
+            if self.model_config.top_k > 1:
+                input_tensor = input_tensor * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-            output = output * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
         else:
             torch.cuda.synchronize()
             
