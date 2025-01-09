@@ -775,8 +775,6 @@ class Engine:
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
-            if self.model_config.top_k > 1:
-                input_tensor = input_tensor * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
         else:
             torch.cuda.synchronize()
@@ -802,9 +800,14 @@ class Engine:
         with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
+            if self.model_config.top_k > 1:
+                topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             h2d_event.record(self.h2d_stream)
 
         h2d_event.wait(self.h2d_stream)
+
+        if self.model_config.top_k > 1:
+            output = output * topk_weights
         
         output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
         meta_c.update_exp_ids([], [])
