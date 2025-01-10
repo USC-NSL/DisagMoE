@@ -30,6 +30,9 @@ class ModelConfig:
     max_batch_size_attn: int = 256
     max_batch_size_expert: int = 384
     
+    # FIXME(hogura|20250110): temporary field, should be moved to other place
+    enable_trace: bool = False
+    
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size

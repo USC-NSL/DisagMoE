@@ -11,6 +11,7 @@ from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, Eng
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
+from disagmoe.utils.metrics import Metric
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
@@ -300,7 +301,7 @@ class Controller:
             await self.request_results[result.req_id].put(result)
             self.request_results.pop(result.req_id)
 
-    def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]]]]:
+    def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
     async def poll_finished_results(self) -> List[SloStat]:
