@@ -260,6 +260,7 @@ class Engine:
             else model_config.max_batch_size_expert
         
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
+        self._metric.is_attn = self.is_attn
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks

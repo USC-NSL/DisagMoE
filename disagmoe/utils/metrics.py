@@ -12,6 +12,7 @@ class Metric:
     t_postprocess: float = 0
     
     counter: int = 0
+    is_attn: bool = False
     
     def step(self):
         self.counter += 1

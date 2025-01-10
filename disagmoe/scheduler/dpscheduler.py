@@ -41,7 +41,7 @@ class DPScheduler:
     
     def put_request(self, func: Callable, req_id: int, *args):
         self.waiting_queue.put_nowait(RequestItem(func, req_id, args))
-        self._logger.warning(f"Waiting queue put a request {req_id}, currently waiting list size {self.waiting_queue.qsize()}")
+        # self._logger.warning(f"Waiting queue put a request {req_id}, currently waiting list size {self.waiting_queue.qsize()}")
     
     async def waiting_loop(self):
         while not self.end_flag:
@@ -69,7 +69,7 @@ class DPScheduler:
                 rank = self.schedule([request_item.req_id])[0]
                 assert rank >= 0
             
-            self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
+            # self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
             # submit the request
             request_item.func(request_item.req_id, *request_item.args, rank)
