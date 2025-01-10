@@ -671,21 +671,15 @@ class Engine:
     @nvtx_range("engine.process_batch_attn")
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
-                           input_tensor: Tensor,
-                           mocking: bool = False) -> Tuple[Tensor, Metadata]:
+                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
         
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
         
-        if mocking:
-            # if mocking is enabled, the meta_c is a python AttentionBatchMetadata class
-            meta_py = meta_c
-            meta_c = meta_c.to_c()
-        else:
-            meta_py = AttentionBatchMetadata.from_c(meta_c)
-            assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+        meta_py = AttentionBatchMetadata.from_c(meta_c)
+        assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
 
         num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
 
@@ -712,8 +706,11 @@ class Engine:
             hiddens = self.static_output[:num_tokens]
             expert_weights = self.static_expert_weights[:num_tokens]
             expert_ids = self.static_expert_ids[:num_tokens]
-            torch.cuda.synchronize()
             range_pop()
+
+        new_meta_c = meta_c.to_metadata()
+        if self.model_config.top_k > 1:
+            new_meta_c.duplicate_topk(self.model_config.top_k)
 
         if self.model_config.top_k == 1:
             # FIXME: here we randomize expert_ids and expert_weights
@@ -723,24 +720,16 @@ class Engine:
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             expert_weights = torch.rand((num_tokens, self.model_config.num_experts), device="cuda", dtype=torch.bfloat16)
             topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
-            topk_weights = topk_weights.transpose(0, 1).reshape(-1).tolist()
-            expert_ids = expert_ids.transpose(0, 1).reshape(-1).tolist()
-            hiddens = torch.cat([hiddens, hiddens], dim=0)
+            topk_weights = topk_weights.view(-1).tolist()
+            expert_ids = expert_ids.view(-1).tolist()
+            new_meta_c.topk_weights = topk_weights
 
         # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
 
         # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         hiddens = permute_tokens(hiddens, exp_mappings)
-        
-        if mocking:
-            new_meta_c = meta_py
-        else:
-            new_meta_c = meta_c.to_metadata()
-            if self.model_config.top_k > 1:
-                new_meta_c.duplicate_topk(self.model_config.top_k)
-                new_meta_c.topk_weights = topk_weights
-            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
@@ -776,7 +765,6 @@ class Engine:
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
             output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-            output = output * torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
         else:
             torch.cuda.synchronize()
             
@@ -801,9 +789,14 @@ class Engine:
         with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
+            if self.model_config.top_k > 1:
+                topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             h2d_event.record(self.h2d_stream)
 
         h2d_event.wait(self.h2d_stream)
+
+        if self.model_config.top_k > 1:
+            output = output * topk_weights
         
         output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
         meta_c.update_exp_ids([], [])
