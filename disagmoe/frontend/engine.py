@@ -708,6 +708,10 @@ class Engine:
             expert_ids = self.static_expert_ids[:num_tokens]
             range_pop()
 
+        new_meta_c = meta_c.to_metadata()
+        if self.model_config.top_k > 1:
+            new_meta_c.duplicate_topk(self.model_config.top_k)
+
         if self.model_config.top_k == 1:
             # FIXME: here we randomize expert_ids and expert_weights
             expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, ), device="cuda")
@@ -718,18 +722,14 @@ class Engine:
             topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
             topk_weights = topk_weights.view(-1).tolist()
             expert_ids = expert_ids.view(-1).tolist()
+            new_meta_c.topk_weights = topk_weights
 
         # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
 
         # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
         exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-        hiddens = permute_tokens(hiddens, exp_mappings)
-        
-        new_meta_c = meta_c.to_metadata()
-        if self.model_config.top_k > 1:
-            new_meta_c.duplicate_topk(self.model_config.top_k)
-            new_meta_c.topk_weights = topk_weights
         new_meta_c.update_exp_ids(expert_ids, exp_mappings)
+        hiddens = permute_tokens(hiddens, exp_mappings)
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
