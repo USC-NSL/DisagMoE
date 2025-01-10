@@ -1,12 +1,13 @@
 from disagmoe.frontend.controller import init_controller, Controller, AsyncResult
 from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_placement
 from disagmoe.utils.utils import StepInfo
+from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat, TraceContext
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import gzip
 import json
@@ -104,6 +105,7 @@ def launch(args):
     model_config.max_batch_size_expert = args.max_batch_size_expert
     model_config.graph_stride = args.graph_stride
     model_config.top_k = args.topk
+    model_config.enable_trace = args.trace
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -180,7 +182,7 @@ def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
 
 
 def generate_step_trace(args,
-                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]]] ]):
+                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric] ]):
     trace_name = f"trace_step-attn={args.step_attn}_dp-size={args.dp_size}_step-exp={args.step_expert}_ep-size={args.ep_size}" \
                  f"_layers={args.num_layers}_experts={args.num_experts}" \
                  f"_max-batch-attn={args.max_batch_size_attn}_max-batch-exp={args.max_batch_size_expert}"
@@ -189,7 +191,9 @@ def generate_step_trace(args,
     def ms_to_us(ms):
         return ms * 1000
     
-    for pid, (worker_stats, p_traces) in enumerate(step_stats):
+    metrics = {}
+    
+    for pid, (worker_stats, p_traces, metric) in enumerate(step_stats):
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -219,9 +223,14 @@ def generate_step_trace(args,
                     "pid": pid,
                     "tid": (tid * 10 + trace.track_id) % (1 << 31),
                 })
+                
+        metrics[pid] = asdict(metric)
 
     with gzip.open(f"{trace_name}.json.gz", "w") as f:
         f.write(json.dumps(events).encode("utf-8"))
+        
+    with open(f"metrics_{trace_name}.json", "w") as f:
+        json.dump(metrics, f)
 
 
 async def benchmark_serving(args):
@@ -278,6 +287,7 @@ def get_args():
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
+    parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
@@ -292,7 +302,7 @@ def get_args():
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
     parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
-    parser.add_argument("--max-batch-size-expert", type=int, default=384, help="max batch size for experts")
+    parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")

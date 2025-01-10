@@ -11,9 +11,10 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext)
 from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
-from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, 
+from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
+from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
@@ -77,6 +78,8 @@ class Engine:
         
         # for stats usage
         self._step_stats = []
+        self._metric = Metric()
+        self._timer = Timer()
 
     @property
     def is_attn(self):
@@ -698,6 +701,9 @@ class Engine:
         positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
         
+        self._timer.stop("preprocess")
+        self._timer.start("execute")
+        
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
@@ -713,6 +719,9 @@ class Engine:
             expert_ids = self.static_expert_ids[:num_tokens]
             torch.cuda.synchronize()
             range_pop()
+        
+        self._timer.stop("execute")
+        self._timer.start("postprocess")
 
         if self.model_config.top_k == 1:
             # FIXME: here we randomize expert_ids and expert_weights
@@ -771,6 +780,8 @@ class Engine:
                 dtype=torch.int64, device="cuda"
             )
         range_pop()
+        self._timer.stop("preprocess")
+        self._timer.start("execute")
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
         if not self.model_config.enable_cuda_graph_expert:
@@ -790,7 +801,10 @@ class Engine:
             self.graphs[meta_c.layer_id][graph_id].replay()
             output = self.static_output[:num_tokens]
             range_pop()
-            
+        
+        self._timer.stop("execute")
+        self._timer.start("postprocess")
+        
         # 2. permute tokens back to <prefill><decode> order
         #   * NOTE(hogura|20241223): when using DP, the first sorting key is AttnId
         h2d_event = torch.cuda.Event()
@@ -817,8 +831,12 @@ class Engine:
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
+        self._timer.stop("postprocess")
+        
         range_push("Engine.stream_sync")
+        self._timer.start("stream_sync")
         self.stream.synchronize()
+        self._timer.stop("stream_sync")
         range_pop()
         self.dispatcher.put(batch, 0)
 
@@ -841,25 +859,46 @@ class Engine:
 
     def stats_pre_process(self, batch: TensorBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
-        self._step_start_timestamp_ms = time.time() * 1000
+        self._step_start_timestamp_ms = time_ms()
     
     def stats_post_process(self, batch: TensorBatch):
-        step_end_timestamp_ms = time.time() * 1000
+        step_end_timestamp_ms = time_ms()
+        self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
         
-        pool_snapshot_dict = dict()
         factor = self.model_config.top_k if self.is_attn else 1
-        for i, size in enumerate(self._pool_snapshot):
-            if size <= 0:
-                continue
-            layer = self.model_config.layer_ids[i]
-            pool_snapshot_dict[layer] = size // factor
-
-        self._step_stats.append(
-            StepInfo(self._step_start_timestamp_ms, 
-                    step_end_timestamp_ms, 
-                    batch.data.shape[0], batch.metadata.layer_id,
-                    pool_snapshot_dict)
-        )
+        if self.model_config.enable_trace:
+            pool_snapshot_dict = dict()
+            queueing_tokens = 0
+            queueing_batches = 0
+            for i, size in enumerate(self._pool_snapshot):
+                if size <= 0:
+                    continue
+                layer = self.model_config.layer_ids[i]
+                pool_snapshot_dict[layer] = size
+                queueing_tokens += size
+                queueing_batches += 1
+            self._step_stats.append(
+                StepInfo(self._step_start_timestamp_ms, 
+                        step_end_timestamp_ms, 
+                        batch.data.shape[0] // factor, batch.metadata.layer_id,
+                        pool_snapshot_dict)
+            )
+        else:
+            filtered_queue = [size for size in self._pool_snapshot if size > 0]
+            queueing_tokens = sum(filtered_queue)
+            queueing_batches = len(filtered_queue)
+        
+        self._metric.update("t_postprocess", self._timer.get("postprocess"))
+        self._metric.update("t_preprocess", self._timer.get("preprocess"))
+        self._metric.update("t_execute", self._timer.get("execute") + self._timer.get("stream_sync"))
+        self._metric.update("t_schedule", self._timer.get("schedule"))
+        self._metric.update("effective_tokens", batch.data.shape[0] // factor)
+        self._metric.update("queueing_tokens", queueing_tokens - batch.data.shape[0] // factor)
+        self._metric.update("queueing_batches", queueing_batches - 1)
+        if queueing_tokens < 0:
+            self._logger.warning(f"queueing tokens: {queueing_tokens}, {self._pool_snapshot}")
+            self._logger.warning(f"{Metadata.from_c(batch.metadata)}")
+            assert False, "queueing tokens should not be negative"
 
     @torch.inference_mode()
     def loop(self):
@@ -870,12 +909,18 @@ class Engine:
         disagmoe_recorder_create()
         while not self.end_flag:
             # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
+            self._timer.start("schedule")
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
+            self._metric.step()
+            
             range_push("Engine.schedule_stream_sync")
             self.stream.synchronize()
             range_pop()
+            
+            self._timer.stop("schedule")
+            self._timer.start("preprocess")
             
             batch = TensorBatch.from_c(batch_info)
             meta: Metadata = batch.metadata
@@ -885,9 +930,9 @@ class Engine:
             self.post_process(output, meta)
             self.stats_post_process(batch)
     
-    def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]]]:
+    def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
         """
-            return: step_stats, profile_contexts
+            return: step_stats, profile_contexts, metric
         """
         from disagmoe_c import TraceContext as TraceContext_C
         
@@ -896,7 +941,7 @@ class Engine:
         for key in output:
             result[key] = [TraceContext.from_c(c) for c in output[key]]
         
-        return self._step_stats, result
+        return self._step_stats, result, self._metric
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver

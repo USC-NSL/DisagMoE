@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import ctypes
 import socket
@@ -166,3 +167,24 @@ class StepInfo:
     
     thread_id: int = -1
     process_id: int = -1
+    
+
+def time_ms():
+    return time.time() * 1000
+
+class Timer:
+    
+    def __init__(self):
+        self.timers = {}
+        
+    def start(self, name):
+        self.timers[name] = time.time_ns()
+        
+    def stop(self, name):
+        assert name in self.timers
+        start = self.timers[name]
+        self.timers[name] = (time.time_ns() - start) / 1e6
+        return self.timers[name]
+    
+    def get(self, name):
+        return self.timers.get(name)
