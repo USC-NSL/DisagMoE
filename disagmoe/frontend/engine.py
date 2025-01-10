@@ -888,17 +888,14 @@ class Engine:
             queueing_tokens = sum(filtered_queue)
             queueing_batches = len(filtered_queue)
         
-        self._metric.update("t_postprocess", self._timer.get("postprocess"))
-        self._metric.update("t_preprocess", self._timer.get("preprocess"))
-        self._metric.update("t_execute", self._timer.get("execute") + self._timer.get("stream_sync"))
-        self._metric.update("t_schedule", self._timer.get("schedule"))
-        self._metric.update("effective_tokens", batch.data.shape[0] // factor)
-        self._metric.update("queueing_tokens", queueing_tokens - batch.data.shape[0] // factor)
-        self._metric.update("queueing_batches", queueing_batches - 1)
-        if queueing_tokens < 0:
-            self._logger.warning(f"queueing tokens: {queueing_tokens}, {self._pool_snapshot}")
-            self._logger.warning(f"{Metadata.from_c(batch.metadata)}")
-            assert False, "queueing tokens should not be negative"
+        if queueing_batches > 0:
+            self._metric.update("t_postprocess", self._timer.get("postprocess"))
+            self._metric.update("t_preprocess", self._timer.get("preprocess"))
+            self._metric.update("t_execute", self._timer.get("execute") + self._timer.get("stream_sync"))
+            self._metric.update("t_schedule", self._timer.get("schedule"))
+            self._metric.update("effective_tokens", batch.data.shape[0] // factor)
+            self._metric.update("queueing_tokens", queueing_tokens - batch.data.shape[0] // factor)
+            self._metric.update("queueing_batches", queueing_batches - 1)
 
     @torch.inference_mode()
     def loop(self):
