@@ -76,7 +76,6 @@ class Engine:
         self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
         
         # for stats usage
-        self._batch_sizes = []
         self._step_stats = []
 
     @property
@@ -840,6 +839,28 @@ class Engine:
             self._logger.info(f"executing attn {meta}")
             self.executor.execute(layer_id, positions, input_tensor, meta)
 
+    def stats_pre_process(self, batch: TensorBatch):
+        self._pool_snapshot = self.scheduler.get_pool_snapshot()
+        self._step_start_timestamp_ms = time.time() * 1000
+    
+    def stats_post_process(self, batch: TensorBatch):
+        step_end_timestamp_ms = time.time() * 1000
+        
+        pool_snapshot_dict = dict()
+        factor = self.model_config.top_k if self.is_attn else 1
+        for i, size in enumerate(self._pool_snapshot):
+            if size <= 0:
+                continue
+            layer = self.model_config.layer_ids[i]
+            pool_snapshot_dict[layer] = size // factor
+
+        self._step_stats.append(
+            StepInfo(self._step_start_timestamp_ms, 
+                    step_end_timestamp_ms, 
+                    batch.data.shape[0], batch.metadata.layer_id,
+                    pool_snapshot_dict)
+        )
+
     @torch.inference_mode()
     def loop(self):
         self._logger.info("starting engine loop")
@@ -852,39 +873,17 @@ class Engine:
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
-            
             range_push("Engine.schedule_stream_sync")
             self.stream.synchronize()
             range_pop()
             
-            pool_snapshot = self.scheduler.get_pool_snapshot()
-            batch_size = batch_info.data.shape[0]
-            layer_id = batch_info.metadata.layer_id
-            step_start_timestamp_ms = time.time() * 1000
-            
-            self._batch_sizes.append(batch_size)
             batch = TensorBatch.from_c(batch_info)
-
             meta: Metadata = batch.metadata
+            
+            self.stats_pre_process(batch)
             output, meta = self._process_batch(meta, batch.data)
             self.post_process(output, meta)
-            
-            step_end_timestamp_ms = time.time() * 1000
-            
-            pool_snapshot_dict = dict()
-            for i, size in enumerate(pool_snapshot):
-                if size <= 0: 
-                    continue
-                layer = self.model_config.layer_ids[i]
-                pool_snapshot_dict[layer] = size
-                
-            self._step_stats.append(
-                StepInfo(step_start_timestamp_ms, 
-                         step_end_timestamp_ms, 
-                         batch_size, layer_id,
-                         pool_snapshot_dict)
-            )
-        # self.recorder_output = disagmoe_recorder_output()
+            self.stats_post_process(batch)
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]]]:
         """
@@ -896,12 +895,6 @@ class Engine:
         result = {}
         for key in output:
             result[key] = [TraceContext.from_c(c) for c in output[key]]
-        
-        # if self.engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
-        #     while self.recorder_output is None:
-        #         time.sleep(0.1)
-        #     for key in self.recorder_output:
-        #         result[key] = [TraceContext.from_c(c) for c in self.recorder_output[key]]
         
         return self._step_stats, result
     
