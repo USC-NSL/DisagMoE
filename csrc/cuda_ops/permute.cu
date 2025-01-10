@@ -51,34 +51,37 @@ __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
 }
 
 template <class T, int CHUNK_SIZE>
-__global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const int hidden_size) {
+__global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const int num_input_tokens, const int hidden_size) {
     int token_id = blockIdx.x;
     int p = mappings[token_id];
-    move_one_token_kernel<T, CHUNK_SIZE>(d_out + p * hidden_size, d_in + token_id * hidden_size, hidden_size);
+    move_one_token_kernel<T, CHUNK_SIZE>(d_out + p * hidden_size, d_in + (token_id % num_input_tokens) * hidden_size, hidden_size);
 }
 
 #define LAUNCH_PERMUTE_KERNEL_(SIZE) \
 do { \
     constexpr int chunk_size = (SIZE); \
-    dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, hidden_size); \
+    dim3 grid(num_output_tokens, hidden_size / chunk_size, 1); \
+    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, num_input_tokens, hidden_size); \
 } while(0)
     
 template <class T>
-void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_tokens, int hidden_size, cudaStream_t stream) {
+void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, int num_output_tokens, int hidden_size, cudaStream_t stream) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
-    if (num_tokens <= 80) {
+    if (num_output_tokens <= 80) {
         LAUNCH_PERMUTE_KERNEL_(512);
-    } else if (num_tokens <= 160) {
+    } else if (num_output_tokens <= 160) {
         LAUNCH_PERMUTE_KERNEL_(1024);
     } else {
         LAUNCH_PERMUTE_KERNEL_(2048);
     }
 }
 
+// This kernel is used to permute the tokens in the hidden states
+// 1. if num of tokens equals to size of mappings, do normal permutation
+// 2. if num of tokens is smaller than size of mappings, do topk token scatter
 torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings, uintptr_t raw_cuda_stream) {
     AUTO_TX_RANGE;
 
@@ -86,19 +89,21 @@ torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings, 
 
     assert(tokens.dim() == 2);
     assert(mappings.dim() == 1);
-    assert(tokens.size(0) == mappings.size(0));
 
-    int num_tokens = tokens.size(0);
+    int num_input_tokens = tokens.size(0);
+    int num_output_tokens = mappings.size(0);
     int hidden_size = tokens.size(1);
 
-    torch::Tensor out = torch::empty_like(tokens);
+    assert(num_output_tokens % num_input_tokens == 0); // adapt for topk token scatter
+
+    torch::Tensor out = torch::empty({num_output_tokens, hidden_size}, tokens.options());
 
     // torch::cuda::synchronize(); // "cuda illegal memory access" without this line, seems to in a different stream with pytorch
    
     AT_DISPATCH_REDUCED_FLOATING_TYPES(tokens.scalar_type(), "permute_tokens_cuda", [&] {
         _permute_tokens_cuda<scalar_t>(
             out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
-            num_tokens, hidden_size, stream
+            num_input_tokens, num_output_tokens, hidden_size, stream
         );
     });
 

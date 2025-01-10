@@ -723,9 +723,8 @@ class Engine:
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             expert_weights = torch.rand((num_tokens, self.model_config.num_experts), device="cuda", dtype=torch.bfloat16)
             topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
-            topk_weights = topk_weights.transpose(0, 1).reshape(-1).tolist()
-            expert_ids = expert_ids.transpose(0, 1).reshape(-1).tolist()
-            hiddens = torch.cat([hiddens, hiddens], dim=0)
+            topk_weights = topk_weights.view(-1).tolist()
+            expert_ids = expert_ids.view(-1).tolist()
 
         # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
 
