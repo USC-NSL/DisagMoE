@@ -51,17 +51,17 @@ __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
 }
 
 template <class T, int CHUNK_SIZE>
-__global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const int num_input_tokens, const int hidden_size) {
+__global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const int topk, const int hidden_size) {
     int token_id = blockIdx.x;
     int p = mappings[token_id];
-    move_one_token_kernel<T, CHUNK_SIZE>(d_out + p * hidden_size, d_in + (token_id % num_input_tokens) * hidden_size, hidden_size);
+    move_one_token_kernel<T, CHUNK_SIZE>(d_out + p * hidden_size, d_in + (token_id / topk) * hidden_size, hidden_size);
 }
 
 #define LAUNCH_PERMUTE_KERNEL_(SIZE) \
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_output_tokens, hidden_size / chunk_size, 1); \
-    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, num_input_tokens, hidden_size); \
+    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, topk, hidden_size); \
 } while(0)
     
 template <class T>
@@ -69,6 +69,7 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, 
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
+    int topk = num_output_tokens / num_input_tokens;
     dim3 block(num_threads, 1, 1);
     if (num_output_tokens <= 80) {
         LAUNCH_PERMUTE_KERNEL_(512);
