@@ -634,7 +634,6 @@ struct AttentionBatchMetadata {
     */
 
     std::vector<int> prefill_seq_len; // per perfill seq, length of (num_prefill_seqs)
-    std::vector<int> prefill_query_len; // per perfill seq, length of (num_prefill_seqs)
 
     std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
@@ -673,7 +672,6 @@ struct AttentionBatchMetadata {
         if (p < num_prefill_tokens) {
             ASSERT(seq_ids.size() >= p);
             ASSERT(prefill_seq_len.size() >= p);
-            ASSERT(prefill_query_len.size() >= p);
             return std::make_pair(
                 std::make_shared<AttentionBatchMetadata> (
                     AttentionBatchMetadata {
@@ -685,7 +683,6 @@ struct AttentionBatchMetadata {
                         0,
                         slice_vector(seq_ids, 0, p),
                         slice_vector(prefill_seq_len, 0, p),
-                        slice_vector(prefill_query_len, 0, p),
                         !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, 0, p)
@@ -701,7 +698,6 @@ struct AttentionBatchMetadata {
                         num_decode_tokens,
                         slice_vector(seq_ids, p, -1),
                         slice_vector(prefill_seq_len, p, -1),
-                        slice_vector(prefill_query_len, p, -1),
                         !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, p, -1)
@@ -720,7 +716,6 @@ struct AttentionBatchMetadata {
                         p - num_prefill_tokens,
                         slice_vector(seq_ids, 0, p),
                         prefill_seq_len,
-                        prefill_query_len,
                         !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, 0, p),
@@ -735,7 +730,6 @@ struct AttentionBatchMetadata {
                         0,
                         num_decode_tokens - (p - num_prefill_tokens),
                         slice_vector(seq_ids, p, -1),
-                        std::vector<int>{},
                         std::vector<int>{},
                         !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
@@ -762,7 +756,6 @@ struct AttentionBatchMetadata {
         std::vector<int> new_seq_ids{};
         std::vector<uint8_t> new_attn_dp_ranks{};
         std::vector<int> new_prefill_seq_len{};
-        std::vector<int> new_prefill_query_len{};
 
         for (auto &batch: batches) {
             new_prefills_seqs += batch->num_prefill_seqs;
@@ -773,7 +766,6 @@ struct AttentionBatchMetadata {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
                 new_attn_dp_ranks.emplace_back(batch->attn_dp_ranks[i]);
                 new_prefill_seq_len.emplace_back(batch->prefill_seq_len[i]);
-                new_prefill_query_len.emplace_back(batch->prefill_query_len[i]);
             }
         }
 
@@ -797,7 +789,6 @@ struct AttentionBatchMetadata {
                 new_decode_tokens,
                 new_seq_ids,
                 new_prefill_seq_len,
-                new_prefill_query_len,
                 {}, // expert_ids
                 {}, // topk_weights
                 new_attn_dp_ranks,
@@ -815,7 +806,6 @@ struct AttentionBatchMetadata {
 
         std::vector<int> new_seq_ids{};
         std::vector<int> new_prefill_seq_len{};
-        std::vector<int> new_prefill_query_len{};
         std::vector<uint8_t> attn_dp_ranks{};
 
         for (int i = 0; i < n; i++) {
@@ -829,7 +819,6 @@ struct AttentionBatchMetadata {
                 new_prefill_tokens ++;
                 new_prefills_seqs ++;
                 new_prefill_seq_len.emplace_back(1);
-                new_prefill_query_len.emplace_back(1);
             }
         }
 
@@ -845,7 +834,6 @@ struct AttentionBatchMetadata {
                 new_decode_tokens,
                 new_seq_ids,
                 new_prefill_seq_len,
-                new_prefill_query_len,
                 {}, // expert_ids
                 {}, // topk_weights
                 attn_dp_ranks // attn_dp_ranks

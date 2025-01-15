@@ -107,7 +107,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("num_prefill_seqs", &AttentionBatchMetadata::num_prefill_seqs)
         .def_readwrite("num_decode_tokens", &AttentionBatchMetadata::num_decode_tokens)
         .def_readwrite("prefill_seq_len", &AttentionBatchMetadata::prefill_seq_len)
-        .def_readwrite("prefill_query_len", &AttentionBatchMetadata::prefill_query_len)
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
         .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
         .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)

@@ -124,7 +124,7 @@ void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<in
         if (!has_seq_block_list(seq_id)) {
             allocate(seq_id, meta->prefill_seq_len[i]);
         } else {
-            append_tokens(seq_id, meta->prefill_seq_len[i] - meta->prefill_query_len[i], meta->prefill_query_len[i]);
+            append_tokens(seq_id, 0, meta->prefill_seq_len[i]);
         }
     }
     for (int i = 0; i < num_decode_tokens; i++) {
@@ -161,8 +161,8 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
 
     int slot_idx = n * m;
     for (int i = 0; i < meta->num_prefill_seqs; i++) {
-        int q_len = meta->prefill_query_len[i];
         int seq_len = meta->prefill_seq_len[i];
+        int q_len = seq_len;
         for (int idx = seq_len - q_len; idx < seq_len; idx++) {
             int block_id = idx / block_size_;
             int id_in_block = idx % block_size_;

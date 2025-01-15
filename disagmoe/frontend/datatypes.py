@@ -112,7 +112,6 @@ class AttentionBatchMetadata:
     seq_ids: List[int]
     
     prefill_seq_len: List[int]
-    prefill_query_len: List[int]
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
 
@@ -133,7 +132,6 @@ class AttentionBatchMetadata:
         attn_meta.num_decode_tokens = self.num_decode_tokens
         attn_meta.seq_ids = self.seq_ids
         attn_meta.prefill_seq_len = self.prefill_seq_len
-        attn_meta.prefill_query_len = self.prefill_query_len
         attn_meta.expert_ids = self.expert_ids
         attn_meta.topk_weights = self.topk_weights
         attn_meta.attn_dp_ranks = self.attn_dp_ranks
@@ -150,7 +148,6 @@ class AttentionBatchMetadata:
             meta_c.num_decode_tokens,
             meta_c.seq_ids,
             meta_c.prefill_seq_len,
-            meta_c.prefill_query_len,
             meta_c.expert_ids,
             meta_c.topk_weights,
             meta_c.attn_dp_ranks

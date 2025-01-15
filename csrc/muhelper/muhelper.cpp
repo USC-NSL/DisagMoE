@@ -763,7 +763,6 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 
     std::vector<int> seq_ids{};
     std::vector<int> prefill_seq_len{};
-    std::vector<int> prefill_query_len{};
     std::vector<uint8_t> attn_dp_ranks{};
 
     ASSERT(meta->req_ids.size() == meta->attn_dp_ranks.size());
@@ -773,7 +772,6 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
             num_prefill_tokens ++;
             num_prefill_seqs ++;
             prefill_seq_len.emplace_back(1);
-            prefill_query_len.emplace_back(1);
         } else {
             num_decode_tokens ++;
         }
@@ -789,7 +787,6 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         num_decode_tokens,
         seq_ids,
         prefill_seq_len,
-        prefill_query_len,
         {}, // expert_ids
         {}, // topk_weights
         attn_dp_ranks

@@ -296,8 +296,8 @@ class Engine:
                 dtype=torch.int32, device="cuda")
             self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
             self.static_batch_infos = torch.zeros(
-                # (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)), 
-                (batch_size + batch_size + (batch_size + 1) + (batch_size + 1)), 
+                # (num_seqs + num_seqs + (num_seqs + 1)), 
+                (batch_size + batch_size + (batch_size + 1)), 
                 dtype=torch.int32, device="cuda")
         else:
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
@@ -487,7 +487,7 @@ class Engine:
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, query_start_loc, seq_start_loc) in the same tensor
-        batch_infos = [0] * (num_seqs + num_seqs + (meta_py.num_prefill_seqs + 1) + (num_seqs + 1)) 
+        batch_infos = [0] * (num_seqs + num_seqs + (num_seqs + 1)) 
         
         # make seq_lens
         batch_infos[ : meta_py.num_prefill_seqs] = meta_py.prefill_seq_len
@@ -496,27 +496,23 @@ class Engine:
         
         # make context_lens
         for i in range(meta_py.num_prefill_seqs):
-            batch_infos[num_seqs + i] = meta_py.prefill_seq_len[i] - meta_py.prefill_query_len[i]
+            batch_infos[num_seqs + i] = meta_py.prefill_seq_len[i]
         for i in range(meta_py.num_decode_tokens):
             batch_infos[num_seqs + meta_py.num_prefill_seqs + i] = decode_seq_lens[i] - 1
             
-        # make query_start_loc
-        make_seqlens_list(meta_py.prefill_query_len, dst=batch_infos[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1])
-
         # make seq_start_loc
-        make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ])
+        make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs : ])
 
-        batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
         if self.model_config.enable_cuda_graph_attn:
-            self.static_batch_infos[ : len(batch_infos)].copy_(batch_infos_cuda)
+            self.static_batch_infos[ : len(batch_infos)].copy_(torch.tensor(batch_infos, dtype=torch.int32, device="cpu"))
             batch_infos_cuda = self.static_batch_infos
-        
+        else:
+            batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
+            
         seq_lens_cuda = batch_infos_cuda[ : num_seqs]
         context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
-        query_start_loc = batch_infos_cuda[num_seqs + num_seqs : num_seqs + num_seqs + meta_py.num_prefill_seqs + 1]
-        seq_start_loc = batch_infos_cuda[num_seqs + num_seqs + meta_py.num_prefill_seqs + 1 : ]
+        seq_start_loc = batch_infos_cuda[num_seqs + num_seqs : ]
 
-        max_query_len = max(meta_py.prefill_query_len) if len(meta_py.prefill_query_len) > 0 else 0
         max_prefill_seq_len = max(meta_py.prefill_seq_len) if len(meta_py.prefill_seq_len) > 0 else 0
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
@@ -531,10 +527,10 @@ class Engine:
             slot_mapping_cuda,
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_cuda,
-            max_query_len=max_query_len,
+            max_query_len=max_prefill_seq_len,
             max_prefill_seq_len=max_prefill_seq_len,
             max_decode_seq_len=max_decode_seq_len,
-            query_start_loc=query_start_loc,
+            query_start_loc=seq_start_loc,
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_table_cuda,
@@ -555,7 +551,7 @@ class Engine:
                 meta_py.num_prefill_seqs, # 1
                 meta_py.num_prefill_tokens, # 2
                 meta_py.num_decode_tokens, # 3
-                *meta_py.prefill_query_len, # 4
+                *meta_py.prefill_seq_len, # 4
                 *meta_py.prefill_seq_len, # 4 + num_prefill_seqs
                 *decode_seq_lens, # 4 + num_prefill_seqs + num_prefill_seqs
             ]

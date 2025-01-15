@@ -28,7 +28,6 @@ def test_mixed_batch():
     meta.num_decode_tokens = 0
     meta.seq_ids = [0]
     meta.prefill_seq_len = [1]
-    meta.prefill_query_len = [1]
     meta.expert_ids = [0]
 
     tensor, new_meta = engine.process_batch_attn(
@@ -62,7 +61,6 @@ def test_prefill():
     meta.num_decode_tokens = 0
     meta.seq_ids = [0, 1]
     meta.prefill_seq_len = [1, 1]
-    meta.prefill_query_len = [1, 1]
     meta.expert_ids = [0, 0]
 
     tensor, new_meta = engine.process_batch_attn(
@@ -83,7 +81,6 @@ def test_decode():
     meta.num_decode_tokens = 0
     meta.seq_ids = [0]
     meta.prefill_seq_len = [1]
-    meta.prefill_query_len = [1]
     meta.expert_ids = [0]
     
     _, _ = engine.process_batch_attn(
@@ -97,7 +94,6 @@ def test_decode():
     meta.num_prefill_tokens = 0
     meta.num_decode_tokens = 1
     meta.prefill_seq_len = []
-    meta.prefill_query_len = []
     
     for i in range(33):
         print("decoding token", i+1)
