@@ -28,13 +28,13 @@ meta: Metadata = Metadata_C(shape)
 meta.layer_id = 0
 meta.req_ids = [0, 1, 2, 3, 4, 5, 6]
 meta.exp_ids = [0, 0, 0, 0, 0, 0, 0]
-meta.prefill_poss = [0, -1, 0, -1, -1, 0, 0]
+meta.init_prefill_lens = [0, -1, 0, -1, -1, 0, 0]
 
 tensor = torch.zeros(shape)
 
 output, new_meta = engine.process_batch_expert(meta, tensor)
 
 print(output, new_meta)
-print(new_meta.req_ids, new_meta.exp_ids, new_meta.prefill_poss)
+print(new_meta.req_ids, new_meta.exp_ids, new_meta.init_prefill_lens)
 
-assert meta.prefill_poss == [0, 0, 0, 0, -1, -1, -1]
+assert meta.init_prefill_lens == [0, 0, 0, 0, -1, -1, -1]

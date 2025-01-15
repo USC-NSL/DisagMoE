@@ -441,7 +441,7 @@ class Engine:
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
             for i, seq_id in enumerate(prefill_seq_ids):
-                self.decode_seq_lens[seq_id] = meta_py.prefill_seq_len[i]
+                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
             
             for i, seq_id in enumerate(decode_seq_ids):
                 decode_seq_lens[i] += 1

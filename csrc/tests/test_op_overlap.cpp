@@ -68,7 +68,7 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
         /*layer_id=*/ 0,
         /*req_ids=*/ std::vector<int>({0}),
         /*exp_ids=*/ std::vector<int>({3}),
-        /*prefill_poss=*/ std::vector<int>({4}),
+        /*init_prefill_lens=*/ std::vector<int>({4}),
     };
     CUDACHECK(cudaStreamSynchronize(cstream));
 
@@ -171,7 +171,7 @@ void test_kernel(int rank) {
         /*layer_id=*/ 0,
         /*req_ids=*/ std::vector<int>({0}),
         /*exp_ids=*/ std::vector<int>({3}),
-        /*prefill_poss=*/ std::vector<int>({4}),
+        /*init_prefill_lens=*/ std::vector<int>({4}),
     };    
     torch::Tensor tensor = torch::empty({4, size}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
 

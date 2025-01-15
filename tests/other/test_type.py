@@ -23,7 +23,7 @@ attn_meta.num_prefill_seqs = meta.num_prefill_seqs
 attn_meta.num_prefill_tokens = meta.num_prefill_tokens
 attn_meta.num_decode_tokens = meta.num_decode_tokens
 attn_meta.seq_ids = meta.seq_ids
-attn_meta.prefill_seq_len = meta.prefill_seq_len
+attn_meta.init_prefill_lens = meta.init_prefill_lens
 attn_meta.expert_ids = meta.expert_ids
 meta = attn_meta
 

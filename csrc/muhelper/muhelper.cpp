@@ -762,16 +762,16 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     int num_decode_tokens = 0;
 
     std::vector<int> seq_ids{};
-    std::vector<int> prefill_seq_len{};
+    std::vector<int> init_prefill_lens{};
     std::vector<uint8_t> attn_dp_ranks{};
 
     ASSERT(meta->req_ids.size() == meta->attn_dp_ranks.size());
 
     for (int i = 0; i < meta->req_ids.size(); i ++) {
-        if (meta->prefill_poss[i] != -1) {
+        if (meta->init_prefill_lens[i] != -1) {
             num_prefill_tokens ++;
             num_prefill_seqs ++;
-            prefill_seq_len.emplace_back(1);
+            init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
         } else {
             num_decode_tokens ++;
         }
@@ -786,7 +786,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         num_prefill_tokens,
         num_decode_tokens,
         seq_ids,
-        prefill_seq_len,
+        init_prefill_lens,
         {}, // expert_ids
         {}, // topk_weights
         attn_dp_ranks
@@ -954,7 +954,7 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
         if (it == this->pool_.end()) {
             this->pool_[seq_id] = TokenTopKInfo(
                 seq_id, 
-                meta->prefill_poss[i], 
+                meta->init_prefill_lens[i], 
                 meta->attn_dp_ranks[i],
                 meta->topk_weights[i],
                 batch.data[i]

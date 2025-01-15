@@ -89,7 +89,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     auto meta1 = meta0; meta1.layer_id = 1;
 //     for (int i = 0; i < n; i ++) {
-//         meta1.infos[i].prefill_pos = 1;
+//         meta1.infos[i].init_prefill_len = 1;
 //         meta1.infos[i].first_attn_id = 233;
 //     }
 //     sender.put((TensorBatch) {ptr0, std::make_shared<Metadata>(meta0)});
@@ -146,7 +146,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     auto meta1 = meta0; meta1.layer_id = 1;
 //     for (int i = 0; i < n; i ++) {
-//         meta1.infos[i].prefill_pos = 1;
+//         meta1.infos[i].init_prefill_len = 1;
 //         meta1.infos[i].first_attn_id = 233;
 //     }
 //     for (int i = 0; i < 5; i ++) {
@@ -224,7 +224,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     auto meta1 = meta0; meta1.layer_id = 1;
 //     for (int i = 0; i < n; i ++) {
-//         meta1.infos[i].prefill_pos = 1;
+//         meta1.infos[i].init_prefill_len = 1;
 //         meta1.infos[i].first_attn_id = 233;
 //     }
 //     for (int i = 0; i < 1; i ++) {
@@ -361,7 +361,7 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
             /*layer_id=*/ 1,
             /*req_ids=*/ std::vector<int>({2}),
             /*exp_ids=*/ std::vector<int>({3}),
-            /*prefill_poss=*/ std::vector<int>({4}),
+            /*init_prefill_lens=*/ std::vector<int>({4}),
         };
         uintptr_t buf = alloc_cuda_tensor(4, 0);
         c->send_metadata(meta);
@@ -376,7 +376,7 @@ void test_nccl_group(int rank, std::vector<int> ranks, std::string uid) {
         c->recv(buf, meta);
         ASSERT(meta.req_ids[0] == 2);
         ASSERT(meta.exp_ids[0] == 3);
-        ASSERT(meta.prefill_poss[0] == 4);
+        ASSERT(meta.init_prefill_lens[0] == 4);
     }
 
     DMOE_LOG(INFO) << "rank " << rank << " passed" << LEND;
@@ -458,7 +458,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                             /*layer_id=*/ 1,
                             /*req_ids=*/ std::vector<int>({rank * 10 + 0}),
                             /*exp_ids=*/ std::vector<int>({3}),
-                            /*prefill_poss=*/ std::vector<int>({4}),
+                            /*init_prefill_lens=*/ std::vector<int>({4}),
                         });
                         DMOE_LOG(DEBUG) << "thread " << i << "sleeping" << LEND;
                         std::this_thread::sleep_for(std::chrono::milliseconds(10000));
@@ -468,7 +468,7 @@ void test_multi_launch(int rank, std::vector<int> ranks, std::vector<std::string
                         //     /*layer_id=*/ 1,
                         //     /*req_ids=*/ std::vector<int>({rank * 10 + 1}),
                         //     /*exp_ids=*/ std::vector<int>({3}),
-                        //     /*prefill_poss=*/ std::vector<int>({4}),
+                        //     /*init_prefill_lens=*/ std::vector<int>({4}),
                         // });
                     } else {
                         Metadata meta;
