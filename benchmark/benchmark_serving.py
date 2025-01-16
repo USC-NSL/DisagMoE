@@ -235,7 +235,6 @@ def generate_step_trace(args,
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
-    assert args.input_len == 1, "supports only 1 token as input"
     
     master.start_polling_results()
     
@@ -277,7 +276,7 @@ def get_args():
     parser = ArgumentParser()
     
     parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
-    parser.add_argument("-i", "--input-len", type=int, default=1, help="length of input sequence")
+    parser.add_argument("-i", "--input-len", type=int, default=1, help="initial prefill length for each seqeunce")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")

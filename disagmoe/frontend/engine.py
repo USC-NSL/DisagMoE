@@ -1042,23 +1042,21 @@ class TokenizerEngine(Engine):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
         
-    def process_request(self, req_id: int, input_len: int, dp_rank: int):
+    def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
-        # TODO(hogura|20241008): only #prefill = 1 now
-        assert input_len == 1
-        tensor_shape = (input_len, self.model_config.hidden_size)
+        tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.zeros(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
-        self.tokenizer.put_request(req_id, x, dp_rank)
+        self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         
-    def put_single_request(self, req_id: int, input_len: int, dp_rank: int):
-        self.process_request(req_id, input_len, dp_rank)
+    def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
+        self.process_request(req_id, init_prefill_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], input_lens: List[int], dp_ranks: List[int]):
-        for req_id, input_len, dp_rank in zip(req_ids, input_lens, dp_ranks):
-            self.process_request(req_id, input_len, dp_rank)
+    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
+        for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
+            self.process_request(req_id, init_prefill_len, dp_rank)
         
     def init_core(
             self,
