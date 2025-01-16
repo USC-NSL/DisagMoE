@@ -746,10 +746,7 @@ void MuAttentionPool::terminate() {
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
-    // for a simple case we consider prefill sequences can only have 1 token,
-    // so all sequences in tensor are complete and can be scheduled immediately
     ASSERT(meta.get() != nullptr);
-    // TODO: support prefill length larger than 1, and maybe deal with chunked prefill
 
     auto shape = meta->shape;
     auto dtype = meta->dtype;
@@ -796,7 +793,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe

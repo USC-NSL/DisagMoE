@@ -296,7 +296,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
         /*attn_ids=*/ {dp_rank},
-        /*init_prefill_len=*/ {0},
+        /*init_prefill_len=*/ {200},
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }

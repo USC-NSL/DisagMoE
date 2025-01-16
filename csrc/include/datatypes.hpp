@@ -401,21 +401,19 @@ struct Metadata {
     }
 
     std::vector<int> sort_by_prefill_order() {
-        // TODO: deal with multiple prefill tokens
         std::vector<int> rank(req_ids.size()), mapping(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++)
             rank[i] = i;
         std::sort(
             rank.begin(), rank.end(),
             [&](const int i, const int j) {
+                ASSERT (0 <= i && i < req_ids.size());
+                ASSERT (0 <= j && j < req_ids.size());
                 if (attn_dp_ranks[i] != attn_dp_ranks[j]) {
                     return attn_dp_ranks[i] < attn_dp_ranks[j];
                 }
-                if (init_prefill_lens[j] == -1) {
-                    return true;
-                }
-                if (init_prefill_lens[i] == -1) {
-                    return false;
+                if (init_prefill_lens[i] == -1 || init_prefill_lens[j] == -1) {
+                    return init_prefill_lens[i] > init_prefill_lens[j];
                 }
                 return req_ids[i] < req_ids[j];
             }
@@ -814,11 +812,9 @@ struct AttentionBatchMetadata {
         // std::cout << LEND;
         
         for (int i = 0; i < num_prefill_seqs; i ++) {
-            for (int j = 0; j < init_prefill_lens[i]; j ++) {
-                req_ids_.push_back(seq_ids[i]);
-                attn_dp_ranks_.push_back(attn_dp_ranks[i]);
-                init_prefill_lens_.push_back(j);
-            }
+            req_ids_.push_back(seq_ids[i]);
+            attn_dp_ranks_.push_back(attn_dp_ranks[i]);
+            init_prefill_lens_.push_back(init_prefill_lens[i]);
         }
 
         for (int i = 0; i < num_decode_tokens; i ++) {
@@ -903,11 +899,8 @@ struct AttentionBatch {
         // std::cerr << std::endl;
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
-                if (b.init_prefill_len == -1) {
-                    return true;
-                }
-                if (a.init_prefill_len == -1) {
-                    return false;
+                if (a.init_prefill_len == -1 || b.init_prefill_len == -1) {
+                    return a.init_prefill_len > b.init_prefill_len;
                 }
                 return a.seq_id < b.seq_id;
             }
