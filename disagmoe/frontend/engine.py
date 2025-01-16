@@ -299,6 +299,9 @@ class Engine:
                 # (num_seqs + num_seqs + (num_seqs + 1)), 
                 (batch_size + batch_size + (batch_size + 1)), 
                 dtype=torch.int32, device="cuda")
+            self.static_seq_lens = self.static_batch_infos[ : batch_size]
+            self.static_context_lens = self.static_batch_infos[batch_size : batch_size + batch_size]
+            self.static_seq_start_loc = self.static_batch_infos[batch_size + batch_size : ]
         else:
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
                                                   device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
@@ -509,15 +512,20 @@ class Engine:
         make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs : ])
 
         if self.model_config.enable_cuda_graph_attn:
-            self.static_batch_infos[ : len(batch_infos)].copy_(torch.tensor(batch_infos, dtype=torch.int32, device="cpu"))
-            batch_infos_cuda = self.static_batch_infos
+            seq_lens_cuda = self.static_seq_lens[ : num_tokens]
+            context_lens_tensor = self.static_context_lens[ : num_tokens]
+            seq_start_loc = self.static_seq_start_loc[ : num_tokens + 1]
+            seq_lens_cuda.copy_(torch.tensor(seq_lens, dtype=torch.int32, device="cpu"))
+            context_lens_tensor.copy_(torch.tensor(batch_infos[num_seqs : num_seqs + num_tokens], dtype=torch.int32, device="cpu"))
+            seq_start_loc.copy_(torch.tensor(batch_infos[num_seqs + num_tokens : ], dtype=torch.int32, device="cpu"))
+            # self.static_batch_infos[ : len(batch_infos)].copy_(torch.tensor(batch_infos, dtype=torch.int32, device="cpu"))
+            # batch_infos_cuda = self.static_batch_infos
         else:
             batch_infos_cuda = torch.tensor(batch_infos, dtype=torch.int32, device="cuda")
+            seq_lens_cuda = batch_infos_cuda[ : num_seqs]
+            context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
+            seq_start_loc = batch_infos_cuda[num_seqs + num_seqs : ]
             
-        seq_lens_cuda = batch_infos_cuda[ : num_seqs]
-        context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
-        seq_start_loc = batch_infos_cuda[num_seqs + num_seqs : ]
-
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
