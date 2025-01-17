@@ -610,34 +610,39 @@ class Engine:
         num_prefill_seqs = meta[1]
         num_prefill_tokens = meta[2]
         num_decode_tokens = meta[3]
-        batch_size = get_graph_batch_size(num_prefill_tokens + num_decode_tokens)[1] if self.model_config.enable_cuda_graph_attn \
-            else num_prefill_tokens + num_decode_tokens
-        
+
         num_tokens = num_prefill_tokens + num_decode_tokens
         num_seqs = num_prefill_seqs + num_decode_tokens
+
+        batch_size = get_graph_batch_size(num_tokens)[1] if self.model_config.enable_cuda_graph_attn else num_tokens
         
-        input_tensor = self.buffer_tensor[ : num_prefill_tokens + num_decode_tokens]
+        input_tensor = self.buffer_tensor[ : num_tokens]
         self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
         
+
+
         if not self.model_config.enable_cuda_graph_attn:
             seq_lens = meta[4 : ]
-            seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + num_seqs]
+            seq_lens_cuda = self.buffer_meta[4 : 4 + num_tokens]
+            context_lens_tensor = seq_lens_cuda - 1
+            seq_start_loc = make_seqlens_cuda_tensor(seq_lens)
         else:
             # extend seq_lens to batch_size
             seq_lens = meta[4 : ]
             for _ in range(batch_size - num_seqs):
                 seq_lens.append(0)
-            seq_lens_cuda = self.buffer_meta[4 + num_prefill_seqs : 4 + num_prefill_seqs + batch_size]
-            
+            seq_lens_cuda = self.static_seq_lens[ : batch_size]
+            seq_lens_cuda.copy_(self.buffer_meta[4 : 4 + batch_size])
+            context_lens_tensor = self.static_context_lens[ : batch_size]
+            context_lens_tensor.copy_(seq_lens_cuda - 1)
+            seq_start_loc = self.static_seq_start_loc[ : batch_size + 1]
+            seq_start_loc.copy_(make_seqlens_cuda_tensor(seq_lens))
+
         decode_seq_lens = seq_lens
         
         max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
         # [slot_mapping, block_table]
         num_elems = num_tokens + max_num_blocks * num_tokens
-        
-        seq_start_loc = make_seqlens_cuda_tensor(seq_lens)
-        context_lens = [seq_len - 1 for seq_len in decode_seq_lens]
-        context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, device="cuda")
         
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
