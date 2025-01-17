@@ -166,6 +166,7 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
         block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
         slot_idx ++;
     }
+    auto block_table_1d_pinned = torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true));
 
-    return torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
+    return block_table_1d_pinned.to(torch::kCUDA, true);
 }
