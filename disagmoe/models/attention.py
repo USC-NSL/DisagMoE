@@ -4,18 +4,51 @@ import torch
 from torch import nn
 from transformers import MixtralConfig
 from vllm.attention import Attention, AttentionMetadata
-
+from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.config import CacheConfig
 from vllm.distributed import get_tensor_model_parallel_world_size
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
+from disagmoe.ops.memory import  permute_tokens_cuda
+
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.rotary_embedding import get_rope
 
 from vllm.model_executor.layers.fused_moe.fused_moe import (
             fused_topk)
+
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def compute_seg_indptr_triton_kernel(reorder_topk_ids, seg_indptr, num_toks):
+    expert = tl.program_id(0)
+    low = 0
+    high = num_toks - 1
+    target_location = -1
+    while low <= high:
+        mid = (low + high) // 2
+
+        if tl.load(reorder_topk_ids + mid) > expert:
+            high = mid - 1
+        else:
+            low = mid + 1
+            target_location = mid
+    tl.store(seg_indptr + expert + 1, target_location + 1)
+
+@triton.jit
+def compute_src2dst_triton_kernel(
+    reorder_ids, src2dst, num_toks, BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(axis=0)
+    dst_id = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = dst_id < num_toks
+    src_id = tl.load(reorder_ids + dst_id, mask=mask)
+    tl.store(src2dst + src_id, dst_id, mask=mask)
+
 
 class MoEAttention(nn.Module):
 
@@ -41,7 +74,7 @@ class MoEAttention(nn.Module):
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
         self.total_num_kv_heads = num_kv_heads
-        self.num_experts = num_heads
+        self.num_experts = num_experts
         self.top_k = top_k
         if self.total_num_kv_heads >= tp_size:
             # Number of KV heads is greater than TP size, so we partition
@@ -106,13 +139,23 @@ class MoEAttention(nn.Module):
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
 
+    def permute_by_exp_ids(self, hidden_states: torch.Tensor, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Permute the attention output by expert IDs.
+        """
+        _, reorder_ids = torch.sort(topk_ids.view(-1), stable=True)
+
+        permuted_output = permute_tokens_cuda(hidden_states, reorder_ids)
+        
+        return permuted_output, reorder_ids
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
@@ -120,10 +163,14 @@ class MoEAttention(nn.Module):
         output, _ = self.o_proj(attn_output)
         router_logits, _ = self.gate(hidden_states)
 
-        # print(f"router logits {router_logits}")
+        print(f"output {output}, router logits {router_logits}")
         
         topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
                                 gating_output=router_logits,
                                 topk=self.top_k,
                                 renormalize=True)
-        return output, topk_weights, topk_ids
+        print(f"topk info {topk_weights}, {topk_ids}")
+
+        permuted_output, reorder_ids = self.permute_by_exp_ids(output, topk_ids)
+
+        return permuted_output, topk_weights, topk_ids, reorder_ids

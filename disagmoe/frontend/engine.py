@@ -201,7 +201,7 @@ class Engine:
             self.attn_scheduler.set_max_batch_size(self.max_batch_size)
         else:
             self.scheduler.set_max_batch_size(self.max_batch_size)
-            self.static_mappings_gpu = torch.zeros((self.max_batch_size, ), dtype=torch.int32, device="cuda")
+            self.static_mappings_gpu = torch.zeros((self.max_batch_size, ), dtype=torch.int64, device="cuda")
         
         self._warmup()
         if self.model_config.enable_cuda_graph_attn or self.model_config.enable_cuda_graph_expert:
@@ -286,9 +286,10 @@ class Engine:
         batch_size = self.max_batch_size
         self.graphs: List[List[torch.cuda.CUDAGraph]] = []
         self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
-        self.static_output = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         if self.is_attn:
-            self.static_expert_ids = torch.zeros((batch_size, self.model_config.top_k), dtype=torch.long, device="cuda")
+            self.static_output = torch.zeros((batch_size * self.model_config.top_k, self.model_config.hidden_size), device="cuda")
+            self.static_topk_ids = torch.zeros((batch_size, self.model_config.top_k), dtype=torch.long, device="cuda")
+            self.static_reorder_topk_ids = torch.zeros((batch_size * self.model_config.top_k), dtype=torch.long, device="cuda")
             self.static_expert_weights = torch.zeros((batch_size, self.model_config.top_k), device="cuda")
             self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
             self.static_block_table = torch.zeros(
@@ -303,6 +304,7 @@ class Engine:
             self.static_context_lens = self.static_batch_infos[batch_size : batch_size + batch_size]
             self.static_seq_start_loc = self.static_batch_infos[batch_size + batch_size : ]
         else:
+            self.static_output = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
             self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.long, 
                                                   device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
             
@@ -333,7 +335,7 @@ class Engine:
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [MAX_SEQ_LEN] * self.max_batch_size, mocking=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _, _, _ = self.executor.execute(layer_id, positions, input, meta)
+                _, _, _, _ = self.executor.execute(layer_id, positions, input, meta)
         
         # restore the original setting
         self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
@@ -373,7 +375,7 @@ class Engine:
                 meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [MAX_SEQ_LEN] * graph_batch_size, mocking=True)
                 self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
-                    self.static_output, self.static_expert_weights, self.static_expert_ids = self.executor.execute(
+                    self.static_output, self.static_expert_weights, self.static_topk_ids, self.static_reorder_topk_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
                 torch.cuda.synchronize()
                 
@@ -621,8 +623,6 @@ class Engine:
         input_tensor = self.buffer_tensor[ : num_tokens]
         self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
         
-
-
         if not self.model_config.enable_cuda_graph_attn:
             seq_lens = meta[4 : ]
             seq_lens_cuda = self.buffer_meta[4 : 4 + num_tokens]
@@ -710,7 +710,7 @@ class Engine:
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids, reorder_expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
@@ -719,8 +719,10 @@ class Engine:
             self.graphs[meta_py.layer_id][graph_id].replay()
             hiddens = self.static_output[:num_tokens]
             expert_weights = self.static_expert_weights[:num_tokens]
-            expert_ids = self.static_expert_ids[:num_tokens]
+            expert_ids = self.static_topk_ids[:num_tokens]
             range_pop()
+
+        torch.cuda.synchronize()
         
         self._timer.stop("execute")
         self._timer.start("postprocess")
@@ -728,25 +730,10 @@ class Engine:
         new_meta_c = meta_c.to_metadata()
         if self.model_config.top_k > 1:
             new_meta_c.duplicate_topk(self.model_config.top_k)
+            new_meta_c.topk_weights = expert_weights.ravel().tolist()
 
-        if self.model_config.top_k == 1:
-            # FIXME: here we randomize expert_ids and expert_weights
-            expert_ids = torch.randint(0, self.model_config.num_experts, (num_tokens, ), device="cuda")
-            expert_ids = expert_ids.tolist()
-        else:
-            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-            expert_weights = torch.rand((num_tokens, self.model_config.num_experts), device="cuda", dtype=torch.bfloat16)
-            topk_weights, expert_ids = expert_weights.topk(self.model_config.top_k, dim=1)
-            topk_weights = topk_weights.view(-1).tolist()
-            expert_ids = expert_ids.view(-1).tolist()
-            new_meta_c.topk_weights = topk_weights
-
-        # print(f"device_id {self.device_id}, top_k experts: {expert_ids}, {expert_weights}, top_1 expert {expert_ids[:, 0]}")
-
-        # TODO(hogura|20241201): move `get_mapping` and `permute_tokens` into CUDAGraph
-        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
-        hiddens = permute_tokens(hiddens, exp_mappings)
+        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+        new_meta_c.update_exp_ids(expert_ids.ravel().tolist(), reorder_expert_ids.ravel().tolist())
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
@@ -808,7 +795,7 @@ class Engine:
         new_mappings = list(meta_c.sort_by_prefill_order())
         
         with torch.cuda.stream(self.h2d_stream):
-            new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int32, device="cpu", pin_memory=True)
+            new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
             self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
             if self.model_config.top_k > 1:
                 topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
@@ -1062,7 +1049,7 @@ class TokenizerEngine(Engine):
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
+        x = torch.randn(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         

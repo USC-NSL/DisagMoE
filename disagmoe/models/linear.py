@@ -120,7 +120,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
                        output_partition_sizes: List[int], input_size: int,
                        output_size: int, params_dtype: torch.dtype,
                        **extra_weight_attrs):
-        weight = Parameter(torch.empty(sum(output_partition_sizes),
+        weight = Parameter(torch.randn(sum(output_partition_sizes),
                                        input_size_per_partition,
                                        dtype=params_dtype),
                            requires_grad=False)
@@ -217,7 +217,7 @@ class ReplicatedLinear(LinearBase):
 
         if bias:
             self.bias = Parameter(
-                torch.empty(self.output_size, dtype=self.params_dtype))
+                torch.randn(self.output_size, dtype=self.params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
                 "weight_loader": self.weight_loader,
@@ -315,7 +315,7 @@ class ColumnParallelLinear(LinearBase):
                 in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
         if bias:
             self.bias = Parameter(
-                torch.empty(self.output_size_per_partition,
+                torch.randn(self.output_size_per_partition,
                             dtype=params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
@@ -1005,7 +1005,7 @@ class RowParallelLinear(LinearBase):
 
         if bias:
             self.bias = Parameter(
-                torch.empty(self.output_size, dtype=params_dtype))
+                torch.randn(self.output_size, dtype=params_dtype))
             set_weight_attrs(self.bias, {
                 "output_dim": 0,
                 "weight_loader": self.weight_loader,

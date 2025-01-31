@@ -95,7 +95,7 @@ def permute_tokens_cuda(tokens: torch.Tensor,
                    mappings: Union[torch.Tensor, List[int]]) -> torch.Tensor:
     range_push("memory.move_mappings")
     if not torch.is_tensor(mappings):
-        mappings = torch.tensor(mappings, dtype=torch.int32, device=tokens.device)
+        mappings = torch.tensor(mappings, dtype=torch.int64, device=tokens.device)
     mappings_device = mappings.to(tokens.device)
     range_pop()
     
