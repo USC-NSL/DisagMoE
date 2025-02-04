@@ -138,6 +138,9 @@ class MoEAttention(nn.Module):
                                      params_dtype=params_dtype,
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
+        
+        self.pre_attention_layernorm = RMSNorm(hidden_size)
+        self.post_attention_layernorm = RMSNorm(hidden_size)
 
     def permute_by_exp_ids(self, hidden_states: torch.Tensor, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -148,6 +151,16 @@ class MoEAttention(nn.Module):
         permuted_output = permute_tokens_cuda(hidden_states, reorder_ids)
         
         return permuted_output, reorder_ids
+    
+    def random_routing(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Random routing.
+        """
+        batch_size = hidden_states.size(0)
+        expert_logits = torch.rand(batch_size, self.num_experts, device=hidden_states.device)
+        topk_weights, topk_ids = torch.topk(expert_logits, self.top_k, dim=-1)
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        return topk_weights, topk_ids
 
     def forward(
         self,
@@ -155,21 +168,32 @@ class MoEAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
+        residual: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.pre_attention_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.pre_attention_layernorm(hidden_states, residual)
+        
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
         output, _ = self.o_proj(attn_output)
-        router_logits, _ = self.gate(hidden_states)
+        output, residual = self.post_attention_layernorm(output, residual)
+        router_logits, _ = self.gate(output)
 
-        print(f"output {output}, router logits {router_logits}")
+        # print(f"hidden_states {hidden_states} output {output}, router logits {router_logits}")
         
         topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
                                 gating_output=router_logits,
                                 topk=self.top_k,
                                 renormalize=True)
-        print(f"topk info {topk_weights}, {topk_ids}")
+        
+        # print(f"topk info {topk_weights}, {topk_ids}")
+        
+        topk_weights, topk_ids = self.random_routing(hidden_states)
 
         permuted_output, reorder_ids = self.permute_by_exp_ids(output, topk_ids)
 

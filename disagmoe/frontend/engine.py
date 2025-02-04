@@ -684,7 +684,9 @@ class Engine:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         assert isinstance(self.executor, AttnExecutor)
-        
+
+        # FIXME(shaoyuw): input tensor is sometimes zero tensor
+
         # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
         
         # self._logger.info(f"process batch attn {meta_c.seq_ids}")
@@ -701,7 +703,7 @@ class Engine:
             meta_c.shrink_topk(self.model_config.top_k)
 
         # TODO(hogura|20241014): fill the real positions
-        positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
+        positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
         attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
 
         self._timer.stop("preprocess")
@@ -841,7 +843,7 @@ class Engine:
                 self._logger.warning("TP worker received termination signal, now exit")
                 break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
-            positions = torch.zeros(num_tokens, dtype=torch.long, device="cuda")
+            positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
             self._logger.info(f"executing attn {meta}")
             self.executor.execute(layer_id, positions, input_tensor, meta)
 
