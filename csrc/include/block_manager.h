@@ -60,3 +60,6 @@ public:
 typedef std::shared_ptr<BlockManager> block_manager_t;
 
 typedef std::vector<block_list_t> block_table_t;
+
+
+torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);

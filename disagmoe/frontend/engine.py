@@ -31,7 +31,7 @@ from torch import Tensor
 
 import torch.distributed as dist
 
-from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts,
+from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
                         recorder_create as disagmoe_recorder_create,
@@ -500,32 +500,20 @@ class Engine:
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos = [0] * (num_seqs + num_seqs + (num_seqs + 1)) 
-        
-        # make seq_lens
-        batch_infos[ : num_seqs] = decode_seq_lens
-        seq_lens = batch_infos[ : num_seqs]
-        
-        # make context_lens
-        for i in range(num_tokens):
-            batch_infos[num_seqs + i] = decode_seq_lens[i] - 1
-            
-        # make seq_start_loc
-        make_seqlens_list(seq_lens, dst=batch_infos[num_seqs + num_seqs : ])
+        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
 
-        batch_infos_pinned = torch.tensor(batch_infos, dtype=torch.int32, device="cpu", pin_memory=True)
+        seq_lens = decode_seq_lens
 
         if self.model_config.enable_cuda_graph_attn:
             seq_lens_cuda = self.static_seq_lens[ : num_tokens]
             context_lens_tensor = self.static_context_lens[ : num_tokens]
             seq_start_loc = self.static_seq_start_loc[ : num_tokens + 1]
-            seq_lens_cuda.copy_(batch_infos_pinned[ : num_tokens])
-            context_lens_tensor.copy_(batch_infos_pinned[num_tokens : num_tokens + num_tokens])
-            seq_start_loc.copy_(batch_infos_pinned[num_tokens + num_tokens : ])
+            seq_lens_cuda.copy_(batch_infos_cuda[ : num_tokens])
+            context_lens_tensor.copy_(batch_infos_cuda[num_tokens : num_tokens + num_tokens])
+            seq_start_loc.copy_(batch_infos_cuda[num_tokens + num_tokens : ])
             # self.static_batch_infos[ : len(batch_infos)].copy_(torch.tensor(batch_infos, dtype=torch.int32, device="cpu"))
             # batch_infos_cuda = self.static_batch_infos
         else:
-            batch_infos_cuda = batch_infos_pinned.to("cuda:0", non_blocking=True)
             seq_lens_cuda = batch_infos_cuda[ : num_seqs]
             context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
             seq_start_loc = batch_infos_cuda[num_seqs + num_seqs : ]

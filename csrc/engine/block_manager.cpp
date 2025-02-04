@@ -170,3 +170,25 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
 
     return block_table_1d_pinned.to(torch::kCUDA, true);
 }
+
+torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+    int num_tokens = meta->num_prefill_tokens + meta->num_decode_tokens;
+    int num_seqs = num_tokens;
+
+    std::vector<int> batch_infos(num_seqs + num_seqs + (num_seqs + 1), 0);
+
+    std::copy(decode_seq_lens.begin(), decode_seq_lens.end(), batch_infos.begin());
+    std::vector<int> seq_lens(batch_infos.begin(), batch_infos.begin() + num_seqs);
+
+    for (int i = 0; i < num_tokens; i++) {
+        batch_infos[num_seqs + i] = decode_seq_lens[i] - 1;
+    }  
+
+    int base = num_seqs + num_seqs;
+
+    for (int i = 1; i <= num_seqs; i++) {
+        batch_infos[base + i] = batch_infos[base + i - 1] + decode_seq_lens[i - 1];
+    }
+
+    return torch::tensor(batch_infos, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
+}
