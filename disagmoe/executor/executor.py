@@ -121,11 +121,11 @@ class CUDAGraphAttnExecutor:
         self.cache_config = cache_config
         self.attn_executor = attn_executor
         
-    def _create_cuda_graph_contexts(self):
+    def create_cuda_graph_buffers(self):
         assert self.model_config.enable_cuda_graph_attn
         batch_size = self.model_config.max_batch_size_attn
         self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
-        self.static_outputs: Dict[int, List[Tensor]] = {}
+        self.static_outputs: Dict[int, Tuple[Tensor]] = {}
 
         self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
@@ -133,14 +133,6 @@ class CUDAGraphAttnExecutor:
             (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
             dtype=torch.int32, device="cuda")
         self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
-
-        # self.static_batch_infos = torch.zeros(
-        #     # (num_seqs + num_seqs + (num_seqs + 1)), 
-        #     (batch_size + batch_size + (batch_size + 1)), 
-        #     dtype=torch.int32, device="cuda")
-        # self.static_seq_lens = self.static_batch_infos[ : batch_size]
-        # self.static_context_lens = self.static_batch_infos[batch_size : batch_size + batch_size]
-        # self.static_seq_start_loc = self.static_batch_infos[batch_size + batch_size : ]
 
         self.static_batch_infos: Dict[int, Tensor] = {}
 
@@ -205,31 +197,37 @@ class CUDAGraphAttnExecutor:
             seq_start_loc=seq_start_loc_cuda,
             context_lens_tensor=context_lens_cuda,
             block_tables=block_table_cuda,
-            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+            use_cuda_graph=True,
         )
 
     def capture(self):
         if not self.model_config.enable_cuda_graph_attn:
             self._logger.warning("Attention CUDA Graph is not enabled.")
             return
-        
-        meta_py = make_dummy_meta(0, self.model_config.max_batch_size_attn)
-        meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.model_config.max_batch_size_attn)
-            
-        meta.use_cuda_graph = True
+
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
                 meta_py = make_dummy_meta(0, graph_batch_size)
                 meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size)
                 self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
-                with torch.cuda.graph(graph):
-                    outputs, topk_weights, topk_ids, reorder_ids = self.attn_executor.execute(
+
+                def run_once() -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+                    return self.attn_executor.execute(
                         layer_id, self.static_positions[ : graph_batch_size], 
                         self.static_input[ : graph_batch_size], meta
                     )
-                    self.static_outputs[layer_id] = [outputs, topk_weights, topk_ids, reorder_ids]
-                torch.cuda.synchronize()
+
+                for _ in range(2):
+                    # warmup
+                    run_once()
+
+                with torch.cuda.graph(graph):
+                    outputs = run_once()
                     
+                torch.cuda.synchronize()
+
+                self.static_outputs[layer_id] = outputs
+                
                 # warmup for the actual execution
                 graph.replay()
                     
