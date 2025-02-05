@@ -3,7 +3,7 @@ import torch.distributed as dist
 
 from torch import Tensor
 
-from typing import override, Tuple
+from typing import override, Tuple, List, Union, Dict
 from time import sleep
 from enum import Enum
 
@@ -14,9 +14,11 @@ from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range
-from disagmoe.models.utils import make_prefill_meta
-
+from disagmoe.models.utils import make_dummy_meta
+from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+
+from disagmoe_c import prepare_batch_infos
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -38,6 +40,8 @@ class Executor:
     
     def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
+    
+
 
 class AttnExecutor(Executor):
 
@@ -78,7 +82,7 @@ class AttnExecutor(Executor):
         self.cache = torch.randn((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
     
     def profile_execute(self, batch_size: int):
-        attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
+        attn_metadata = make_dummy_meta(0, self.cache_config.block_size)
         kv_cache = None
         for layer_id in range(self.num_layers):
             positions = torch.ones(batch_size, dtype=torch.long, device="cuda")
@@ -95,13 +99,13 @@ class AttnExecutor(Executor):
                 attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
-        outputs, top_k_weights, topk_ids, reorder_topk_ids = operator.forward(
+        outputs, topk_weights, topk_ids, reorder_ids = operator.forward(
             positions, 
             hidden_states, 
             self.cache[vid], 
             attn_metadata
         )
-        return outputs, top_k_weights, topk_ids, reorder_topk_ids
+        return outputs, topk_weights, topk_ids, reorder_ids
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
@@ -110,6 +114,158 @@ class AttnExecutor(Executor):
         else:
             return AttnExecutor(model_config, cache_config)
 
+class CUDAGraphAttnExecutor:
+    
+    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig, attn_executor: AttnExecutor):
+        self.model_config = model_config
+        self.cache_config = cache_config
+        self.attn_executor = attn_executor
+        
+    def _create_cuda_graph_contexts(self):
+        assert self.model_config.enable_cuda_graph_attn
+        batch_size = self.model_config.max_batch_size_attn
+        self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
+        self.static_outputs: Dict[int, List[Tensor]] = {}
+
+        self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
+        self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
+        self.static_block_table = torch.zeros(
+            (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
+            dtype=torch.int32, device="cuda")
+        self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
+
+        # self.static_batch_infos = torch.zeros(
+        #     # (num_seqs + num_seqs + (num_seqs + 1)), 
+        #     (batch_size + batch_size + (batch_size + 1)), 
+        #     dtype=torch.int32, device="cuda")
+        # self.static_seq_lens = self.static_batch_infos[ : batch_size]
+        # self.static_context_lens = self.static_batch_infos[batch_size : batch_size + batch_size]
+        # self.static_seq_start_loc = self.static_batch_infos[batch_size + batch_size : ]
+
+        self.static_batch_infos: Dict[int, Tensor] = {}
+
+        self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
+                                            batch_size + 1,
+                                            self.model_config.graph_stride))
+        self.graph_batch_sizes = [1] + self.graph_batch_sizes
+
+        for layer_id in self.model_config.layer_ids:
+            self.graphs[layer_id] = [torch.cuda.CUDAGraph() for _ in self.graph_batch_sizes]
+        
+        for bs in self.graph_batch_sizes:
+            self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1)), dtype=torch.int32, device="cuda")
+
+    def _prepare_dummy_flash_attn_metadata(
+            self,
+            meta_c: AttentionBatchMetadata,
+            meta_py: AttentionBatchMetadata,
+            decode_seq_lens: List[int],
+            mocking: bool = False,
+        ) -> FlashAttentionMetadata:
+        
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
+
+        max_num_blocks_per_seq = self.model_config.max_seq_len // self.cache_config.block_size
+        block_table_1d = torch.zeros(
+            (num_seqs, max_num_blocks_per_seq), 
+            dtype=torch.int32, device="cuda")
+        
+        self.static_slot_mapping[ : num_tokens] = torch.arange(num_tokens, dtype=torch.long, device="cuda")
+        self.static_block_table[ : num_seqs] = block_table_1d
+        slot_mapping_cuda = self.static_slot_mapping[ : num_tokens]
+        block_table_cuda = self.static_block_table[ : num_seqs]
+
+        # 2. prepare seqlens and start_locs
+        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
+        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+        self.static_batch_infos[num_seqs].copy_(batch_infos_cuda)
+
+        # FIXME: double check this split operation
+        seq_lens_cuda  = self.static_batch_infos[ : num_seqs]
+        context_lens_cuda = self.static_batch_infos[num_seqs : num_seqs + num_seqs]
+        seq_start_loc_cuda = self.static_batch_infos[num_seqs + num_seqs : ]
+        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+
+        seq_lens = decode_seq_lens
+
+        return FlashAttentionMetadata(
+            0,
+            0,
+            num_tokens,
+            slot_mapping_cuda,
+            seq_lens=seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            query_start_loc=None,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
+            block_tables=block_table_cuda,
+            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+        )
+
+    def capture(self):
+        if not self.model_config.enable_cuda_graph_attn:
+            self._logger.warning("Attention CUDA Graph is not enabled.")
+            return
+        
+        meta_py = make_dummy_meta(0, self.model_config.max_batch_size_attn)
+        meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.model_config.max_batch_size_attn)
+            
+        meta.use_cuda_graph = True
+        for layer_id in self.model_config.layer_ids:
+            for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
+                meta_py = make_dummy_meta(0, graph_batch_size)
+                meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size)
+                self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
+                with torch.cuda.graph(graph):
+                    outputs, topk_weights, topk_ids, reorder_ids = self.attn_executor.execute(
+                        layer_id, self.static_positions[ : graph_batch_size], 
+                        self.static_input[ : graph_batch_size], meta
+                    )
+                    self.static_outputs[layer_id] = [outputs, topk_weights, topk_ids, reorder_ids]
+                torch.cuda.synchronize()
+                    
+                # warmup for the actual execution
+                graph.replay()
+                    
+                torch.cuda.synchronize()
+
+    def _get_graph_by_batch_size(self, batch_size: int):
+        for i, size in enumerate(self.graph_batch_sizes):
+            if size >= batch_size:
+                return i, size
+        assert False, f"No available graph for batch size={batch_size}"
+
+    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        num_tokens = hidden_states.shape[0]
+        graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
+        self.static_input[ : num_tokens].copy_(hidden_states)
+        self.static_positions[ : num_tokens].copy_(positions)
+        self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
+
+        max_num_blocks = meta.block_tables.shape[1]
+        self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
+
+        static_batch_infos = self.static_batch_infos[batch_size]
+
+        seq_lens_cuda  = static_batch_infos[ : batch_size]
+        context_lens_cuda = static_batch_infos[batch_size : batch_size + batch_size]
+        seq_start_loc_cuda = static_batch_infos[batch_size + batch_size : ]
+        seq_lens_cuda[ : num_tokens].copy_(meta.seq_lens_tensor)
+        context_lens_cuda[ : num_tokens].copy_(meta.context_lens_tensor)
+        seq_start_loc_cuda[ : num_tokens].copy_(meta.seq_start_loc)
+
+        self.graphs[layer_id][graph_id].replay()
+
+        outputs, topk_weights, topk_ids, reorder_ids = self.static_outputs[layer_id]
+
+        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens], reorder_ids[ : num_tokens]
+        
 class ExpertsExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig):

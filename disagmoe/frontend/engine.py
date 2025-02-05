@@ -2,29 +2,27 @@ import torch
 import time
 import enum
 import os
-import asyncio
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext)
-from disagmoe.ops.memory import get_mappings_from_exp_ids, permute_tokens_cuda as permute_tokens
+from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
-                                  make_seqlens_cuda_tensor, make_seqlens_list, get_graph_batch_size, StepInfo, 
+                                  make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.utils import (pack_flash_attn_meta, unpack_flash_attn_meta, 
-                                   make_prefill_meta, make_dummy_meta, CudaGraphContext)
+from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
-from typing import Optional, List, Dict, Union, Callable, Tuple
+from typing import Optional, List, Dict, Callable, Tuple
 from threading import Thread
 
 from torch import Tensor
@@ -289,11 +287,10 @@ class Engine:
         if self.is_attn:
             self.static_output = torch.zeros((batch_size * self.model_config.top_k, self.model_config.hidden_size), device="cuda")
             self.static_topk_ids = torch.zeros((batch_size, self.model_config.top_k), dtype=torch.long, device="cuda")
-            self.static_reorder_topk_ids = torch.zeros((batch_size * self.model_config.top_k), dtype=torch.long, device="cuda")
             self.static_expert_weights = torch.zeros((batch_size, self.model_config.top_k), device="cuda")
             self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
             self.static_block_table = torch.zeros(
-                (batch_size, MAX_SEQ_LEN // self.cache_config.block_size), 
+                (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
                 dtype=torch.int32, device="cuda")
             self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
             self.static_batch_infos = torch.zeros(
@@ -332,7 +329,7 @@ class Engine:
         input = torch.zeros((self.max_batch_size, self.model_config.hidden_size), device="cuda")
         positions = torch.zeros(self.max_batch_size, dtype=torch.long, device="cuda")
         meta_py = make_dummy_meta(0, self.max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [MAX_SEQ_LEN] * self.max_batch_size, mocking=True)
+        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.max_batch_size, mocking=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
                 _, _, _, _ = self.executor.execute(layer_id, positions, input, meta)
@@ -364,7 +361,7 @@ class Engine:
             return
         
         meta_py = make_dummy_meta(0, self.max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [MAX_SEQ_LEN] * self.max_batch_size, mocking=True)
+        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.max_batch_size, mocking=True)
         if self.model_config.tp_size > 1:
             group_sync()
             
@@ -372,10 +369,10 @@ class Engine:
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
                 meta_py = make_dummy_meta(0, graph_batch_size)
-                meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [MAX_SEQ_LEN] * graph_batch_size, mocking=True)
+                meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size, mocking=True)
                 self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
                 with torch.cuda.graph(graph):
-                    self.static_output, self.static_expert_weights, self.static_topk_ids, self.static_reorder_topk_ids = self.executor.execute(
+                    self.static_output, self.static_expert_weights, self.static_topk_ids = self.executor.execute(
                         layer_id, self.static_positions, self.static_input[: graph_batch_size], meta)
                 torch.cuda.synchronize()
                 
@@ -418,7 +415,7 @@ class Engine:
         self.buffer_tensor = torch.empty((self.max_batch_size, self.model_config.hidden_size), device="cuda")
         
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
-        shape = (self.max_batch_size + self.max_batch_size * MAX_SEQ_LEN // self.cache_config.block_size, )
+        shape = (self.max_batch_size + self.max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.empty(shape, dtype=torch.int32, device="cuda")
         
         self.buffer_meta.fill_(0)
@@ -482,7 +479,7 @@ class Engine:
         else:
             # mocking=True when _warmup_attn
             block_table_1d = torch.zeros(
-                (num_tokens + num_seqs * MAX_SEQ_LEN // self.cache_config.block_size, ), 
+                (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
                 dtype=torch.int32, device="cuda")
 
         if self.model_config.enable_cuda_graph_attn:
@@ -506,17 +503,16 @@ class Engine:
 
         if self.model_config.enable_cuda_graph_attn:
             seq_lens_cuda = self.static_seq_lens[ : num_tokens]
-            context_lens_tensor = self.static_context_lens[ : num_tokens]
-            seq_start_loc = self.static_seq_start_loc[ : num_tokens + 1]
+            context_lens_cuda = self.static_context_lens[ : num_tokens]
+            seq_start_loc_cuda = self.static_seq_start_loc[ : num_tokens + 1]
             seq_lens_cuda.copy_(batch_infos_cuda[ : num_tokens])
-            context_lens_tensor.copy_(batch_infos_cuda[num_tokens : num_tokens + num_tokens])
-            seq_start_loc.copy_(batch_infos_cuda[num_tokens + num_tokens : ])
+            context_lens_cuda.copy_(src=batch_infos_cuda[num_tokens : num_tokens + num_tokens])
+            seq_start_loc_cuda.copy_(batch_infos_cuda[num_tokens + num_tokens : ])
             # self.static_batch_infos[ : len(batch_infos)].copy_(torch.tensor(batch_infos, dtype=torch.int32, device="cpu"))
             # batch_infos_cuda = self.static_batch_infos
         else:
-            seq_lens_cuda = batch_infos_cuda[ : num_seqs]
-            context_lens_tensor = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
-            seq_start_loc = batch_infos_cuda[num_seqs + num_seqs : ]
+            seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
+                torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
             
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
@@ -527,16 +523,16 @@ class Engine:
         return FlashAttentionMetadata(
             0,
             0,
-            meta_py.num_prefill_tokens + meta_py.num_decode_tokens,
+            num_tokens,
             slot_mapping_cuda,
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=0,
             max_prefill_seq_len=0,
             max_decode_seq_len=max_decode_seq_len,
-            query_start_loc=[],
-            seq_start_loc=seq_start_loc,
-            context_lens_tensor=context_lens_tensor,
+            query_start_loc=None,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
             block_tables=block_table_cuda,
             use_cuda_graph=self.model_config.enable_cuda_graph_attn,
         )
@@ -666,8 +662,8 @@ class Engine:
             block_tables=block_table_cuda,
             use_cuda_graph=self.model_config.enable_cuda_graph_attn,
         )
-
     @nvtx_range("engine.process_batch_attn")
+
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
@@ -700,7 +696,7 @@ class Engine:
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids, reorder_expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids, reorder_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             num_tokens = input_tensor.shape[0]
             graph_id, batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
@@ -723,7 +719,7 @@ class Engine:
             new_meta_c.topk_weights = expert_weights.ravel().tolist()
 
         # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-        new_meta_c.update_exp_ids(expert_ids.ravel().tolist(), reorder_expert_ids.ravel().tolist())
+        new_meta_c.update_exp_ids(expert_ids.ravel().tolist(), reorder_ids.ravel().tolist())
         
         # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
         # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
