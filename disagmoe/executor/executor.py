@@ -14,7 +14,7 @@ from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range
-from disagmoe.models.utils import make_dummy_meta
+from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
@@ -82,7 +82,7 @@ class AttnExecutor(Executor):
         self.cache = torch.randn((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
     
     def profile_execute(self, batch_size: int):
-        attn_metadata = make_dummy_meta(0, self.cache_config.block_size)
+        attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
         kv_cache = None
         for layer_id in range(self.num_layers):
             positions = torch.ones(batch_size, dtype=torch.long, device="cuda")
