@@ -297,7 +297,7 @@ class Engine:
         meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.max_batch_size, mocking=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _, _, _, _ = self.executor.execute(layer_id, positions, input, meta)
+                self.executor.execute(layer_id, positions, input, meta)
         
         # restore the original setting
         self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
@@ -581,14 +581,18 @@ class Engine:
         # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids, reorder_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             range_push("engine.graph_replay")
-            hiddens, expert_weights, expert_ids, reorder_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
             range_pop()
 
+        _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+
+        # print(f"topk_ids {expert_ids}, reorder_ids {reorder_ids}")
+        hiddens = permute_tokens(hiddens, reorder_ids)
         torch.cuda.synchronize()
-        
+
         self._timer.stop("execute")
         self._timer.start("postprocess")
 

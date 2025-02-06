@@ -169,7 +169,7 @@ class MoEAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
         residual: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
             hidden_states = self.pre_attention_layernorm(hidden_states)
@@ -195,6 +195,6 @@ class MoEAttention(nn.Module):
         
         topk_weights, topk_ids = self.random_routing(hidden_states)
 
-        permuted_output, reorder_ids = self.permute_by_exp_ids(output, topk_ids)
+        # permuted_output, reorder_ids = self.permute_by_exp_ids(output, topk_ids)
 
-        return permuted_output, topk_weights, topk_ids, reorder_ids
+        return output, topk_weights, topk_ids

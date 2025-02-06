@@ -96,16 +96,16 @@ class AttnExecutor(Executor):
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
-        outputs, topk_weights, topk_ids, reorder_ids = operator.forward(
+        outputs, topk_weights, topk_ids = operator.forward(
             positions, 
             hidden_states, 
             self.cache[vid], 
             attn_metadata
         )
-        return outputs, topk_weights, topk_ids, reorder_ids
+        return outputs, topk_weights, topk_ids
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
@@ -125,7 +125,7 @@ class CUDAGraphAttnExecutor:
         assert self.model_config.enable_cuda_graph_attn
         batch_size = self.model_config.max_batch_size_attn
         self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
-        self.static_outputs: Dict[int, Tuple[Tensor]] = {}
+        self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
 
         self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
@@ -143,6 +143,7 @@ class CUDAGraphAttnExecutor:
 
         for layer_id in self.model_config.layer_ids:
             self.graphs[layer_id] = [torch.cuda.CUDAGraph() for _ in self.graph_batch_sizes]
+            self.static_outputs[layer_id] = []
         
         for bs in self.graph_batch_sizes:
             self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1)), dtype=torch.int32, device="cuda")
@@ -165,20 +166,22 @@ class CUDAGraphAttnExecutor:
             (num_seqs, max_num_blocks_per_seq), 
             dtype=torch.int32, device="cuda")
         
-        self.static_slot_mapping[ : num_tokens] = torch.arange(num_tokens, dtype=torch.long, device="cuda")
-        self.static_block_table[ : num_seqs] = block_table_1d
+        self.static_slot_mapping[ : num_tokens].copy_(torch.arange(num_tokens, dtype=torch.long, device="cuda"))
+        self.static_block_table[ : num_seqs, : max_num_blocks_per_seq].copy_(block_table_1d)
         slot_mapping_cuda = self.static_slot_mapping[ : num_tokens]
         block_table_cuda = self.static_block_table[ : num_seqs]
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-        self.static_batch_infos[num_seqs].copy_(batch_infos_cuda)
+        batch_info_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+        batch_info_len = batch_info_cuda.shape[0]
 
-        # FIXME: double check this split operation
-        seq_lens_cuda  = self.static_batch_infos[ : num_seqs]
-        context_lens_cuda = self.static_batch_infos[num_seqs : num_seqs + num_seqs]
-        seq_start_loc_cuda = self.static_batch_infos[num_seqs + num_seqs : ]
+        batch_size = num_tokens
+        static_batch_info = self.static_batch_infos[batch_size]
+        static_batch_info[ : batch_info_len].copy_(batch_info_cuda)
+        seq_lens_cuda = static_batch_info[ : num_seqs]
+        context_lens_cuda = static_batch_info[num_seqs : num_seqs + num_seqs]
+        seq_start_loc_cuda = static_batch_info[num_seqs + num_seqs : ]
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
 
         seq_lens = decode_seq_lens
@@ -201,17 +204,13 @@ class CUDAGraphAttnExecutor:
         )
 
     def capture(self):
-        if not self.model_config.enable_cuda_graph_attn:
-            self._logger.warning("Attention CUDA Graph is not enabled.")
-            return
-
+        assert self.model_config.enable_cuda_graph_attn, "Attention CUDA Graph is not enabled."
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
                 meta_py = make_dummy_meta(0, graph_batch_size)
                 meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size)
-                self._logger.info(f"Attention CUDA Graph capturing layer {layer_id, graph_batch_size}")
 
-                def run_once() -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+                def run_once() -> Tuple[Tensor, Tensor, Tensor]:
                     return self.attn_executor.execute(
                         layer_id, self.static_positions[ : graph_batch_size], 
                         self.static_input[ : graph_batch_size], meta
@@ -219,19 +218,23 @@ class CUDAGraphAttnExecutor:
 
                 for _ in range(2):
                     # warmup
+                    torch.cuda.synchronize()
                     run_once()
+                    torch.cuda.synchronize()
 
                 with torch.cuda.graph(graph):
                     outputs = run_once()
                     
                 torch.cuda.synchronize()
 
-                self.static_outputs[layer_id] = outputs
+                self.static_outputs[layer_id].append(outputs)
                 
                 # warmup for the actual execution
                 graph.replay()
                     
                 torch.cuda.synchronize()
+
+        print("cuda graph captured")
 
     def _get_graph_by_batch_size(self, batch_size: int):
         for i, size in enumerate(self.graph_batch_sizes):
@@ -239,7 +242,7 @@ class CUDAGraphAttnExecutor:
                 return i, size
         assert False, f"No available graph for batch size={batch_size}"
 
-    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         num_tokens = hidden_states.shape[0]
         graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
         self.static_input[ : num_tokens].copy_(hidden_states)
@@ -249,20 +252,20 @@ class CUDAGraphAttnExecutor:
         max_num_blocks = meta.block_tables.shape[1]
         self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
 
-        static_batch_infos = self.static_batch_infos[batch_size]
+        static_batch_info = self.static_batch_infos[batch_size]
 
-        seq_lens_cuda  = static_batch_infos[ : batch_size]
-        context_lens_cuda = static_batch_infos[batch_size : batch_size + batch_size]
-        seq_start_loc_cuda = static_batch_infos[batch_size + batch_size : ]
+        seq_lens_cuda  = static_batch_info[ : batch_size]
+        context_lens_cuda = static_batch_info[batch_size : batch_size + batch_size]
+        seq_start_loc_cuda = static_batch_info[batch_size + batch_size : ]
         seq_lens_cuda[ : num_tokens].copy_(meta.seq_lens_tensor)
         context_lens_cuda[ : num_tokens].copy_(meta.context_lens_tensor)
-        seq_start_loc_cuda[ : num_tokens].copy_(meta.seq_start_loc)
+        seq_start_loc_cuda[ : num_tokens + 1].copy_(meta.seq_start_loc)
 
         self.graphs[layer_id][graph_id].replay()
 
-        outputs, topk_weights, topk_ids, reorder_ids = self.static_outputs[layer_id]
+        outputs, topk_weights, topk_ids = self.static_outputs[layer_id][graph_id]
 
-        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens], reorder_ids[ : num_tokens]
+        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]
         
 class ExpertsExecutor(Executor):
 
