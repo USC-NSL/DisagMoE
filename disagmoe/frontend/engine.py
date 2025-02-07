@@ -587,9 +587,10 @@ class Engine:
             hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
             range_pop()
 
+        torch.cuda.synchronize()
+
         _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
 
-        # print(f"topk_ids {expert_ids}, reorder_ids {reorder_ids}")
         hiddens = permute_tokens(hiddens, reorder_ids)
         torch.cuda.synchronize()
 

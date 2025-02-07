@@ -161,7 +161,7 @@ class CUDAGraphAttnExecutor:
 
         # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
 
-        max_num_blocks_per_seq = self.model_config.max_seq_len // self.cache_config.block_size
+        max_num_blocks_per_seq = max(decode_seq_lens) // self.cache_config.block_size
         block_table_1d = torch.zeros(
             (num_seqs, max_num_blocks_per_seq), 
             dtype=torch.int32, device="cuda")
@@ -169,7 +169,7 @@ class CUDAGraphAttnExecutor:
         self.static_slot_mapping[ : num_tokens].copy_(torch.arange(num_tokens, dtype=torch.long, device="cuda"))
         self.static_block_table[ : num_seqs, : max_num_blocks_per_seq].copy_(block_table_1d)
         slot_mapping_cuda = self.static_slot_mapping[ : num_tokens]
-        block_table_cuda = self.static_block_table[ : num_seqs]
+        block_table_cuda = self.static_block_table[ : num_seqs, : max_num_blocks_per_seq]
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
@@ -235,6 +235,67 @@ class CUDAGraphAttnExecutor:
                 torch.cuda.synchronize()
 
         print("cuda graph captured")
+
+        self.test_graph()
+        
+        print("cuda graph tested")
+
+    def _prepare_test_flash_attn_metadata(
+            self,
+            meta_c: AttentionBatchMetadata,
+            meta_py: AttentionBatchMetadata,
+            decode_seq_lens: List[int],
+        ) -> FlashAttentionMetadata:
+        
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
+        
+        # 1. prepare block table
+        block_table_1d = torch.zeros(
+            (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
+            dtype=torch.int32, device="cuda")
+
+        slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
+        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
+
+        # 2. prepare seqlens and start_locs
+        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
+        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+
+        seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
+            torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
+
+        seq_lens = decode_seq_lens
+            
+        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+
+        return FlashAttentionMetadata(
+            0,
+            0,
+            num_tokens,
+            slot_mapping_cuda,
+            seq_lens=seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            query_start_loc=None,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
+            block_tables=block_table_cuda,
+            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+        )
+
+    def test_graph(self):
+        for layer_id in self.model_config.layer_ids:
+            for bs in range(1, self.model_config.max_batch_size_attn + 1):
+                meta_py = make_dummy_meta(0, bs)
+                meta = self._prepare_test_flash_attn_metadata(meta_py.to_c(), meta_py, [200] * bs)
+                hiddens, expert_weights, expert_ids = self.run(layer_id, torch.zeros(bs, dtype=torch.long, device="cuda"), torch.randn(bs, self.model_config.hidden_size, device="cuda"), meta)
+                torch.cuda.synchronize()
+                _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
 
     def _get_graph_by_batch_size(self, batch_size: int):
         for i, size in enumerate(self.graph_batch_sizes):
