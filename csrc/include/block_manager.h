@@ -22,7 +22,7 @@ private:
 
     std::mutex free_blocks_lock_;
 
-    std::queue<int> free_blocks_;
+    std::queue<int> free_blocks_{};
 
     std::unordered_map<int , block_list_t> block_tables_{};
 

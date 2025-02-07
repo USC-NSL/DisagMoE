@@ -122,9 +122,8 @@ void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<in
     int num_decode_tokens = meta->num_decode_tokens;
     for (int i = 0; i < num_prefill_tokens; i++) {
         int seq_id = meta->seq_ids[i];
-        if (!has_seq_block_list(seq_id)) {
-            allocate(seq_id, meta->init_prefill_lens[i]);
-        }
+        ASSERT (!has_seq_block_list(seq_id));
+        allocate(seq_id, meta->init_prefill_lens[i]);
     }
     for (int i = 0; i < num_prefill_tokens + num_decode_tokens; i++) {
         int seq_id = meta->seq_ids[i];

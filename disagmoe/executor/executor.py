@@ -134,6 +134,11 @@ class CUDAGraphAttnExecutor:
             dtype=torch.int32, device="cuda")
         self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
 
+        self.static_batch_info = torch.zeros((batch_size + batch_size + (batch_size + 1)), dtype=torch.int32, device="cuda")
+        self.static_seq_lens = self.static_batch_info[ : batch_size]
+        self.static_context_lens = self.static_batch_info[batch_size : batch_size + batch_size]
+        self.static_seq_start_loc = self.static_batch_info[batch_size + batch_size : ]
+
         self.static_batch_infos: Dict[int, Tensor] = {}
 
         self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
@@ -174,15 +179,24 @@ class CUDAGraphAttnExecutor:
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         batch_info_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-        batch_info_len = batch_info_cuda.shape[0]
 
-        batch_size = num_tokens
-        static_batch_info = self.static_batch_infos[batch_size]
-        static_batch_info[ : batch_info_len].copy_(batch_info_cuda)
-        seq_lens_cuda = static_batch_info[ : num_seqs]
-        context_lens_cuda = static_batch_info[num_seqs : num_seqs + num_seqs]
-        seq_start_loc_cuda = static_batch_info[num_seqs + num_seqs : ]
+
+        # batch_info_len = batch_info_cuda.shape[0]
+
+        # batch_size = num_tokens
+        # static_batch_info = self.static_batch_infos[batch_size]
+        # static_batch_info[ : batch_info_len].copy_(batch_info_cuda)
+        # seq_lens_cuda = static_batch_info[ : num_seqs]
+        # context_lens_cuda = static_batch_info[num_seqs : num_seqs + num_seqs]
+        # seq_start_loc_cuda = static_batch_info[num_seqs + num_seqs : ]
+        
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+        seq_lens_cuda = self.static_seq_lens[ : num_seqs]
+        context_lens_cuda = self.static_context_lens[ : num_seqs]
+        seq_start_loc_cuda = self.static_seq_start_loc[ : num_seqs + 1]
+        seq_lens_cuda[ : num_seqs].copy_(batch_info_cuda[ : num_seqs])
+        context_lens_cuda[ : num_seqs].copy_(batch_info_cuda[num_seqs : num_seqs + num_seqs])
+        seq_start_loc_cuda[ : num_seqs + 1].copy_(batch_info_cuda[num_seqs + num_seqs : ])
 
         seq_lens = decode_seq_lens
 
@@ -313,14 +327,17 @@ class CUDAGraphAttnExecutor:
         max_num_blocks = meta.block_tables.shape[1]
         self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
 
-        static_batch_info = self.static_batch_infos[batch_size]
+        # static_batch_info = self.static_batch_infos[batch_size]
 
-        seq_lens_cuda  = static_batch_info[ : batch_size]
-        context_lens_cuda = static_batch_info[batch_size : batch_size + batch_size]
-        seq_start_loc_cuda = static_batch_info[batch_size + batch_size : ]
-        seq_lens_cuda[ : num_tokens].copy_(meta.seq_lens_tensor)
-        context_lens_cuda[ : num_tokens].copy_(meta.context_lens_tensor)
-        seq_start_loc_cuda[ : num_tokens + 1].copy_(meta.seq_start_loc)
+        # seq_lens_cuda  = static_batch_info[ : batch_size]
+        # context_lens_cuda = static_batch_info[batch_size : batch_size + batch_size]
+        # seq_start_loc_cuda = static_batch_info[batch_size + batch_size : ]
+        # seq_lens_cuda[ : num_tokens].copy_(meta.seq_lens_tensor)
+        # context_lens_cuda[ : num_tokens].copy_(meta.context_lens_tensor)
+        # seq_start_loc_cuda[ : num_tokens + 1].copy_(meta.seq_start_loc)
+        self.static_seq_lens[ : num_tokens].copy_(meta.seq_lens_tensor)
+        self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
+        self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
 
         self.graphs[layer_id][graph_id].replay()
 
