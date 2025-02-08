@@ -22,7 +22,7 @@ meta: Metadata = Metadata_C([4, cfg.hidden_size])
 meta.layer_id = 0
 meta.req_ids = [0, 1, 2, 3]
 meta.exp_ids = [1, 1, 1, 1]
-meta.prefill_poss = [-1, -1, -1, -1]
+meta.init_prefill_lens = [-1, -1, -1, -1]
 meta.dtype = "bf16"
 
 tensor = torch.randn(meta.shape)

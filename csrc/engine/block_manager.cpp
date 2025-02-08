@@ -117,18 +117,17 @@ void BlockManager::append_tokens(int seq_id, int context_len, int num_tokens) {
 }
 
 void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<int> &context_lens) {
-    int num_prefill_seqs = meta->num_prefill_seqs;
+    // first allocate cache blocks for init seqs, then append a slot for all seqs
+    int num_prefill_tokens = meta->num_prefill_tokens;
     int num_decode_tokens = meta->num_decode_tokens;
-    for (int i = 0; i < num_prefill_seqs; i++) {
+    for (int i = 0; i < num_prefill_tokens; i++) {
         int seq_id = meta->seq_ids[i];
         if (!has_seq_block_list(seq_id)) {
-            allocate(seq_id, meta->prefill_seq_len[i]);
-        } else {
-            append_tokens(seq_id, meta->prefill_seq_len[i] - meta->prefill_query_len[i], meta->prefill_query_len[i]);
+            allocate(seq_id, meta->init_prefill_lens[i]);
         }
     }
-    for (int i = 0; i < num_decode_tokens; i++) {
-        int seq_id = meta->seq_ids[num_prefill_seqs + i];
+    for (int i = 0; i < num_prefill_tokens + num_decode_tokens; i++) {
+        int seq_id = meta->seq_ids[i];
         ASSERT (has_seq_block_list(seq_id));
         int context_len = context_lens[i];
         append_tokens(seq_id, context_len, 1);
@@ -160,23 +159,14 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
     int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
 
     int slot_idx = n * m;
-    for (int i = 0; i < meta->num_prefill_seqs; i++) {
-        int q_len = meta->prefill_query_len[i];
-        int seq_len = meta->prefill_seq_len[i];
-        for (int idx = seq_len - q_len; idx < seq_len; idx++) {
-            int block_id = idx / block_size_;
-            int id_in_block = idx % block_size_;
-            block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
-            slot_idx ++;
-        }
-    }
-    for (int i = meta->num_prefill_tokens; i < tokens_in_batch; i++) {
-        int last_idx = decode_seq_lens[i - meta->num_prefill_tokens] - 1; // decode_index should be decode_lens - 1
+    for (int i = 0; i < tokens_in_batch; i++) {
+        int last_idx = decode_seq_lens[i] - 1; // decode_index should be decode_lens - 1
         int block_id = last_idx / block_size_;
         int id_in_block = last_idx % block_size_;
         block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
         slot_idx ++;
     }
+    auto block_table_1d_pinned = torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true));
 
-    return torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
+    return block_table_1d_pinned.to(torch::kCUDA, true);
 }

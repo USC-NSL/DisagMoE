@@ -69,37 +69,37 @@ struct TokenMetadata {
     int req_id;
     int exp_id;
     int attn_dp_rank;
-    int prefill_pos;
+    int init_prefill_len;
     int topk_weight;
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(req_id, exp_id, attn_dp_rank, prefill_pos);
+        archive(req_id, exp_id, attn_dp_rank, init_prefill_len);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenMetadata& token) {
         out << "TokenMetadata{req_id=" << token.req_id << ", "
             << "exp_id=" << token.exp_id << ", "
             << "attn_dp_rank=" << token.attn_dp_rank << ", "
-            << "prefill_pos=" << token.prefill_pos << "}";
+            << "init_prefill_len=" << token.init_prefill_len << "}";
         return out;
     }
 };
 
 struct TokenTopKInfo {
     int seq_id;
-    int prefill_pos; // -1 for decoding
+    int init_prefill_len; // -1 for decoding
     int attn_dp_rank; 
     std::vector<float> topk_weights;
     std::vector<torch::Tensor> topk_tensors;
 
     TokenTopKInfo() {}
 
-    TokenTopKInfo(int seq_id, int prefill_pos, int attn_dp_rank):
-        seq_id(seq_id), prefill_pos(prefill_pos), attn_dp_rank(attn_dp_rank) {}
+    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank):
+        seq_id(seq_id), init_prefill_len(init_prefill_len), attn_dp_rank(attn_dp_rank) {}
 
-    TokenTopKInfo(int seq_id, int prefill_pos, int attn_dp_rank, float weight, torch::Tensor tensor):
-        seq_id(seq_id), prefill_pos(prefill_pos), 
+    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, float weight, torch::Tensor tensor):
+        seq_id(seq_id), init_prefill_len(init_prefill_len), 
         topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
@@ -115,7 +115,7 @@ struct TokenTopKInfo {
 
     friend std::ostream& operator<<(std::ostream &out, const TokenTopKInfo& token) {
         out << "TokenTopKInfo{seq_id=" << token.seq_id << ", "
-            << "prefill_pos=" << token.prefill_pos << ", "
+            << "init_prefill_len=" << token.init_prefill_len << ", "
             << "topk_weights={";
         if (token.topk_weights.size() > 0) {
             out << token.topk_weights[0];
@@ -139,7 +139,7 @@ struct Metadata {
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
     std::vector<int> attn_dp_ranks;
-    std::vector<int> prefill_poss;
+    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
     std::vector<float> topk_weights;
  
     inline size_t num_element() const {
@@ -179,7 +179,7 @@ struct Metadata {
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
             slice_vector(attn_dp_ranks, l, r),
-            slice_vector(prefill_poss, l, r),
+            slice_vector(init_prefill_lens, l, r),
             sliced_topk_weights,
         };
     }
@@ -187,7 +187,7 @@ struct Metadata {
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
-        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), attn_dp_ranks_(shape[0], -1), prefill_poss_(shape[0], -1);
+        std::vector<int> req_ids_(shape[0]), exp_ids_(shape[0], -1), attn_dp_ranks_(shape[0], -1), init_prefill_lens_(shape[0], -1);
         std::vector<float> topk_weights_(shape[0]);
 
         for (size_t i = 0; i < ids.size(); i ++) {
@@ -197,8 +197,8 @@ struct Metadata {
             if (exp_ids.size() >= shape[0]) {
                 exp_ids_[i] = exp_ids[ids[i]];
             }
-            if (prefill_poss.size() >= shape[0]) {
-                prefill_poss_[i] = prefill_poss[ids[i]];
+            if (init_prefill_lens.size() >= shape[0]) {
+                init_prefill_lens_[i] = init_prefill_lens[ids[i]];
             }
             if (topk_weights.size() != 0) {
                 topk_weights_[i] = topk_weights[ids[i]];
@@ -208,13 +208,13 @@ struct Metadata {
             topk_weights_.clear();
         }
         return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, prefill_poss_, topk_weights_
+            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
         };
     }
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, prefill_poss, topk_weights);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -242,13 +242,13 @@ struct Metadata {
         int exp_id = -1;
         if (exp_ids.size() > 0)
             exp_id = exp_ids[i];
-        int prefill_pos = -1;
-        if (prefill_poss.size() > 0)
-            prefill_pos = prefill_poss[i];
+        int init_prefill_len = -1;
+        if (init_prefill_lens.size() > 0)
+            init_prefill_len = init_prefill_lens[i];
         float topk_weight = 0;
         if (topk_weights.size() > 0)
             topk_weight = topk_weights[i];
-        return TokenMetadata {req_ids[i], exp_id, attn_dp_ranks[i], prefill_pos, topk_weight};
+        return TokenMetadata {req_ids[i], exp_id, attn_dp_ranks[i], init_prefill_len, topk_weight};
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
@@ -262,7 +262,7 @@ struct Metadata {
             out << "layer_id=" << meta.layer_id << ", ";
             out << "num_reqs=" << meta.req_ids.size() << ", ";
             out << "size of exp_ids=" << meta.exp_ids.size() << ", ";
-            out << "size of prefill_poss=" << meta.prefill_poss.size() << ", ";
+            out << "size of init_prefill_lens=" << meta.init_prefill_lens.size() << ", ";
             out << "size of topk_weights=" << meta.topk_weights.size() << ", ";
             out << "infos={";
             if (meta.req_ids.size() > 0) {
@@ -290,7 +290,7 @@ struct Metadata {
             total_tokens += meta->num_tokens();
         }
         shape[0] = total_tokens;
-        std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), attn_dp_ranks(total_tokens), prefill_poss(total_tokens);
+        std::vector<int> req_ids(total_tokens), exp_ids(total_tokens), attn_dp_ranks(total_tokens), init_prefill_lens(total_tokens);
         std::vector<float> topk_weights(total_tokens);
 
         std::vector<int> exp_cnts(MAX_NUM_EXPERTS, 0);
@@ -316,7 +316,7 @@ struct Metadata {
                 req_ids[j] = meta->req_ids[i];
                 exp_ids[j] = meta->exp_ids[i];
                 attn_dp_ranks[j] = meta->attn_dp_ranks[i];
-                prefill_poss[j] = meta->prefill_poss[i];
+                init_prefill_lens[j] = meta->init_prefill_lens[i];
                 if (!meta->topk_weights.empty()) {
                     topk_weights[j] = meta->topk_weights[i];
                 }
@@ -324,43 +324,9 @@ struct Metadata {
             }
         }
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, prefill_poss, topk_weights
+            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
         });
     }
-
-    // NOTE: This function is not called for now.
-    // static metadata_t merge(const std::vector<metadata_t> &metas) {
-    //     AUTO_TX_RANGE;
-
-    //     ASSERT(metas.size() > 0);
-    //     std::vector<size_t> shape = metas[0]->shape;
-    //     auto dtype = metas[0]->dtype;
-    //     auto layer_id = metas[0]->layer_id;
-
-    //     int total_tokens = 0;
-    //     for (auto &meta: metas) {
-    //         total_tokens += meta->num_tokens();
-    //     }
-    //     shape[0] = total_tokens;
-    //     std::vector<int> req_ids, exp_ids, attn_dp_ranks, prefill_poss;
-        
-    //     req_ids.reserve(total_tokens);
-    //     exp_ids.reserve(total_tokens);
-    //     attn_dp_ranks.reserve(total_tokens);
-    //     prefill_poss.reserve(total_tokens);
-
-    //     for (size_t i = 0; i < metas.size(); i ++) {
-    //         auto meta = metas[i];
-    //         extend(req_ids, meta->req_ids);
-    //         extend(exp_ids, meta->exp_ids);
-    //         extend(attn_dp_ranks, meta->attn_dp_ranks);
-    //         extend(prefill_poss, meta->prefill_poss);
-    //     }
-
-    //     return std::make_shared<Metadata>(Metadata {
-    //         shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, prefill_poss
-    //     });
-    // }
 
     void step_layer() {
         this->layer_id ++;
@@ -381,21 +347,21 @@ struct Metadata {
     void duplicate_topk(int topk) {
         if (topk == 1)
             return;
-        std::vector<int> new_req_ids, new_prefill_poss, new_attn_dp_ranks;
+        std::vector<int> new_req_ids, new_init_prefill_lens, new_attn_dp_ranks;
         int n = req_ids.size();
         new_req_ids.reserve(n * topk);
-        new_prefill_poss.reserve(n * topk);
+        new_init_prefill_lens.reserve(n * topk);
         new_attn_dp_ranks.reserve(n * topk);
 
         for (int j = 0; j < topk; j++) {
             for (int i = 0; i < n; i++) {
                 new_req_ids.push_back(req_ids[i]);
-                new_prefill_poss.push_back(prefill_poss[i]);
+                new_init_prefill_lens.push_back(init_prefill_lens[i]);
                 new_attn_dp_ranks.push_back(attn_dp_ranks[i]);
             }
         }
         req_ids = std::move(new_req_ids);
-        prefill_poss = std::move(new_prefill_poss);
+        init_prefill_lens = std::move(new_init_prefill_lens);
         attn_dp_ranks = std::move(new_attn_dp_ranks);
         shape[0] *= topk;
     }
@@ -426,7 +392,7 @@ struct Metadata {
         MOVE_INT(exp_ids);
         MOVE_INT(req_ids);
         MOVE_INT(attn_dp_ranks);
-        MOVE_INT(prefill_poss);
+        MOVE_INT(init_prefill_lens);
         if (!topk_weights.empty()) {
             MOVE_FLOAT(topk_weights);
         }
@@ -435,19 +401,21 @@ struct Metadata {
     }
 
     std::vector<int> sort_by_prefill_order() {
-        // TODO: deal with multiple prefill tokens
         std::vector<int> rank(req_ids.size()), mapping(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++)
             rank[i] = i;
         std::sort(
             rank.begin(), rank.end(),
             [&](const int i, const int j) {
-                return (attn_dp_ranks[i] != attn_dp_ranks[j]) ? attn_dp_ranks[i] < attn_dp_ranks[j] : 
-                    (prefill_poss[i] < 0 || prefill_poss[j] < 0) ?
-                        prefill_poss[i] > prefill_poss[j] :
-                        (prefill_poss[i] == prefill_poss[j] ? 
-                            req_ids[i] < req_ids[j] :
-                            prefill_poss[i] < prefill_poss[j]);
+                ASSERT (0 <= i && i < req_ids.size());
+                ASSERT (0 <= j && j < req_ids.size());
+                if (attn_dp_ranks[i] != attn_dp_ranks[j]) {
+                    return attn_dp_ranks[i] < attn_dp_ranks[j];
+                }
+                if (init_prefill_lens[i] == -1 || init_prefill_lens[j] == -1) {
+                    return init_prefill_lens[i] > init_prefill_lens[j];
+                }
+                return req_ids[i] < req_ids[j];
             }
         );
         for (int i = 0; i < req_ids.size(); i ++)
@@ -468,7 +436,7 @@ struct Metadata {
                     slice_vector(req_ids, 0, p),
                     slice_vector(exp_ids, 0, p),
                     slice_vector(attn_dp_ranks, 0, p),
-                    slice_vector(prefill_poss, 0, p),
+                    slice_vector(init_prefill_lens, 0, p),
                     topk_weights.empty() ? std::vector<float>{} : slice_vector(topk_weights, 0, p)
                 }
             ),
@@ -480,7 +448,7 @@ struct Metadata {
                     slice_vector(req_ids, p, -1),
                     slice_vector(exp_ids, p, -1),
                     slice_vector(attn_dp_ranks, p, -1),
-                    slice_vector(prefill_poss, p, -1),
+                    slice_vector(init_prefill_lens, p, -1),
                     topk_weights.empty() ? std::vector<float>{} : slice_vector(topk_weights, p, -1)
                 }
             )
@@ -491,7 +459,7 @@ struct Metadata {
         int topk = tokens[0].count();
         int n = tokens.size();
 
-        std::vector<int> req_ids, exp_ids, attn_dp_ranks, prefill_poss;
+        std::vector<int> req_ids, exp_ids, attn_dp_ranks, init_prefill_lens;
         std::vector<float> topk_weights(n * topk);
         std::vector<size_t> shape = {n * topk, tokens[0].topk_tensors[0].size(0)};
         std::string dtype = "bf16";
@@ -499,16 +467,16 @@ struct Metadata {
         for (int i = 0; i < n; i++) {
             auto &token = tokens[i];
             req_ids.push_back(token.seq_id);
-            exp_ids.push_back(token.prefill_pos);
+            exp_ids.push_back(token.init_prefill_len);
             attn_dp_ranks.push_back(token.attn_dp_rank);
-            prefill_poss.push_back(token.prefill_pos);
+            init_prefill_lens.push_back(token.init_prefill_len);
             for (int k = 0; k < topk; k ++) {
                 topk_weights[k * n + i] = token.topk_weights[k];
             }
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, prefill_poss, topk_weights
+            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
         });
     }
 
@@ -518,7 +486,7 @@ struct Metadata {
         std::vector<TokenTopKInfo> tokens;
         tokens.reserve(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++) {
-            tokens.emplace_back(req_ids[i], prefill_poss[i], attn_dp_ranks[i]);
+            tokens.emplace_back(req_ids[i], init_prefill_lens[i], attn_dp_ranks[i]);
         }
         return tokens;
     }
@@ -623,18 +591,7 @@ struct AttentionBatchMetadata {
 
     std::vector<int> seq_ids; // per seq, length of (num_prefill_seqs + num_decode_tokens)
 
-    /*
-    |----------seq_len----------|
-    | last chunk  | this chunk  |
-    |-------------|-------------|
-    |-context_len-|
-                  |--query_len--|
-
-    context = seq - query
-    */
-
-    std::vector<int> prefill_seq_len; // per perfill seq, length of (num_prefill_seqs)
-    std::vector<int> prefill_query_len; // per perfill seq, length of (num_prefill_seqs)
+    std::vector<int> init_prefill_lens; // per perfill seq, length of (num_prefill_seqs)
 
     std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
@@ -667,13 +624,11 @@ struct AttentionBatchMetadata {
             Split the Metadata into [0, p) and [p, n)
         */
 
-        // TODO(hogura|20241206): here we assume #prefill_len=1
         ASSERT(num_prefill_tokens == num_prefill_seqs);
         ASSERT(p > 0);
         if (p < num_prefill_tokens) {
             ASSERT(seq_ids.size() >= p);
-            ASSERT(prefill_seq_len.size() >= p);
-            ASSERT(prefill_query_len.size() >= p);
+            ASSERT(init_prefill_lens.size() >= p);
             return std::make_pair(
                 std::make_shared<AttentionBatchMetadata> (
                     AttentionBatchMetadata {
@@ -684,8 +639,7 @@ struct AttentionBatchMetadata {
                         p,
                         0,
                         slice_vector(seq_ids, 0, p),
-                        slice_vector(prefill_seq_len, 0, p),
-                        slice_vector(prefill_query_len, 0, p),
+                        slice_vector(init_prefill_lens, 0, p),
                         !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, 0, p)
@@ -700,8 +654,7 @@ struct AttentionBatchMetadata {
                         num_prefill_tokens - p,
                         num_decode_tokens,
                         slice_vector(seq_ids, p, -1),
-                        slice_vector(prefill_seq_len, p, -1),
-                        slice_vector(prefill_query_len, p, -1),
+                        slice_vector(init_prefill_lens, p, -1),
                         !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, p, -1)
@@ -719,8 +672,7 @@ struct AttentionBatchMetadata {
                         num_prefill_tokens,
                         p - num_prefill_tokens,
                         slice_vector(seq_ids, 0, p),
-                        prefill_seq_len,
-                        prefill_query_len,
+                        init_prefill_lens,
                         !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
                         slice_vector(attn_dp_ranks, 0, p),
@@ -735,7 +687,6 @@ struct AttentionBatchMetadata {
                         0,
                         num_decode_tokens - (p - num_prefill_tokens),
                         slice_vector(seq_ids, p, -1),
-                        std::vector<int>{},
                         std::vector<int>{},
                         !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
                         !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
@@ -761,8 +712,7 @@ struct AttentionBatchMetadata {
 
         std::vector<int> new_seq_ids{};
         std::vector<uint8_t> new_attn_dp_ranks{};
-        std::vector<int> new_prefill_seq_len{};
-        std::vector<int> new_prefill_query_len{};
+        std::vector<int> new_init_prefill_lens{};
 
         for (auto &batch: batches) {
             new_prefills_seqs += batch->num_prefill_seqs;
@@ -772,8 +722,7 @@ struct AttentionBatchMetadata {
             for (int i = 0; i < batch->num_prefill_seqs; i++) {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
                 new_attn_dp_ranks.emplace_back(batch->attn_dp_ranks[i]);
-                new_prefill_seq_len.emplace_back(batch->prefill_seq_len[i]);
-                new_prefill_query_len.emplace_back(batch->prefill_query_len[i]);
+                new_init_prefill_lens.emplace_back(batch->init_prefill_lens[i]);
             }
         }
 
@@ -796,8 +745,7 @@ struct AttentionBatchMetadata {
                 new_prefill_tokens,
                 new_decode_tokens,
                 new_seq_ids,
-                new_prefill_seq_len,
-                new_prefill_query_len,
+                new_init_prefill_lens,
                 {}, // expert_ids
                 {}, // topk_weights
                 new_attn_dp_ranks,
@@ -806,7 +754,7 @@ struct AttentionBatchMetadata {
     }
 
     static attn_metadata_t pack_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
-        int new_prefills_seqs = 0;
+        int new_prefill_seqs = 0;
         int new_prefill_tokens = 0;
         int new_decode_tokens = 0;
 
@@ -814,22 +762,20 @@ struct AttentionBatchMetadata {
         int n = tokens.size();
 
         std::vector<int> new_seq_ids{};
-        std::vector<int> new_prefill_seq_len{};
-        std::vector<int> new_prefill_query_len{};
+        std::vector<int> new_init_prefill_lens{};
         std::vector<uint8_t> attn_dp_ranks{};
 
         for (int i = 0; i < n; i++) {
             auto &token = tokens[i];
             new_seq_ids.emplace_back(token.seq_id);
             attn_dp_ranks.emplace_back(token.attn_dp_rank);
-            if (token.prefill_pos == -1) {
+            if (token.init_prefill_len == -1) {
                 new_decode_tokens ++;
             } else {
                 // NOTE: Only considered for prefill length = 1
                 new_prefill_tokens ++;
-                new_prefills_seqs ++;
-                new_prefill_seq_len.emplace_back(1);
-                new_prefill_query_len.emplace_back(1);
+                new_prefill_seqs ++;
+                new_init_prefill_lens.emplace_back(token.init_prefill_len);
             }
         }
 
@@ -840,12 +786,11 @@ struct AttentionBatchMetadata {
                 layer_id,
                 new_shape,
                 "bf16",
-                new_prefills_seqs,
+                new_prefill_seqs,
                 new_prefill_tokens,
                 new_decode_tokens,
                 new_seq_ids,
-                new_prefill_seq_len,
-                new_prefill_query_len,
+                new_init_prefill_lens,
                 {}, // expert_ids
                 {}, // topk_weights
                 attn_dp_ranks // attn_dp_ranks
@@ -859,7 +804,7 @@ struct AttentionBatchMetadata {
         auto layer_id = this->layer_id;
         std::vector<int> req_ids_;
         std::vector<int> attn_dp_ranks_;
-        std::vector<int> prefill_poss_;
+        std::vector<int> init_prefill_lens_;
 
         // DMOE_LOG(INFO) << "To metadata, seq_ids: ";
         // for (int i = 0; i < num_prefill_seqs + num_decode_tokens; i ++)
@@ -867,21 +812,19 @@ struct AttentionBatchMetadata {
         // std::cout << LEND;
         
         for (int i = 0; i < num_prefill_seqs; i ++) {
-            for (int j = 0; j < prefill_seq_len[i]; j ++) {
-                req_ids_.push_back(seq_ids[i]);
-                attn_dp_ranks_.push_back(attn_dp_ranks[i]);
-                prefill_poss_.push_back(j);
-            }
+            req_ids_.push_back(seq_ids[i]);
+            attn_dp_ranks_.push_back(attn_dp_ranks[i]);
+            init_prefill_lens_.push_back(init_prefill_lens[i]);
         }
 
         for (int i = 0; i < num_decode_tokens; i ++) {
             req_ids_.push_back(seq_ids[num_prefill_seqs + i]);
             attn_dp_ranks_.push_back(attn_dp_ranks[num_prefill_seqs + i]);
-            prefill_poss_.push_back(-1);
+            init_prefill_lens_.push_back(-1);
         }
         
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids_, {}, attn_dp_ranks_, prefill_poss_
+            shape, dtype, layer_id, req_ids_, {}, attn_dp_ranks_, init_prefill_lens_
         });
     }
 };
@@ -956,15 +899,10 @@ struct AttentionBatch {
         // std::cerr << std::endl;
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
-                if (a.prefill_pos == -1) {
-                    return false;
+                if (a.init_prefill_len == -1 || b.init_prefill_len == -1) {
+                    return a.init_prefill_len > b.init_prefill_len;
                 }
-                if (b.prefill_pos == -1) {
-                    return true;
-                }
-                if (a.seq_id != b.seq_id)
-                    return a.seq_id < b.seq_id;
-                return a.prefill_pos < b.prefill_pos;
+                return a.seq_id < b.seq_id;
             }
         );
 

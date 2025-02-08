@@ -85,7 +85,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         output_lens[rid] ++;
         this->_active_token_count ++;
 
-        if (meta->prefill_poss[i] == -1) {
+        if (meta->init_prefill_lens[i] == -1) {
             // at decode phase
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
@@ -114,8 +114,8 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // !NOTE(hogura|20241007): 
         // 1. no chunked prefill, directly prefill -> decode;
         // 2. no attn replica, first_attn_id = 0
-        if (new_meta.prefill_poss[i] != -1) {
-            new_meta.prefill_poss[i] = -1;
+        if (new_meta.init_prefill_lens[i] != -1) {
+            new_meta.init_prefill_lens[i] = -1;
         }
     }
 
@@ -221,7 +221,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         output_lens[rid] ++;
         this->_active_token_count ++;
 
-        if (ready_tokens[i].prefill_pos == -1) {
+        if (ready_tokens[i].init_prefill_len == -1) {
             // at decode phase
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
@@ -249,8 +249,8 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // !NOTE(hogura|20241007): 
         // 1. no chunked prefill, directly prefill -> decode;
         // 2. no attn replica, first_attn_id = 0
-        if (new_meta.prefill_poss[i] != -1) {
-            new_meta.prefill_poss[i] = -1;
+        if (new_meta.init_prefill_lens[i] != -1) {
+            new_meta.init_prefill_lens[i] = -1;
         }
     }
 
@@ -285,7 +285,7 @@ Tokenizer::Tokenizer(int device_id,
     MuExpertDispatcher({}, device_id, ParallelConfig(1, 1, cfg.dp, 1, {}), channels, out_channel_infos) {
 }
 
-void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
+void Tokenizer::put_request(int req_id, int init_prefill_len, torch::Tensor tensor, int dp_rank) {
     // TODO(hogura|20241007): set the first attn
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
@@ -296,7 +296,7 @@ void Tokenizer::put_request(int req_id, torch::Tensor tensor, int dp_rank) {
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
         /*attn_ids=*/ {dp_rank},
-        /*prefill_pos=*/ {0},
+        /*init_prefill_lens=*/ {init_prefill_len},
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
 }

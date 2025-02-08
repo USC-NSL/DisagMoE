@@ -746,10 +746,7 @@ void MuAttentionPool::terminate() {
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
-    // for a simple case we consider prefill sequences can only have 1 token,
-    // so all sequences in tensor are complete and can be scheduled immediately
     ASSERT(meta.get() != nullptr);
-    // TODO: support prefill length larger than 1, and maybe deal with chunked prefill
 
     auto shape = meta->shape;
     auto dtype = meta->dtype;
@@ -762,18 +759,16 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
     int num_decode_tokens = 0;
 
     std::vector<int> seq_ids{};
-    std::vector<int> prefill_seq_len{};
-    std::vector<int> prefill_query_len{};
+    std::vector<int> init_prefill_lens{};
     std::vector<uint8_t> attn_dp_ranks{};
 
     ASSERT(meta->req_ids.size() == meta->attn_dp_ranks.size());
 
     for (int i = 0; i < meta->req_ids.size(); i ++) {
-        if (meta->prefill_poss[i] != -1) {
+        if (meta->init_prefill_lens[i] != -1) {
             num_prefill_tokens ++;
             num_prefill_seqs ++;
-            prefill_seq_len.emplace_back(1);
-            prefill_query_len.emplace_back(1);
+            init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
         } else {
             num_decode_tokens ++;
         }
@@ -788,8 +783,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         num_prefill_tokens,
         num_decode_tokens,
         seq_ids,
-        prefill_seq_len,
-        prefill_query_len,
+        init_prefill_lens,
         {}, // expert_ids
         {}, // topk_weights
         attn_dp_ranks
@@ -799,7 +793,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // DMOE_LOG(DEBUG) << "AttnPool processing batch: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
@@ -957,7 +951,7 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
         if (it == this->pool_.end()) {
             this->pool_[seq_id] = TokenTopKInfo(
                 seq_id, 
-                meta->prefill_poss[i], 
+                meta->init_prefill_lens[i], 
                 meta->attn_dp_ranks[i],
                 meta->topk_weights[i],
                 batch.data[i]

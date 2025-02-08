@@ -25,7 +25,7 @@ class TokenMetadata:
     req_id: int
     exp_id: int
     attn_dp_rank: int
-    prefill_pos: int
+    init_prefill_len: int
 
 @dataclass
 class Metadata:
@@ -35,7 +35,7 @@ class Metadata:
     req_ids: List[int]
     exp_ids: List[int]
     attn_dp_ranks: List[int]
-    prefill_poss: List[int]
+    init_prefill_lens: List[int]
     topk_weights: List[float]
 
     def num_tokens(self) -> int:
@@ -73,7 +73,7 @@ class Metadata:
             meta_c.req_ids,
             meta_c.exp_ids,
             meta_c.attn_dp_ranks,
-            meta_c.prefill_poss
+            meta_c.init_prefill_lens
         )
         
     def to_c(self) -> "Metadata_C":
@@ -84,7 +84,7 @@ class Metadata:
         meta_c.req_ids = self.req_ids
         meta_c.exp_ids = self.exp_ids
         meta_c.attn_dp_ranks = self.attn_dp_ranks
-        meta_c.prefill_poss = self.prefill_poss
+        meta_c.init_prefill_lens = self.init_prefill_lens
         return meta_c
     
 
@@ -111,8 +111,7 @@ class AttentionBatchMetadata:
     num_decode_tokens: int
     seq_ids: List[int]
     
-    prefill_seq_len: List[int]
-    prefill_query_len: List[int]
+    init_prefill_lens: List[int]
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
 
@@ -132,8 +131,7 @@ class AttentionBatchMetadata:
         attn_meta.num_prefill_tokens = self.num_prefill_tokens
         attn_meta.num_decode_tokens = self.num_decode_tokens
         attn_meta.seq_ids = self.seq_ids
-        attn_meta.prefill_seq_len = self.prefill_seq_len
-        attn_meta.prefill_query_len = self.prefill_query_len
+        attn_meta.init_prefill_lens = self.init_prefill_lens
         attn_meta.expert_ids = self.expert_ids
         attn_meta.topk_weights = self.topk_weights
         attn_meta.attn_dp_ranks = self.attn_dp_ranks
@@ -149,8 +147,7 @@ class AttentionBatchMetadata:
             meta_c.num_prefill_tokens,
             meta_c.num_decode_tokens,
             meta_c.seq_ids,
-            meta_c.prefill_seq_len,
-            meta_c.prefill_query_len,
+            meta_c.init_prefill_lens,
             meta_c.expert_ids,
             meta_c.topk_weights,
             meta_c.attn_dp_ranks
