@@ -75,13 +75,13 @@ class AttnExecutor(Executor):
     
     def _make_kv_cache(self, num_layers, num_blocks, block_size, num_heads, head_size):
         data_type = self.model_config.dtype
-        self.cache = torch.zeros((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
+        self.cache = torch.randn((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
     
     def profile_execute(self, batch_size: int):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
         kv_cache = None
         for layer_id in range(self.num_layers):
-            positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
+            positions = torch.ones(batch_size, dtype=torch.long, device="cuda")
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
             operator.forward(positions, hidden_states, kv_cache, attn_metadata)
@@ -92,16 +92,16 @@ class AttnExecutor(Executor):
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
-        outputs, top_k_weights, topk_experts = operator.forward(
+        outputs, top_k_weights, topk_ids, reorder_topk_ids = operator.forward(
             positions, 
             hidden_states, 
             self.cache[vid], 
             attn_metadata
         )
-        return outputs, top_k_weights, topk_experts
+        return outputs, top_k_weights, topk_ids, reorder_topk_ids
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
