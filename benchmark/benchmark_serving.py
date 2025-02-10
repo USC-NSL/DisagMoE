@@ -260,17 +260,14 @@ async def benchmark_serving(args):
         metrics.write_to_file(args)
     
     await master.start_scheduler()
-    
     await run_once()
-    
     await master.stop_scheduler()
     
     master.stop_workers()
     
-    step_stats = master.fetch_step_stats()
-    
-    generate_step_trace(args, step_stats)
-    
+    if args.trace:
+        step_stats = master.fetch_step_stats()
+        generate_step_trace(args, step_stats)
     
 def get_args():
     parser = ArgumentParser()
@@ -280,9 +277,7 @@ def get_args():
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
-    parser.add_argument("-c", "--cuda-graph", action="store_true", default=False, help="enable cuda graph for all modules")
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
-    parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")

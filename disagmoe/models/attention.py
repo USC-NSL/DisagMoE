@@ -152,16 +152,6 @@ class MoEAttention(nn.Module):
         
         return permuted_output, reorder_ids
     
-    def random_routing(self, hidden_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Random routing.
-        """
-        batch_size = hidden_states.size(0)
-        expert_logits = torch.rand(batch_size, self.num_experts, device=hidden_states.device)
-        topk_weights, topk_ids = torch.topk(expert_logits, self.top_k, dim=-1)
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-        return topk_weights, topk_ids
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -183,18 +173,13 @@ class MoEAttention(nn.Module):
         output, _ = self.o_proj(attn_output)
         output, residual = self.post_attention_layernorm(output, residual)
         router_logits, _ = self.gate(output)
-
-        # print(f"hidden_states {hidden_states} output {output}, router logits {router_logits}")
+        
+        # random routing
+        random_logits = torch.rand_like(router_logits)
         
         topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
-                                gating_output=router_logits,
+                                gating_output=random_logits,
                                 topk=self.top_k,
                                 renormalize=True)
         
-        # print(f"topk info {topk_weights}, {topk_ids}")
-        
-        topk_weights, topk_ids = self.random_routing(hidden_states)
-
-        # permuted_output, reorder_ids = self.permute_by_exp_ids(output, topk_ids)
-
         return output, topk_weights, topk_ids

@@ -547,8 +547,8 @@ class Engine:
             block_tables=block_table_cuda,
             use_cuda_graph=self.model_config.enable_cuda_graph_attn,
         )
+    
     @nvtx_range("engine.process_batch_attn")
-
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
@@ -578,7 +578,6 @@ class Engine:
         self._timer.stop("preprocess")
         self._timer.start("execute")
         
-        # self._logger.info(f"executing attn {meta_c.seq_ids}")
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
             hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
@@ -586,13 +585,11 @@ class Engine:
             range_push("engine.graph_replay")
             hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
             range_pop()
-
-        torch.cuda.synchronize()
-
+            
         _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-
         hiddens = permute_tokens(hiddens, reorder_ids)
-        torch.cuda.synchronize()
+        
+        self.stream.synchronize()
 
         self._timer.stop("execute")
         self._timer.start("postprocess")
@@ -600,13 +597,11 @@ class Engine:
         new_meta_c = meta_c.to_metadata()
         if self.model_config.top_k > 1:
             new_meta_c.duplicate_topk(self.model_config.top_k)
-            new_meta_c.topk_weights = expert_weights.ravel().tolist()
+            new_meta_c.topk_weights = expert_weights.view(-1).tolist()
 
         # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-        new_meta_c.update_exp_ids(expert_ids.ravel().tolist(), reorder_ids.ravel().tolist())
-        
-        # self._logger.info(f"processed batch attn {meta_c.seq_ids}")
-        # print(f"attn send out: layer {new_meta_c.layer_id}, {hiddens.shape}, {new_meta_c.req_ids}, {new_meta_c.exp_ids}, {len(new_meta_c.topk_weights)}")
+        new_meta_c.update_exp_ids(expert_ids.view(-1).tolist(), reorder_ids.view(-1).tolist())
+
         assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
     
