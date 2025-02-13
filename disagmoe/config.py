@@ -29,6 +29,7 @@ class ModelConfig:
     graph_stride: int = 8
     max_batch_size_attn: int = 256
     max_batch_size_expert: int = 384
+    max_seq_len: int = 4096
     
     # FIXME(hogura|20250110): temporary field, should be moved to other place
     enable_trace: bool = False
