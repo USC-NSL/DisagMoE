@@ -5,6 +5,7 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat, TraceContext
+from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -96,8 +97,8 @@ def launch(args):
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
-    model_config.enable_cuda_graph_attn = args.cuda_graph or args.cuda_graph_attn
-    model_config.enable_cuda_graph_expert = args.cuda_graph or args.cuda_graph_expert
+    model_config.enable_cuda_graph_attn = args.cuda_graph_attn
+    model_config.enable_cuda_graph_expert = False
     model_config.enable_grouped_gemm = not args.serial_gemm
     model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
@@ -241,19 +242,26 @@ async def benchmark_serving(args):
     print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     
     async def run_once():
+        GeneratorType = get_generator(args.generator_type)
+        generator = GeneratorType(args.rate, 1, args.input_len)
+        workload = generator.generate(args.num_requests)
+        
         pbar = tqdm.tqdm(total=args.num_requests)
-        benchmark_start_time = time.perf_counter()
+        t_start = time.perf_counter()
         tasks = []
-        for _ in range(args.num_requests):
-            resp = master.put_single_request(args.input_len)
+        for i in range(args.num_requests):
+            t_elapsed = time.perf_counter() - t_start
+            arrival, input_len = workload[i]
+            if t_elapsed < arrival:
+                await asyncio.sleep(arrival - t_elapsed)
+            resp = master.put_single_request(input_len)
             tasks.append(asyncio.create_task(process_response(resp, pbar)))
-            await asyncio.sleep(args.rate)
         
         results: List[SloStat] = await asyncio.gather(*tasks)
-        benchmark_duration = time.perf_counter() - benchmark_start_time
+        t_duration = time.perf_counter() - t_start
         pbar.close()
 
-        metrics = analyze_results(results, benchmark_duration)
+        metrics = analyze_results(results, t_duration)
 
         print(metrics)
 
@@ -282,6 +290,7 @@ def get_args():
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
+    parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
@@ -326,7 +335,7 @@ def main():
         launch(args)
         asyncio.run(benchmark_serving(args))
     except Exception as e:
-        print("Error: failed to run benchmark, with exception:", e)
+        print("Error: failed to run benchmark, with exception:", e.with_traceback())
         BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":
