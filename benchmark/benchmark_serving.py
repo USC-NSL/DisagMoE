@@ -55,7 +55,8 @@ class BenchmarkMetrics:
         try:
             import pandas as pd
             if not os.path.exists(filename):
-                df = pd.DataFrame(columns=["num_requests", "output_len",
+                df = pd.DataFrame(columns=["num_requests", "rate", "dist_type",
+                                           "output_len",
                                            "step_attn", "DP_size", "max_batch_size_attn", 
                                            "step_expert", "EP_size", "max_batch_size_expert",
                                            "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
@@ -66,6 +67,8 @@ class BenchmarkMetrics:
                     df = pd.read_excel(filename)
             new_row = {
                 "num_requests": args.num_requests,
+                "rate": args.rate,
+                "dist_type": args.generator_type,
                 "output_len": args.output_len,
                 "step_attn": args.step_attn,
                 "DP_size": args.dp_size,
