@@ -96,8 +96,8 @@ def launch(args):
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
     model_config.tp_enable_inter_group = False
-    model_config.enable_cuda_graph_attn = args.cuda_graph or args.cuda_graph_attn
-    model_config.enable_cuda_graph_expert = args.cuda_graph or args.cuda_graph_expert
+    model_config.enable_cuda_graph_attn = args.cuda_graph_attn
+    model_config.enable_cuda_graph_expert = False
     model_config.enable_grouped_gemm = not args.serial_gemm
     model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
