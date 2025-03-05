@@ -127,22 +127,22 @@ class Engine:
             self.scheduler = self.attn_scheduler
             self.executor = self.attn_executor
             self.dispatcher = self.attn_dispatcher
+            self._process_batch = self.process_batch_attn
         elif self.has_expert:
             self.scheduler = self.expert_scheduler
             self.executor = self.expert_executor
             self.dispatcher = self.expert_dispatcher
+            self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
     
     def _build_executor(self):
         if self.has_expert:
             self.expert_executor = ExpertsExecutor(self.model_config)
-            self._process_batch = self.process_batch_expert
             # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
             self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
             for i in range(self.model_config.num_experts_per_rank):
                 self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
-                
         if self.has_attn:
             self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
             if self.cache_config.num_gpu_blocks is None:
@@ -150,7 +150,6 @@ class Engine:
                 self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
             self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
             self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-            self._process_batch = self.process_batch_attn
             self.block_mgr = BlockManager_C(
                 self.cache_config.block_size, 
                 self.cache_config.num_gpu_blocks, 
@@ -248,16 +247,14 @@ class Engine:
         self._logger.info("core launched")
     
     def start(self):
-        
         # attention TP is deprecated
         # if self.is_attn_worker:
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher)
         
-        if self.has_attn and self.has_expert:
+        if self.engine_type == EngineType.HYBRID:
             self.loop_thread = Thread(target=self.dual_module_loop)
         else:
-            # self._switch_scheduler()
             self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
@@ -773,7 +770,6 @@ class Engine:
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
         while not self.end_flag:
-            # self.scheduler.wait_for_new_requests()  # !NOTE(hogura|20241008): will block this process!
             self._timer.start("schedule")
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
