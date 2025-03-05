@@ -6,6 +6,11 @@
 #include <set>
 #include <memory>
 
+struct SamplerStepInfo {
+    int num_tokens;
+    float time_stamp;
+};
+
 class Sampler: public MuExpertDispatcher {
 protected:
     // channels info
@@ -23,6 +28,8 @@ protected:
     std::set<int> finished_seqs; // sequences that have reached EOS and ended another round of inference
     std::map<int, SloStat> slo_stats;
     std::map<int, int> output_lens;
+
+    std::vector<SamplerStepInfo> step_infos; 
 
     int max_output_len;
 
@@ -51,6 +58,8 @@ public:
     void start();
 
     std::vector<SloStat> fetch_finished_slo_stats();
+
+    std::vector<SamplerStepInfo> fetch_step_infos();
 
     std::map<int, SloStat> wait_slo_stats(int n_request);
 };

@@ -55,7 +55,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
         .def("start", &Sampler::start)
         .def("wait_slo_stats", &Sampler::wait_slo_stats)
-        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats);
+        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats)
+        .def("fetch_step_infos", &Sampler::fetch_step_infos);
 
     py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
         .def("start", &TopKSampler::start)
@@ -96,6 +97,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("t_prefill", &SloStat::t_prefill)
         .def_readwrite("t_decode", &SloStat::t_decode)
         .def_readwrite("t_tokens", &SloStat::t_tokens);
+
+    REGISTER_STRUCT(SamplerStepInfo)
+        .def_readwrite("num_tokens", &SamplerStepInfo::num_tokens)
+        .def_readwrite("time_stamp", &SamplerStepInfo::time_stamp);
 
     py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
         .def(py::init<>())

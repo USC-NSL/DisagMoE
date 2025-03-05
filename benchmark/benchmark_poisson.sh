@@ -1,5 +1,5 @@
 OUTPUT_LEN=1024
-N_TIME=180
+N_TIME=120
 N_NODE=1
 N_GPU_PER_NODE=4
 NUM_LAYERS=16
@@ -8,12 +8,14 @@ MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=4
 step_attn=2
-step_exp=1
 dp_size=1
+step_exp=1
 ep_size=2
-REPORT_DIR=/home/hogura1999/DisagMoE/reports/poisson.csv
+REPORT_DIR=/home/hogura1999/DisagMoE/reports/distributed_poisson.csv
 
-for ((rate=1; rate<=20; rate+=1)); do
+RATES=(1 10 20 30)
+
+for rate in "${RATES[@]}"; do
     n_req=$((rate * N_TIME))
     echo "!!![bash script]!!!" running with rate: $rate
     python benchmark/benchmark_serving.py \
@@ -33,5 +35,6 @@ for ((rate=1; rate<=20; rate+=1)); do
         -c \
         --file $REPORT_DIR \
         --generator-type poisson \
-        --rate $rate
+        --rate $rate \
+        --analyze-throughput
 done

@@ -4,7 +4,7 @@ from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
-from disagmoe.frontend.datatypes import SloStat, TraceContext
+from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
@@ -237,6 +237,13 @@ def generate_step_trace(args,
         json.dump(metrics, f)
 
 
+def analyze_throughput(args, sampler_step_infos: List[SamplerStepInfo]):
+    from benchmark.plotter.namer import get_sampler_step_name
+    sampler_fn = get_sampler_step_name(args)
+    sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
+    sampler_df.to_csv(sampler_fn, index=False)
+
+
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
     
@@ -280,6 +287,10 @@ async def benchmark_serving(args):
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
     
+    if args.analyze_throughput:
+        sampler_step_infos = master.fetch_sampler_step_infos()
+        analyze_throughput(args, sampler_step_infos)
+    
 def get_args():
     parser = ArgumentParser()
     
@@ -294,6 +305,7 @@ def get_args():
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
     parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
+    parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")

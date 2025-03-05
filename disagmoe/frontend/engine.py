@@ -7,7 +7,8 @@ from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, 
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
-                                         AttentionBatchMetadata, SloStat, TraceContext)
+                                         AttentionBatchMetadata, SloStat, TraceContext,
+                                         SamplerStepInfo)
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
@@ -890,6 +891,9 @@ class SamplerEngine(Engine):
         # if len(results) > 0:
         #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
+    
+    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
+        return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
     def set_sampling_params(self, max_output_len: int):
         self.max_output_len = max_output_len

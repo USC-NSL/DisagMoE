@@ -79,8 +79,9 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
+    int num_tokens = meta->req_ids.size();
 
-    for (int i = 0; i < meta->req_ids.size(); i ++) {
+    for (int i = 0; i < num_tokens; i ++) {
         int rid = meta->req_ids[i];
         output_lens[rid] ++;
         this->_active_token_count ++;
@@ -143,6 +144,8 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
+    this->step_infos.push_back(SamplerStepInfo {num_tokens, clock()});
+
     DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
 
@@ -155,6 +158,11 @@ std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
     }
     finished_seqs.clear();
     return res;
+}
+
+std::vector<SamplerStepInfo> Sampler::fetch_step_infos() {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    return std::move(step_infos);
 }
 
 std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {

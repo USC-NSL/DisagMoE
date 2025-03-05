@@ -187,3 +187,15 @@ class TraceContext:
             ctx_c.t_dur,
             ctx_c.track_id
         )
+        
+@dataclass
+class SamplerStepInfo:
+    num_tokens: int
+    time_stamp: float
+    
+    @staticmethod
+    def from_c(step_c: "SamplerStepInfo_C") -> "SamplerStepInfo":
+        return SamplerStepInfo(
+            step_c.num_tokens,
+            step_c.time_stamp
+        )

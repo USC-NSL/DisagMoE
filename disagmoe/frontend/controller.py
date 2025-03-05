@@ -8,7 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
-from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
+from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, SamplerStepInfo
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
@@ -303,6 +303,9 @@ class Controller:
 
     def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
+        
+    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
+        return ray.get(self.sampler_worker.fetch_sampler_step_infos.remote())
         
     async def poll_finished_results(self) -> List[SloStat]:
         print(f"master start polling request")
