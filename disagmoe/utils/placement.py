@@ -94,7 +94,7 @@ class ModelPlacement:
         )))
         
     def add_edge(self, start, end):
-        assert start != end
+        # assert start != end
         if end not in self.in_device_ids:
             self.in_device_ids[end] = []
         if start not in self.out_device_ids:

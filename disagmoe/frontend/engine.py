@@ -38,6 +38,7 @@ from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer,
 class EngineType(enum.Enum):
     ATTENTION = enum.auto()
     EXPERT = enum.auto()
+    HYBRID = enum.auto()
     TOKENIZER = enum.auto()
     SAMPLER = enum.auto()
 
@@ -48,11 +49,22 @@ class Engine:
                  executor: Optional[Executor] = None, 
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
-        self.scheduler: Scheduler = scheduler
-        self.attn_scheduler: Scheduler = scheduler
-        self.executor: Executor = executor
-        self.dispatcher: MuDispatcher = dispatcher
+        
+        assert executor is None, "Executor is initialization should be done in setup_engine"
+        assert scheduler is None, "Scheduler is initialization should be done in setup_engine"
+        assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
+        
         self.device_id = device_id
+        self.scheduler: Scheduler = None
+        self.executor: Executor = None
+        self.dispatcher: MuDispatcher = None
+        self.attn_scheduler: Scheduler = None
+        self.expert_scheduler: Scheduler = None
+        self.attn_executor: AttnExecutor = None
+        self.expert_executor: ExpertsExecutor = None
+        self.attn_dispatcher: MuDispatcher = None
+        self.expert_dispatcher: MuDispatcher = None
+        
         self.end_flag = False
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
@@ -61,9 +73,9 @@ class Engine:
         if device_id is not None:
             self._logger = get_logger(f"engine{device_id}")
             
-        self.loop_thread = Thread(target=self.loop)
+        self.loop_thread = None
         
-        self._process_batch: Callable
+        self._process_batch: Callable = None
         
         self.block_mgr: BlockManager = None
         
@@ -80,12 +92,16 @@ class Engine:
         self._timer = Timer()
 
     @property
-    def is_attn(self):
-        return self.engine_type == EngineType.ATTENTION
+    def has_attn(self):
+        return self.engine_type == EngineType.ATTENTION or self.engine_type == EngineType.HYBRID
+    
+    @property
+    def has_expert(self):
+        return self.engine_type == EngineType.EXPERT or self.engine_type == EngineType.HYBRID
     
     @property
     def is_attn_driver(self):
-        return self.is_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
     
     @property
     def is_attn_worker(self):
@@ -93,7 +109,7 @@ class Engine:
     
     @property
     def _tp_enabled(self):
-        return self.is_attn and self.model_config.tp_size > 1
+        return self.has_attn and self.model_config.tp_size > 1
     
     @property
     def _inter_group_tp_enabled(self):
@@ -102,6 +118,52 @@ class Engine:
     @property
     def _intra_group_tp_enabled(self):
         return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
+    
+    def _delegate_modules(self):
+        if self.has_attn and self.has_expert:
+            return
+        
+        if self.has_attn:
+            self.scheduler = self.attn_scheduler
+            self.executor = self.attn_executor
+            self.dispatcher = self.attn_dispatcher
+        elif self.has_expert:
+            self.scheduler = self.expert_scheduler
+            self.executor = self.expert_executor
+            self.dispatcher = self.expert_dispatcher
+        else:
+            assert False, "No engine type is set"
+    
+    def _build_executor(self):
+        if self.has_expert:
+            self.expert_executor = ExpertsExecutor(self.model_config)
+            self._process_batch = self.process_batch_expert
+            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+            for i in range(self.model_config.num_experts_per_rank):
+                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+                
+        if self.has_attn:
+            self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+            if self.cache_config.num_gpu_blocks is None:
+                self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
+                self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
+            self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
+            self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
+            self._process_batch = self.process_batch_attn
+            self.block_mgr = BlockManager_C(
+                self.cache_config.block_size, 
+                self.cache_config.num_gpu_blocks, 
+                self.cache_config.num_reserved_blocks
+            )
+            if self._intra_group_tp_enabled:
+                self._create_broadcast_buffers()
+                
+        self._warmup()
+        if self.has_attn and self.model_config.enable_cuda_graph_attn:
+            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
+            self.cuda_graph_executor.create_cuda_graph_buffers()
+            self.cuda_graph_executor.capture()
         
     def init_core(
             self,
@@ -127,30 +189,6 @@ class Engine:
         self.model_config.layer_ids = layer_ids
         self.device_group_ids = device_group_ids
         
-        if self.engine_type == EngineType.ATTENTION:
-            self.executor = AttnExecutor.build(self.model_config, self.cache_config)
-            
-            if self.cache_config.num_gpu_blocks is None:
-                self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
-                self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
-            self.executor.initialize_cache(self.cache_config.num_gpu_blocks)
-            self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-            self._process_batch = self.process_batch_attn
-            self.block_mgr = BlockManager_C(
-                self.cache_config.block_size, 
-                self.cache_config.num_gpu_blocks, 
-                self.cache_config.num_reserved_blocks
-            )
-            if self._intra_group_tp_enabled:
-                self._create_broadcast_buffers()
-        elif self.engine_type == EngineType.EXPERT:
-            self.executor = ExpertsExecutor(self.model_config)
-            self._process_batch = self.process_batch_expert
-            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
-            for i in range(self.model_config.num_experts_per_rank):
-                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
-                
         if not self.model_config.tp_enable_inter_group:
             device_group_ids = None
             out_device_group_ids = {}
@@ -161,10 +199,11 @@ class Engine:
                           device_group_ids, expert_ranks, local_attn_dp_rank}")
         if device_group_ids is None:
             device_group_ids = []
-        self.scheduler, self.attn_scheduler, self.dispatcher = init_engine(
+        self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
             self.device_id,
             self.model_config.top_k,
-            self.is_attn,
+            self.has_attn,
+            self.has_expert,
             layer_ids,
             # P2P Channels
             in_device_ids,
@@ -189,36 +228,37 @@ class Engine:
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
         else:
-            if self.is_attn:
+            if self.has_attn and self._intra_group_tp_enabled:
                 dist.init_process_group(backend="nccl", 
                                         world_size=len(self.device_group_ids), 
                                         rank=self.rank_in_group,
                                         init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
         
-        if self.is_attn:
-            self.attn_scheduler.set_max_batch_size(self.max_batch_size)
-        else:
-            self.scheduler.set_max_batch_size(self.max_batch_size)
-            self.static_mappings_gpu = torch.zeros((self.max_batch_size, ), dtype=torch.int64, device="cuda")
+        if self.has_attn:
+            self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
         
-        self._warmup()
-        if self.is_attn and self.model_config.enable_cuda_graph_attn:
-            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.executor)
-            self.cuda_graph_executor.create_cuda_graph_buffers()
-            self.cuda_graph_executor.capture()
+        if self.has_expert:
+            self.expert_scheduler.set_max_batch_size(self.expert_max_batch_size)
+            self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
+            
+        self._build_executor()
+        
+        self._delegate_modules()
         
         self._logger.info("core launched")
-        
-    def _switch_scheduler(self):
-        if self.scheduler is None:
-            self.scheduler = self.attn_scheduler
     
     def start(self):
-        if self.is_attn_worker:
-            self.loop_thread = Thread(target=self.attn_worker_loop)
+        
+        # attention TP is deprecated
+        # if self.is_attn_worker:
+        #     self.loop_thread = Thread(target=self.attn_worker_loop)
+        start_engine(self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher)
+        
+        if self.has_attn and self.has_expert:
+            self.loop_thread = Thread(target=self.dual_module_loop)
         else:
-            start_engine(self.scheduler, self.attn_scheduler, self.dispatcher)
-            self._switch_scheduler()
+            # self._switch_scheduler()
+            self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
 
@@ -254,9 +294,12 @@ class Engine:
         self.engine_type = engine_type
         self.model_config = model_config
         self.cache_config = cache_config
-        self.max_batch_size = model_config.max_batch_size_attn \
-            if engine_type == EngineType.ATTENTION \
-            else model_config.max_batch_size_expert
+        
+        if self.has_attn:
+            self.attn_max_batch_size = model_config.max_batch_size_attn 
+            
+        if self.has_expert:
+            self.expert_max_batch_size = model_config.max_batch_size_expert
         
         self._logger.info(f"engine setup. {self.engine_type, model_config}")
     
@@ -264,10 +307,10 @@ class Engine:
         return self.cache_config.num_gpu_blocks
     
     def determine_kv_cache_blocks(self) -> int:
-        assert isinstance(self.executor, AttnExecutor)
+        assert isinstance(self.attn_executor, AttnExecutor)
         torch.cuda.empty_cache()
         
-        self.executor.profile_execute(self.max_batch_size)      
+        self.attn_executor.profile_execute(self.attn_max_batch_size)      
         torch.cuda.synchronize()  
         
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
@@ -281,9 +324,10 @@ class Engine:
         return num_gpu_blocks
             
     def _warmup(self):
-        if self.is_attn:
+        if self.has_attn:
             self._warmup_attn()
-        else:
+        
+        if self.has_expert:
             self._warmup_experts()
             
     def _warmup_attn(self):
@@ -291,13 +335,13 @@ class Engine:
         _enable_cuda_graph_attn = self.model_config.enable_cuda_graph_attn
         self.model_config.enable_cuda_graph_attn = False
         
-        input = torch.zeros((self.max_batch_size, self.model_config.hidden_size), device="cuda")
-        positions = torch.zeros(self.max_batch_size, dtype=torch.long, device="cuda")
-        meta_py = make_dummy_meta(0, self.max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.max_batch_size, mocking=True)
+        input = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
+        positions = torch.zeros(self.attn_max_batch_size, dtype=torch.long, device="cuda")
+        meta_py = make_dummy_meta(0, self.attn_max_batch_size)
+        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.attn_max_batch_size, mocking=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                self.executor.execute(layer_id, positions, input, meta)
+                self.attn_executor.execute(layer_id, positions, input, meta)
         
         # restore the original setting
         self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
@@ -305,26 +349,22 @@ class Engine:
     def _warmup_experts(self):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
         
-        input = torch.zeros((self.max_batch_size, self.model_config.hidden_size), device="cuda")
-        batch_sizes = torch.tensor([self.max_batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
+        input = torch.zeros((self.expert_max_batch_size, self.model_config.hidden_size), device="cuda")
+        batch_sizes = torch.tensor([self.expert_max_batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
             dtype=torch.int64,
             # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
             device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _ = self.executor.execute(layer_id, self.max_batch_size, input, batch_sizes)
+                _ = self.expert_executor.execute(layer_id, self.expert_max_batch_size, input, batch_sizes)
             
     def _create_broadcast_buffers(self):
-        self.buffer_meta = torch.empty((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
-        self.buffer_tensor = torch.empty((self.max_batch_size, self.model_config.hidden_size), device="cuda")
+        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
+        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
         
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
-        shape = (self.max_batch_size + self.max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
-        self.buffer_attn_meta = torch.empty(shape, dtype=torch.int32, device="cuda")
-        
-        self.buffer_meta.fill_(0)
-        self.buffer_tensor.fill_(0)
-        self.buffer_attn_meta.fill_(0)
+        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
+        self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
         
     def _wait_async_handles(self):
         for h in self.handles:
@@ -552,14 +592,7 @@ class Engine:
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        assert isinstance(self.executor, AttnExecutor)
-
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-
-        # self._logger.debug(f"process batch AttentionBatchMetadata: {meta_c}")
-        
-        # self._logger.info(f"process batch attn {meta_c.seq_ids}")
-        
         meta_py = AttentionBatchMetadata.from_c(meta_c)
         assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
 
@@ -580,7 +613,7 @@ class Engine:
         
         if not self.model_config.enable_cuda_graph_attn:
             # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
             range_push("engine.graph_replay")
             hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
@@ -609,10 +642,6 @@ class Engine:
     def process_batch_expert(self, 
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        assert isinstance(self.executor, ExpertsExecutor)
-        
-        # self._logger.info(f"process batch expert: layer {meta_c.layer_id}, {meta_c.req_ids}, {meta_c.exp_ids}, {meta_c.topk_weights}")
-        
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
@@ -634,22 +663,7 @@ class Engine:
         self._timer.start("execute")
         
         # self._logger.info(f"executing expert {meta_c.req_ids}")
-        if not self.model_config.enable_cuda_graph_expert:
-            output = self.executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-        else:
-            torch.cuda.synchronize()
-            
-            range_push("engine.input_copy")
-            self.static_input[:num_tokens].copy_(input_tensor)
-            self.static_batch_sizes.copy_(batch_sizes)
-            graph_id, graph_batch_size = get_graph_batch_size(num_tokens, self.graph_batch_sizes)
-            range_pop()
-            
-            range_push("engine.graph_replay")
-            self._logger.info(f"layer id {meta_c.layer_id}, graph_id {graph_id}, graph_batch_size {graph_batch_size}")
-            self.graphs[meta_c.layer_id][graph_id].replay()
-            output = self.static_output[:num_tokens]
-            range_pop()
+        output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
         
         self._timer.stop("execute")
         self._timer.start("postprocess")
@@ -679,7 +693,7 @@ class Engine:
         return output, meta_c
 
     @nvtx_range("Engine.post_process")
-    def post_process(self, output: Tensor, meta: Metadata) -> None:
+    def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
         assert not self.is_attn_worker
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
@@ -691,7 +705,7 @@ class Engine:
         self.stream.synchronize()
         self._timer.stop("stream_sync")
         range_pop()
-        self.dispatcher.put(batch, 0)
+        dispatcher.put(batch, 0)
 
     @torch.inference_mode()
     def attn_worker_loop(self):
@@ -709,7 +723,7 @@ class Engine:
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
             self._logger.info(f"executing attn {meta}")
-            self.executor.execute(layer_id, positions, input_tensor, meta)
+            self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
     def stats_pre_process(self, batch: TensorBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
@@ -752,8 +766,8 @@ class Engine:
             self._metric.update("queueing_batches", queueing_batches - 1)
 
     @torch.inference_mode()
-    def loop(self):
-        self._logger.info("starting engine loop")
+    def single_module_loop(self):
+        self._logger.info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -778,9 +792,41 @@ class Engine:
             
             self.stats_pre_process(batch)
             output, meta = self._process_batch(meta, batch.data)
-            self.post_process(output, meta)
+            self.post_process(output, meta, self.dispatcher)
             self.stats_post_process(batch)
     
+    def dual_module_loop(self):
+        self._logger.info("starting dual_module_loop")
+        torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_device("cuda:0")
+        torch.cuda.set_stream(self.stream)
+        disagmoe_recorder_create()
+        
+        def step(scheduler, processor, dispatcher):
+            batch_info = scheduler.schedule()
+            if batch_info.data is None:
+                return
+            self._metric.step()
+        
+            range_push("Engine.schedule_stream_sync")
+            self.stream.synchronize()
+            range_pop()
+            
+            self._timer.stop("schedule")
+            self._timer.start("preprocess")
+            
+            batch = TensorBatch.from_c(batch_info)
+            meta: Metadata = batch.metadata
+            
+            self.stats_pre_process(batch)
+            output, meta = processor(meta, batch.data)
+            self.post_process(output, meta, dispatcher)
+            self.stats_post_process(batch)
+            
+        while not self.end_flag:
+            step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
+            step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
+            
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
         """
             return: step_stats, profile_contexts, metric
@@ -796,7 +842,9 @@ class Engine:
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
-        if self.is_attn and (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
+        if not self.has_attn:
+            return
+        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens

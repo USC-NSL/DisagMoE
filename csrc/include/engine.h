@@ -10,10 +10,11 @@
 using std::vector;
 using std::string;
 
-std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
+std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     int top_k,
-    bool is_attn,
+    bool has_attn,
+    bool has_expert,
     const std::vector<int> &layer_ids,
     // P2P Channels
     const std::vector<int> &in_device_ids,
@@ -31,7 +32,7 @@ std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
     int local_attn_dp_rank
 );
 
-void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);
+void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatcher, scheduler_t expert_scheduler, mu_dispatcher_t expert_dispatcher);
 
 Sampler_t init_sampler(
     int device_id,
