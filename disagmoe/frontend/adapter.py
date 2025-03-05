@@ -21,6 +21,9 @@ class Scheduler:
     def get_pool_snapshot(self) -> List[int]:
         ...
 
+    def get_cur_queueing_delay(self) -> float:
+        ...
+
 class MuDispatcher:
         
     def put(self, batch: TensorBatch, rank: int):

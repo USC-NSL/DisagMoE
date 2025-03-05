@@ -237,12 +237,22 @@ def generate_step_trace(args,
         json.dump(metrics, f)
 
 
-def analyze_throughput(args, sampler_step_infos: List[SamplerStepInfo]):
-    from benchmark.plotter.namer import get_sampler_step_name
+def analyze_throughput(args, 
+                       sampler_step_infos: List[SamplerStepInfo], 
+                       attn_queueing_delays: List[List[float]],
+                       exp_queueing_delays: List[List[float]]):
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name
     sampler_fn = get_sampler_step_name(args)
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
     sampler_df.to_csv(sampler_fn, index=False)
-
+    
+    attn_fn = get_worker_queueing_delay_name(args, "attn")
+    attn_df = pd.DataFrame(attn_queueing_delays)
+    attn_df.to_csv(attn_fn, index=False)
+    
+    exp_fn = get_worker_queueing_delay_name(args, "exp")
+    exp_df = pd.DataFrame(exp_queueing_delays)
+    exp_df.to_csv(exp_fn, index=False)
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
@@ -289,7 +299,8 @@ async def benchmark_serving(args):
     
     if args.analyze_throughput:
         sampler_step_infos = master.fetch_sampler_step_infos()
-        analyze_throughput(args, sampler_step_infos)
+        attn_delays, exp_delays = master.fetch_queueing_delays()
+        analyze_throughput(args, sampler_step_infos, attn_delays, exp_delays)
     
 def get_args():
     parser = ArgumentParser()

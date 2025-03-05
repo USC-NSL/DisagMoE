@@ -304,6 +304,17 @@ class Controller:
     def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
+    def fetch_queueing_delays(self) -> Tuple[List[List[float]], List[List[float]]]:
+        results = ray.get([worker.fetch_queueing_delays.remote() for worker in self.workers])
+        attn = []
+        exp = []
+        for worker_id, result in enumerate(results):
+            if self.model_place.is_attn(self.device_ids[worker_id]):
+                attn.append(result)
+            else:
+                exp.append(result)
+        return attn, exp
+        
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return ray.get(self.sampler_worker.fetch_sampler_step_infos.remote())
         

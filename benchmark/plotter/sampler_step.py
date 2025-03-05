@@ -6,7 +6,7 @@ from benchmark.plotter.namer import get_sampler_step_name
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
 parser.add_argument('--gap-i', type=int)
-parser.add_argument('--gap-t', type=int)
+parser.add_argument('--gap-t', type=int, default=1)
 parser.add_argument('--seg', type=int)
 
 CLK = 1e6
@@ -16,40 +16,44 @@ report_dir = "reports/throughput_benchmark"
 args = parser.parse_args()
 
 rate = args.rate
-gap_i = args.seg or args.gap_i
-gap_t = args.seg or args.gap_t
+
+assert args.seg or (args.gap_i and args.gap_t)
 
 df = pd.read_csv(get_sampler_step_name(args))
 
-_gap_i = (len(df.index) - gap_i + 1) // gap_i
-
 # Summing up results in each gap for index
-index_bins = range(0, len(df.index), _gap_i)
-index_sums = df.groupby(pd.cut(df.index, bins=index_bins))['num_tokens'].sum()
+
+gap_i = (len(df.index) - args.seg + 1) // args.seg if args.seg else args.gap_i
+
+index_bins = range(0, len(df.index), gap_i)
+index_sums = df.groupby(pd.cut(df.index, bins=index_bins))['num_tokens'].mean()
 
 plt.figure(figsize=(10, 5))
-plt.plot(index_bins[:-1], index_sums, 'o-')
+plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
-plt.ylabel('Sum of Tokens')
-plt.title('Sum of Tokens (By Steps)')
+plt.ylabel(f'Number of Tokens per {gap_i} steps')
+plt.title(f'Sampler\'s Average Output Tokens (Rate={rate})')
 plt.savefig(f'{report_dir}/index/sum_sampler_step_rate_{rate}.png')
 plt.close()
 
 # Summing up results in each gap for time_stamp
+
 df['time_stamp'] = (df['time_stamp'] - df['time_stamp'].iloc[0]) / CLK
-_gap_t = (df['time_stamp'].iloc[-1] - df['time_stamp'].iloc[0]) / gap_t
+gap_t = (df['time_stamp'].iloc[-1] - df['time_stamp'].iloc[0]) / args.seg if args.seg else args.gap_t
+seg = args.seg if args.seg else int((df['time_stamp'].iloc[-1] - df['time_stamp'].iloc[0] + gap_t - 1) // gap_t)
 time_bins = [
-    df['time_stamp'].iloc[0] + i * _gap_t
-        for i in range(gap_t + 1)
+    df['time_stamp'].iloc[0] + i * gap_t
+        for i in range(seg + 1)
 ]
 print(df['time_stamp'])
 print(time_bins)
-time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].sum()
+time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].mean()
 
 plt.figure(figsize=(10, 5))
-plt.plot(time_bins[:-1], time_sums, 'o-')
+plt.plot(time_bins[:-1], time_sums, '-')
+plt.axvline(x=120, color='green', linestyle='dotted')
 plt.xlabel('Time (in seconds)')
-plt.ylabel('Sum of Tokens')
-plt.title('Sum of Tokens (By Time)')
+plt.ylabel('Number of Tokens per second')
+plt.title(f'Sampler\'s Average Output Tokens (Rate={rate})')
 plt.savefig(f'{report_dir}/time/sum_sampler_step_rate_{rate}.png')
 plt.close()

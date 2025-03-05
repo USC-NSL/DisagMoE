@@ -79,6 +79,8 @@ class Engine:
         self._step_stats = []
         self._metric = Metric()
         self._timer = Timer()
+        self._queueing_timer = {}
+        self._queueing_delays = []
 
     @property
     def is_attn(self):
@@ -765,6 +767,7 @@ class Engine:
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
+            # self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
             range_push("Engine.schedule_stream_sync")
@@ -794,6 +797,9 @@ class Engine:
             result[key] = [TraceContext.from_c(c) for c in output[key]]
         
         return self._step_stats, result, self._metric
+    
+    def fetch_queueing_delays(self) -> List[float]:
+        return self._queueing_delays
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
