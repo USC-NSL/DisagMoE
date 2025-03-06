@@ -338,6 +338,9 @@ class Controller:
             self.tokenizer_worker.put_single_request.remote, req_id, input_len)
         return res
         
+    def fetch_submitted_time(self) -> Dict[int, int]:
+        return ray.get(self.tokenizer_worker.fetch_submitted_time.remote())
+        
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
         raise NotImplementedError("DP Scheduler not implemented here")
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]

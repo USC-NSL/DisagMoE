@@ -159,15 +159,19 @@ class AttentionBatchMetadata:
 @dataclass
 class SloStat:
     req_id: int
-    t_prefill: int
-    t_decode: int
-    t_tokens: List[int]
+    
+    # all time in seconds
+    t_prefill: float
+    t_prefill_std: float
+    t_decode: float
+    t_tokens: List[float]
     
     @staticmethod
     def from_c(stat_c: "SloStat_C") -> "SloStat":
         return SloStat(
             stat_c.req_id,
-            stat_c.t_prefill / CPS, # NOTE: consider how to deal with prefill time
+            stat_c.t_prefill / CPS,
+            stat_c.t_prefill_std,
             (stat_c.t_decode - stat_c.t_prefill) / CPS,
             [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )

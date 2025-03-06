@@ -919,6 +919,7 @@ class TokenizerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
+        self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         
     def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
@@ -928,6 +929,7 @@ class TokenizerEngine(Engine):
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
+        self.t_submitted[req_id] = time.time()
         
     def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
         self.process_request(req_id, init_prefill_len, dp_rank)
@@ -935,6 +937,9 @@ class TokenizerEngine(Engine):
     def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
         for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
             self.process_request(req_id, init_prefill_len, dp_rank)
+        
+    def fetch_submitted_time(self):
+        return self.t_submitted
         
     def init_core(
             self,

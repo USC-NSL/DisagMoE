@@ -97,6 +97,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_STRUCT(SloStat)
         .def_readwrite("req_id", &SloStat::req_id)
         .def_readwrite("t_prefill", &SloStat::t_prefill)
+        .def_readwrite("t_prefill_std", &SloStat::t_prefill_std)
         .def_readwrite("t_decode", &SloStat::t_decode)
         .def_readwrite("t_tokens", &SloStat::t_tokens);
 

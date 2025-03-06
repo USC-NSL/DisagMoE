@@ -145,7 +145,7 @@ protected:
     int max_batch_size;
 
     std::mutex timer_mutex;
-    std::map<int, long> queueing_timers;
+    std::map<int, clock_t> queueing_timers;
 
     virtual int tokens_in_layer(int lid);
 

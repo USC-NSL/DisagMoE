@@ -359,7 +359,7 @@ MuPool::MuPool(
     }
 
     this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
-    this->queueing_timers = std::map<int, long>();
+    this->queueing_timers = std::map<int, clock_t>();
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -433,7 +433,7 @@ void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
     std::lock_guard<std::mutex> lock(this->timer_mutex);
     for (int req_id: req_ids) {
         if (this->queueing_timers.find(req_id) == this->queueing_timers.end())
-            this->queueing_timers[req_id] = clock();
+            this->queueing_timers[req_id] = t_now();
         else {
             ASSERT(this->queueing_timers.at(req_id) == -1);
             this->queueing_timers.erase(req_id);
@@ -447,7 +447,7 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
 
     std::lock_guard<std::mutex> lock(this->timer_mutex);
     float total_delay = 0;
-    clock_t now = clock();
+    auto now = t_now();
     for (int req_id: req_ids) {
         if (this->queueing_timers.find(req_id) == this->queueing_timers.end()) {
             this->queueing_timers[req_id] = -1;
@@ -466,7 +466,7 @@ void MuPool::run() {
     }
     this->mq.bind(get_zmq_addr(this->device_id));
 
-    auto last = clock();
+    auto last = t_now();
     auto start = last;
 
     // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;

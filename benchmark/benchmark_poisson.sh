@@ -1,5 +1,5 @@
-OUTPUT_LEN=1024
-N_TIME=120
+OUTPUT_LEN=16
+N_TIME=1
 N_NODE=1
 N_GPU_PER_NODE=4
 NUM_LAYERS=16
@@ -13,7 +13,7 @@ step_exp=1
 ep_size=2
 REPORT_DIR=/home/hogura1999/DisagMoE/reports/distributed_poisson.csv
 
-RATES=(20)
+RATES=(2)
 
 for rate in "${RATES[@]}"; do
     n_req=$((rate * N_TIME))

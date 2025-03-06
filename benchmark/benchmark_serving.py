@@ -240,12 +240,16 @@ def generate_step_trace(args,
 def analyze_throughput(args, 
                        sampler_step_infos: List[SamplerStepInfo], 
                        attn_queueing_delays: List[List[float]],
-                       exp_queueing_delays: List[List[float]]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name
+                       exp_queueing_delays: List[List[float]],
+                       t_submitted: Dict[int, int],
+                       slo_stats: List[SloStat]):
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name
+    # sampler throughput
     sampler_fn = get_sampler_step_name(args)
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
     sampler_df.to_csv(sampler_fn, index=False)
     
+    # queueing delay
     attn_fn = get_worker_queueing_delay_name(args, "attn")
     attn_df = pd.DataFrame(attn_queueing_delays)
     attn_df.to_csv(attn_fn, index=False)
@@ -253,6 +257,14 @@ def analyze_throughput(args,
     exp_fn = get_worker_queueing_delay_name(args, "exp")
     exp_df = pd.DataFrame(exp_queueing_delays)
     exp_df.to_csv(exp_fn, index=False)
+    
+    # TTFT
+    ttft_fn = get_ttft_name(args)
+    ttft_df = pd.DataFrame([
+        stat.t_prefill - t_submitted[stat.req_id]
+            for stat in slo_stats
+    ])
+    ttft_df.to_csv(ttft_fn, index=False)
 
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
@@ -286,9 +298,11 @@ async def benchmark_serving(args):
         print(metrics)
 
         metrics.write_to_file(args)
+        
+        return results
     
     await master.start_scheduler()
-    await run_once()
+    results = await run_once()
     await master.stop_scheduler()
     
     master.stop_workers()
@@ -300,7 +314,11 @@ async def benchmark_serving(args):
     if args.analyze_throughput:
         sampler_step_infos = master.fetch_sampler_step_infos()
         attn_delays, exp_delays = master.fetch_queueing_delays()
-        analyze_throughput(args, sampler_step_infos, attn_delays, exp_delays)
+        t_submitted = master.fetch_submitted_time()
+        analyze_throughput(args, 
+                           sampler_step_infos, 
+                           attn_delays, exp_delays,
+                           t_submitted, results)
     
 def get_args():
     parser = ArgumentParser()
