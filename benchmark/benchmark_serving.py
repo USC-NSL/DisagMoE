@@ -261,7 +261,7 @@ def analyze_throughput(args,
     # TTFT
     ttft_fn = get_ttft_name(args)
     ttft_df = pd.DataFrame([
-        stat.t_prefill - t_submitted[stat.req_id]
+        stat.t_prefill_std - t_submitted[stat.req_id]
             for stat in slo_stats
     ])
     ttft_df.to_csv(ttft_fn, index=False)
