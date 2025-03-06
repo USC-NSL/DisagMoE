@@ -17,7 +17,7 @@ for name in ["exp", "attn"]:
     values = df.iloc[worker_id] * 1e3
     worker_name = f"{name}{worker_id}"
 
-    plt.scatter(range(len(values)), values)
+    plt.scatter(range(len(values)), values, marker='.')
     plt.xlabel('Steps')
     plt.ylabel('Queueing Delay (ms)')
     plt.title(f'Average Queueing Delay for {worker_name}')
@@ -37,15 +37,17 @@ for name in ["exp", "attn"]:
 
     plt.annotate(f'P90@{p90:.2f} ms', 
                  xy=(p90, 0), 
-                 xytext=(p90, 0))
+                 xytext=(p90, 0),
+                 color='blue')
     
     p99 = sorted_values[int(0.99 * len(sorted_values))]
 
     plt.axvline(x=p99, color='red', linestyle='dotted')
 
     plt.annotate(f'P99@{p99:.2f} ms', 
-                 xy=(p99, 0), 
-                 xytext=(p99, 0))
+                 xy=(p99, 0.5), 
+                 xytext=(p99, 0.5),
+                 color='red')
     
     plt.xlabel('Queueing Delay (ms)')
     plt.ylabel('CDF')

@@ -21,7 +21,7 @@ class Scheduler:
     def get_pool_snapshot(self) -> List[int]:
         ...
 
-    def get_cur_queueing_delay(self) -> float:
+    def get_cur_queueing_delay(self) -> List[float]:
         ...
 
 class MuDispatcher:
