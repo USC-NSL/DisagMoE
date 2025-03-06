@@ -767,7 +767,7 @@ class Engine:
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
-            # self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
+            self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
             range_push("Engine.schedule_stream_sync")

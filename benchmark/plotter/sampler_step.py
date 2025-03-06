@@ -8,6 +8,7 @@ parser.add_argument('--rate', type=float, required=True)
 parser.add_argument('--gap-i', type=int)
 parser.add_argument('--gap-t', type=int, default=1)
 parser.add_argument('--seg', type=int)
+parser.add_argument('--num-nodes', type=int, default=1)
 
 CLK = 1e6
 
@@ -16,6 +17,7 @@ report_dir = "reports/throughput_benchmark"
 args = parser.parse_args()
 
 rate = args.rate
+num_nodes = args.num_nodes
 
 assert args.seg or (args.gap_i and args.gap_t)
 
@@ -32,8 +34,8 @@ plt.figure(figsize=(10, 5))
 plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
 plt.ylabel(f'Number of Tokens per {gap_i} steps')
-plt.title(f'Sampler\'s Average Output Tokens (Rate={rate})')
-plt.savefig(f'{report_dir}/index/sum_sampler_step_rate_{rate}.png')
+plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
+plt.savefig(f'{report_dir}/index/sum_sampler_step_rate_{rate}_nodes_{num_nodes}.png')
 plt.close()
 
 # Summing up results in each gap for time_stamp
@@ -54,6 +56,6 @@ plt.plot(time_bins[:-1], time_sums, '-')
 plt.axvline(x=120, color='green', linestyle='dotted')
 plt.xlabel('Time (in seconds)')
 plt.ylabel('Number of Tokens per second')
-plt.title(f'Sampler\'s Average Output Tokens (Rate={rate})')
-plt.savefig(f'{report_dir}/time/sum_sampler_step_rate_{rate}.png')
+plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
+plt.savefig(f'{report_dir}/time/sum_sampler_step_rate_{rate}_nodes_{num_nodes}.png')
 plt.close()

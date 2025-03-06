@@ -184,7 +184,7 @@ public:
 
     std::vector<int> get_pool_snapshot();
 
-    // return average queueing delay
+    // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
 };
 

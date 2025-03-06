@@ -1,19 +1,19 @@
-OUTPUT_LEN=16
-N_TIME=2
+OUTPUT_LEN=1024
+N_TIME=120
 N_NODE=1
 N_GPU_PER_NODE=4
 NUM_LAYERS=16
 NUM_EXPERTS=8
-MAX_BATCH_SIZE_ATTN=256
-MAX_BATCH_SIZE_EXP=512
-GRAPH_STRIDE=4
+MAX_BATCH_SIZE_ATTN=32
+MAX_BATCH_SIZE_EXP=32
+GRAPH_STRIDE=32
 step_attn=2
 dp_size=1
 step_exp=1
 ep_size=2
 REPORT_DIR=/home/hogura1999/DisagMoE/reports/distributed_poisson.csv
 
-RATES=(2)
+RATES=(20)
 
 for rate in "${RATES[@]}"; do
     n_req=$((rate * N_TIME))

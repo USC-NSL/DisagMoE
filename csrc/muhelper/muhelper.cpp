@@ -359,6 +359,7 @@ MuPool::MuPool(
     }
 
     this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
+    this->queueing_timers = std::map<int, long>();
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -426,7 +427,8 @@ void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_fro
 }
 
 void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
-    return;
+    if (req_ids.empty())
+        return;
     
     std::lock_guard<std::mutex> lock(this->timer_mutex);
     for (int req_id: req_ids) {
@@ -440,7 +442,8 @@ void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
 }
 
 float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
-    return 0;
+    if (req_ids.empty())
+        return 0;
 
     std::lock_guard<std::mutex> lock(this->timer_mutex);
     float total_delay = 0;
