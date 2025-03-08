@@ -196,6 +196,8 @@ class Engine:
                           out_device_ids, out_channel_infos, \
                           out_device_group_ids, \
                           device_group_ids, expert_ranks, local_attn_dp_rank}")
+        
+        self._logger.info(f"launching core: {in_nccl_ids, out_nccl_ids, group_nccl_ids}")
         if device_group_ids is None:
             device_group_ids = []
         self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
@@ -272,9 +274,10 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
+        print(f"start to set up engine")
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
-        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT]:
+        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
             torch.set_default_device("cuda:0")
             stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
@@ -730,7 +733,7 @@ class Engine:
         step_end_timestamp_ms = time_ms()
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
         
-        factor = self.model_config.top_k if self.is_attn else 1
+        factor = self.model_config.top_k if self.has_attn else 1
         if self.model_config.enable_trace:
             pool_snapshot_dict = dict()
             queueing_tokens = 0

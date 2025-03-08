@@ -48,6 +48,8 @@ class ModelPlacement:
     # device_id -> attn_rank_id
     attn_dp_ranks: Dict[int, int] = None
     
+    is_hybrid: bool = False
+        
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
         assert self.expert_ranks is not None
@@ -479,9 +481,8 @@ class ColocatePlacement(PlacementBase):
             attns[i].extend(all_layers)
         
         for i in range(n_expert):
-            for j in range(num_devices):
-                for k in all_layers:
-                    experts[j].append((k, i // self.ep_size))
+            for j in all_layers:
+                experts[i // self.model_config.num_experts_per_rank].append((j, i))
         
         device_groups = {
             i: [i] for i in range(num_devices)
@@ -489,7 +490,7 @@ class ColocatePlacement(PlacementBase):
         
         return ModelPlacement(
             attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, 
-            {}, {}, device_groups=device_groups
+            {}, {}, device_groups=device_groups, is_hybrid=True
         )
         
     @override
@@ -524,8 +525,12 @@ def get_model_placement(
         cls = _placement_cls[strategy]
     else:
         raise NotImplementedError()
-
-    solver = cls(model_config, cluster_config, *args, **kwargs)
+    
+    if strategy == "pipeline":
+        solver = cls(model_config, cluster_config, *args, **kwargs)
+    elif strategy == "colocate":
+        solver = cls(model_config, cluster_config)
+        
     place: ModelPlacement = solver.solve()
     
     print(f"Model Placement: {place}")

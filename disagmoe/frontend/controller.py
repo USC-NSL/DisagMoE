@@ -9,7 +9,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
-from disagmoe.utils.placement import ModelPlacement
+from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.logger import get_logger
@@ -207,16 +207,24 @@ class Controller:
                 for worker in self.all_workers
         ])
         
+        def determine_worker_type(device_id: int) -> EngineType:
+            if device_id in [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]:
+                return EngineType.SAMPLER if device_id == SAMPLER_DEV_ID else EngineType.TOKENIZER
+            if model_place.is_hybrid:
+                return EngineType.HYBRID
+            return EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT
+        
         # setup attention & expert
-        ray.get([
+        ray.get([ 
             worker.setup_engine.remote(
-                EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
+                determine_worker_type(device_id),
                 model_config=model_config,
                 cache_config=cache_config,
                 rank=model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank),
             )
                 for worker, device_id in zip(self.workers, self.device_ids)
         ])
+        
         # setup tokenizer & sampler
         ray.get([
             worker.setup_engine.remote(
@@ -231,6 +239,7 @@ class Controller:
         
         ray.get(self.sampler_worker.set_sampling_params.remote(self.max_output_len))
         
+        print(f"Controller start to init core modules for workers")
         # init core
         tasks = [
             worker.init_core.remote(
@@ -262,8 +271,8 @@ class Controller:
                     self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
                 )
         ]
-        self._logger.info("launched all tasks")
         ray.get(tasks)
+        self._logger.info("launched all tasks")
         
         self.dp_scheduler = get_dp_scheduler(
             model_config.dp_size, self.max_output_len, cache_config.block_size, "max"

@@ -49,12 +49,12 @@ void init_all_channels(
     out_channels.resize(n_out);
     is_group_channels.resize(n_out);
 
-    #define INST(channel) {                                                                 \
+    #define INST(channel, msg) {                                                                 \
         threads.emplace_back(std::thread(                                                   \
             [&](Channel_t channel) {                                                        \
-                DMOE_LOG(DEBUG) << local_id << " running channel threads @" << channel << LEND;  \
+                DMOE_LOG(DEBUG) << local_id << " running channel threads " << msg << LEND;  \
                 channel->instantiate();                                                     \
-                DMOE_LOG(DEBUG) << local_id << " channel @" << channel << " inited" << LEND;     \
+                DMOE_LOG(DEBUG) << local_id << " channel " << msg << " inited" << LEND;     \
             },                                                                              \
             channel                                                                         \
         ));                                                                                 \
@@ -88,8 +88,10 @@ void init_all_channels(
                 );
             }
         }
-        INST(channel);
+        INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
     }
+
+    DMOE_LOG(DEBUG) << local_id << " " << "in channel initialized" << LEND;
 
     for (size_t i = 0; i < n_out; i ++) {
         auto peer_id = out_device_ids[i];
@@ -117,8 +119,10 @@ void init_all_channels(
                 );
             }
         }
-        INST(channel);
+        INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
     }
+
+    DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
 
     if (device_group_ids.size() > 1) {
         intra_group_channel_1 = create_nccl_group_channel(
@@ -133,9 +137,9 @@ void init_all_channels(
             local_id, device_group_ids, 
             convert_to_nccl_uid((char*) std::get<2>(group_nccl_id).c_str())
         );
-        INST(intra_group_channel_1);
-        INST(intra_group_channel_2);
-        INST(intra_group_channel_3);
+        INST(intra_group_channel_1, "intra_group_channel_1");
+        INST(intra_group_channel_2, "intra_group_channel_2");
+        INST(intra_group_channel_3, "intra_group_channel_3");
     }
 
     for (auto &t: threads)
@@ -163,7 +167,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     std::vector<bool> is_group_channels;
     Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr, intra_group_channel_3 = nullptr;
 
-    init_all_channels(local_id, is_attn, 
+    init_all_channels(local_id, has_attn, 
         in_channels, in_device_ids, in_nccl_ids,
         out_channels, out_device_ids, out_device_group_ids, out_nccl_ids,
         intra_group_channel_1, intra_group_channel_2, intra_group_channel_3,
@@ -181,7 +185,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     }
     
     // init scheduler
-    DMOE_LOG(DEBUG) << local_id << " init scheduler" << LEND;
+    DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
     scheduler_t expert_scheduler;
     attn_scheduler_t attn_scheduler;
 
@@ -204,7 +208,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
         }
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, is_attn);
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels);
         expert_scheduler = Scheduler::build(pool, layer_ids, "largest");
     }
 

@@ -322,12 +322,12 @@ def get_args():
 def main():
     args = get_args()
     
-    try:
-        launch(args)
-        asyncio.run(benchmark_serving(args))
-    except Exception as e:
-        print("Error: failed to run benchmark, with exception:", e)
-        BenchmarkMetrics().write_to_file(args)
+    # try:
+    launch(args)
+    asyncio.run(benchmark_serving(args))
+    # except Exception as e:
+    #     print("Error: failed to run benchmark, with exception:", e)
+    #     BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":
     main()
