@@ -19,6 +19,6 @@ plt.figure()
 plt.plot(df_sorted[df.columns[0]], cdf)
 plt.xlabel('Time to First Token (s)')
 plt.ylabel('CDF')
-plt.title('CDF for TTFT')
+plt.title(f'CDF for TTFT (rate={args.rate}, nodes={args.num_nodes})')
 
 plt.savefig(f"reports/throughput_benchmark/ttft/cdf_rate={args.rate}_nodes={args.num_nodes}.png")

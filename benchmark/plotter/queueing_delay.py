@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
 parser.add_argument('--num-nodes', type=int, default=1)
+parser.add_argument('--dp-size', type=int, default=1)
+parser.add_argument('--ep-size', type=int, default=1)
 
 args = parser.parse_args()
 
@@ -21,7 +23,7 @@ for name in ["exp", "attn"]:
     plt.xlabel('Steps')
     plt.ylabel('Queueing Delay (ms)')
     plt.title(f'Average Queueing Delay for {worker_name}')
-    plt.savefig(f'reports/throughput_benchmark/queueing_delay/steps_{worker_name}_rate={args.rate}_nodes={args.num_nodes}.png')
+    plt.savefig(f'reports/throughput_benchmark/queueing_delay/steps_{worker_name}_rate={args.rate}_nodes={args.num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
     plt.close()
     
     sorted_values = sorted(values)
@@ -52,5 +54,5 @@ for name in ["exp", "attn"]:
     plt.xlabel('Queueing Delay (ms)')
     plt.ylabel('CDF')
     plt.title(f'CDF of Queueing Delay for {worker_name}')
-    plt.savefig(f'reports/throughput_benchmark/queueing_delay/cdf_{worker_name}_rate={args.rate}_nodes={args.num_nodes}.png')
+    plt.savefig(f'reports/throughput_benchmark/queueing_delay/cdf_{worker_name}_rate={args.rate}_nodes={args.num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
     plt.close()

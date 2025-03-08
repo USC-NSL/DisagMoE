@@ -9,6 +9,8 @@ parser.add_argument('--gap-i', type=int)
 parser.add_argument('--gap-t', type=int, default=1)
 parser.add_argument('--seg', type=int)
 parser.add_argument('--num-nodes', type=int, default=1)
+parser.add_argument('--dp-size', type=int, default=1)
+parser.add_argument('--ep-size', type=float, default=1)
 
 CLK = 1e6
 
@@ -35,7 +37,7 @@ plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
 plt.ylabel(f'Number of Tokens per {gap_i} steps')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{report_dir}/index/sum_sampler_step_rate_{rate}_nodes_{num_nodes}.png')
+plt.savefig(f'{report_dir}/index/sum_sampler_step_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
 plt.close()
 
 # Summing up results in each gap for time_stamp
@@ -57,5 +59,5 @@ plt.axvline(x=120, color='green', linestyle='dotted')
 plt.xlabel('Time (in seconds)')
 plt.ylabel('Number of Tokens per second')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{report_dir}/time/sum_sampler_step_rate_{rate}_nodes_{num_nodes}.png')
+plt.savefig(f'{report_dir}/time/sum_sampler_step_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
 plt.close()
