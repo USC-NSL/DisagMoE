@@ -73,6 +73,27 @@ public:
     void sync() override;
 };
 
+class TensorLocalChannel: public Channel {
+    protected:
+        cudaStream_t stream;
+        std::queue<uintptr_t> data_buffer{};
+        mutable std::mutex m;
+        std::condition_variable c;
+    
+    public:
+        TensorLocalChannel(int device_id, cudaStream_t stream = nullptr);
+    
+        ~TensorLocalChannel();
+    
+        void instantiate() override;
+    
+        void send(uintptr_t data, const Metadata& metadata) override;
+    
+        void recv(uintptr_t data, const Metadata& metadata) override;
+    
+        void sync() override;
+};
+
 typedef std::shared_ptr<zmq::socket_t> mq_t;
 
 class ZmqChannel: public Channel {
@@ -142,6 +163,8 @@ public:
 };
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
+
+Channel_t create_local_channel(int device_id);
 
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 

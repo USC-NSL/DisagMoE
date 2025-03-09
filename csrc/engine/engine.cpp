@@ -21,7 +21,8 @@ void init_all_channels(
     std::vector<Channel_t> &out_channels,
     const std::vector<int> &out_device_ids,
     const std::map<int, std::string> &out_nccl_ids,
-    int local_attn_dp_rank
+    int local_attn_dp_rank,
+    std::vector<std::thread>& threads
 ) {
     /*
         We have multiple types of channels to be inited.
@@ -36,7 +37,6 @@ void init_all_channels(
             * Only for device_group_ids
             
     */
-    std::vector<std::thread> threads;
     auto n_in = in_device_ids.size();
     auto n_out = out_device_ids.size();
     in_channels.resize(n_in);
@@ -44,14 +44,22 @@ void init_all_channels(
 
     #define INST(channel, msg) {                                                                 \
         threads.emplace_back(std::thread(                                                   \
-            [&](Channel_t channel) {                                                        \
+            [local_id, peer_id](Channel_t channel) {                                                        \
                 channel->instantiate();                                                     \
-                DMOE_LOG(DEBUG) << local_id << " channel " << msg << " inited" << LEND;     \
+                std::cout << local_id << " channel " << msg << " inited" << LEND;     \
             },                                                                              \
             channel                                                                         \
         ));                                                                                 \
     }
-    
+
+    Channel_t local_channel = nullptr;
+
+    // print all in_device_ids
+    std::cout << local_id << " in_device_ids: ";
+    for (auto id: in_device_ids)
+        std::cout << id << " ";
+    std::cout << std::endl;
+
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = in_device_ids[i];
         auto &channel = in_channels[i];
@@ -60,10 +68,15 @@ void init_all_channels(
                 // only attn needs to consider the DP
                 is_attn ? local_attn_dp_rank : 0);
         } else {
-            auto nccl_id = in_nccl_ids.at(peer_id);
-            channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_id.c_str())
-            );
+            if (peer_id == local_id) {
+                channel = create_local_channel(local_id);
+                local_channel = channel;
+            } else {
+                auto nccl_id = in_nccl_ids.at(peer_id);
+                channel = create_channel(local_id, peer_id, 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            }
         }
         INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
     }
@@ -76,18 +89,22 @@ void init_all_channels(
         if (is_embedding_node(peer_id)) {
             channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ true);
         } else {
-            auto nccl_id = out_nccl_ids.at(peer_id);
-            channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_id.c_str())
-            );
+            if (peer_id == local_id) {
+                channel = local_channel;
+            } else {
+                auto nccl_id = out_nccl_ids.at(peer_id);
+                channel = create_channel(local_id, peer_id, 
+                    convert_to_nccl_uid((char*) nccl_id.c_str())
+                );
+            }
         }
         INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
     }
 
     DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
 
-    for (auto &t: threads)
-        t.join();
+
+
 }
 
 std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
@@ -107,20 +124,41 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     const std::vector<int> &device_group_ids,
     int local_attn_dp_rank) {
 
+    bool is_hybrid = has_attn && has_expert;
+
     std::vector<Channel_t> in_channels, out_channels;
     std::vector<Channel_t> in_channels_ext, out_channels_ext;
     std::vector<bool> is_group_channels;
     Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr, intra_group_channel_3 = nullptr;
 
-    init_all_channels(local_id, has_attn,
-        in_channels, in_device_ids, in_nccl_ids,
-        out_channels, out_device_ids, out_nccl_ids,
-        local_attn_dp_rank);
+    std::vector<std::thread> threads;
 
-    init_all_channels(local_id, has_attn,
-        in_channels_ext, in_device_ids, in_nccl_ids_ext,
-        out_channels_ext, out_device_ids, out_nccl_ids_ext,
-        local_attn_dp_rank);
+    if (is_hybrid) {
+        init_all_channels(local_id, has_attn,
+            in_channels, in_device_ids, in_nccl_ids,
+            out_channels_ext, out_device_ids, out_nccl_ids_ext,
+            local_attn_dp_rank, threads);
+
+        init_all_channels(local_id, has_attn,
+            in_channels_ext, in_device_ids, in_nccl_ids_ext,
+            out_channels, out_device_ids, out_nccl_ids,
+            local_attn_dp_rank, threads);
+    } else {
+        init_all_channels(local_id, has_attn,
+            in_channels, in_device_ids, in_nccl_ids,
+            out_channels, out_device_ids, out_nccl_ids,
+            local_attn_dp_rank, threads);
+
+        init_all_channels(local_id, has_attn,
+            in_channels_ext, in_device_ids, in_nccl_ids_ext,
+            out_channels_ext, out_device_ids, out_nccl_ids_ext,
+            local_attn_dp_rank, threads);
+    }
+
+    for (auto &t: threads)
+        t.join();
+
+    std::cout << local_id << " finished init all channels" << std::endl;
     
     // init dispatcher
     DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
