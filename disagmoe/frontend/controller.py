@@ -6,7 +6,7 @@ import asyncio
 
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
+from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group, InitCoreArgs
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
 from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
@@ -190,6 +190,8 @@ class Controller:
             self.max_output_len = sampling_config.max_output_len
             
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
+        in_nccl_ids_ext, out_nccl_ids_ext, group_nccl_ids_ext = self._get_nccl_ids(model_place)
+        
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
@@ -239,37 +241,39 @@ class Controller:
         
         ray.get(self.sampler_worker.set_sampling_params.remote(self.max_output_len))
         
-        print(f"Controller start to init core modules for workers")
         # init core
         tasks = [
             worker.init_core.remote(
-                layer_ids=model_place.layer_ids_at(device_id),
-                in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
-                out_device_ids=model_place.out_device_ids.get(device_id, []),
-                out_channel_infos=[
-                    ChannelInfo(
-                        model_place.expert_ids_at(out),
-                        model_place.attn_layer_ids_at(out),
-                        model_place.attn_dp_rank_at(out),
-                    )
-                        for out in model_place.out_device_ids.get(device_id, [])
-                ],
-                in_nccl_ids=in_nccl_ids.get(device_id, {}),
-                out_device_group_ids={
-                    j: [device_id] + model_place.device_groups.get(j, [])
-                        for j in model_place.out_device_ids.get(device_id, [])
-                },
-                out_nccl_ids=out_nccl_ids.get(device_id, {}),
-                device_group_ids=model_place.device_groups.get(device_id, []),
-                group_nccl_ids=group_nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
-                expert_ranks=model_place.out_expert_ranks_at(device_id),
-                local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
-            )
-                for worker, device_id in zip(
-                    self.workers + [self.sampler_worker, self.tokenizer_worker], 
-                    self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+                InitCoreArgs(
+                    layer_ids=model_place.layer_ids_at(device_id),
+                    in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
+                    out_device_ids=model_place.out_device_ids.get(device_id, []),
+                    out_channel_infos=[
+                        ChannelInfo(
+                            model_place.expert_ids_at(out),
+                            model_place.attn_layer_ids_at(out),
+                            model_place.attn_dp_rank_at(out),
+                        )
+                            for out in model_place.out_device_ids.get(device_id, [])
+                    ],
+                    in_nccl_ids=in_nccl_ids.get(device_id, {}),
+                    out_nccl_ids=out_nccl_ids.get(device_id, {}),
+                    in_nccl_ids_ext=in_nccl_ids_ext.get(device_id, {}),
+                    out_nccl_ids_ext=out_nccl_ids_ext.get(device_id, {}),
+                    out_device_group_ids={
+                        j: [device_id] + model_place.device_groups.get(j, [])
+                            for j in model_place.out_device_ids.get(device_id, [])
+                    },
+                    device_group_ids=model_place.device_groups.get(device_id, []),
+                    group_nccl_ids=group_nccl_ids.get(
+                        tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
+                    expert_ranks=model_place.out_expert_ranks_at(device_id),
+                    local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                 )
+            ) for worker, device_id in zip(
+                self.workers + [self.sampler_worker, self.tokenizer_worker], 
+                self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+            )
         ]
         ray.get(tasks)
         self._logger.info("launched all tasks")

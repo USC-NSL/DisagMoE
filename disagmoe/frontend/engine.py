@@ -8,6 +8,7 @@ from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext)
+from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
@@ -164,67 +165,48 @@ class Engine:
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
         
-    def init_core(
-            self,
-            layer_ids: List[int],
-            # P2P Channels
-            in_device_ids: List[int],
-            out_device_ids: List[int],
-            out_channel_infos: List[ChannelInfo],
-            # Group Channels
-            in_nccl_ids: Dict[int, int],
-            out_device_group_ids: Dict[int, List[int]],
-            out_nccl_ids: Dict[int, int],
-            device_group_ids: List[int] = None,
-            group_nccl_ids: Tuple[str, str, str] = ("", "", ""),
-            expert_ranks: List[Tuple[int, int, int]] = [],
-            local_attn_dp_rank: int = 0,
-        ):
+    def init_core(self, core_args: InitCoreArgs):
         """
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         disagmoe_recorder_create()
         
-        self.model_config.layer_ids = layer_ids
-        self.device_group_ids = device_group_ids
+        self.device_group_ids = core_args.device_group_ids
         
-        if not self.model_config.tp_enable_inter_group:
-            device_group_ids = None
-            out_device_group_ids = {}
+        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
+        
+        self.model_config.layer_ids = core_args.layer_ids
             
-        self._logger.info(f"launching core: {layer_ids, in_device_ids, \
-                          out_device_ids, out_channel_infos, \
-                          out_device_group_ids, \
-                          device_group_ids, expert_ranks, local_attn_dp_rank}")
+        self._logger.info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
+                          core_args.out_device_ids, core_args.out_channel_infos, \
+                          core_args.device_group_ids, core_args.expert_ranks, core_args.local_attn_dp_rank}")
         
-        self._logger.info(f"launching core: {in_nccl_ids, out_nccl_ids, group_nccl_ids}")
-        if device_group_ids is None:
-            device_group_ids = []
+        # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
+
         self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
             self.device_id,
             self.model_config.top_k,
             self.has_attn,
             self.has_expert,
-            layer_ids,
-            # P2P Channels
-            in_device_ids,
-            out_device_ids,
-            [info.to_c() for info in out_channel_infos],
-            # Parallel config
             ParallelConfig.from_c(
                 self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.dp_size,
                 self.model_config.num_experts_per_rank,
-                expert_ranks,
-            ),
+                core_args.expert_ranks,
+            ), # parallel config
+            core_args.layer_ids,
+            # P2P Channels
+            core_args.in_device_ids,
+            core_args.out_device_ids,
+            [info.to_c() for info in core_args.out_channel_infos],
             # Group Channels
-            in_nccl_ids,
-            out_device_group_ids,
-            out_nccl_ids,
-            device_group_ids,
-            group_nccl_ids,
-            local_attn_dp_rank,
+            core_args.in_nccl_ids,
+            core_args.out_nccl_ids,
+            core_args.in_nccl_ids_ext,
+            core_args.out_nccl_ids_ext,
+            [], # device_grou_ids, now is actually deprecated
+            core_args.local_attn_dp_rank,
         )
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
@@ -233,7 +215,7 @@ class Engine:
                 dist.init_process_group(backend="nccl", 
                                         world_size=len(self.device_group_ids), 
                                         rank=self.rank_in_group,
-                                        init_method=f"tcp://{get_nccl_url_from_uid(group_nccl_ids[0])}")
+                                        init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
             self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
@@ -898,22 +880,7 @@ class SamplerEngine(Engine):
         self.sampler: Sampler = None
         self.max_output_len = -1
         
-    def init_core(
-            self,
-            layer_ids: List[int],
-            # P2P Channels
-            in_device_ids: List[int],
-            out_device_ids: List[int],
-            out_channel_infos: List[ChannelInfo],
-            # Group Channels
-            in_nccl_ids: Dict[int, int],
-            out_device_group_ids: Dict[int, List[int]],
-            out_nccl_ids: Dict[int, int],
-            device_group_ids: List[int] = None,
-            group_nccl_ids: str = "",
-            expert_ranks: List[Tuple[int, int, int]] = [],
-            local_attn_dp_rank: int = 0,
-        ):
+    def init_core(self, core_args: InitCoreArgs,):
         self.sampler = init_sampler(
             self.device_id,
             self.max_output_len,
@@ -921,9 +888,9 @@ class SamplerEngine(Engine):
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
-            in_device_ids,
-            out_device_ids,
-            [info.to_c() for info in out_channel_infos],
+            core_args.in_device_ids,
+            core_args.out_device_ids,
+            [info.to_c() for info in core_args.out_channel_infos],
         )
         self._logger.info("inited sampler")
         self._t_start = time.time()
@@ -973,29 +940,14 @@ class TokenizerEngine(Engine):
         for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
             self.process_request(req_id, init_prefill_len, dp_rank)
         
-    def init_core(
-            self,
-            layer_ids: List[int],
-            # P2P Channels
-            in_device_ids: List[int],
-            out_device_ids: List[int],
-            out_channel_infos: List[ChannelInfo],
-            # Group Channels
-            in_nccl_ids: Dict[int, int],
-            out_device_group_ids: Dict[int, List[int]],
-            out_nccl_ids: Dict[int, int],
-            device_group_ids: List[int] = None,
-            group_nccl_ids: str = "",
-            expert_ranks: List[Tuple[int, int, int]] = [],
-            local_attn_dp_rank: int = 0,
-        ):
+    def init_core(self, core_args: InitCoreArgs,):
         self.tokenizer = init_tokenizer(
             self.device_id,
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
-            out_device_ids,
-            [info.to_c() for info in out_channel_infos],
+            core_args.out_device_ids,
+            [info.to_c() for info in core_args.out_channel_infos],
         )
         self._logger.info("inited tokenizer")
     
