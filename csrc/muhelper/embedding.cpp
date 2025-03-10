@@ -42,9 +42,9 @@ Sampler::Sampler(int device_id,
 }
 
 void Sampler::run() {
-    this->recv_mq.bind(get_zmq_addr(device_id));
+    this->recv_mq.bind(get_zmq_addr(device_id, true, -1, 1));
     for (int i = 0; i < this->channels.size(); i ++)
-        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
+        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, 1));
 
     while (!this->end_flag) {
         // DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;

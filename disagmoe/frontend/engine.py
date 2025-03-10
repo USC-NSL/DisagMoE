@@ -30,7 +30,7 @@ from torch import Tensor
 
 import torch.distributed as dist
 
-from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
+from disagmoe_c import (init_engine, init_engine_colocate, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
                         recorder_create as disagmoe_recorder_create,
@@ -182,32 +182,58 @@ class Engine:
                           core_args.device_group_ids, core_args.expert_ranks, core_args.local_attn_dp_rank}")
         
         # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
-
-        self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
-            self.device_id,
-            self.model_config.top_k,
-            self.has_attn,
-            self.has_expert,
-            ParallelConfig.from_c(
-                self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
-                self.model_config.ep_size,
-                self.model_config.dp_size,
-                self.model_config.num_experts_per_rank,
-                core_args.expert_ranks,
-            ), # parallel config
-            core_args.layer_ids,
-            # P2P Channels
-            core_args.in_device_ids,
-            core_args.out_device_ids,
-            [info.to_c() for info in core_args.out_channel_infos],
-            # Group Channels
-            core_args.in_nccl_ids,
-            core_args.out_nccl_ids,
-            core_args.in_nccl_ids_ext,
-            core_args.out_nccl_ids_ext,
-            [], # device_grou_ids, now is actually deprecated
-            core_args.local_attn_dp_rank,
-        )
+        
+        if self.engine_type == EngineType.HYBRID:
+            self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine_colocate(
+                self.device_id,
+                self.model_config.top_k,
+                self.has_attn,
+                self.has_expert,
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ), # parallel config
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+                # Group Channels
+                core_args.in_nccl_ids,
+                core_args.out_nccl_ids,
+                core_args.in_nccl_ids_ext,
+                core_args.out_nccl_ids_ext,
+                [], # device_grou_ids, now is actually deprecated
+                core_args.local_attn_dp_rank,
+            )
+        else:
+            self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
+                self.device_id,
+                self.model_config.top_k,
+                self.has_attn,
+                self.has_expert,
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ), # parallel config
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+                # Group Channels
+                core_args.in_nccl_ids,
+                core_args.out_nccl_ids,
+                core_args.device_group_ids,
+                core_args.local_attn_dp_rank,
+            )
+            
         if self.model_config.tp_enable_inter_group:
             set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
         else:

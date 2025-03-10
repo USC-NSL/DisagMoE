@@ -22,7 +22,8 @@ void init_all_channels(
     const std::vector<int> &out_device_ids,
     const std::map<int, std::string> &out_nccl_ids,
     int local_attn_dp_rank,
-    std::vector<std::thread>& threads
+    std::vector<std::thread>& threads,
+    bool skip_embedding = false
 ) {
     /*
         We have multiple types of channels to be inited.
@@ -39,8 +40,6 @@ void init_all_channels(
     */
     auto n_in = in_device_ids.size();
     auto n_out = out_device_ids.size();
-    in_channels.resize(n_in);
-    out_channels.resize(n_out);
 
     #define INST(channel, msg) {                                                                 \
         threads.emplace_back(std::thread(                                                   \
@@ -62,8 +61,11 @@ void init_all_channels(
 
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = in_device_ids[i];
-        auto &channel = in_channels[i];
+        Channel_t channel{};
         if (is_embedding_node(peer_id)) {
+            if (skip_embedding) {
+                continue;
+            }
             channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ false, 
                 // only attn needs to consider the DP
                 is_attn ? local_attn_dp_rank : 0);
@@ -78,6 +80,7 @@ void init_all_channels(
                 );
             }
         }
+        in_channels.push_back(channel);
         INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
     }
 
@@ -85,8 +88,11 @@ void init_all_channels(
 
     for (size_t i = 0; i < n_out; i ++) {
         auto peer_id = out_device_ids[i];
-        auto &channel = out_channels[i];
+        Channel_t channel{};
         if (is_embedding_node(peer_id)) {
+            if (skip_embedding) {
+                continue;
+            }
             channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ true);
         } else {
             if (peer_id == local_id) {
@@ -98,13 +104,11 @@ void init_all_channels(
                 );
             }
         }
+        out_channels.push_back(channel);
         INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
     }
 
     DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
-
-
-
 }
 
 std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
@@ -119,41 +123,21 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     const std::vector<ChannelInfo> &out_channel_infos,
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids,
-    const std::map<int, std::string> &in_nccl_ids_ext,
-    const std::map<int, std::string> &out_nccl_ids_ext,
     const std::vector<int> &device_group_ids,
     int local_attn_dp_rank) {
 
-    bool is_hybrid = has_attn && has_expert;
+    ASSERT (has_attn ^ has_expert == true);
 
     std::vector<Channel_t> in_channels, out_channels;
-    std::vector<Channel_t> in_channels_ext, out_channels_ext;
     std::vector<bool> is_group_channels;
-    Channel_t intra_group_channel_1 = nullptr, intra_group_channel_2 = nullptr, intra_group_channel_3 = nullptr;
+    Channel_t intra_group_channel_1 = nullptr;
 
     std::vector<std::thread> threads;
 
-    if (is_hybrid) {
-        init_all_channels(local_id, has_attn,
-            in_channels, in_device_ids, in_nccl_ids,
-            out_channels_ext, out_device_ids, out_nccl_ids_ext,
-            local_attn_dp_rank, threads);
-
-        init_all_channels(local_id, has_attn,
-            in_channels_ext, in_device_ids, in_nccl_ids_ext,
-            out_channels, out_device_ids, out_nccl_ids,
-            local_attn_dp_rank, threads);
-    } else {
-        init_all_channels(local_id, has_attn,
-            in_channels, in_device_ids, in_nccl_ids,
-            out_channels, out_device_ids, out_nccl_ids,
-            local_attn_dp_rank, threads);
-
-        init_all_channels(local_id, has_attn,
-            in_channels_ext, in_device_ids, in_nccl_ids_ext,
-            out_channels_ext, out_device_ids, out_nccl_ids_ext,
-            local_attn_dp_rank, threads);
-    }
+    init_all_channels(local_id, has_attn,
+        in_channels, in_device_ids, in_nccl_ids,
+        out_channels, out_device_ids, out_nccl_ids,
+        local_attn_dp_rank, threads);
 
     for (auto &t: threads)
         t.join();
@@ -167,7 +151,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
         attn_dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
     }
     if (has_expert) {
-        expert_dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels_ext, out_channel_infos, is_group_channels);
+        expert_dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos, is_group_channels);
     }
     
     // init scheduler
@@ -185,12 +169,86 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
         attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels_ext);
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels);
         expert_scheduler = Scheduler::build(pool, layer_ids, "largest");
     }
 
     return std::make_tuple(attn_scheduler, attn_dispatcher, expert_scheduler, expert_dispatcher);
 }
+
+
+std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine_colocate(
+    int local_id, 
+    int top_k,
+    bool has_attn,
+    bool has_expert,
+    ParallelConfig cfg,
+    const std::vector<int> &layer_ids,
+    const std::vector<int> &in_device_ids,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos,
+    const std::map<int, std::string> &in_nccl_ids,
+    const std::map<int, std::string> &out_nccl_ids,
+    const std::map<int, std::string> &in_nccl_ids_ext,
+    const std::map<int, std::string> &out_nccl_ids_ext,
+    const std::vector<int> &device_group_ids,
+    int local_attn_dp_rank) {
+
+    ASSERT (has_attn && has_expert);
+
+    std::vector<Channel_t> in_channels, out_channels;
+    std::vector<Channel_t> in_channels_ext, out_channels_ext;
+    std::vector<bool> is_group_channels;
+    Channel_t intra_group_channel_1 = nullptr;
+
+    std::vector<std::thread> threads;
+
+    init_all_channels(local_id, has_attn,
+        in_channels, in_device_ids, in_nccl_ids,
+        out_channels, out_device_ids, out_nccl_ids,
+        local_attn_dp_rank, threads, true); // skip embedding
+
+    init_all_channels(local_id, has_attn,
+        in_channels_ext, in_device_ids, in_nccl_ids_ext,
+        out_channels_ext, out_device_ids, out_nccl_ids_ext,
+        local_attn_dp_rank, threads);
+
+    for (auto &t: threads)
+        t.join();
+
+    std::cout << local_id << " finished init all channels" << std::endl;
+    
+    // init dispatcher
+    DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
+    mu_dispatcher_t attn_dispatcher{}, expert_dispatcher{};
+    attn_dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
+    expert_dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels_ext, out_channel_infos, is_group_channels);
+    
+    // init scheduler
+    DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
+    scheduler_t expert_scheduler;
+    attn_scheduler_t attn_scheduler;
+
+    {
+        // init attention scheduler
+        mu_attn_pool_t pool;
+        if (top_k == 1) {
+            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels_ext, device_group_ids, intra_group_channel_1);
+        } else {
+            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels_ext, device_group_ids, intra_group_channel_1, top_k);
+        }
+        attn_scheduler = AttentionScheduler::build(pool, layer_ids, "largest");
+    }
+
+    {
+        // init expert scheduler
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels);
+        expert_scheduler = Scheduler::build(pool, layer_ids, "largest");
+    }
+
+    return std::make_tuple(attn_scheduler, attn_dispatcher, expert_scheduler, expert_dispatcher);
+}
+
 
 void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatcher, scheduler_t expert_scheduler, mu_dispatcher_t expert_dispatcher) {
     if (attn_scheduler.get() != nullptr)

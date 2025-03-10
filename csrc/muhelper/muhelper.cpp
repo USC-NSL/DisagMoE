@@ -101,8 +101,9 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
 }
 
 void MuDispatcher::run() {
-    for (int i = 0; i < this->channels.size(); i ++)
+    for (int i = 0; i < this->channels.size(); i ++) {
         this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, this->peer_zmq_port_offset));
+    }
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
@@ -375,7 +376,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
-    // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "Expert pool receive metadata: " << *meta << LEND;
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
@@ -432,7 +433,7 @@ void MuPool::run() {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq.bind(get_zmq_addr(this->device_id));
+    this->mq.bind(get_zmq_addr(this->device_id, true, -1, this->local_zmq_port_offset));
 
     auto last = clock();
     auto start = last;
