@@ -107,10 +107,9 @@ class ModelPlacement:
             
     def is_worker_device(self, device_id: int) -> bool:
         return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
-
-    def is_attn(self, device_id: int) -> bool:
-        # NOTE(hogura|20241111): since the dict `attn` only includes driver now, we use `expert` to check
-        return device_id not in self.expert
+    
+    def has_attn(self, device_id: int) -> bool:
+        return device_id in self.attn
     
     def in_device_ids_at(self, device_id: int, tp_enable_inter_group: bool) -> List[int]:
         if self.is_worker_device(device_id) and tp_enable_inter_group:

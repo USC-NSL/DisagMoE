@@ -63,6 +63,8 @@ class DPScheduler:
             request_item: RequestItem = done.pop().result()
             rank = self.schedule([request_item.req_id])[0]
             
+            print(f"Waiting loop get request {request_item.req_id}, assign rank {rank}")
+            
             if rank < 0:
                 await self.sch_event.wait()
                 self.sch_event.clear()
@@ -72,11 +74,13 @@ class DPScheduler:
             self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
             # submit the request
+            self._logger.warning(f"Submit request {request_item.req_id} to rank {rank}")
             request_item.func(request_item.req_id, *request_item.args, rank)
     
     def init_kv_cache_stats(self, stats: Dict[int, int]):
         for rank, num_blocks in stats.items():
             self.kv_cache_stats[rank] = num_blocks
+        print(f"Init cache stats {self.kv_cache_stats}")
     
     def add_seq(self, seq_id: int, rank: int):
         self.kv_cache_stats[rank] -= self.delta

@@ -214,7 +214,7 @@ class Controller:
                 return EngineType.SAMPLER if device_id == SAMPLER_DEV_ID else EngineType.TOKENIZER
             if model_place.is_hybrid:
                 return EngineType.HYBRID
-            return EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT
+            return EngineType.ATTENTION if model_place.has_attn(device_id) else EngineType.EXPERT
         
         # setup attention & expert
         ray.get([ 
@@ -290,11 +290,13 @@ class Controller:
         tasks = [worker.release_seqs.remote(req_ids) for worker in self.attn_workers]
         ray.get(tasks)
         
-    def start_engine(self, non_blocking: bool = True):
+    def start_engine(self, non_blocking: bool = False):
         tasks = [worker.start.remote() for worker in self.workers + \
                     [self.sampler_worker, self.tokenizer_worker]]
         if not non_blocking:
             ray.get(tasks)
+            print(f"all workers started")
+        
     
     def get_new_req_id(self) -> int:
         req_id = next(self.req_id_generator)
@@ -373,9 +375,9 @@ class Controller:
         ray.get(tasks)
         
     async def start_scheduler(self):
-        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
+        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.has_attn(device_id)}
         for worker, device_id in zip(self.workers, self.device_ids):
-            if self.model_place.is_attn(device_id):
+            if self.model_place.has_attn(device_id):
                 rank = self.model_place.attn_dp_rank_at(device_id)
                 stats[rank] = min(stats[rank], ray.get(worker.get_configured_kv_cache_blocks.remote()))
         self.dp_scheduler.start(stats)

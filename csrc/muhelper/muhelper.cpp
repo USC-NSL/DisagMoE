@@ -376,7 +376,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
-    // DMOE_LOG(INFO) << "Expert pool receive metadata: " << *meta << LEND;
+    DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
@@ -797,7 +797,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
+    DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe

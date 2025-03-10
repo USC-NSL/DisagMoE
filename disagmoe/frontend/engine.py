@@ -282,7 +282,6 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
-        print(f"start to set up engine")
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
@@ -601,6 +600,7 @@ class Engine:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        print(f"process_batch_attn")
         meta_py = AttentionBatchMetadata.from_c(meta_c)
         assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
 
@@ -650,6 +650,8 @@ class Engine:
     def process_batch_expert(self, 
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        print(f"process_batch_attn")
+        
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
@@ -810,6 +812,7 @@ class Engine:
         disagmoe_recorder_create()
         
         def step(scheduler, processor, dispatcher):
+            # self._timer.start("schedule")
             batch_info = scheduler.schedule()
             if batch_info.data is None:
                 return
@@ -819,16 +822,16 @@ class Engine:
             self.stream.synchronize()
             range_pop()
             
-            self._timer.stop("schedule")
+            # self._timer.stop("schedule")
             self._timer.start("preprocess")
             
             batch = TensorBatch.from_c(batch_info)
             meta: Metadata = batch.metadata
             
-            self.stats_pre_process(batch)
+            # self.stats_pre_process(batch)
             output, meta = processor(meta, batch.data)
             self.post_process(output, meta, dispatcher)
-            self.stats_post_process(batch)
+            # self.stats_post_process(batch)
             
         while not self.end_flag:
             step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
@@ -951,6 +954,7 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         
     def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
+        self._logger.info(f"tokenizer put 1 request {req_id}")
         # req_id (or seq_id) must > 0
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)

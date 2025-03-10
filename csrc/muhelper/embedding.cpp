@@ -176,6 +176,7 @@ bool Sampler::check_finished(int token, int req_id) {
 
 void Sampler::start() {
     MuExpertDispatcher::start();
+    DMOE_LOG(INFO) << "sampler started" << LEND;
 }
 
 TopKSampler::TopKSampler(int device_id, 
@@ -287,6 +288,7 @@ Tokenizer::Tokenizer(int device_id,
 
 void Tokenizer::put_request(int req_id, int init_prefill_len, torch::Tensor tensor, int dp_rank) {
     // TODO(hogura|20241007): set the first attn
+    DMOE_LOG(DEBUG) << "tokenizer start put a request" << LEND;
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
     auto meta_t = std::make_shared<Metadata>(Metadata {
@@ -299,8 +301,11 @@ void Tokenizer::put_request(int req_id, int init_prefill_len, torch::Tensor tens
         /*init_prefill_lens=*/ {init_prefill_len},
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
+
+    DMOE_LOG(DEBUG) << "tokenizer end put a request" << LEND;
 }
 
 void Tokenizer::start() {
     MuExpertDispatcher::start();
+    DMOE_LOG(DEBUG) << "tokenizer started" << LEND;
 }
