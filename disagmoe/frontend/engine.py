@@ -600,7 +600,6 @@ class Engine:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        print(f"process_batch_attn")
         meta_py = AttentionBatchMetadata.from_c(meta_c)
         assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
 
@@ -650,8 +649,6 @@ class Engine:
     def process_batch_expert(self, 
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        print(f"process_batch_attn")
-        
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
@@ -859,7 +856,7 @@ class Engine:
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        self._logger.info(f"releasing seqs {seq_ids}")
+        # self._logger.info(f"releasing seqs {seq_ids}")
         for i in seq_ids:
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
             self.decode_seq_lens.pop(i)
@@ -954,7 +951,6 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         
     def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
-        self._logger.info(f"tokenizer put 1 request {req_id}")
         # req_id (or seq_id) must > 0
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)

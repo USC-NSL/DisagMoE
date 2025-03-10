@@ -45,7 +45,6 @@ void init_all_channels(
         threads.emplace_back(std::thread(                                                   \
             [local_id, peer_id](Channel_t channel) {                                                        \
                 channel->instantiate();                                                     \
-                std::cout << local_id << " channel " << msg << " inited" << LEND;     \
             },                                                                              \
             channel                                                                         \
         ));                                                                                 \
@@ -84,7 +83,7 @@ void init_all_channels(
         INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
     }
 
-    DMOE_LOG(DEBUG) << local_id << " " << "in channel initialized" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << " " << "in channel initialized" << LEND;
 
     for (size_t i = 0; i < n_out; i ++) {
         auto peer_id = out_device_ids[i];
@@ -108,7 +107,7 @@ void init_all_channels(
         INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
     }
 
-    DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
 }
 
 std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
@@ -145,7 +144,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     std::cout << local_id << " finished init all channels" << std::endl;
     
     // init dispatcher
-    DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t attn_dispatcher{}, expert_dispatcher{};
     if (has_attn) {
         attn_dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
@@ -155,7 +154,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     }
     
     // init scheduler
-    DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
     scheduler_t expert_scheduler;
     attn_scheduler_t attn_scheduler;
 
@@ -219,13 +218,13 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     std::cout << local_id << " finished init all channels" << std::endl;
     
     // init dispatcher
-    DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << " " << "init dispatcher" << LEND;
     mu_dispatcher_t attn_dispatcher{}, expert_dispatcher{};
     attn_dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
     expert_dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels_ext, out_channel_infos, is_group_channels);
     
     // init scheduler
-    DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
+    // DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
     scheduler_t expert_scheduler;
     attn_scheduler_t attn_scheduler;
 

@@ -152,7 +152,7 @@ MuAttnDispatcher::MuAttnDispatcher(
         }
     }
     max_exp_id ++;
-    DMOE_LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
+    // DMOE_LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
     exp_channels.resize((max_layer_id + 1) * max_exp_id, -1);
 
     // get expert ranks
@@ -258,13 +258,13 @@ MuExpertDispatcher::MuExpertDispatcher(
         int dp_rank = channel_infos[i].attn_dp_rank;
         for (int j = 0; j < channel_infos[i].attn_layer_ids.size(); j ++) {
             int lid = channel_infos[i].attn_layer_ids[j];
-            DMOE_LOG(DEBUG) << "channel " << i << " attn_layer_id " << lid << " dp_rank " << dp_rank << LEND;
+            // DMOE_LOG(DEBUG) << "channel " << i << " attn_layer_id " << lid << " dp_rank " << dp_rank << LEND;
             ASSERT(this->attn_channel[lid][dp_rank] == -1);
             this->attn_channel[lid][dp_rank] = i;
         }
     }
 
-    DMOE_LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
+    // DMOE_LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
 }
 
 int MuExpertDispatcher::_get_attn_channel(int layer_id, int rank) {
@@ -376,7 +376,7 @@ void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
 
     peer_id = std::stoi(recv_msgs[0].to_string());
     meta = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
-    DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
 void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
@@ -522,7 +522,7 @@ int schedule_with_limit_dp(std::vector<DataBatch> &data_list,
     while (!dp[cur] && cur > 0)
         cur --;
     if (cur == 0) {
-        DMOE_LOG(WARNING) << "MaxBatchSize=" << max_batch_size << "; Current DataBatch sizes: ";
+        // DMOE_LOG(WARNING) << "MaxBatchSize=" << max_batch_size << "; Current DataBatch sizes: ";
         for (auto &d: data_list)
             std::cerr << d.metadata->num_tokens() << " ";
         std::cerr << LEND;
@@ -702,7 +702,7 @@ void MuAttentionPool::run() {
         }));
     }
 
-    DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
+    // DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
     for (auto &c: this->channels) {
         if (is_embedding_node(c->get_peer_id()))
             continue;
@@ -797,7 +797,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
     if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
         // since only driver can have the pool, we can send the data from layer 0 to other workers here.
         // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
