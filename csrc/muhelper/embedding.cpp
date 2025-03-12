@@ -211,7 +211,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     // TODO: now it is a hack for gathering topk tokens, should be replaced by adding them up
     ready_tokens_meta->shape[0] = n;
     ready_tokens_meta->topk_weights = {};
-    auto ready_tokens_tensor = torch::zeros(
+    auto ready_tokens_tensor = torch::randn(
         {ready_tokens_meta->num_tokens(), ready_tokens_meta->token_hidden_dim()}, 
         torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)
     );

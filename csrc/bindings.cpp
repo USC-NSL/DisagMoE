@@ -152,6 +152,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("update_block_table", &BlockManager::update_block_table)
         .def("prepare_block_table", &BlockManager::prepare_block_table);
 
+    m.def("prepare_batch_infos", &prepare_batch_infos);
+
     // custom ops
     m.def("permute_tokens_cuda", &permute_tokens_cuda);
 

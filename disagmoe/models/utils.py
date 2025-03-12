@@ -118,7 +118,7 @@ def make_naive_mapping(block_size, lens, mode):
     slots_table = torch.tensor(slots_table, dtype=torch.long)
     return block_table, slots_table
 
-def make_prefill_meta(num_prefills: int, block_size: int):
+def make_prefill_meta(num_prefills: int, block_size: int) -> FlashAttentionMetadata:
     lens = [1 for _ in range(num_prefills)]
     seqlens = torch.tensor(lens)
     num_prefill_tokens = sum(lens)
@@ -147,7 +147,7 @@ def make_prefill_meta(num_prefills: int, block_size: int):
     )
     return meta
 
-def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int):
+def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int) -> AttentionBatchMetadata:
     bs = num_prefill_tokens + num_decode_tokens
     meta = AttentionBatchMetadata(
         0,

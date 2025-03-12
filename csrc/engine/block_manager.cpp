@@ -122,9 +122,8 @@ void BlockManager::update_block_table(attn_metadata_t meta, const std::vector<in
     int num_decode_tokens = meta->num_decode_tokens;
     for (int i = 0; i < num_prefill_tokens; i++) {
         int seq_id = meta->seq_ids[i];
-        if (!has_seq_block_list(seq_id)) {
-            allocate(seq_id, meta->init_prefill_lens[i]);
-        }
+        ASSERT (!has_seq_block_list(seq_id));
+        allocate(seq_id, meta->init_prefill_lens[i]);
     }
     for (int i = 0; i < num_prefill_tokens + num_decode_tokens; i++) {
         int seq_id = meta->seq_ids[i];
@@ -169,4 +168,26 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
     auto block_table_1d_pinned = torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true));
 
     return block_table_1d_pinned.to(torch::kCUDA, true);
+}
+
+torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+    int num_tokens = meta->num_prefill_tokens + meta->num_decode_tokens;
+    int num_seqs = num_tokens;
+
+    std::vector<int> batch_infos(num_seqs + num_seqs + (num_seqs + 1), 0);
+
+    std::copy(decode_seq_lens.begin(), decode_seq_lens.end(), batch_infos.begin());
+    std::vector<int> seq_lens(batch_infos.begin(), batch_infos.begin() + num_seqs);
+
+    for (int i = 0; i < num_tokens; i++) {
+        batch_infos[num_seqs + i] = decode_seq_lens[i] - 1;
+    }  
+
+    int base = num_seqs + num_seqs;
+
+    for (int i = 1; i <= num_seqs; i++) {
+        batch_infos[base + i] = batch_infos[base + i - 1] + decode_seq_lens[i - 1];
+    }
+
+    return torch::tensor(batch_infos, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
 }
