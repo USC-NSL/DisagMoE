@@ -362,6 +362,7 @@ MuPool::MuPool(
     }
 
     this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
+    this->queueing_timers = std::map<int, clock_t>();
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -428,6 +429,39 @@ void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_fro
     }
 }
 
+void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
+    if (req_ids.empty())
+        return;
+    
+    std::lock_guard<std::mutex> lock(this->timer_mutex);
+    for (int req_id: req_ids) {
+        if (this->queueing_timers.find(req_id) == this->queueing_timers.end())
+            this->queueing_timers[req_id] = t_now();
+        else {
+            ASSERT(this->queueing_timers.at(req_id) == -1);
+            this->queueing_timers.erase(req_id);
+        }
+    }
+}
+
+float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
+    if (req_ids.empty())
+        return 0;
+
+    std::lock_guard<std::mutex> lock(this->timer_mutex);
+    float total_delay = 0;
+    auto now = t_now();
+    for (int req_id: req_ids) {
+        if (this->queueing_timers.find(req_id) == this->queueing_timers.end()) {
+            this->queueing_timers[req_id] = -1;
+            continue;
+        }
+        total_delay += 1.0 * (now - this->queueing_timers.at(req_id)) / CLOCKS_PER_SEC;
+        this->queueing_timers.erase(req_id);
+    }
+    return total_delay / req_ids.size();
+}
+
 void MuPool::run() {
     if (this->channels.empty()) {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
@@ -435,7 +469,7 @@ void MuPool::run() {
     }
     this->mq.bind(get_zmq_addr(this->device_id, true, -1, this->local_zmq_port_offset));
 
-    auto last = clock();
+    auto last = t_now();
     auto start = last;
 
     // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
@@ -451,6 +485,9 @@ void MuPool::run() {
         );
 
         MuPool::recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
+
+        // NOTE(hogura|20250305): after receiving batch, start the queueing timer for each request
+        this->start_queueing_timer(meta->req_ids);
 
         this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
     }

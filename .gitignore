@@ -178,3 +178,4 @@ steps_trace*
 *.png
 *.gz
 metrics*.json
+tmp*
