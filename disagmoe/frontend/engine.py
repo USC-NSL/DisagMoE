@@ -136,6 +136,11 @@ class Engine:
             self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
+            
+    def _log_memory_usage(self, prefix: str = ""):
+        free_memory, total_memory = torch.cuda.mem_get_info()
+        self._logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
+                            f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
     
     def _build_executor(self):
         if self.has_expert:
@@ -293,9 +298,8 @@ class Engine:
             self.h2d_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
-            free_memory, total_memory = torch.cuda.mem_get_info()
-            self._logger.info(f"CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
-                              f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
+            self._log_memory_usage("Setup device")
+            free_memory, _ = torch.cuda.mem_get_info()
             self.init_gpu_memory = free_memory
             
         self.engine_type = engine_type
@@ -317,12 +321,17 @@ class Engine:
         assert isinstance(self.attn_executor, AttnExecutor)
         torch.cuda.empty_cache()
         
+        self._log_memory_usage("After allocate parameters")
+        
         self.attn_executor.profile_execute(self.attn_max_batch_size)      
         torch.cuda.synchronize()  
         
+        self._log_memory_usage("After profile run")
+        
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
         peak_memory = self.init_gpu_memory - free_gpu_memory
-        cache_block_size = self.model_config.hidden_size * self.cache_config.block_size * 2 # fp16 or bf16
+        cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
+                            * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
         
         num_gpu_blocks = int(
             (total_gpu_memory * self.cache_config.gpu_memory_utilization -
