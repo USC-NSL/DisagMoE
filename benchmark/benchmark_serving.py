@@ -4,7 +4,8 @@ from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
-from disagmoe.frontend.datatypes import SloStat, TraceContext
+from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
+from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -54,7 +55,8 @@ class BenchmarkMetrics:
         try:
             import pandas as pd
             if not os.path.exists(filename):
-                df = pd.DataFrame(columns=["num_requests", "output_len",
+                df = pd.DataFrame(columns=["num_requests", "rate", "dist_type",
+                                           "output_len",
                                            "step_attn", "DP_size", "max_batch_size_attn", 
                                            "step_expert", "EP_size", "max_batch_size_expert",
                                            "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
@@ -65,6 +67,8 @@ class BenchmarkMetrics:
                     df = pd.read_excel(filename)
             new_row = {
                 "num_requests": args.num_requests,
+                "rate": args.rate,
+                "dist_type": args.generator_type,
                 "output_len": args.output_len,
                 "step_attn": args.step_attn,
                 "DP_size": args.dp_size,
@@ -233,6 +237,35 @@ def generate_step_trace(args,
         json.dump(metrics, f)
 
 
+def analyze_throughput(args, 
+                       sampler_step_infos: List[SamplerStepInfo], 
+                       attn_queueing_delays: List[List[float]],
+                       exp_queueing_delays: List[List[float]],
+                       t_submitted: Dict[int, int],
+                       slo_stats: List[SloStat]):
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name
+    # sampler throughput
+    sampler_fn = get_sampler_step_name(args)
+    sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
+    sampler_df.to_csv(sampler_fn, index=False)
+    
+    # queueing delay
+    attn_fn = get_worker_queueing_delay_name(args, "attn")
+    attn_df = pd.DataFrame(attn_queueing_delays)
+    attn_df.to_csv(attn_fn, index=False)
+    
+    exp_fn = get_worker_queueing_delay_name(args, "exp")
+    exp_df = pd.DataFrame(exp_queueing_delays)
+    exp_df.to_csv(exp_fn, index=False)
+    
+    # TTFT
+    ttft_fn = get_ttft_name(args)
+    ttft_df = pd.DataFrame([
+        stat.t_prefill_std - t_submitted[stat.req_id]
+            for stat in slo_stats
+    ])
+    ttft_df.to_csv(ttft_fn, index=False)
+
 async def benchmark_serving(args):
     assert master is not None, "master is not initialized"
     
@@ -241,26 +274,35 @@ async def benchmark_serving(args):
     print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     
     async def run_once():
+        GeneratorType = get_generator(args.generator_type)
+        generator = GeneratorType(args.rate, 1, args.input_len)
+        workload = generator.generate(args.num_requests)
+        
         pbar = tqdm.tqdm(total=args.num_requests)
-        benchmark_start_time = time.perf_counter()
+        t_start = time.perf_counter()
         tasks = []
-        for _ in range(args.num_requests):
-            resp = master.put_single_request(args.input_len)
+        for i in range(args.num_requests):
+            t_elapsed = time.perf_counter() - t_start
+            arrival, input_len = workload[i]
+            if t_elapsed < arrival:
+                await asyncio.sleep(arrival - t_elapsed)
+            resp = master.put_single_request(input_len)
             tasks.append(asyncio.create_task(process_response(resp, pbar)))
-            await asyncio.sleep(args.rate)
         
         results: List[SloStat] = await asyncio.gather(*tasks)
-        benchmark_duration = time.perf_counter() - benchmark_start_time
+        t_duration = time.perf_counter() - t_start
         pbar.close()
 
-        metrics = analyze_results(results, benchmark_duration)
+        metrics = analyze_results(results, t_duration)
 
         print(metrics)
 
         metrics.write_to_file(args)
+        
+        return results
     
     await master.start_scheduler()
-    await run_once()
+    results = await run_once()
     await master.stop_scheduler()
     
     master.stop_workers()
@@ -268,6 +310,15 @@ async def benchmark_serving(args):
     if args.trace:
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
+    
+    if args.analyze_throughput:
+        sampler_step_infos = master.fetch_sampler_step_infos()
+        attn_delays, exp_delays = master.fetch_queueing_delays()
+        t_submitted = master.fetch_submitted_time()
+        analyze_throughput(args, 
+                           sampler_step_infos, 
+                           attn_delays, exp_delays,
+                           t_submitted, results)
     
 def get_args():
     parser = ArgumentParser()
@@ -282,6 +333,8 @@ def get_args():
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
+    parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
+    parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
     
     # model config
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
@@ -326,7 +379,7 @@ def main():
         launch(args)
         asyncio.run(benchmark_serving(args))
     except Exception as e:
-        print("Error: failed to run benchmark, with exception:", e)
+        print("Error: failed to run benchmark, with exception:", e.with_traceback())
         BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":

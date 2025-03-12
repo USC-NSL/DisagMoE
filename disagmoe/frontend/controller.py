@@ -8,7 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
-from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext
+from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, SamplerStepInfo
 from disagmoe.utils.placement import ModelPlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
@@ -304,6 +304,20 @@ class Controller:
     def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
         
+    def fetch_queueing_delays(self) -> Tuple[List[List[float]], List[List[float]]]:
+        results = ray.get([worker.fetch_queueing_delays.remote() for worker in self.workers])
+        attn = []
+        exp = []
+        for worker_id, result in enumerate(results):
+            if self.model_place.is_attn(self.device_ids[worker_id]):
+                attn.append(result)
+            else:
+                exp.append(result)
+        return attn, exp
+        
+    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
+        return ray.get(self.sampler_worker.fetch_sampler_step_infos.remote())
+        
     async def poll_finished_results(self) -> List[SloStat]:
         print(f"master start polling request")
         while not self.end_flag:
@@ -323,6 +337,9 @@ class Controller:
         self.dp_scheduler.put_request(
             self.tokenizer_worker.put_single_request.remote, req_id, input_len)
         return res
+        
+    def fetch_submitted_time(self) -> Dict[int, int]:
+        return ray.get(self.tokenizer_worker.fetch_submitted_time.remote())
         
     def put_requests(self, input_lens: int) -> List[AsyncResult]:
         raise NotImplementedError("DP Scheduler not implemented here")

@@ -7,7 +7,8 @@ from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, 
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
-                                         AttentionBatchMetadata, SloStat, TraceContext)
+                                         AttentionBatchMetadata, SloStat, TraceContext,
+                                         SamplerStepInfo)
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
@@ -78,6 +79,8 @@ class Engine:
         self._step_stats = []
         self._metric = Metric()
         self._timer = Timer()
+        self._queueing_timer = {}
+        self._queueing_delays = []
 
     @property
     def is_attn(self):
@@ -764,6 +767,7 @@ class Engine:
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 continue
+            self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
             range_push("Engine.schedule_stream_sync")
@@ -793,6 +797,9 @@ class Engine:
             result[key] = [TraceContext.from_c(c) for c in output[key]]
         
         return self._step_stats, result, self._metric
+    
+    def fetch_queueing_delays(self) -> List[float]:
+        return self._queueing_delays
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
@@ -891,6 +898,9 @@ class SamplerEngine(Engine):
         #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
     
+    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
+        return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
+    
     def set_sampling_params(self, max_output_len: int):
         self.max_output_len = max_output_len
         
@@ -909,6 +919,7 @@ class TokenizerEngine(Engine):
     def __init__(self):
         super().__init__(None, None, None, TOKENIZER_DEV_ID)
         self.tokenizer: Tokenizer = None
+        self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         
     def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
@@ -918,6 +929,7 @@ class TokenizerEngine(Engine):
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
         # self._logger.info("tokenizer put 1 request")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
+        self.t_submitted[req_id] = time.time()
         
     def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
         self.process_request(req_id, init_prefill_len, dp_rank)
@@ -925,6 +937,9 @@ class TokenizerEngine(Engine):
     def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
         for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
             self.process_request(req_id, init_prefill_len, dp_rank)
+        
+    def fetch_submitted_time(self):
+        return self.t_submitted
         
     def init_core(
             self,

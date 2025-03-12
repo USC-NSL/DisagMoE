@@ -52,7 +52,7 @@ for step_attn in "${step_attns[@]}"; do
             --step-exp $step_exp \
             --dp-size $dp_size \
             --ep-size $ep_size \
-            -c \
+            -ca \
             --file $REPORT_DIR
     done
 done

@@ -8,6 +8,8 @@
 #include "zmq_addon.hpp"
 
 #include <thread>
+#include <ctime>
+#include <chrono>
 
 Sampler::Sampler(int device_id, 
                 int max_output_len,
@@ -79,8 +81,9 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
     // Step 1. select finished & unfinished batches
     std::vector<int> continue_ids;
+    int num_tokens = meta->req_ids.size();
 
-    for (int i = 0; i < meta->req_ids.size(); i ++) {
+    for (int i = 0; i < num_tokens; i ++) {
         int rid = meta->req_ids[i];
         output_lens[rid] ++;
         this->_active_token_count ++;
@@ -90,10 +93,10 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
-                slo_stats[rid].t_tokens.push_back(clock());
+                slo_stats[rid].t_tokens.push_back(t_now());
             }
             else {
-                // Finished, end.
+                // Finished.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
                 this->_active_token_count -= output_lens[rid];
@@ -104,7 +107,8 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid] = SloStat {rid, clock(), 0, {}};
+            // TODO(hogura|20250306): replace all time & clock with chrono::now()
+            slo_stats[rid] = SloStat {rid, t_now(), t_now_high(), 0, {}};
         }
     }
     // Step 2. update metadata
@@ -125,10 +129,6 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
     if (continue_ids.size() > 0)
         this->_send_once(TensorBatch{
             torch_tensor_slice(tensor, continue_ids),
-            // torch::zeros(
-            //     {new_meta.num_tokens(), new_meta.token_hidden_dim()}, 
-            //     torch::TensorOptions().dtype(tensor.dtype()).device(tensor.device())
-            // ),
             std::make_shared<Metadata>(new_meta)
     });
 
@@ -138,10 +138,11 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         int token = sample(tensor_at((uint64_t)tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
             eos_seqs.insert(req_id);
-            slo_stats[req_id].t_decode = clock();
+            slo_stats[req_id].t_decode = t_now();
         }
-        // TODO(hogura|20241007): send the generated tokens back to master node
     }
+
+    this->step_infos.push_back(SamplerStepInfo {num_tokens, t_now()});
 
     DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
@@ -155,6 +156,11 @@ std::vector<SloStat> Sampler::fetch_finished_slo_stats() {
     }
     finished_seqs.clear();
     return res;
+}
+
+std::vector<SamplerStepInfo> Sampler::fetch_step_infos() {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    return std::move(step_infos);
 }
 
 std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {
@@ -226,7 +232,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
-                slo_stats[rid].t_tokens.push_back(clock());
+                slo_stats[rid].t_tokens.push_back(t_now());
             }
             else {
                 // Finished, end.
@@ -240,7 +246,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid] = SloStat {rid, clock(), 0, {}};
+            slo_stats[rid] = SloStat {rid, t_now(), 0, {}};
         }
     }
     // Step 2. update metadata
@@ -269,7 +275,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         int token = sample(tensor_at((uint64_t)ready_tokens_tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
             eos_seqs.insert(req_id);
-            slo_stats[req_id].t_decode = clock();
+            slo_stats[req_id].t_decode = t_now();
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
     }

@@ -144,6 +144,9 @@ protected:
 
     int max_batch_size;
 
+    std::mutex timer_mutex;
+    std::map<int, clock_t> queueing_timers;
+
     virtual int tokens_in_layer(int lid);
 
     void recv_metadata(int &peer_id, metadata_t &meta);
@@ -151,6 +154,8 @@ protected:
     void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
 
     virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true);
+
+    void start_queueing_timer(const std::vector<int> &req_ids);
 
 public:
     MuPool(std::vector<int> layer_ids,
@@ -178,6 +183,9 @@ public:
     void maintain_largest_batch();
 
     std::vector<int> get_pool_snapshot();
+
+    // return average queueing delay    
+    float remove_queueing_timer(const std::vector<int> &req_ids);
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;

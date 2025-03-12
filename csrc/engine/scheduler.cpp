@@ -19,7 +19,7 @@ scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::st
 
 
 Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
     
 }
 
@@ -40,8 +40,13 @@ void Scheduler::set_max_batch_size(int max_batch_size) {
 TensorBatch Scheduler::schedule() {
     tx_range _{"Scheduler::schedule"};
 
-    auto batches = this->_schedule();
+    auto batches = std::move(this->_schedule());
     auto batch = TensorBatch::merge(batches);
+    if (batch.metadata) {
+        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
+    } else {
+        this->cur_queueing_delay = 0;
+    }
     return batch;
 }
 
@@ -59,7 +64,7 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
 
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
     
 }
 
@@ -80,9 +85,14 @@ std::vector<AttentionBatch> AttentionScheduler::_schedule() {
 AttentionBatch AttentionScheduler::schedule() {
     tx_range _{"AttentionScheduler::schedule"};
     
-    auto batches = this->_schedule();
+    auto batches = std::move(this->_schedule());
     // maybe moving merge to mu_pool results in less memory copy
     auto batch = AttentionBatch::merge(batches);
+    if (batch.metadata) {
+        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
+    } else {
+        this->cur_queueing_delay = 0;
+    }
     return batch;
 }
 
