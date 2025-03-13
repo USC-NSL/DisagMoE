@@ -44,6 +44,8 @@ class MuDispatcher: public MuHelper {
 protected:
     char device_id_str[3];
 
+    int peer_zmq_port_offset{0};
+
     std::queue<std::pair<TensorBatch, int>> send_queue;
     std::mutex mtx;
     std::condition_variable cv;
@@ -140,6 +142,7 @@ protected:
 
     int largest_batch_size_{0};
     int largest_batch_layer_id_{-1};
+    int local_zmq_port_offset{0};
     std::vector<int> tokens_per_layer_;
 
     int max_batch_size;

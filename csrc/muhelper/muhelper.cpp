@@ -101,8 +101,9 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
 }
 
 void MuDispatcher::run() {
-    for (int i = 0; i < this->channels.size(); i ++)
-        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
+    for (int i = 0; i < this->channels.size(); i ++) {
+        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, this->peer_zmq_port_offset));
+    }
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
@@ -141,6 +142,7 @@ MuAttnDispatcher::MuAttnDispatcher(
     std::vector<Channel_t> channels,
     const std::vector<ChannelInfo> &out_channel_infos): 
         MuDispatcher(layer_ids, device_id, cfg, channels) {
+    this->peer_zmq_port_offset = 0;
     int max_layer_id = 0;
     max_exp_id = 0;
     for (auto &info: out_channel_infos) {
@@ -150,7 +152,7 @@ MuAttnDispatcher::MuAttnDispatcher(
         }
     }
     max_exp_id ++;
-    DMOE_LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
+    // DMOE_LOG(INFO) << "max_layer_id " << max_layer_id << ", max_exp_id " << max_exp_id << LEND;
     exp_channels.resize((max_layer_id + 1) * max_exp_id, -1);
 
     // get expert ranks
@@ -237,6 +239,7 @@ MuExpertDispatcher::MuExpertDispatcher(
     const std::vector<bool> &is_group_channels): 
         MuDispatcher(layer_ids, device_id, cfg, channels, is_group_channels),
         channel_infos(channel_infos) {
+    this->peer_zmq_port_offset = 1;
     int max_layer = -1;
     for (auto info: channel_infos)
         for (int i: info.attn_layer_ids)
@@ -255,13 +258,13 @@ MuExpertDispatcher::MuExpertDispatcher(
         int dp_rank = channel_infos[i].attn_dp_rank;
         for (int j = 0; j < channel_infos[i].attn_layer_ids.size(); j ++) {
             int lid = channel_infos[i].attn_layer_ids[j];
-            DMOE_LOG(DEBUG) << "channel " << i << " attn_layer_id " << lid << " dp_rank " << dp_rank << LEND;
+            // DMOE_LOG(DEBUG) << "channel " << i << " attn_layer_id " << lid << " dp_rank " << dp_rank << LEND;
             ASSERT(this->attn_channel[lid][dp_rank] == -1);
             this->attn_channel[lid][dp_rank] = i;
         }
     }
 
-    DMOE_LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
+    // DMOE_LOG(INFO) << "inited MuExpertDispatcher " << device_id << LEND;
 }
 
 int MuExpertDispatcher::_get_attn_channel(int layer_id, int rank) {
@@ -332,7 +335,7 @@ MuPool::MuPool(
     ctx(channels.size()),
     mq(ctx, zmq::socket_type::pull),
     max_batch_size(MAX_BATCH_SIZE) {
-    
+    this->local_zmq_port_offset = 0;
     int num_layers = layer_ids.size();
     int max_layer_id = 0;
     for (auto id: layer_ids)
@@ -464,7 +467,7 @@ void MuPool::run() {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq.bind(get_zmq_addr(this->device_id));
+    this->mq.bind(get_zmq_addr(this->device_id, true, -1, this->local_zmq_port_offset));
 
     auto last = t_now();
     auto start = last;
@@ -556,7 +559,7 @@ int schedule_with_limit_dp(std::vector<DataBatch> &data_list,
     while (!dp[cur] && cur > 0)
         cur --;
     if (cur == 0) {
-        DMOE_LOG(WARNING) << "MaxBatchSize=" << max_batch_size << "; Current DataBatch sizes: ";
+        // DMOE_LOG(WARNING) << "MaxBatchSize=" << max_batch_size << "; Current DataBatch sizes: ";
         for (auto &d: data_list)
             std::cerr << d.metadata->num_tokens() << " ";
         std::cerr << LEND;
@@ -695,6 +698,7 @@ MuAttentionPool::MuAttentionPool(
 ): MuPool(layer_ids, device_id, channels, true), 
     device_group_ids(device_group_ids),
     group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
+    this->local_zmq_port_offset = 1;
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
 }
@@ -735,7 +739,7 @@ void MuAttentionPool::run() {
         }));
     }
 
-    DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
+    // DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
     for (auto &c: this->channels) {
         if (is_embedding_node(c->get_peer_id()))
             continue;

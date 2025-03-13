@@ -44,9 +44,9 @@ Sampler::Sampler(int device_id,
 }
 
 void Sampler::run() {
-    this->recv_mq.bind(get_zmq_addr(device_id));
+    this->recv_mq.bind(get_zmq_addr(device_id, true, -1, 1));
     for (int i = 0; i < this->channels.size(); i ++)
-        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id()));
+        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, 1));
 
     while (!this->end_flag) {
         // DMOE_LOG(DEBUG) << "sampler receiving msg ..." << LEND;
@@ -305,6 +305,7 @@ void Tokenizer::put_request(int req_id, int init_prefill_len, torch::Tensor tens
         /*init_prefill_lens=*/ {init_prefill_len},
     });
     this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
+
 }
 
 void Tokenizer::start() {

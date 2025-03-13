@@ -6,10 +6,10 @@ import asyncio
 
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group
+from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group, InitCoreArgs
 from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, SamplerStepInfo
-from disagmoe.utils.placement import ModelPlacement
+from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.logger import get_logger
@@ -190,6 +190,8 @@ class Controller:
             self.max_output_len = sampling_config.max_output_len
             
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
+        in_nccl_ids_ext, out_nccl_ids_ext, group_nccl_ids_ext = self._get_nccl_ids(model_place)
+        
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
@@ -207,16 +209,24 @@ class Controller:
                 for worker in self.all_workers
         ])
         
+        def determine_worker_type(device_id: int) -> EngineType:
+            if device_id in [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]:
+                return EngineType.SAMPLER if device_id == SAMPLER_DEV_ID else EngineType.TOKENIZER
+            if model_place.is_hybrid:
+                return EngineType.HYBRID
+            return EngineType.ATTENTION if model_place.has_attn(device_id) else EngineType.EXPERT
+        
         # setup attention & expert
-        ray.get([
+        ray.get([ 
             worker.setup_engine.remote(
-                EngineType.ATTENTION if model_place.is_attn(device_id) else EngineType.EXPERT,
+                determine_worker_type(device_id),
                 model_config=model_config,
                 cache_config=cache_config,
                 rank=model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank),
             )
                 for worker, device_id in zip(self.workers, self.device_ids)
         ])
+        
         # setup tokenizer & sampler
         ray.get([
             worker.setup_engine.remote(
@@ -234,36 +244,39 @@ class Controller:
         # init core
         tasks = [
             worker.init_core.remote(
-                layer_ids=model_place.layer_ids_at(device_id),
-                in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
-                out_device_ids=model_place.out_device_ids.get(device_id, []),
-                out_channel_infos=[
-                    ChannelInfo(
-                        model_place.expert_ids_at(out),
-                        model_place.attn_layer_ids_at(out),
-                        model_place.attn_dp_rank_at(out),
-                    )
-                        for out in model_place.out_device_ids.get(device_id, [])
-                ],
-                in_nccl_ids=in_nccl_ids.get(device_id, {}),
-                out_device_group_ids={
-                    j: [device_id] + model_place.device_groups.get(j, [])
-                        for j in model_place.out_device_ids.get(device_id, [])
-                },
-                out_nccl_ids=out_nccl_ids.get(device_id, {}),
-                device_group_ids=model_place.device_groups.get(device_id, []),
-                group_nccl_ids=group_nccl_ids.get(
-                    tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
-                expert_ranks=model_place.out_expert_ranks_at(device_id),
-                local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
-            )
-                for worker, device_id in zip(
-                    self.workers + [self.sampler_worker, self.tokenizer_worker], 
-                    self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+                InitCoreArgs(
+                    layer_ids=model_place.layer_ids_at(device_id),
+                    in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
+                    out_device_ids=model_place.out_device_ids.get(device_id, []),
+                    out_channel_infos=[
+                        ChannelInfo(
+                            model_place.expert_ids_at(out),
+                            model_place.attn_layer_ids_at(out),
+                            model_place.attn_dp_rank_at(out),
+                        )
+                            for out in model_place.out_device_ids.get(device_id, [])
+                    ],
+                    in_nccl_ids=in_nccl_ids.get(device_id, {}),
+                    out_nccl_ids=out_nccl_ids.get(device_id, {}),
+                    in_nccl_ids_ext=in_nccl_ids_ext.get(device_id, {}),
+                    out_nccl_ids_ext=out_nccl_ids_ext.get(device_id, {}),
+                    out_device_group_ids={
+                        j: [device_id] + model_place.device_groups.get(j, [])
+                            for j in model_place.out_device_ids.get(device_id, [])
+                    },
+                    device_group_ids=model_place.device_groups.get(device_id, []),
+                    group_nccl_ids=group_nccl_ids.get(
+                        tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
+                    expert_ranks=model_place.out_expert_ranks_at(device_id),
+                    local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                 )
+            ) for worker, device_id in zip(
+                self.workers + [self.sampler_worker, self.tokenizer_worker], 
+                self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+            )
         ]
-        self._logger.info("launched all tasks")
         ray.get(tasks)
+        self._logger.info("launched all tasks")
         
         self.dp_scheduler = get_dp_scheduler(
             model_config.dp_size, self.max_output_len, cache_config.block_size, "max"
@@ -277,11 +290,13 @@ class Controller:
         tasks = [worker.release_seqs.remote(req_ids) for worker in self.attn_workers]
         ray.get(tasks)
         
-    def start_engine(self, non_blocking: bool = True):
+    def start_engine(self, non_blocking: bool = False):
         tasks = [worker.start.remote() for worker in self.workers + \
                     [self.sampler_worker, self.tokenizer_worker]]
         if not non_blocking:
             ray.get(tasks)
+            print(f"all workers started")
+        
     
     def get_new_req_id(self) -> int:
         req_id = next(self.req_id_generator)
@@ -377,9 +392,9 @@ class Controller:
         ray.get(tasks)
         
     async def start_scheduler(self):
-        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.is_attn(device_id)}
+        stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.has_attn(device_id)}
         for worker, device_id in zip(self.workers, self.device_ids):
-            if self.model_place.is_attn(device_id):
+            if self.model_place.has_attn(device_id):
                 rank = self.model_place.attn_dp_rank_at(device_id)
                 stats[rank] = min(stats[rank], ray.get(worker.get_configured_kv_cache_blocks.remote()))
         self.dp_scheduler.start(stats)

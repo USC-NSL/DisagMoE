@@ -82,6 +82,45 @@ void NcclChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
+TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
+    Channel(device_id, device_id), stream(stream) {
+    #ifndef D_ENABLE_RAY
+    CUDACHECK(cudaSetDevice(this->local));
+    #endif
+    if (stream == nullptr) {
+        CUDACHECK(cudaStreamCreate(&this->stream));
+    } 
+}
+
+TensorLocalChannel::~TensorLocalChannel() {
+    // CUDACHECK(cudaStreamDestroy(this->stream));
+}
+
+void TensorLocalChannel::instantiate() {
+    // do nothing
+}
+
+void TensorLocalChannel::send(uintptr_t data, const Metadata& metadata) {
+    std::lock_guard<std::mutex> lock(m);
+    data_buffer.push(data);
+    c.notify_one();
+}
+
+void TensorLocalChannel::recv(uintptr_t data, const Metadata& metadata) {
+    std::unique_lock<std::mutex> lock(m);
+    while (data_buffer.empty()) {
+        c.wait(lock);
+    }
+    uintptr_t data_to_recv = data_buffer.front();
+    data_buffer.pop();
+    cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
+void TensorLocalChannel::sync() {
+    CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
 ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):
     Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
         sprintf(device_id_str, "%d", party_local);
@@ -96,7 +135,7 @@ std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
 
 void ZmqChannel::instantiate() {
-    DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << " " << this->rank_offset << LEND;
+    // DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << " " << this->rank_offset << LEND;
     this->ctx = zmq::context_t(1);
     this->mq = std::make_shared<zmq::socket_t>(
         this->ctx, 
@@ -388,6 +427,11 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
         party_local, party_other, id
     );
     // TODO(hogura|20240927): recycle the ncclUniqueId (raw).
+    return channel;
+}
+
+Channel_t create_local_channel(int device_id) {
+    auto channel = std::make_shared<TensorLocalChannel>(device_id);
     return channel;
 }
 

@@ -48,6 +48,8 @@ class ModelPlacement:
     # device_id -> attn_rank_id
     attn_dp_ranks: Dict[int, int] = None
     
+    is_hybrid: bool = False
+        
     def expert_rank_at(self, device_id: int, num_expert_per_rank: int) -> int:
         assert device_id in self.expert
         assert self.expert_ranks is not None
@@ -94,7 +96,7 @@ class ModelPlacement:
         )))
         
     def add_edge(self, start, end):
-        assert start != end
+        # assert start != end
         if end not in self.in_device_ids:
             self.in_device_ids[end] = []
         if start not in self.out_device_ids:
@@ -105,10 +107,9 @@ class ModelPlacement:
             
     def is_worker_device(self, device_id: int) -> bool:
         return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
-
-    def is_attn(self, device_id: int) -> bool:
-        # NOTE(hogura|20241111): since the dict `attn` only includes driver now, we use `expert` to check
-        return device_id not in self.expert
+    
+    def has_attn(self, device_id: int) -> bool:
+        return device_id in self.attn
     
     def in_device_ids_at(self, device_id: int, tp_enable_inter_group: bool) -> List[int]:
         if self.is_worker_device(device_id) and tp_enable_inter_group:
@@ -393,12 +394,14 @@ class PipelinePlacement(PlacementBase):
         p = self.step_attn
         q = self.step_expert
         
+        num_attn_workers = p * self.tp_size * self.dp_size
+        
         attns = {
-            i: [] for i in range(p * self.tp_size * self.dp_size)
+            i: [] for i in range(num_attn_workers)
         }
         experts = {
-            i: [] for i in range(p * self.tp_size * self.dp_size, 
-                                 p * self.tp_size * self.dp_size + q * self.ep_size)
+            i: [] for i in range(num_attn_workers, 
+                                 num_attn_workers + q * self.ep_size)
         }
         device_groups = {
             i: list(range(i * self.tp_size, (i + 1) * self.tp_size)) for i in range(p * self.dp_size)
@@ -421,7 +424,7 @@ class PipelinePlacement(PlacementBase):
         for i, layers in mp.expert.items():
             for e in range(self.model_config.num_experts):
                 # expert rank: #E -> #E // num_experts_per_rank
-                dev_id = p * self.tp_size * self.dp_size + i * self.ep_size + e // self.model_config.num_experts_per_rank
+                dev_id = num_attn_workers + i * self.ep_size + e // self.model_config.num_experts_per_rank
                 for l in layers:
                     experts[dev_id].append((l, e))
         
@@ -460,10 +463,52 @@ class PipelinePlacement(PlacementBase):
         mp = self._solve_virtual()
         mp = self._solve_physical(mp)
         return mp
+
+class ColocatePlacement(PlacementBase):
+    
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig):
+        super().__init__(model_config, cluster_config)
         
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
+        num_devices = n_node * n_gpu_per_node
+        
+        all_layers = list(range(n_layer))
+        attns = { i: [] for i in range(num_devices) }
+        experts = { i: [] for i in range(num_devices) }
+        
+        for i in range(num_devices):
+            attns[i].extend(all_layers)
+        
+        for i in range(n_expert):
+            for j in all_layers:
+                experts[i // self.model_config.num_experts_per_rank].append((j, i))
+        
+        device_groups = {
+            i: [i] for i in range(num_devices)
+        }
+        
+        return ModelPlacement(
+            attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, 
+            {}, {}, device_groups=device_groups, is_hybrid=True
+        )
+        
+    @override
+    def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
+        expert_ranks = {
+            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                for layer_id, expert_id in product(range(self.num_layers),
+                                                   range(self.model_config.num_experts))
+        }
+        place.expert_ranks = expert_ranks
+        return place
+        
+    @override
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        place.attn_dp_ranks = {dev_id: dev_id for dev_id in place.attn}
+        return place
 
 _placement_cls: Dict[str, PlacementBase] = {
-    
+    "colocate": ColocatePlacement,
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
     "pipeline": PipelinePlacement,
@@ -479,8 +524,12 @@ def get_model_placement(
         cls = _placement_cls[strategy]
     else:
         raise NotImplementedError()
-
-    solver = cls(model_config, cluster_config, *args, **kwargs)
+    
+    if strategy == "pipeline":
+        solver = cls(model_config, cluster_config, *args, **kwargs)
+    elif strategy == "colocate":
+        solver = cls(model_config, cluster_config)
+        
     place: ModelPlacement = solver.solve()
     
     print(f"Model Placement: {place}")

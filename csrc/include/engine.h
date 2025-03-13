@@ -10,28 +10,42 @@
 using std::vector;
 using std::string;
 
-std::tuple<scheduler_t, attn_scheduler_t, mu_dispatcher_t> init_engine(
+std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     int top_k,
-    bool is_attn,
+    bool has_attn,
+    bool has_expert,
+    ParallelConfig cfg,
     const std::vector<int> &layer_ids,
     // P2P Channels
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
     const std::vector<ChannelInfo> &out_channel_infos,
-    // Parallel config
-    ParallelConfig cfg,
-    // group channels
     const std::map<int, std::string> &in_nccl_ids,
-    const std::map<int, std::vector<int>> &out_device_group_ids,
     const std::map<int, std::string> &out_nccl_ids,
-    const std::vector<int> device_group_ids,
-    const std::tuple<std::string, std::string, std::string> &group_nccl_id,
-    // DP rank
+    const std::vector<int> &device_group_ids,
+    int local_attn_dp_rank // DP rank
+);
+
+std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine_colocate(
+    int local_id, 
+    int top_k,
+    bool has_attn,
+    bool has_expert,
+    ParallelConfig cfg,
+    const std::vector<int> &layer_ids,
+    const std::vector<int> &in_device_ids,
+    const std::vector<int> &out_device_ids,
+    const std::vector<ChannelInfo> &out_channel_infos,
+    const std::map<int, std::string> &in_nccl_ids,
+    const std::map<int, std::string> &out_nccl_ids,
+    const std::map<int, std::string> &in_nccl_ids_ext,
+    const std::map<int, std::string> &out_nccl_ids_ext,
+    const std::vector<int> &device_group_ids,
     int local_attn_dp_rank
 );
 
-void start_engine(scheduler_t scheduler, attn_scheduler_t attn_scheduler, mu_dispatcher_t dispatcher);
+void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatcher, scheduler_t expert_scheduler, mu_dispatcher_t expert_dispatcher);
 
 Sampler_t init_sampler(
     int device_id,

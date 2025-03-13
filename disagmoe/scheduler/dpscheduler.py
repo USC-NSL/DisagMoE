@@ -77,6 +77,7 @@ class DPScheduler:
     def init_kv_cache_stats(self, stats: Dict[int, int]):
         for rank, num_blocks in stats.items():
             self.kv_cache_stats[rank] = num_blocks
+        print(f"Init cache stats {self.kv_cache_stats}")
     
     def add_seq(self, seq_id: int, rank: int):
         self.kv_cache_stats[rank] -= self.delta
