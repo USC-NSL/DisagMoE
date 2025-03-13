@@ -36,14 +36,16 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("schedule", &Scheduler::schedule)
         .def("set_max_batch_size", &Scheduler::set_max_batch_size)
-        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot);
+        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
+        .def("get_cur_queueing_delay", &Scheduler::get_cur_queueing_delay);
 
     py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
         .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
         .def("schedule", &AttentionScheduler::schedule)
         .def("get_channel", &AttentionScheduler::get_channel)
         .def("set_max_batch_size", &AttentionScheduler::set_max_batch_size)
-        .def("get_pool_snapshot", &AttentionScheduler::get_pool_snapshot);
+        .def("get_pool_snapshot", &AttentionScheduler::get_pool_snapshot)
+        .def("get_cur_queueing_delay", &AttentionScheduler::get_cur_queueing_delay);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);
@@ -55,7 +57,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
         .def("start", &Sampler::start)
         .def("wait_slo_stats", &Sampler::wait_slo_stats)
-        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats);
+        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats)
+        .def("fetch_step_infos", &Sampler::fetch_step_infos);
 
     py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
         .def("start", &TopKSampler::start)
@@ -94,8 +97,13 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_STRUCT(SloStat)
         .def_readwrite("req_id", &SloStat::req_id)
         .def_readwrite("t_prefill", &SloStat::t_prefill)
+        .def_readwrite("t_prefill_std", &SloStat::t_prefill_std)
         .def_readwrite("t_decode", &SloStat::t_decode)
         .def_readwrite("t_tokens", &SloStat::t_tokens);
+
+    REGISTER_STRUCT(SamplerStepInfo)
+        .def_readwrite("num_tokens", &SamplerStepInfo::num_tokens)
+        .def_readwrite("time_stamp", &SamplerStepInfo::time_stamp);
 
     py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
         .def(py::init<>())

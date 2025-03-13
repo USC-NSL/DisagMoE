@@ -6,12 +6,20 @@
 #include <vector>
 #include <map>
 #include <iomanip>
+#include <chrono>
 
 #include "datatypes.hpp"
 #include "cuda_utils.h"
 #include "constants.h"
 #include "logging.h"
 #include "nccl.h"
+
+#define t_now clock
+
+inline clock_t t_now_high() {
+    auto now = std::chrono::system_clock::now();
+    return (clock_t) std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
 
 inline torch::Tensor torch_tensor_slice(torch::Tensor tensor, const std::vector<int> &ids) {
     return tensor.index({

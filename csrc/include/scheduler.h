@@ -22,6 +22,7 @@ protected:
     std::vector<int> layer_ids;
     std::string policy;
     int max_batch_size;
+    float cur_queueing_delay;
 
     std::vector<int> pool_snapshot_{};
 
@@ -43,6 +44,10 @@ public:
     std::vector<int> get_pool_snapshot() {
         return pool_snapshot_;
     };
+
+    float get_cur_queueing_delay() const {
+        return cur_queueing_delay;
+    }
 };
 
 
@@ -61,6 +66,8 @@ protected:
     std::vector<int> pool_snapshot_{};
 
     virtual std::vector<AttentionBatch> _schedule();
+
+    float cur_queueing_delay;
 
 public:
     AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
@@ -82,6 +89,10 @@ public:
     virtual std::vector<int> get_pool_snapshot() {
         return pool_snapshot_;
     };
+
+    float get_cur_queueing_delay() const {
+        return cur_queueing_delay;
+    }
 };
 
 class AttentionDriverScheduler : public AttentionScheduler {
