@@ -10,7 +10,7 @@ parser.add_argument('--gap-t', type=int, default=1)
 parser.add_argument('--seg', type=int)
 parser.add_argument('--num-nodes', type=int, default=1)
 parser.add_argument('--dp-size', type=int, default=1)
-parser.add_argument('--ep-size', type=float, default=1)
+parser.add_argument('--ep-size', type=int, default=1)
 
 CLK = 1e6
 
@@ -30,7 +30,7 @@ df = pd.read_csv(get_sampler_step_name(args))
 gap_i = (len(df.index) - args.seg + 1) // args.seg if args.seg else args.gap_i
 
 index_bins = range(0, len(df.index), gap_i)
-index_sums = df.groupby(pd.cut(df.index, bins=index_bins))['num_tokens'].mean()
+index_sums = df.groupby(pd.cut(df.index, bins=index_bins))['num_tokens'].sum()
 
 plt.figure(figsize=(10, 5))
 plt.plot(index_bins[:-1], index_sums, '-')
@@ -51,7 +51,7 @@ time_bins = [
 ]
 print(df['time_stamp'])
 print(time_bins)
-time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].mean()
+time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].sum()
 
 plt.figure(figsize=(10, 5))
 plt.plot(time_bins[:-1], time_sums, '-')
