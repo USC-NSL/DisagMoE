@@ -324,7 +324,7 @@ class Controller:
         attn = []
         exp = []
         for worker_id, result in enumerate(results):
-            if self.model_place.is_attn(self.device_ids[worker_id]):
+            if self.model_place.has_attn(self.device_ids[worker_id]):
                 attn.append(result)
             else:
                 exp.append(result)

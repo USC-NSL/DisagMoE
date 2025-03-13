@@ -120,7 +120,7 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
-    cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+    cache_config = CacheConfig(args.block_size, 0.8, 2, "auto",
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
