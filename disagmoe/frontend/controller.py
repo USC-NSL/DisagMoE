@@ -324,7 +324,7 @@ class Controller:
         attn = []
         exp = []
         for worker_id, result in enumerate(results):
-            if self.model_place.is_attn(self.device_ids[worker_id]):
+            if self.model_place.has_attn(self.device_ids[worker_id]):
                 attn.append(result)
             else:
                 exp.append(result)
@@ -373,6 +373,10 @@ class Controller:
         self.release_kv_cache(finished_req_ids)
         self.in_flight_reqs.clear()
         return results
+    
+    def reset_workers(self):
+        tasks = [worker.reset.remote() for worker in self.workers]
+        ray.get(tasks)
     
     def stop_workers(self):
         self.end_flag = True

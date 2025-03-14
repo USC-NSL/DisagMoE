@@ -120,7 +120,7 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
-    cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+    cache_config = CacheConfig(args.block_size, 0.8, 2, "auto",
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
@@ -273,15 +273,14 @@ async def benchmark_serving(args):
     
     print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     
-    async def run_once():
-        GeneratorType = get_generator(args.generator_type)
-        generator = GeneratorType(args.rate, 1, args.input_len)
-        workload = generator.generate(args.num_requests)
-        
-        pbar = tqdm.tqdm(total=args.num_requests)
+    async def run_benchmark(generator_type, num_requests, input_len, output_len, rate, warmup=False):
+        GeneratorType = get_generator(generator_type)
+        generator = GeneratorType(rate, 1, input_len)
+        workload = generator.generate(num_requests)
+        pbar = tqdm.tqdm(total=num_requests)
         t_start = time.perf_counter()
         tasks = []
-        for i in range(args.num_requests):
+        for i in range(num_requests):
             t_elapsed = time.perf_counter() - t_start
             arrival, input_len = workload[i]
             if t_elapsed < arrival:
@@ -292,17 +291,22 @@ async def benchmark_serving(args):
         results: List[SloStat] = await asyncio.gather(*tasks)
         t_duration = time.perf_counter() - t_start
         pbar.close()
-
-        metrics = analyze_results(results, t_duration)
-
-        print(metrics)
-
-        metrics.write_to_file(args)
         
+        if warmup:
+            master.reset_workers()
+            print("warmup done")
+            return None
+        
+        metrics = analyze_results(results, t_duration)
+        print(metrics)
+        metrics.write_to_file(args)
         return results
     
     await master.start_scheduler()
-    results = await run_once()
+    # warmup
+    await run_benchmark(args.generator_type, 10, args.input_len, args.output_len, 5, warmup=True)
+    # run benchmark
+    results = await run_benchmark(args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate)
     await master.stop_scheduler()
     
     master.stop_workers()
@@ -347,7 +351,7 @@ def get_args():
     parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
     parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
-    parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
+    parser.add_argument("--graph-stride", type=int, default=8, help="CUDA graph batch size stride")
     parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     

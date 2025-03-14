@@ -163,6 +163,19 @@ std::vector<SamplerStepInfo> Sampler::fetch_step_infos() {
     return std::move(step_infos);
 }
 
+void Sampler::reset() {
+    std::lock_guard<std::mutex> _(this->result_lock);
+    if (step_infos.size() > 0) {
+        step_infos.clear();
+    }
+    if (slo_stats.size() > 0) {
+        slo_stats.clear();
+    }
+    if (finished_seqs.size() > 0) {
+        finished_seqs.clear();
+    }
+}
+
 std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {
     std::lock_guard<std::mutex> _(this->result_lock);
     if (finished_seqs.size() < n_request)
