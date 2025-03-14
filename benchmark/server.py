@@ -44,10 +44,13 @@ def run_once_endpoint():
     
     async def _runner():
         global master
+        master.reset()
+        master.start_polling_results()
         await master.start_scheduler()
         await benchmark_serving(master, new_args, is_api_server=True)
         await master.stop_scheduler()
     
+    asyncio.set_event_loop(asyncio.new_event_loop())
     asyncio.run(_runner())
     
     return "run_once executed successfully", 200

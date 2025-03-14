@@ -286,6 +286,7 @@ async def run_benchmark(master, args,
     for i in range(num_requests):
         t_elapsed = time.perf_counter() - t_start
         arrival, input_len = workload[i]
+        logger.debug(f"Request {i} arrives at {arrival}s, input_len={input_len}")
         if t_elapsed < arrival:
             await asyncio.sleep(arrival - t_elapsed)
         resp = master.put_single_request(input_len)
@@ -299,16 +300,23 @@ async def run_benchmark(master, args,
         master.reset_workers()
         return None
     
+    logger.info("Benchmark finished, now analyznig results ...")
     metrics = analyze_results(results, t_duration)
-    logger.debug(metrics)
+    logger.debug(f"{metrics}")
+    
     metrics.write_to_file(args)
+    logger.info("Results written to file.")
+    
     return results
 
 
 async def benchmark_warmup(master, args):
     logger.info("Now running warmup ...")
+    _num_warmup_requests = 10
+    _num_warmup_rate = 5
     await run_benchmark(
-        master, args, args.generator_type, 10, args.input_len, args.output_len, 5, warmup=True
+        master, args, args.generator_type, _num_warmup_requests, 
+        args.input_len, args.output_len, _num_warmup_rate, warmup=True
     )
     logger.info("Warmup done.")
 

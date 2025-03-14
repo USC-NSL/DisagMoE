@@ -174,6 +174,10 @@ void Sampler::reset() {
     if (finished_seqs.size() > 0) {
         finished_seqs.clear();
     }
+    if (output_lens.size() > 0) {
+        output_lens.clear();
+    }
+    this->_active_token_count = 0;
 }
 
 std::map<int, SloStat> Sampler::wait_slo_stats(int n_request) {

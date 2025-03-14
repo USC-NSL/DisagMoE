@@ -297,7 +297,6 @@ class Controller:
             ray.get(tasks)
             print(f"all workers started")
         
-    
     def get_new_req_id(self) -> int:
         req_id = next(self.req_id_generator)
         self.in_flight_reqs.add(req_id)
@@ -405,6 +404,12 @@ class Controller:
     
     async def stop_scheduler(self):
         await self.dp_scheduler.terminate()
+
+    def reset(self):
+        self.in_flight_reqs.clear()
+        self.request_results.clear()
+        # self.req_id_generator.reset()
+        self.reset_workers()
 
 controller: Controller
 
