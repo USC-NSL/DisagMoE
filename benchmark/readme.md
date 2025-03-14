@@ -22,6 +22,24 @@ Change the args in the script to run.
 
 [TODO]
 
+### launch_server.sh
+
+A fast entrypoint for `server.py`. The args are almost the same as `benchmark_poisson.sh`.
+
+### benchmark_instructions.sh
+
+A simple curl command to send a benchmark request to the server. 
+
+Request format:
+
+```json
+{
+    "rate": <float>,
+    "time": <int>,
+    "distribution": <str>  // 'uniform' or 'poisson'
+}
+```
+
 ## Plotter Scripts
 
 Each benchmark is associated with:
