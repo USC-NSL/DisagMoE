@@ -33,6 +33,8 @@ class DPScheduler:
     def start(self, stats: Dict[int, int]):
         self._logger.info(f"Start with stats {stats}")
         self.init_kv_cache_stats(stats)
+        self.end_flag = False
+        self.end_event = asyncio.Event()
         asyncio.get_running_loop().create_task(self.waiting_loop())
         
     async def terminate(self):

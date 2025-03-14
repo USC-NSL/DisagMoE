@@ -7,6 +7,7 @@ from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingCo
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from benchmark.utils import get_parser_base
+from disagmoe.utils.logger import get_logger
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -24,6 +25,8 @@ tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
 
 master: Controller = None
+logger = get_logger("Serving")
+
 
 @dataclass
 class BenchmarkMetrics:
@@ -90,6 +93,7 @@ class BenchmarkMetrics:
                 df.to_excel(filename, index=False)
         except Exception as e:
             print("Error: failed to write to file, with exception:", e)
+
 
 def launch(args):
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
@@ -166,6 +170,7 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_p90_ms=np.percentile(itls, 90) * 1000,
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
+
 
 def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
     try:
@@ -269,51 +274,46 @@ def analyze_throughput(args,
     ])
     ttft_df.to_csv(ttft_fn, index=False)
 
-async def benchmark_serving(args):
-    assert master is not None, "master is not initialized"
     
-    master.start_polling_results()
+async def run_benchmark(master, args, 
+                        generator_type, num_requests, input_len, output_len, rate, warmup=False):
+    GeneratorType = get_generator(generator_type)
+    generator = GeneratorType(rate, 1, input_len)
+    workload = generator.generate(num_requests)
+    pbar = tqdm.tqdm(total=num_requests)
+    t_start = time.perf_counter()
+    tasks = []
+    for i in range(num_requests):
+        t_elapsed = time.perf_counter() - t_start
+        arrival, input_len = workload[i]
+        if t_elapsed < arrival:
+            await asyncio.sleep(arrival - t_elapsed)
+        resp = master.put_single_request(input_len)
+        tasks.append(asyncio.create_task(process_response(resp, pbar)))
     
-    print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
+    results: List[SloStat] = await asyncio.gather(*tasks)
+    t_duration = time.perf_counter() - t_start
+    pbar.close()
     
-    async def run_benchmark(generator_type, num_requests, input_len, output_len, rate, warmup=False):
-        GeneratorType = get_generator(generator_type)
-        generator = GeneratorType(rate, 1, input_len)
-        workload = generator.generate(num_requests)
-        pbar = tqdm.tqdm(total=num_requests)
-        t_start = time.perf_counter()
-        tasks = []
-        for i in range(num_requests):
-            t_elapsed = time.perf_counter() - t_start
-            arrival, input_len = workload[i]
-            if t_elapsed < arrival:
-                await asyncio.sleep(arrival - t_elapsed)
-            resp = master.put_single_request(input_len)
-            tasks.append(asyncio.create_task(process_response(resp, pbar)))
-        
-        results: List[SloStat] = await asyncio.gather(*tasks)
-        t_duration = time.perf_counter() - t_start
-        pbar.close()
-        
-        if warmup:
-            master.reset_workers()
-            print("warmup done")
-            return None
-        
-        metrics = analyze_results(results, t_duration)
-        print(metrics)
-        metrics.write_to_file(args)
-        return results
+    if warmup:
+        master.reset_workers()
+        return None
     
-    await master.start_scheduler()
-    # warmup
-    await run_benchmark(args.generator_type, 10, args.input_len, args.output_len, 5, warmup=True)
-    # run benchmark
-    results = await run_benchmark(args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate)
-    await master.stop_scheduler()
-    
-    master.stop_workers()
-    
+    metrics = analyze_results(results, t_duration)
+    logger.debug(metrics)
+    metrics.write_to_file(args)
+    return results
+
+
+async def benchmark_warmup(master, args):
+    logger.info("Now running warmup ...")
+    await run_benchmark(
+        master, args, args.generator_type, 10, args.input_len, args.output_len, 5, warmup=True
+    )
+    logger.info("Warmup done.")
+
+
+def post_benchmark(master, args, results):
     if args.trace:
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
@@ -326,7 +326,38 @@ async def benchmark_serving(args):
                            sampler_step_infos, 
                            attn_delays, exp_delays,
                            t_submitted, results)
+
+
+async def benchmark_serving(
+    master,
+    args, 
+    is_api_server: bool = False
+):
+    assert master is not None, "master is not initialized"
     
+    if not is_api_server:
+        master.start_polling_results()
+    
+    logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
+    
+    # warmup
+    if not is_api_server:
+        await master.start_scheduler()
+        await benchmark_warmup(master, args)
+    
+    # run benchmark
+    logger.info("Now running benchmark.")
+    results = await run_benchmark(
+        master, args, args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate
+    )
+    
+    if not is_api_server:
+        await master.stop_scheduler()
+        master.stop_workers()
+    
+    post_benchmark(master, args, results)
+    
+
 def get_args():
     args = get_parser_base().parse_args()
     
@@ -348,7 +379,7 @@ def main():
     
     try:
         launch(args)
-        asyncio.run(benchmark_serving(args))
+        asyncio.run(benchmark_serving(master, args))
     except Exception as e:
         print("Error: failed to run benchmark, with exception:", e.with_traceback())
         BenchmarkMetrics().write_to_file(args)
