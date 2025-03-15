@@ -44,8 +44,6 @@ def run_once_endpoint():
     
     async def _runner():
         global master
-        master.reset()
-        master.start_polling_results()
         await master.start_scheduler()
         await benchmark_serving(master, new_args, is_api_server=True)
         await master.stop_scheduler()
@@ -61,7 +59,6 @@ async def init(master: Controller, args):
     await master.start_scheduler()
     await benchmark_warmup(master, args)
     await master.stop_scheduler()
-
 
 def main():
     global master, args

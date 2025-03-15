@@ -7,8 +7,8 @@ NUM_EXPERTS=8
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
-step_attn=1
-dp_size=4
+step_attn=2
+dp_size=2
 step_exp=1
 ep_size=4
 

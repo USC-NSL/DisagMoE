@@ -141,8 +141,9 @@ def launch(args):
     return master
     
    
-async def process_response(resp: AsyncResult, pbar):
+async def process_response(resp: AsyncResult, req_finish_timestamps: List[float], pbar):
     slo_stat = await resp.get()
+    req_finish_timestamps.append(time.perf_counter())
     # print(f">>> Response received: {resp.req_id}, {slo_stat}")
     pbar.update(1)
     return slo_stat
@@ -246,12 +247,19 @@ def generate_step_trace(args,
 
 
 def analyze_throughput(args, 
+                       req_finish_timestamps: List[float],
                        sampler_step_infos: List[SamplerStepInfo], 
                        attn_queueing_delays: List[List[float]],
                        exp_queueing_delays: List[List[float]],
                        t_submitted: Dict[int, int],
                        slo_stats: List[SloStat]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name, get_req_finish_time_name
+    
+    # request finish timestamp
+    req_finish_fn = get_req_finish_time_name(args)
+    req_finish_df = pd.DataFrame(req_finish_timestamps)
+    req_finish_df.to_csv(req_finish_fn, index=False)
+    
     # sampler throughput
     sampler_fn = get_sampler_step_name(args)
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
@@ -275,7 +283,7 @@ def analyze_throughput(args,
     ttft_df.to_csv(ttft_fn, index=False)
 
     
-async def run_benchmark(master, args, 
+async def run_benchmark(master: Controller, args, 
                         generator_type, num_requests, input_len, output_len, rate, warmup=False):
     GeneratorType = get_generator(generator_type)
     generator = GeneratorType(rate, 1, input_len)
@@ -283,34 +291,38 @@ async def run_benchmark(master, args,
     pbar = tqdm.tqdm(total=num_requests)
     t_start = time.perf_counter()
     tasks = []
+    req_finish_timestamps = []
+    logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     for i in range(num_requests):
         t_elapsed = time.perf_counter() - t_start
         arrival, input_len = workload[i]
-        logger.debug(f"Request {i} arrives at {arrival}s, input_len={input_len}")
+        # logger.debug(f"Request {i} arrives at {arrival}s, input_len={input_len}")
         if t_elapsed < arrival:
             await asyncio.sleep(arrival - t_elapsed)
         resp = master.put_single_request(input_len)
-        tasks.append(asyncio.create_task(process_response(resp, pbar)))
+        tasks.append(asyncio.create_task(process_response(resp, req_finish_timestamps, pbar)))
     
     results: List[SloStat] = await asyncio.gather(*tasks)
     t_duration = time.perf_counter() - t_start
     pbar.close()
     
     if warmup:
-        master.reset_workers()
         return None
     
     logger.info("Benchmark finished, now analyznig results ...")
     metrics = analyze_results(results, t_duration)
     logger.debug(f"{metrics}")
     
+    req_finish_timestamps.sort()
+    for i in range(num_requests):
+        req_finish_timestamps[i] -= t_start
+    
     metrics.write_to_file(args)
     logger.info("Results written to file.")
     
-    return results
+    return results, req_finish_timestamps
 
-
-async def benchmark_warmup(master, args):
+async def benchmark_warmup(master: Controller, args):
     logger.info("Now running warmup ...")
     _num_warmup_requests = 10
     _num_warmup_rate = 5
@@ -318,10 +330,10 @@ async def benchmark_warmup(master, args):
         master, args, args.generator_type, _num_warmup_requests, 
         args.input_len, args.output_len, _num_warmup_rate, warmup=True
     )
+    master.reset()
     logger.info("Warmup done.")
 
-
-def post_benchmark(master, args, results):
+def post_benchmark(master, args, results, req_finish_timestamps):
     if args.trace:
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
@@ -331,13 +343,13 @@ def post_benchmark(master, args, results):
         attn_delays, exp_delays = master.fetch_queueing_delays()
         t_submitted = master.fetch_submitted_time()
         analyze_throughput(args, 
+                           req_finish_timestamps,
                            sampler_step_infos, 
                            attn_delays, exp_delays,
                            t_submitted, results)
 
-
 async def benchmark_serving(
-    master,
+    master: Controller,
     args, 
     is_api_server: bool = False
 ):
@@ -345,17 +357,12 @@ async def benchmark_serving(
     
     if not is_api_server:
         master.start_polling_results()
-    
-    logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
-    
-    # warmup
-    if not is_api_server:
         await master.start_scheduler()
         await benchmark_warmup(master, args)
     
     # run benchmark
     logger.info("Now running benchmark.")
-    results = await run_benchmark(
+    results, req_finish_timestamps = await run_benchmark(
         master, args, args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate
     )
     
@@ -363,8 +370,9 @@ async def benchmark_serving(
         await master.stop_scheduler()
         master.stop_workers()
     
-    post_benchmark(master, args, results)
+    post_benchmark(master, args, results, req_finish_timestamps)
     
+    master.reset()
 
 def get_args():
     args = get_parser_base().parse_args()
