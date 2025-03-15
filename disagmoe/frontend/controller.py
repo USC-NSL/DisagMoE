@@ -297,7 +297,6 @@ class Controller:
             ray.get(tasks)
             print(f"all workers started")
         
-    
     def get_new_req_id(self) -> int:
         req_id = next(self.req_id_generator)
         self.in_flight_reqs.add(req_id)
@@ -324,7 +323,7 @@ class Controller:
         attn = []
         exp = []
         for worker_id, result in enumerate(results):
-            if self.model_place.is_attn(self.device_ids[worker_id]):
+            if self.model_place.has_attn(self.device_ids[worker_id]):
                 attn.append(result)
             else:
                 exp.append(result)
@@ -374,6 +373,10 @@ class Controller:
         self.in_flight_reqs.clear()
         return results
     
+    def reset_workers(self):
+        tasks = [worker.reset.remote() for worker in self.workers]
+        ray.get(tasks)
+    
     def stop_workers(self):
         self.end_flag = True
         tasks = [worker.terminate.remote() for worker in self.workers]
@@ -401,6 +404,12 @@ class Controller:
     
     async def stop_scheduler(self):
         await self.dp_scheduler.terminate()
+
+    def reset(self):
+        self.in_flight_reqs.clear()
+        self.request_results.clear()
+        # self.req_id_generator.reset()
+        self.reset_workers()
 
 controller: Controller
 

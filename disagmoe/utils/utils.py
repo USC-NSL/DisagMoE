@@ -30,6 +30,7 @@ def get_nccl_url_from_uid(uid):
 class Counter:
 
     def __init__(self, start: int = 0, end: int = 2e9, step: int = 1) -> None:
+        self.start = start
         self.counter = start
         self.end = end
         self.step = step
@@ -42,7 +43,7 @@ class Counter:
         return i
 
     def reset(self) -> None:
-        self.counter = 0
+        self.counter = self.start
     
 def get_ip():
     # adpated from VLLM: https://github.com/vllm-project/vllm/blob/v0.6.0/vllm/utils.py#L484

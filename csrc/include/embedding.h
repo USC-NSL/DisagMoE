@@ -61,6 +61,8 @@ public:
 
     std::vector<SamplerStepInfo> fetch_step_infos();
 
+    void reset();
+
     std::map<int, SloStat> wait_slo_stats(int n_request);
 };
 
@@ -96,6 +98,7 @@ public:
     void put_request(int req_id, int init_prefill_len, torch::Tensor tensor, int dp_rank);
 
     void start();
+
 };
 
 typedef std::shared_ptr<Sampler> Sampler_t;

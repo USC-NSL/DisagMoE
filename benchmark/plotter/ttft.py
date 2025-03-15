@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
 parser.add_argument('--num-nodes', type=int, default=1)
+parser.add_argument('--dp-size', type=int, default=1)
+parser.add_argument('--ep-size', type=int, default=1)
 
 args = parser.parse_args()
 

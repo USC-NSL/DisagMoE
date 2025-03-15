@@ -5,7 +5,7 @@ from benchmark.plotter.namer import get_sampler_step_name
 
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
-parser.add_argument('--gap-i', type=int)
+parser.add_argument('--gap-i', type=int, default=1)
 parser.add_argument('--gap-t', type=int, default=1)
 parser.add_argument('--seg', type=int)
 parser.add_argument('--num-nodes', type=int, default=1)

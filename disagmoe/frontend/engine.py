@@ -92,7 +92,7 @@ class Engine:
         self._step_stats = []
         self._metric = Metric()
         self._timer = Timer()
-        self._queueing_timer = {}
+        self._queueing_timer = {} # placeholder, not used at the moment
         self._queueing_delays = []
 
     @property
@@ -172,6 +172,8 @@ class Engine:
             self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
+            
+        self._logger.info("Executors built")
         
     def init_core(self, core_args: InitCoreArgs):
         """
@@ -914,7 +916,16 @@ class Engine:
     def stop_profile(self):
         assert self.profiler is not None, "torch rofiler is not enabled"
         self.profiler.stop()
-
+        
+    def reset(self):
+        # for stats usage
+        self._metric = Metric()
+        self._timer = Timer()
+        self._step_stats.clear()
+        self._queueing_timer.clear()
+        self._queueing_delays.clear()
+        self.release_seqs(list(self.decode_seq_lens.keys()))
+        
 class SamplerEngine(Engine):
     
     def __init__(self):
@@ -962,6 +973,9 @@ class SamplerEngine(Engine):
             req_id: SloStat.from_c(stat) for req_id, stat in result.items()
         }
         return new_res
+    
+    def reset(self):
+        self.sampler.reset()
         
 class TokenizerEngine(Engine):
     
@@ -976,7 +990,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        # self._logger.info("tokenizer put 1 request")
+        self._logger.info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
@@ -1003,3 +1017,6 @@ class TokenizerEngine(Engine):
     
     def start(self):
         self.tokenizer.start()
+        
+    def reset(self):
+        self.t_submitted.clear()
