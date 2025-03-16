@@ -26,3 +26,11 @@ def get_req_finish_time_name(args):
 def get_trace_name(args):
     dir_path = get_dir_path(args)
     return f"{dir_path}/trace.json"
+
+def get_queue_length_name(args):
+    dir_path = get_dir_path(args)
+    return f"{dir_path}/queue_length.csv"
+
+def get_trace_metrics_name(args):
+    dir_path = get_dir_path(args)
+    return f"{dir_path}/trace_metrics.json"

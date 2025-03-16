@@ -196,17 +196,15 @@ def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
 
 def generate_step_trace(args,
                         step_stats: List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]):
-    from benchmark.plotter.namer import get_trace_name
-    
-    trace_name = get_trace_name(args)
-    events = []
-    
     def ms_to_us(ms):
         return ms * 1000
-    
+    events = []
     metrics = {}
     
+    queue_length_per_step = []
+    
     for pid, (worker_stats, p_traces, metric) in enumerate(step_stats):
+        worker_queue_length_per_step = dict()
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -221,6 +219,13 @@ def generate_step_trace(args,
                 }
             })
             
+            for i, queue_length in enumerate(step_info.pool_snapshot):
+                if i not in worker_queue_length_per_step:
+                    worker_queue_length_per_step[i] = []
+                worker_queue_length_per_step[i].append(queue_length)
+        
+        queue_length_per_step.append(worker_queue_length_per_step)
+        
         if args.enable_trace_detail:
             for tid, t_traces in p_traces.items():
                 print("outputing thread", tid)
@@ -239,12 +244,17 @@ def generate_step_trace(args,
                     })
                 
         metrics[pid] = asdict(metric)
-
-    with gzip.open(f"{trace_name}.json.gz", "w") as f:
-        f.write(json.dumps(events).encode("utf-8"))
         
-    with open(f"metrics_{trace_name}.json", "w") as f:
+    from benchmark.plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
+
+    with gzip.open(get_trace_name(args), "w") as f:
+        f.write(json.dumps(events).encode("utf-8"))
+
+    with open(get_trace_metrics_name(args), "w") as f:
         json.dump(metrics, f)
+        
+    queue_length_df = pd.DataFrame(queue_length_per_step) # one row per worker
+    queue_length_df.to_csv(get_queue_length_name(args), index=False)
 
 def analyze_throughput(args, 
                        req_finish_timestamps: List[float],
