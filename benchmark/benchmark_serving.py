@@ -195,10 +195,10 @@ def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
 
 
 def generate_step_trace(args,
-                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric] ]):
-    trace_name = f"trace_step-attn={args.step_attn}_dp-size={args.dp_size}_step-exp={args.step_expert}_ep-size={args.ep_size}" \
-                 f"_layers={args.num_layers}_experts={args.num_experts}" \
-                 f"_max-batch-attn={args.max_batch_size_attn}_max-batch-exp={args.max_batch_size_expert}"
+                        step_stats: List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]):
+    from benchmark.plotter.namer import get_trace_name
+    
+    trace_name = get_trace_name(args)
     events = []
     
     def ms_to_us(ms):
@@ -221,21 +221,22 @@ def generate_step_trace(args,
                 }
             })
             
-        for tid, t_traces in p_traces.items():
-            print("outputing thread", tid)
-            tid = tid % (1 << 32)
-            for trace in t_traces:
-                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
-                    continue
-                events.append({
-                    "name": trace.msg,
-                    "cat": "trace",
-                    "ph": "X",
-                    "ts": ms_to_us(trace.t_start),
-                    "dur": ms_to_us(trace.t_dur),
-                    "pid": pid,
-                    "tid": (tid * 10 + trace.track_id) % (1 << 31),
-                })
+        if args.enable_trace_detail:
+            for tid, t_traces in p_traces.items():
+                print("outputing thread", tid)
+                tid = tid % (1 << 32)
+                for trace in t_traces:
+                    if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
+                        continue
+                    events.append({
+                        "name": trace.msg,
+                        "cat": "trace",
+                        "ph": "X",
+                        "ts": ms_to_us(trace.t_start),
+                        "dur": ms_to_us(trace.t_dur),
+                        "pid": pid,
+                        "tid": (tid * 10 + trace.track_id) % (1 << 31),
+                    })
                 
         metrics[pid] = asdict(metric)
 
@@ -244,7 +245,6 @@ def generate_step_trace(args,
         
     with open(f"metrics_{trace_name}.json", "w") as f:
         json.dump(metrics, f)
-
 
 def analyze_throughput(args, 
                        req_finish_timestamps: List[float],

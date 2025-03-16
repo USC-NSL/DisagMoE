@@ -22,3 +22,7 @@ def get_ttft_name(args):
 def get_req_finish_time_name(args):
     dir_path = get_dir_path(args)
     return f"{dir_path}/req_finish_time.csv"
+
+def get_trace_name(args):
+    dir_path = get_dir_path(args)
+    return f"{dir_path}/trace.json"

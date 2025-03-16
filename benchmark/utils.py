@@ -14,6 +14,7 @@ def get_parser_base():
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
+    parser.add_argument("--enable-trace-detail", action="store_true", default=False, help="generate trace")
     parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
     parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
     
