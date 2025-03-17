@@ -35,7 +35,7 @@ plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
 plt.ylabel(f'Number of Tokens per {gap_i} steps')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{get_plot_dir()}/output_tokens_over_index/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+plt.savefig(f'{get_plot_dir(args)}/output_tokens_over_index.png')
 plt.close()
 
 # Summing up results in each gap for time_stamp
@@ -47,8 +47,8 @@ time_bins = [
     df['time_stamp'].iloc[0] + i * gap_t
         for i in range(seg + 1)
 ]
-print(df['time_stamp'])
-print(time_bins)
+# print(df['time_stamp'])
+# print(time_bins)
 time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].sum()
 
 plt.figure(figsize=(10, 5))
@@ -57,5 +57,5 @@ plt.axvline(x=120, color='green', linestyle='dotted')
 plt.xlabel('Time (in seconds)')
 plt.ylabel('Number of Tokens per second')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{get_plot_dir()}/output_tokens_over_time/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+plt.savefig(f'{get_plot_dir(args)}/output_tokens_over_time.png')
 plt.close()

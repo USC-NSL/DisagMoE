@@ -13,7 +13,7 @@ parser.add_argument('--steps', type=int, default=100)
 
 args = parser.parse_args()
 
-plot_dir = f"{get_plot_dir()}/queue_length_over_time/{args.rate}_nodes_{args.num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}"
+plot_dir = f"{get_plot_dir(args)}/queue_length_over_time/"
 
 if not os.path.exists(plot_dir):
     os.makedirs(plot_dir)

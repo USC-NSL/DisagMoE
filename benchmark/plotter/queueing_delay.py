@@ -23,7 +23,7 @@ for name in ["exp", "attn"]:
     plt.xlabel('Steps')
     plt.ylabel('Queueing Delay (ms)')
     plt.title(f'Average Queueing Delay for {worker_name}')
-    plt.savefig(f'reports/throughput_benchmark/queueing_delay/steps_{worker_name}_rate={args.rate}_nodes={args.num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+    plt.savefig(f'{get_plot_dir(args)}/queueing_delay_steps.png')
     plt.close()
     
     sorted_values = sorted(values)
@@ -54,5 +54,5 @@ for name in ["exp", "attn"]:
     plt.xlabel('Queueing Delay (ms)')
     plt.ylabel('CDF')
     plt.title(f'CDF of Queueing Delay for {worker_name}')
-    plt.savefig(f'{get_plot_dir()}/queueing_delay/cdf_{worker_name}_rate={args.rate}_nodes={args.num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+    plt.savefig(f'{get_plot_dir(args)}/queueing_delay_cdf.png')
     plt.close()

@@ -145,8 +145,8 @@ def launch(args):
    
 async def process_response(resp: AsyncResult, req_finish_timestamps: List[float], pbar):
     slo_stat = await resp.get()
+    # print(f">>> Response received: {resp.req_id}")
     req_finish_timestamps.append(time.perf_counter())
-    # print(f">>> Response received: {resp.req_id}, {slo_stat}")
     pbar.update(1)
     return slo_stat
 

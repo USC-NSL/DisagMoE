@@ -36,4 +36,8 @@ def get_trace_metrics_name(args):
     return f"{dir_path}/trace_metrics.json"
 
 def get_plot_dir(args):
-    return "reports/plots"
+    data_dir_path = get_dir_path(args)
+    plot_dir_path = f"{data_dir_path}/plots"
+    if not os.path.exists(plot_dir_path):
+        os.makedirs(plot_dir_path)
+    return plot_dir_path
