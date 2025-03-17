@@ -45,17 +45,18 @@ class BenchmarkMetrics:
     def __repr__(self):
         return f"Metrics: \n" \
                 f"e2e_duration: {self.e2e_duration:.2f}s\n" \
-                f"req_throughput: {self.req_throughput:.2f} req/s\n" \
-                f"token_throughput: {self.token_throughput:.2f} tokens/s\n" \
-                f"req_latency_median: {self.req_latency_median_ms:.2f}ms\n" \
-                f"req_latency_p90: {self.req_latency_p90_ms:.2f}ms\n" \
-                f"req_latency_p99: {self.req_latency_p99_ms:.2f}ms\n" \
-                f"itl_latency_median: {self.itl_latency_median_ms:.2f}ms\n" \
-                f"itl_latency_p90: {self.itl_latency_p90_ms:.2f}ms\n" \
-                f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
+                f"req_throughput: {self.req_throughput:.0f} req/s\n" \
+                f"token_throughput: {self.token_throughput:.0f} tokens/s\n" \
+                f"req_latency_median: {self.req_latency_median_ms:.0f}ms\n" \
+                f"req_latency_p90: {self.req_latency_p90_ms:.0f}ms\n" \
+                f"req_latency_p99: {self.req_latency_p99_ms:.0f}ms\n" \
+                f"itl_latency_median: {self.itl_latency_median_ms:.0f}ms\n" \
+                f"itl_latency_p90: {self.itl_latency_p90_ms:.0f}ms\n" \
+                f"itl_latency_p99: {self.itl_latency_p99_ms:.0f}ms\n"
 
     def write_to_file(self, args):
         filename = args.file
+        metrics = { k: int(v) for k, v in self.__dict__.items()}
         try:
             import pandas as pd
             if not os.path.exists(filename):
@@ -63,7 +64,7 @@ class BenchmarkMetrics:
                                            "output_len",
                                            "step_attn", "DP_size", "max_batch_size_attn", 
                                            "step_expert", "EP_size", "max_batch_size_expert",
-                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
+                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(metrics.keys()))
             else:
                 if filename.endswith(".csv"):
                     df = pd.read_csv(filename)
@@ -84,7 +85,7 @@ class BenchmarkMetrics:
                 "num_gpus": args.num_gpus,
                 "num_experts": args.num_experts,
                 "num_layers": args.num_layers,
-                **self.__dict__
+                **metrics
             }
             df.loc[len(df)] = new_row
             if filename.endswith(".csv"):
@@ -204,8 +205,13 @@ def generate_step_trace(args,
     queue_length_per_step = []
     
     for pid, (worker_stats, p_traces, metric) in enumerate(step_stats):
-        worker_queue_length_per_step = dict()
+        layers = set()
         for step_info in worker_stats:
+            layers.add(step_info.layer_id)
+        layers = sorted(list(layers))
+        
+        for step_info in worker_stats:
+            worker_queue_length_per_step = {layer: [] for layer in layers}
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
                 "cat": "step",
@@ -219,10 +225,11 @@ def generate_step_trace(args,
                 }
             })
             
-            for i, queue_length in enumerate(step_info.pool_snapshot):
-                if i not in worker_queue_length_per_step:
-                    worker_queue_length_per_step[i] = []
-                worker_queue_length_per_step[i].append(queue_length)
+            for layer in layers:
+                if layer in step_info.pool_snapshot:
+                    worker_queue_length_per_step[layer].append(step_info.pool_snapshot[layer])
+                else:
+                    worker_queue_length_per_step[layer].append(0)
         
         queue_length_per_step.append(worker_queue_length_per_step)
         
