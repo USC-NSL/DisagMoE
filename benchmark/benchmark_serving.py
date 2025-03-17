@@ -20,6 +20,7 @@ import tqdm
 import numpy as np
 import pandas as pd
 import os
+import pickle
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
@@ -210,8 +211,8 @@ def generate_step_trace(args,
             layers.add(step_info.layer_id)
         layers = sorted(list(layers))
         
+        worker_queue_length_per_step = {layer: [] for layer in layers}
         for step_info in worker_stats:
-            worker_queue_length_per_step = {layer: [] for layer in layers}
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
                 "cat": "step",
@@ -260,8 +261,8 @@ def generate_step_trace(args,
     with open(get_trace_metrics_name(args), "w") as f:
         json.dump(metrics, f)
         
-    queue_length_df = pd.DataFrame(queue_length_per_step) # one row per worker
-    queue_length_df.to_csv(get_queue_length_name(args), index=False)
+    with open(get_queue_length_name(args), "wb") as f:
+        pickle.dump(queue_length_per_step, f)
 
 def analyze_throughput(args, 
                        req_finish_timestamps: List[float],

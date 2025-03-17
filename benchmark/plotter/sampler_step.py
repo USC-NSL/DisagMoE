@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from argparse import ArgumentParser
-from benchmark.plotter.namer import get_sampler_step_name
+from benchmark.plotter.namer import get_sampler_step_name, get_plot_dir
 
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
@@ -13,8 +13,6 @@ parser.add_argument('--dp-size', type=int, default=1)
 parser.add_argument('--ep-size', type=int, default=1)
 
 CLK = 1e6
-
-report_dir = "reports/throughput_benchmark"
 
 args = parser.parse_args()
 
@@ -37,7 +35,7 @@ plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
 plt.ylabel(f'Number of Tokens per {gap_i} steps')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{report_dir}/output_tokens_over_index/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+plt.savefig(f'{get_plot_dir()}/output_tokens_over_index/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
 plt.close()
 
 # Summing up results in each gap for time_stamp
@@ -59,5 +57,5 @@ plt.axvline(x=120, color='green', linestyle='dotted')
 plt.xlabel('Time (in seconds)')
 plt.ylabel('Number of Tokens per second')
 plt.title(f'Sampler\'s Average Output Tokens (Rate={rate}, Nodes={num_nodes})')
-plt.savefig(f'{report_dir}/output_tokens_over_time/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
+plt.savefig(f'{get_plot_dir()}/output_tokens_over_time/token_throughput_rate_{rate}_nodes_{num_nodes}_dp-size={args.dp_size}_ep-size={args.ep_size}.png')
 plt.close()

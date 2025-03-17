@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from argparse import ArgumentParser
-from benchmark.plotter.namer import get_req_finish_time_name
+from benchmark.plotter.namer import get_req_finish_time_name, get_plot_dir
 
 parser = ArgumentParser()
 parser.add_argument('--rate', type=float, required=True)
@@ -9,7 +9,6 @@ parser.add_argument('--num-nodes', type=int, default=1)
 parser.add_argument('--dp-size', type=int, default=1)
 parser.add_argument('--ep-size', type=int, default=1)
 
-report_dir = "reports/throughput_benchmark"
 
 args = parser.parse_args()
 
@@ -29,4 +28,4 @@ plt.xlabel('time (s)')
 plt.ylabel('num of output request')
 plt.title(f'output request per second(rate={args.rate}, nodes={args.num_nodes})')
 
-plt.savefig(f"{report_dir}/output_reqs_over_time/req_throughput_rate={args.rate}_nodes={args.num_nodes}.png")
+plt.savefig(f"{get_plot_dir}/output_reqs_over_time/req_throughput_rate={args.rate}_nodes={args.num_nodes}.png")

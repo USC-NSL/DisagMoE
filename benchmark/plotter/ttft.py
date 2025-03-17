@@ -1,4 +1,4 @@
-from benchmark.plotter.namer import get_ttft_name
+from benchmark.plotter.namer import get_ttft_name, get_plot_dir
 from argparse import ArgumentParser
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,6 +8,7 @@ parser.add_argument('--rate', type=float, required=True)
 parser.add_argument('--num-nodes', type=int, default=1)
 parser.add_argument('--dp-size', type=int, default=1)
 parser.add_argument('--ep-size', type=int, default=1)
+
 
 args = parser.parse_args()
 
@@ -23,4 +24,4 @@ plt.xlabel('Time to First Token (s)')
 plt.ylabel('CDF')
 plt.title(f'CDF for TTFT (rate={args.rate}, nodes={args.num_nodes})')
 
-plt.savefig(f"reports/throughput_benchmark/ttft/cdf_rate={args.rate}_nodes={args.num_nodes}.png")
+plt.savefig(f"{get_plot_dir()}/ttft/cdf_rate={args.rate}_nodes={args.num_nodes}.png")
