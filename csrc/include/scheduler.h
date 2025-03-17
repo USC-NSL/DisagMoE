@@ -129,3 +129,54 @@ public:
 
     std::shared_ptr<NcclGroupChannel> get_channel() override;
 };
+
+
+/*
+
+    Layer-wise scheduler
+
+*/
+class LayerScheduler {
+public:
+    enum LayerScheduleType {
+        MBFS,   // max-batch-first-serve
+        FLFS,   // first-layer-first-serve
+        MBFLFS  // max-block-first-layer-first-serve
+    };
+
+    LayerScheduler(mu_pool_t pool, std::vector<int> layer_ids);
+
+    int schedule();
+
+    void set_schedule_type(LayerScheduleType type);
+
+    void set_block_step(int step);
+
+private:
+    mu_pool_t pool;
+    LayerScheduleType type;
+    int step, n_layers;
+
+    /*
+        max-batch-first-serve
+    */
+    int _schedule_mbfs();
+    
+    /*
+        first-layer-first-serve
+    */
+    int _schedule_flfs();
+
+    /*
+        max-block-first-layer-first-serve
+
+        1. Group layers into blocks with step size
+        2. Find the block with the largest token count
+        3. Find the first layer with tokens in the block
+
+        NOTE(hogura|20250317): 
+            * when step=1, this is equivalent to MBFS
+            * when step=n_layers, this is equivalent to FLFS
+    */
+    int _schedule_mbflfs();
+};

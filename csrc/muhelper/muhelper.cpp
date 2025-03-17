@@ -507,12 +507,7 @@ void MuPool::wait_for_new_requests() {
 
 // the batch_mutex must be used outside this function
 int MuPool::tokens_in_layer(int lid) {
-    auto &q = this->data_queue[lid];
-    int total_tokens = 0;
-    for (auto &d: q) {
-        total_tokens += d.metadata->num_tokens();
-    }
-    return total_tokens;
+    return this->tokens_per_layer_[lid];
 }
 
 void MuPool::maintain_largest_batch() {
@@ -687,6 +682,10 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
 void MuPool::set_max_batch_size(int max_batch_size) {
     this->max_batch_size = max_batch_size;
+}
+
+int MuPool::schedule_layer_id() {
+    return this->layer_scheduler.schedule();
 }
 
 MuAttentionPool::MuAttentionPool(
@@ -871,15 +870,7 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
 
 // the batch_mutex must be used outside this function
 int MuAttentionPool::tokens_in_layer(int lid) {
-    auto &q = this->attn_data_queue[lid];
-    int num_tokens = 0;
-    for (auto &d: q) {
-        num_tokens += d.metadata->num_prefill_tokens + d.metadata->num_decode_tokens;
-        // DMOE_LOG(DEBUG) << "tokens_in_layer #" << lid << " " 
-        //     << d.metadata->num_prefill_tokens << " " 
-        //     << d.metadata->num_decode_tokens << LEND;
-    }
-    return num_tokens;
+    return this->tokens_per_layer_[lid];
 }
 
 std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {

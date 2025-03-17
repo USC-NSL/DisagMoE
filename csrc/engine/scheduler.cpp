@@ -204,3 +204,70 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
     return chan_dist;
 
 }
+
+/*
+
+    Layer-wise scheduler
+
+*/
+
+LayerScheduler::LayerScheduler(mu_pool_t pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size())
+    {}
+
+int LayerScheduler::schedule() {
+    if (pool->get_largest_batch_layer_id() == -1)
+        return -1;
+    switch (this->type) {
+        case LayerScheduleType::MBFS:
+            return this->_schedule_mbfs();
+        case LayerScheduleType::FLFS:
+            return this->_schedule_flfs();
+        case LayerScheduleType::MBFLFS:
+            return this->_schedule_mbflfs();
+        default:
+            throw std::runtime_error("Unknown schedule type.");
+    }
+}
+
+void LayerScheduler::set_schedule_type(LayerScheduler::LayerScheduleType type) {
+    this->type = type;
+}
+
+void LayerScheduler::set_block_step(int step) {
+    this->step = step;
+}
+
+int LayerScheduler::_schedule_mbfs() {
+    return pool->get_largest_batch_layer_id();
+}
+
+int LayerScheduler::_schedule_flfs() {
+    for (int i = 0; i < n_layers; i++) {
+        if (pool->tokens_in_layer(i) > 0)
+            return i;
+    }
+    return -1;
+}
+
+int LayerScheduler::_schedule_mbflfs() {
+    // step 1. find the largest block
+    int block_i = -1;
+    int block_sum = 0;
+    for (int i = 0; i < n_layers; i += step) {
+        int cur_sum = 0;
+        for (int j = i; j < i + step && j < n_layers; j ++)
+            cur_sum += pool->tokens_in_layer(j);
+        if (cur_sum > block_sum) {
+            block_sum = cur_sum;
+            block_i = i;
+        }
+    }
+
+    // step 2. find the first layer in this block
+    for (int i = block_i; i < block_i + step && i < n_layers; i++) {
+        if (pool->tokens_in_layer(i) > 0)
+            return i;
+    }
+
+    return -1;
+}
