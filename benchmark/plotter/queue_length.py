@@ -64,8 +64,8 @@ def draw_heatmap(worker_id, data):
     plt.xlabel('time (ms)')
     plt.ylabel('layer')
     plt.title(f'queue length per layer (Rate={args.rate}, Nodes={args.num_nodes})')
-    plt.colorbar(label='Queue Length', orientation='horizontal')
-    plt.savefig(f'{plot_dir}/{worker_id}.pdf')
+    plt.colorbar(label='Queue Length', orientation='vertical', shrink=0.4)
+    plt.savefig(f'{plot_dir}/{worker_id}.pdf', bbox_inches='tight')
     plt.close()
 
 # for each row of df, do draw_plot
