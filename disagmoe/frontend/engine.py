@@ -10,7 +10,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
-from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
+from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
@@ -301,6 +301,7 @@ class Engine:
             self._logger.info(f"set stream {stream}")
             self.stream = stream
             self.h2d_stream = torch.cuda.Stream(priority=-1)
+            self.d2h_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
             self._log_memory_usage("Setup device")
@@ -640,21 +641,39 @@ class Engine:
             hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
             range_pop()
             
-        _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-        hiddens = permute_tokens(hiddens, reorder_ids)
-        
-        self.stream.synchronize()
-
         self._timer.stop("execute")
         self._timer.start("postprocess")
-
+        # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+        # hiddens = permute_tokens(hiddens, reorder_ids)
+        # d2h_event = torch.cuda.Event()
+        # with torch.cuda.stream(self.d2h_stream):
+        #     new_meta_c = meta_c.to_metadata()
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.duplicate_topk(self.model_config.top_k)
+        #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+        #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+        #     d2h_event.record(self.d2h_stream)
+        # d2h_event.synchronize()
+        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+        # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+        
         new_meta_c = meta_c.to_metadata()
         if self.model_config.top_k > 1:
             new_meta_c.duplicate_topk(self.model_config.top_k)
-            new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-
-        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-        new_meta_c.update_exp_ids(expert_ids.view(-1).tolist(), reorder_ids.view(-1).tolist())
+            
+        if self.model_config.top_k == 1:
+            expert_ids = expert_ids.view(-1).tolist()
+        else:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            expert_ids = expert_ids.view(-1).tolist()
+            expert_weights = expert_weights.view(-1).tolist()
+            new_meta_c.topk_weights = expert_weights
+            
+        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        hiddens = permute_tokens(hiddens, exp_mappings)
+        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
 
         assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
