@@ -57,11 +57,19 @@ class PoissonGenerator(Generator):
         arrivals = np.cumsum(gap)
         return arrivals
     
+class OfflineGenerator(Generator):
+    
+    @override
+    def generate_arrivals(self, n_request: int) -> List[int]:
+        arrivals = np.zeros(n_request)
+        return arrivals
+    
 
 def get_generator(name) -> Generator:
     return {
         "uniform": UniformGenerator,
-        "poisson": PoissonGenerator
+        "poisson": PoissonGenerator,
+        "offline": OfflineGenerator,
     }[name]
     
 
