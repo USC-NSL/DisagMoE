@@ -755,6 +755,7 @@ class Engine:
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
         
         factor = self.model_config.top_k if self.has_attn else 1
+        real_batch_size = batch.data.shape[0] // factor # excluding topk tokens
         if self.model_config.enable_trace:
             pool_snapshot_dict = dict()
             queueing_tokens = 0
@@ -769,7 +770,7 @@ class Engine:
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
-                        batch.data.shape[0] // factor, batch.metadata.layer_id,
+                        real_batch_size, batch.metadata.layer_id,
                         pool_snapshot_dict)
             )
         else:
@@ -782,8 +783,8 @@ class Engine:
             self._metric.update("t_preprocess", self._timer.get("preprocess"))
             self._metric.update("t_execute", self._timer.get("execute") + self._timer.get("stream_sync"))
             self._metric.update("t_schedule", self._timer.get("schedule"))
-            self._metric.update("effective_tokens", batch.data.shape[0] // factor)
-            self._metric.update("queueing_tokens", queueing_tokens - batch.data.shape[0] // factor)
+            self._metric.update("effective_tokens", real_batch_size)
+            self._metric.update("queueing_tokens", queueing_tokens - real_batch_size)
             self._metric.update("queueing_batches", queueing_batches - 1)
 
     @torch.inference_mode()

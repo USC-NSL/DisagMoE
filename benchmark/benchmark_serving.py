@@ -212,6 +212,7 @@ def generate_step_trace(args,
         layers = sorted(list(layers))
         
         worker_queue_length_per_step = {layer: [] for layer in layers}
+        step_start_time_ms = []
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -225,14 +226,14 @@ def generate_step_trace(args,
                     "pool_snapshot": f"{step_info.pool_snapshot}"
                 }
             })
-            
+            step_start_time_ms.append(step_info.start_timestamp_ms)
             for layer in layers:
                 if layer in step_info.pool_snapshot:
                     worker_queue_length_per_step[layer].append(step_info.pool_snapshot[layer])
                 else:
                     worker_queue_length_per_step[layer].append(0)
         
-        queue_length_per_step.append(worker_queue_length_per_step)
+        queue_length_per_step.append((worker_queue_length_per_step, step_start_time_ms))
         
         if args.enable_trace_detail:
             for tid, t_traces in p_traces.items():
