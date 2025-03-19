@@ -16,30 +16,35 @@ class Scheduler;
 
 typedef std::shared_ptr<Scheduler> scheduler_t;
 
-class Scheduler {
+class SchedulerBase {
 protected:
     mu_pool_t pool;
+
     std::vector<int> layer_ids;
+
     std::string policy;
-    int max_batch_size;
+
     float cur_queueing_delay;
+
+    int max_batch_size;
 
     std::vector<int> pool_snapshot_{};
 
-    std::vector<TensorBatch> _schedule();
-
 public:
-    Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
+    SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
-    static scheduler_t build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
+    void start() {
+        this->pool->start();
+    }
 
-    TensorBatch schedule();
+    void wait_for_new_requests() {
+        this->pool->wait_for_new_requests();
+    }
 
-    void wait_for_new_requests();
-
-    void start();
-
-    void set_max_batch_size(int max_batch_size);
+    void set_max_batch_size(int max_batch_size) {
+        this->max_batch_size = max_batch_size;
+        this->pool->set_max_batch_size(max_batch_size);
+    }
 
     std::vector<int> get_pool_snapshot() {
         return pool_snapshot_;
@@ -48,6 +53,22 @@ public:
     float get_cur_queueing_delay() const {
         return cur_queueing_delay;
     }
+
+    void set_schedule_policy(std::string policy);
+
+    void set_schedule_block(int step);
+};
+
+class Scheduler: public SchedulerBase {
+protected:
+    std::vector<TensorBatch> _schedule();
+
+public:
+    Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+
+    static scheduler_t build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+
+    TensorBatch schedule();
 };
 
 
@@ -55,44 +76,22 @@ class AttentionScheduler;
 
 typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
 
-class AttentionScheduler {
+class AttentionScheduler: public SchedulerBase {
 protected:
-    int max_batch_size;
-
     mu_attn_pool_t pool;
-    std::vector<int> layer_ids;
-    std::string policy;
-
-    std::vector<int> pool_snapshot_{};
 
     virtual std::vector<AttentionBatch> _schedule();
 
-    float cur_queueing_delay;
-
 public:
-    AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
+    AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
-    static attn_scheduler_t build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "largest");
+    static attn_scheduler_t build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
     virtual AttentionBatch schedule();
-
-    void wait_for_new_requests();
-
-    void start();
-
-    void set_max_batch_size(int max_batch_size);
 
     virtual std::shared_ptr<NcclGroupChannel> get_channel() {
         return nullptr;
     };
-
-    virtual std::vector<int> get_pool_snapshot() {
-        return pool_snapshot_;
-    };
-
-    float get_cur_queueing_delay() const {
-        return cur_queueing_delay;
-    }
 };
 
 class AttentionDriverScheduler : public AttentionScheduler {
@@ -102,7 +101,7 @@ protected:
     std::shared_ptr<NcclGroupChannel> chan, chan_dist;
 
 public:
-    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "largest");
+    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
 
     AttentionBatch schedule() override;
 
@@ -122,7 +121,7 @@ protected:
     void async_schedule();
 
 public:
-    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "largest");
+    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
     ~AttentionWorkerScheduler();
 
     AttentionBatch schedule() override;
@@ -144,16 +143,16 @@ public:
         MBFLFS  // max-block-first-layer-first-serve
     };
 
-    LayerScheduler(mu_pool_t pool, std::vector<int> layer_ids);
+    LayerScheduler(MuPool* pool, std::vector<int> layer_ids);
 
     int schedule();
 
-    void set_schedule_type(LayerScheduleType type);
+    void set_schedule_type(std::string type);
 
     void set_block_step(int step);
 
 private:
-    mu_pool_t pool;
+    MuPool* pool;
     LayerScheduleType type;
     int step, n_layers;
 

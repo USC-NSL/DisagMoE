@@ -9,32 +9,32 @@
 #include <string>
 #include <set>
 
-scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
-    if (policy == "largest") {
-        return std::make_shared<Scheduler>(pool, layer_ids);
-    } else {
-        throw std::runtime_error(policy + " schedule not implemented.");
-    }
-}
-
-
-Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
+SchedulerBase::SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
     pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
     
 }
 
-void Scheduler::start() {
-    this->pool->start();
+void SchedulerBase::set_schedule_policy(std::string policy) {
+    this->policy = policy;
+    this->pool->set_layer_schedule_type(policy);
+}
+
+void SchedulerBase::set_schedule_block(int step) {
+    this->pool->set_scheduler_block(step);
+}
+
+scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
+    return std::make_shared<Scheduler>(pool, layer_ids, policy);
+}
+
+Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
+    SchedulerBase(pool, layer_ids, policy) {
+
 }
 
 std::vector<TensorBatch> Scheduler::_schedule() {
     this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
-}
-
-void Scheduler::set_max_batch_size(int max_batch_size) {
-    this->max_batch_size = max_batch_size;
-    this->pool->set_max_batch_size(max_batch_size);
 }
 
 TensorBatch Scheduler::schedule() {
@@ -50,12 +50,8 @@ TensorBatch Scheduler::schedule() {
     return batch;
 }
 
-void Scheduler::wait_for_new_requests() {
-    pool->wait_for_new_requests();
-}
-
 attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy) {
-    if (policy == "largest") {
+    if (policy == "mbfs") {
         return std::make_shared<AttentionScheduler>(pool, layer_ids);
     } else {
         throw std::runtime_error(policy + " schedule not implemented.");
@@ -64,17 +60,8 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
 
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
+    SchedulerBase(pool, layer_ids, policy), pool(pool) {
     
-}
-
-void AttentionScheduler::set_max_batch_size(int max_batch_size) {
-    this->max_batch_size = max_batch_size;
-    this->pool->set_max_batch_size(max_batch_size);
-}
-
-void AttentionScheduler::start() {
-    this->pool->start();
 }
 
 std::vector<AttentionBatch> AttentionScheduler::_schedule() {
@@ -94,10 +81,6 @@ AttentionBatch AttentionScheduler::schedule() {
         this->cur_queueing_delay = 0;
     }
     return batch;
-}
-
-void AttentionScheduler::wait_for_new_requests() {
-    pool->wait_for_new_requests();
 }
 
 AttentionDriverScheduler::AttentionDriverScheduler(
@@ -211,7 +194,7 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 
 */
 
-LayerScheduler::LayerScheduler(mu_pool_t pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size())
+LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size())
     {}
 
 int LayerScheduler::schedule() {
@@ -229,8 +212,16 @@ int LayerScheduler::schedule() {
     }
 }
 
-void LayerScheduler::set_schedule_type(LayerScheduler::LayerScheduleType type) {
-    this->type = type;
+void LayerScheduler::set_schedule_type(std::string type) {
+    if (type == "mbfs") {
+        this->type = LayerScheduler::LayerScheduleType::MBFS;
+    } else if (type == "flfs") {
+        this->type = LayerScheduler::LayerScheduleType::FLFS;
+    } else if (type == "mbflfs") {
+        this->type = LayerScheduler::LayerScheduleType::MBFLFS;
+    } else {
+        throw std::runtime_error(type + " schedule not implemented.");
+    }
 }
 
 void LayerScheduler::set_block_step(int step) {
