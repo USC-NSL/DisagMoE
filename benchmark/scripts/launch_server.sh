@@ -1,15 +1,15 @@
-OUTPUT_LEN=300
-N_NODE=2
+OUTPUT_LEN=100
+N_NODE=1
 N_GPU_PER_NODE=4
 NUM_LAYERS=32
-NUM_EXPERTS=8
-MAX_BATCH_SIZE_ATTN=192
+NUM_EXPERTS=4
+MAX_BATCH_SIZE_ATTN=128
 MAX_BATCH_SIZE_EXP=256
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=4
+dp_size=2
 step_exp=1
-ep_size=4
+ep_size=2
 top_k=1
 
 if [ ! -d "./reports" ]; then

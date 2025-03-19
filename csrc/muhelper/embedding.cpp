@@ -144,7 +144,7 @@ void Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
 
     this->step_infos.push_back(SamplerStepInfo {num_tokens, t_now()});
 
-    DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
+    // DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
 
 std::vector<SloStat> Sampler::fetch_finished_slo_stats() {

@@ -194,7 +194,7 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 
 */
 
-LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size())
+LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size()), type(LayerScheduleType::MBFS)
     {}
 
 int LayerScheduler::schedule() {

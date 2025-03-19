@@ -40,6 +40,23 @@ Request format:
 }
 ```
 
+### adjust_policy.sh
+
+A simple curl command to send schedule policy update request to the server.
+
+Request format:
+
+```json
+{
+    "policy": <str>,
+    "step": <int>
+}
+```
+
+Where the policy should be one of "mbfs", "flfs" and "mbflfs".
+
+The step is effective only when using "mbflfs", representing that the layers are grouped every consecuetive step.
+
 ## Plotter Scripts
 
 Each benchmark is associated with:
