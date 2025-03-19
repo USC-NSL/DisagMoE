@@ -121,6 +121,8 @@ public:
     void debug_put(TensorBatch batch);
 };
 
+class LayerScheduler;
+
 class MuPool: public MuHelper {
 protected:
     bool is_attn;
@@ -150,7 +152,7 @@ protected:
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
-    virtual int tokens_in_layer(int lid);
+    std::shared_ptr<LayerScheduler> layer_scheduler;
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
@@ -185,7 +187,19 @@ public:
 
     void maintain_largest_batch();
 
+    int get_largest_batch_layer_id() {
+        return largest_batch_layer_id_;
+    }
+
     std::vector<int> get_pool_snapshot();
+
+    virtual int tokens_in_layer(int lid);
+
+    int schedule_layer_id();
+
+    void set_layer_schedule_type(std::string type);
+
+    void set_scheduler_block(int step);
 
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);

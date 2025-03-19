@@ -199,7 +199,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 //     MuExpertDispatcher sender0({0}, 0, {c0}, {ChannelInfo{{0}, {0}}});
 //     MuExpertDispatcher sender1({1}, 1, {c1}, {ChannelInfo{{0}, {1}}});
 //     mu_pool_t recver = std::make_shared<MuPool>(std::vector<int>({0, 1}), 2, std::vector<Channel_t>({r1, r2}), false);
-//     scheduler_t scheduler = Scheduler::build(recver, {2}, "largest");
+//     scheduler_t scheduler = Scheduler::build(recver, {2}, "mbfs");
 
 //     recver->start();
 //     sender0.start();

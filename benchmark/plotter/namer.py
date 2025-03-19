@@ -1,7 +1,8 @@
 import os
 
 def get_dir_path(args):
-    dir_path = f"reports/rate={args.rate}-nodes={args.num_nodes}-dp={args.dp_size}-ep={args.ep_size}"
+    dir_path = f"reports/rate={args.rate}-nodes={args.num_nodes}-dp={args.dp_size}-ep={args.ep_size}-"\
+               f"layersch={args.layer_scheduler_type}-layerstep={args.layer_scheduler_step}"
     # if dir not exists, create it
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
