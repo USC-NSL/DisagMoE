@@ -23,27 +23,36 @@ class DPScheduler:
         self.delta = (seq_len + block_size - 1) // block_size
         self.seq_ranks = {}
         
+        self._logger = get_logger("DPScheduler")
+        self._loop_task: asyncio.Task = None
+        
+        self.reset()
+        
+    def reset(self):
         self.end_flag = False
         self.end_event = asyncio.Event()
         self.sch_event = asyncio.Event()
         self.waiting_queue = asyncio.Queue()
         
-        self._logger = get_logger("DPScheduler")
-        
     def start(self, stats: Dict[int, int]):
         self._logger.info(f"Start with stats {stats}")
         self.init_kv_cache_stats(stats)
-        asyncio.get_running_loop().create_task(self.waiting_loop())
+        self.reset()
+        
+        self._loop_task = asyncio.create_task(self.waiting_loop())
+        self._logger.warning("Created waiting loop")
         
     async def terminate(self):
         self.end_flag = True
         self.end_event.set()
+        await self._loop_task
     
     def put_request(self, func: Callable, req_id: int, *args):
         self.waiting_queue.put_nowait(RequestItem(func, req_id, args))
         self._logger.warning(f"Waiting queue put a request {req_id}, currently waiting list size {self.waiting_queue.qsize()}")
     
     async def waiting_loop(self):
+        self._logger.warning("Waiting loop started")
         while not self.end_flag:
             done, pending = await asyncio.wait(
                 [

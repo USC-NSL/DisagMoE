@@ -10,7 +10,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
-from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
+from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
@@ -92,7 +92,7 @@ class Engine:
         self._step_stats = []
         self._metric = Metric()
         self._timer = Timer()
-        self._queueing_timer = {}
+        self._queueing_timer = {} # placeholder, not used at the moment
         self._queueing_delays = []
 
     @property
@@ -172,6 +172,8 @@ class Engine:
             self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
+            
+        self._logger.info("Executors built")
         
     def init_core(self, core_args: InitCoreArgs):
         """
@@ -299,6 +301,7 @@ class Engine:
             self._logger.info(f"set stream {stream}")
             self.stream = stream
             self.h2d_stream = torch.cuda.Stream(priority=-1)
+            self.d2h_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
             self._log_memory_usage("Setup device")
@@ -638,21 +641,39 @@ class Engine:
             hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
             range_pop()
             
-        _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-        hiddens = permute_tokens(hiddens, reorder_ids)
-        
-        self.stream.synchronize()
-
         self._timer.stop("execute")
         self._timer.start("postprocess")
-
+        # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+        # hiddens = permute_tokens(hiddens, reorder_ids)
+        # d2h_event = torch.cuda.Event()
+        # with torch.cuda.stream(self.d2h_stream):
+        #     new_meta_c = meta_c.to_metadata()
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.duplicate_topk(self.model_config.top_k)
+        #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+        #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+        #     d2h_event.record(self.d2h_stream)
+        # d2h_event.synchronize()
+        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+        # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+        
         new_meta_c = meta_c.to_metadata()
         if self.model_config.top_k > 1:
             new_meta_c.duplicate_topk(self.model_config.top_k)
-            new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-
-        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-        new_meta_c.update_exp_ids(expert_ids.view(-1).tolist(), reorder_ids.view(-1).tolist())
+            
+        if self.model_config.top_k == 1:
+            expert_ids = expert_ids.view(-1).tolist()
+        else:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            expert_ids = expert_ids.view(-1).tolist()
+            expert_weights = expert_weights.view(-1).tolist()
+            new_meta_c.topk_weights = expert_weights
+            
+        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        hiddens = permute_tokens(hiddens, exp_mappings)
+        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
 
         assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
@@ -753,6 +774,7 @@ class Engine:
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
         
         factor = self.model_config.top_k if self.has_attn else 1
+        real_batch_size = batch.data.shape[0] // factor # excluding topk tokens
         if self.model_config.enable_trace:
             pool_snapshot_dict = dict()
             queueing_tokens = 0
@@ -767,7 +789,7 @@ class Engine:
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
-                        batch.data.shape[0] // factor, batch.metadata.layer_id,
+                        real_batch_size, batch.metadata.layer_id,
                         pool_snapshot_dict)
             )
         else:
@@ -780,8 +802,8 @@ class Engine:
             self._metric.update("t_preprocess", self._timer.get("preprocess"))
             self._metric.update("t_execute", self._timer.get("execute") + self._timer.get("stream_sync"))
             self._metric.update("t_schedule", self._timer.get("schedule"))
-            self._metric.update("effective_tokens", batch.data.shape[0] // factor)
-            self._metric.update("queueing_tokens", queueing_tokens - batch.data.shape[0] // factor)
+            self._metric.update("effective_tokens", real_batch_size)
+            self._metric.update("queueing_tokens", queueing_tokens - real_batch_size)
             self._metric.update("queueing_batches", queueing_batches - 1)
 
     @torch.inference_mode()
@@ -914,7 +936,16 @@ class Engine:
     def stop_profile(self):
         assert self.profiler is not None, "torch rofiler is not enabled"
         self.profiler.stop()
-
+        
+    def reset(self):
+        # for stats usage
+        self._metric = Metric()
+        self._timer = Timer()
+        self._step_stats.clear()
+        self._queueing_timer.clear()
+        self._queueing_delays.clear()
+        self.release_seqs(list(self.decode_seq_lens.keys()))
+        
 class SamplerEngine(Engine):
     
     def __init__(self):
@@ -962,6 +993,9 @@ class SamplerEngine(Engine):
             req_id: SloStat.from_c(stat) for req_id, stat in result.items()
         }
         return new_res
+    
+    def reset(self):
+        self.sampler.reset()
         
 class TokenizerEngine(Engine):
     
@@ -976,7 +1010,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        # self._logger.info("tokenizer put 1 request")
+        self._logger.info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
@@ -1003,3 +1037,6 @@ class TokenizerEngine(Engine):
     
     def start(self):
         self.tokenizer.start()
+        
+    def reset(self):
+        self.t_submitted.clear()

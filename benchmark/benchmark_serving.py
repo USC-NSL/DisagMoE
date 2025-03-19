@@ -6,6 +6,8 @@ from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
+from benchmark.utils import get_parser_base
+from disagmoe.utils.logger import get_logger
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -18,11 +20,14 @@ import tqdm
 import numpy as np
 import pandas as pd
 import os
+import pickle
 
 tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
 
 master: Controller = None
+logger = get_logger("Serving")
+
 
 @dataclass
 class BenchmarkMetrics:
@@ -41,17 +46,18 @@ class BenchmarkMetrics:
     def __repr__(self):
         return f"Metrics: \n" \
                 f"e2e_duration: {self.e2e_duration:.2f}s\n" \
-                f"req_throughput: {self.req_throughput:.2f} req/s\n" \
-                f"token_throughput: {self.token_throughput:.2f} tokens/s\n" \
-                f"req_latency_median: {self.req_latency_median_ms:.2f}ms\n" \
-                f"req_latency_p90: {self.req_latency_p90_ms:.2f}ms\n" \
-                f"req_latency_p99: {self.req_latency_p99_ms:.2f}ms\n" \
-                f"itl_latency_median: {self.itl_latency_median_ms:.2f}ms\n" \
-                f"itl_latency_p90: {self.itl_latency_p90_ms:.2f}ms\n" \
-                f"itl_latency_p99: {self.itl_latency_p99_ms:.2f}ms\n"
+                f"req_throughput: {self.req_throughput:.0f} req/s\n" \
+                f"token_throughput: {self.token_throughput:.0f} tokens/s\n" \
+                f"req_latency_median: {self.req_latency_median_ms:.0f}ms\n" \
+                f"req_latency_p90: {self.req_latency_p90_ms:.0f}ms\n" \
+                f"req_latency_p99: {self.req_latency_p99_ms:.0f}ms\n" \
+                f"itl_latency_median: {self.itl_latency_median_ms:.0f}ms\n" \
+                f"itl_latency_p90: {self.itl_latency_p90_ms:.0f}ms\n" \
+                f"itl_latency_p99: {self.itl_latency_p99_ms:.0f}ms\n"
 
     def write_to_file(self, args):
         filename = args.file
+        metrics = { k: int(v) for k, v in self.__dict__.items()}
         try:
             import pandas as pd
             if not os.path.exists(filename):
@@ -59,7 +65,7 @@ class BenchmarkMetrics:
                                            "output_len",
                                            "step_attn", "DP_size", "max_batch_size_attn", 
                                            "step_expert", "EP_size", "max_batch_size_expert",
-                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(self.__dict__.keys()))
+                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(metrics.keys()))
             else:
                 if filename.endswith(".csv"):
                     df = pd.read_csv(filename)
@@ -80,7 +86,7 @@ class BenchmarkMetrics:
                 "num_gpus": args.num_gpus,
                 "num_experts": args.num_experts,
                 "num_layers": args.num_layers,
-                **self.__dict__
+                **metrics
             }
             df.loc[len(df)] = new_row
             if filename.endswith(".csv"):
@@ -89,6 +95,7 @@ class BenchmarkMetrics:
                 df.to_excel(filename, index=False)
         except Exception as e:
             print("Error: failed to write to file, with exception:", e)
+
 
 def launch(args):
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
@@ -120,7 +127,7 @@ def launch(args):
 
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
-    cache_config = CacheConfig(args.block_size, 0.9, 2, "auto",
+    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
@@ -133,10 +140,13 @@ def launch(args):
 
     master.start_engine()
     
+    return master
+    
    
-async def process_response(resp: AsyncResult, pbar):
+async def process_response(resp: AsyncResult, req_finish_timestamps: List[float], pbar):
     slo_stat = await resp.get()
-    # print(f">>> Response received: {resp.req_id}, {slo_stat}")
+    # print(f">>> Response received: {resp.req_id}")
+    req_finish_timestamps.append(time.perf_counter())
     pbar.update(1)
     return slo_stat
 
@@ -164,6 +174,7 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
 
+
 def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
     try:
         import matplotlib.pyplot as plt 
@@ -186,18 +197,22 @@ def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
 
 
 def generate_step_trace(args,
-                        step_stats: List[ Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric] ]):
-    trace_name = f"trace_step-attn={args.step_attn}_dp-size={args.dp_size}_step-exp={args.step_expert}_ep-size={args.ep_size}" \
-                 f"_layers={args.num_layers}_experts={args.num_experts}" \
-                 f"_max-batch-attn={args.max_batch_size_attn}_max-batch-exp={args.max_batch_size_expert}"
-    events = []
-    
+                        step_stats: List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]):
     def ms_to_us(ms):
         return ms * 1000
-    
+    events = []
     metrics = {}
     
+    queue_length_per_step = []
+    
     for pid, (worker_stats, p_traces, metric) in enumerate(step_stats):
+        layers = set()
+        for step_info in worker_stats:
+            layers.add(step_info.layer_id)
+        layers = sorted(list(layers))
+        
+        worker_queue_length_per_step = {layer: [] for layer in layers}
+        step_start_time_ms = []
         for step_info in worker_stats:
             events.append({
                 "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
@@ -211,39 +226,59 @@ def generate_step_trace(args,
                     "pool_snapshot": f"{step_info.pool_snapshot}"
                 }
             })
-            
-        for tid, t_traces in p_traces.items():
-            print("outputing thread", tid)
-            tid = tid % (1 << 32)
-            for trace in t_traces:
-                if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
-                    continue
-                events.append({
-                    "name": trace.msg,
-                    "cat": "trace",
-                    "ph": "X",
-                    "ts": ms_to_us(trace.t_start),
-                    "dur": ms_to_us(trace.t_dur),
-                    "pid": pid,
-                    "tid": (tid * 10 + trace.track_id) % (1 << 31),
-                })
+            step_start_time_ms.append(step_info.start_timestamp_ms)
+            for layer in layers:
+                if layer in step_info.pool_snapshot:
+                    worker_queue_length_per_step[layer].append(step_info.pool_snapshot[layer])
+                else:
+                    worker_queue_length_per_step[layer].append(0)
+        
+        queue_length_per_step.append((worker_queue_length_per_step, step_start_time_ms))
+        
+        if args.enable_trace_detail:
+            for tid, t_traces in p_traces.items():
+                print("outputing thread", tid)
+                tid = tid % (1 << 32)
+                for trace in t_traces:
+                    if "schedule" in trace.msg and ms_to_us(trace.t_dur) < 10:
+                        continue
+                    events.append({
+                        "name": trace.msg,
+                        "cat": "trace",
+                        "ph": "X",
+                        "ts": ms_to_us(trace.t_start),
+                        "dur": ms_to_us(trace.t_dur),
+                        "pid": pid,
+                        "tid": (tid * 10 + trace.track_id) % (1 << 31),
+                    })
                 
         metrics[pid] = asdict(metric)
-
-    with gzip.open(f"{trace_name}.json.gz", "w") as f:
-        f.write(json.dumps(events).encode("utf-8"))
         
-    with open(f"metrics_{trace_name}.json", "w") as f:
-        json.dump(metrics, f)
+    from benchmark.plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
 
+    with gzip.open(get_trace_name(args), "w") as f:
+        f.write(json.dumps(events).encode("utf-8"))
+
+    with open(get_trace_metrics_name(args), "w") as f:
+        json.dump(metrics, f)
+        
+    with open(get_queue_length_name(args), "wb") as f:
+        pickle.dump(queue_length_per_step, f)
 
 def analyze_throughput(args, 
+                       req_finish_timestamps: List[float],
                        sampler_step_infos: List[SamplerStepInfo], 
                        attn_queueing_delays: List[List[float]],
                        exp_queueing_delays: List[List[float]],
                        t_submitted: Dict[int, int],
                        slo_stats: List[SloStat]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name, get_req_finish_time_name
+    
+    # request finish timestamp
+    req_finish_fn = get_req_finish_time_name(args)
+    req_finish_df = pd.DataFrame(req_finish_timestamps)
+    req_finish_df.to_csv(req_finish_fn, index=False)
+    
     # sampler throughput
     sampler_fn = get_sampler_step_name(args)
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
@@ -266,47 +301,58 @@ def analyze_throughput(args,
     ])
     ttft_df.to_csv(ttft_fn, index=False)
 
-async def benchmark_serving(args):
-    assert master is not None, "master is not initialized"
     
-    master.start_polling_results()
+async def run_benchmark(master: Controller, args, 
+                        generator_type, num_requests, input_len, output_len, rate, warmup=False):
+    GeneratorType = get_generator(generator_type)
+    generator = GeneratorType(rate, 1, input_len)
+    workload = generator.generate(num_requests)
+    pbar = tqdm.tqdm(total=num_requests)
+    t_start = time.perf_counter()
+    tasks = []
+    req_finish_timestamps = []
+    logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
+    for i in range(num_requests):
+        t_elapsed = time.perf_counter() - t_start
+        arrival, input_len = workload[i]
+        # logger.debug(f"Request {i} arrives at {arrival}s, input_len={input_len}")
+        if t_elapsed < arrival:
+            await asyncio.sleep(arrival - t_elapsed)
+        resp = master.put_single_request(input_len)
+        tasks.append(asyncio.create_task(process_response(resp, req_finish_timestamps, pbar)))
     
-    print(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
+    results: List[SloStat] = await asyncio.gather(*tasks)
+    t_duration = time.perf_counter() - t_start
+    pbar.close()
     
-    async def run_once():
-        GeneratorType = get_generator(args.generator_type)
-        generator = GeneratorType(args.rate, 1, args.input_len)
-        workload = generator.generate(args.num_requests)
-        
-        pbar = tqdm.tqdm(total=args.num_requests)
-        t_start = time.perf_counter()
-        tasks = []
-        for i in range(args.num_requests):
-            t_elapsed = time.perf_counter() - t_start
-            arrival, input_len = workload[i]
-            if t_elapsed < arrival:
-                await asyncio.sleep(arrival - t_elapsed)
-            resp = master.put_single_request(input_len)
-            tasks.append(asyncio.create_task(process_response(resp, pbar)))
-        
-        results: List[SloStat] = await asyncio.gather(*tasks)
-        t_duration = time.perf_counter() - t_start
-        pbar.close()
+    if warmup:
+        return None
+    
+    logger.info("Benchmark finished, now analyznig results ...")
+    metrics = analyze_results(results, t_duration)
+    logger.debug(f"{metrics}")
+    
+    req_finish_timestamps.sort()
+    for i in range(num_requests):
+        req_finish_timestamps[i] -= t_start
+    
+    metrics.write_to_file(args)
+    logger.info("Results written to file.")
+    
+    return results, req_finish_timestamps
 
-        metrics = analyze_results(results, t_duration)
+async def benchmark_warmup(master: Controller, args):
+    logger.info("Now running warmup ...")
+    _num_warmup_requests = 10
+    _num_warmup_rate = 5
+    await run_benchmark(
+        master, args, args.generator_type, _num_warmup_requests, 
+        args.input_len, args.output_len, _num_warmup_rate, warmup=True
+    )
+    master.reset()
+    logger.info("Warmup done.")
 
-        print(metrics)
-
-        metrics.write_to_file(args)
-        
-        return results
-    
-    await master.start_scheduler()
-    results = await run_once()
-    await master.stop_scheduler()
-    
-    master.stop_workers()
-    
+def post_benchmark(master, args, results, req_finish_timestamps):
     if args.trace:
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
@@ -316,48 +362,39 @@ async def benchmark_serving(args):
         attn_delays, exp_delays = master.fetch_queueing_delays()
         t_submitted = master.fetch_submitted_time()
         analyze_throughput(args, 
+                           req_finish_timestamps,
                            sampler_step_infos, 
                            attn_delays, exp_delays,
                            t_submitted, results)
+
+async def benchmark_serving(
+    master: Controller,
+    args, 
+    is_api_server: bool = False
+):
+    assert master is not None, "master is not initialized"
     
+    if not is_api_server:
+        master.start_polling_results()
+        await master.start_scheduler()
+        await benchmark_warmup(master, args)
+    
+    # run benchmark
+    logger.info("Now running benchmark.")
+    results, req_finish_timestamps = await run_benchmark(
+        master, args, args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate
+    )
+    
+    if not is_api_server:
+        await master.stop_scheduler()
+        master.stop_workers()
+    
+    post_benchmark(master, args, results, req_finish_timestamps)
+    
+    master.reset()
+
 def get_args():
-    parser = ArgumentParser()
-    
-    parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
-    parser.add_argument("-i", "--input-len", type=int, default=1, help="initial prefill length for each seqeunce")
-    parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
-    parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
-    parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
-    parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
-    parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
-    parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
-    parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
-    parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
-    parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
-    parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
-    
-    # model config
-    parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
-    parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
-    parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
-    parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
-    parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
-    parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
-    parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
-    parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
-    parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
-    parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
-    parser.add_argument("--graph-stride", type=int, default=32, help="CUDA graph batch size stride")
-    parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
-    parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
-    
-    # placement config
-    parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
-    parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
-    parser.add_argument("--step-attn", type=int, default=2, help="number of steps in attention placement")
-    parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
-    
-    args = parser.parse_args()
+    args = get_parser_base().parse_args()
     
     assert args.num_experts >= args.topk, "number of experts must be greater than topk"
     
@@ -377,7 +414,7 @@ def main():
     
     try:
         launch(args)
-        asyncio.run(benchmark_serving(args))
+        asyncio.run(benchmark_serving(master, args))
     except Exception as e:
         print("Error: failed to run benchmark, with exception:", e.with_traceback())
         BenchmarkMetrics().write_to_file(args)

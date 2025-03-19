@@ -48,6 +48,9 @@ class Sampler:
     def fetch_finished_slo_stats(self) -> List[SloStat]:
         ...
         
+    def reset(self) -> None:
+        ...
+        
 class BlockManager:
     
     # def can_allocate(seq_len: int) -> bool:

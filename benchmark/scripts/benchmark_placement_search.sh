@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # profile & report configs
-export REPORT_DIR=/home/hogura1999/DisagMoE/reports/e2e.csv
+export REPORT_DIR=./reports/server.csv
+
 
 # model configs
 export NUM_LAYERS=32
