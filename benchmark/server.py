@@ -57,7 +57,7 @@ def run_once_endpoint():
 
 @app.route('/set_schedule', methods=['POST'])
 def set_schedule_endpoint():
-    global master
+    global master, args
     from flask import request
     
     data = request.get_json()
@@ -77,6 +77,7 @@ def set_schedule_endpoint():
             return f"Invalid policy: {policy}", 400
         
         master.set_schedule_policy(policy)
+        args.layer_scheduler_type = policy
     
     if step is not None:
         try:
@@ -85,6 +86,7 @@ def set_schedule_endpoint():
             return f"Invalid parameter type: {step}", 400
         
         master.set_schedule_block(step)
+        args.layer_scheduler_step = step
     
     return "set_schedule executed successfully", 200
 

@@ -4,12 +4,12 @@ from disagmoe.utils.constants import BLOCK_SIZE
 def get_parser_base():
     parser = ArgumentParser()
     
+    # benchmark config
     parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
     parser.add_argument("-i", "--input-len", type=int, default=1, help="initial prefill length for each seqeunce")
     parser.add_argument("-o", "--output-len", type=int, default=32, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
-    parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
     parser.add_argument("--nsys", action="store_true", help="enable nsys profiling")
     parser.add_argument("-f", "--file", type=str, default="reports/benchmark.xlsx", help="file to write benchmark results")
@@ -19,6 +19,7 @@ def get_parser_base():
     parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
     
     # model config
+    parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
     parser.add_argument("-u", "--gpu-usage", type=float, default=0.7, help="GPU memory usage")
@@ -33,7 +34,9 @@ def get_parser_base():
     parser.add_argument("--graph-stride", type=int, default=8, help="CUDA graph batch size stride")
     parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
-    
+    parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
+    parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")
+
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
     parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
