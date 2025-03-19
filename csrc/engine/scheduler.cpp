@@ -207,6 +207,8 @@ int LayerScheduler::schedule() {
             return this->_schedule_flfs();
         case LayerScheduleType::MBFLFS:
             return this->_schedule_mbflfs();
+        case LayerScheduleType::MBTFS:
+            return this->_schedule_batches_tokens();
         default:
             throw std::runtime_error("Unknown schedule type.");
     }
@@ -219,6 +221,8 @@ void LayerScheduler::set_schedule_type(std::string type) {
         this->type = LayerScheduler::LayerScheduleType::FLFS;
     } else if (type == "mbflfs") {
         this->type = LayerScheduler::LayerScheduleType::MBFLFS;
+    } else if (type == "mbtfs") {
+        this->type = LayerScheduler::LayerScheduleType::MBTFS;
     } else {
         throw std::runtime_error(type + " schedule not implemented.");
     }
@@ -261,4 +265,20 @@ int LayerScheduler::_schedule_mbflfs() {
     }
 
     return -1;
+}
+
+int LayerScheduler::_schedule_batches_tokens() {
+    int lid = -1;
+    int max_batches = 0, max_tokens = 0;
+
+    for (int i = 0; i < n_layers; i ++) {
+        int num_batches = pool->num_batches_in_layer(i);
+        int num_tokens = pool->tokens_in_layer(i);
+        if (num_batches > max_batches || (num_batches == max_batches && num_tokens > max_tokens)) {
+            lid = i;
+            max_batches = num_batches;
+            max_tokens = num_tokens;
+        }
+    }
+    return max_tokens > 0 ? lid : -1;
 }

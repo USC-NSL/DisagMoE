@@ -146,6 +146,7 @@ protected:
     int largest_batch_layer_id_{-1};
     int local_zmq_port_offset{0};
     std::vector<int> tokens_per_layer_;
+    std::vector<int> num_batches_per_layer_;
 
     int max_batch_size;
 
@@ -195,6 +196,8 @@ public:
 
     virtual int tokens_in_layer(int lid);
 
+    virtual int num_batches_in_layer(int lid);
+
     int schedule_layer_id();
 
     void set_layer_schedule_type(std::string type);
@@ -220,8 +223,6 @@ private:
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
     AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
-
-    int tokens_in_layer(int lid) override;
 
     void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
@@ -287,7 +288,6 @@ class MuAttentionTopKPool: public MuAttentionPool {
 
     std::vector<TokenTopKPool> topk_pools;
 
-    int tokens_in_layer(int lid) override;
 
     std::vector<TokenTopKInfo> schedule_with_limit();
 
@@ -301,6 +301,8 @@ public:
            std::vector<int> device_group_ids = {},
            Channel_t group_comm = nullptr,
            int top_k = 1);
+
+    int tokens_in_layer(int lid) override;
 
     std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr) override;
 
