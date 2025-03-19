@@ -23,6 +23,12 @@ class Scheduler:
 
     def get_cur_queueing_delay(self) -> List[float]:
         ...
+        
+    def set_schedule_policy(self, policy: str) -> None:
+        ...
+        
+    def set_schedule_block(self, step: int) -> None:
+        ...
 
 class MuDispatcher:
         

@@ -55,6 +55,40 @@ def run_once_endpoint():
     return "run_once executed successfully", 200
 
 
+@app.route('/set_schedule', methods=['POST'])
+def set_schedule_endpoint():
+    global master
+    from flask import request
+    
+    data = request.get_json()
+    policy = data.get('policy')
+    step = data.get('step')
+    
+    if policy is None and step is None:
+        return "Missing required parameters: policy or step", 400
+    
+    if policy is not None:
+        try:
+            policy = str(policy)
+        except ValueError:
+            return f"Invalid parameter type: {policy}", 400
+        
+        if policy not in ["mbfs", "flfs", "mbflfs"]:
+            return f"Invalid policy: {policy}", 400
+        
+        master.set_schedule_policy(policy)
+    
+    if step is not None:
+        try:
+            step = int(step)
+        except ValueError:
+            return f"Invalid parameter type: {step}", 400
+        
+        master.set_schedule_block(step)
+    
+    return "set_schedule executed successfully", 200
+
+
 async def init(master: Controller, args):
     master.start_polling_results()
     await master.start_scheduler()
