@@ -363,9 +363,10 @@ MuPool::MuPool(
     }
 
     this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
+    this->num_batches_per_layer_ = std::vector<int>(num_layers, 0);
     this->queueing_timers = std::map<int, clock_t>();
 
-    this->layer_scheduler = std::make_shared<LayerScheduler>(this, layer_ids);
+    this->layer_scheduler = std::make_shared<LayerScheduler>(this, layer_ids, LayerScheduler::LayerScheduleType::MBFS);
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -422,6 +423,7 @@ void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_fro
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
         this->data_queue[lid].push_back((TensorBatch) {tensor, meta});
+        this->num_batches_per_layer_[lid] += 1;
         int &tokens_cur_layer = this->tokens_per_layer_[lid];
         tokens_cur_layer += num_tokens;
         if (tokens_cur_layer > this->largest_batch_size_) {
@@ -511,6 +513,10 @@ void MuPool::wait_for_new_requests() {
 // the batch_mutex must be used outside this function
 int MuPool::tokens_in_layer(int lid) {
     return this->tokens_per_layer_[lid];
+}
+
+int MuPool::num_batches_in_layer(int lid) {
+    return this->num_batches_per_layer_[lid];
 }
 
 void MuPool::maintain_largest_batch() {
@@ -677,6 +683,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
         this->data_queue[id].clear();
         this->tokens_per_layer_[id] = 0;
     }
+    this->num_batches_per_layer_[id] = 0;
 
     maintain_largest_batch();
 
@@ -867,7 +874,7 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
     
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
-
+        this->num_batches_per_layer_[lid] += 1;
         int &tokens_cur_layer = this->tokens_per_layer_[lid];
         tokens_cur_layer += batched_tokens;
         if (tokens_cur_layer > this->largest_batch_size_) {
@@ -877,11 +884,6 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
 
         this->attn_data_queue[lid].push_back(attn_batch);
     }
-}
-
-// the batch_mutex must be used outside this function
-int MuAttentionPool::tokens_in_layer(int lid) {
-    return this->tokens_per_layer_[lid];
 }
 
 std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {
@@ -908,6 +910,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
             this->attn_data_queue[layer_id], result, this->max_batch_size, 
             /*allow_sliced=*/ true, /*use_dp=*/ false);
         this->tokens_per_layer_[layer_id] -= num_tokens;
+        this->num_batches_per_layer_[layer_id] = 0;
         maintain_largest_batch();
     }
 

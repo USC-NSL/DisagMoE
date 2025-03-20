@@ -140,10 +140,11 @@ public:
     enum LayerScheduleType {
         MBFS,   // max-batch-first-serve
         FLFS,   // first-layer-first-serve
-        MBFLFS  // max-block-first-layer-first-serve
+        MBFLFS,  // max-block-first-layer-first-serve
+        MBTFS,  // max-batch-token-first-serve
     };
 
-    LayerScheduler(MuPool* pool, std::vector<int> layer_ids);
+    LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type = LayerScheduleType::MBFS);
 
     int schedule();
 
@@ -178,4 +179,6 @@ private:
             * when step=n_layers, this is equivalent to FLFS
     */
     int _schedule_mbflfs();
+
+    int _schedule_batches_tokens();
 };
