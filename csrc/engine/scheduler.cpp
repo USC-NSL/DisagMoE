@@ -194,8 +194,8 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 
 */
 
-LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size()), type(LayerScheduleType::MBFS)
-    {}
+LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type): 
+    pool(pool), step(1), n_layers(layer_ids.size()), type(type) { }
 
 int LayerScheduler::schedule() {
     if (pool->get_largest_batch_layer_id() == -1)

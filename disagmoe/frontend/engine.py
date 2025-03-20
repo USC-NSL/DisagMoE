@@ -786,10 +786,15 @@ class Engine:
                 pool_snapshot_dict[layer] = size
                 queueing_tokens += size
                 queueing_batches += 1
+                
+            executed_layer_id = batch.metadata.layer_id
+            if self.has_expert:
+                executed_layer_id -= 1
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
-                        real_batch_size, batch.metadata.layer_id,
+                        real_batch_size, executed_layer_id,
+                        self.executor.layer_mappings[executed_layer_id],
                         pool_snapshot_dict)
             )
         else:

@@ -1,4 +1,4 @@
-from benchmark.plotter.namer import get_queue_length_name, get_plot_dir
+from benchmark.plotter.namer import add_args, get_plot_dir
 from argparse import ArgumentParser
 import matplotlib.pyplot as plt
 import pickle
@@ -6,21 +6,17 @@ import os
 import numpy as np
 
 parser = ArgumentParser()
-parser.add_argument('--rate', type=float, required=True)
-parser.add_argument('--num-nodes', type=int, default=1)
-parser.add_argument('--dp-size', type=int, default=1)
-parser.add_argument('--ep-size', type=int, default=1)
-parser.add_argument('--steps', type=int, default=100)
-parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
-parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")
-
+parser = add_args(parser)
+parser.add_argument('--steps', type=int, default=200)
 args = parser.parse_args()
 
-plot_dir = f"{get_plot_dir(args)}/queue_length_over_time/"
+data_path = f"{args.path}/queue_length.pkl"
+
+plot_dir = f"{get_plot_dir(args.path)}/queue_length_over_time/"
 if not os.path.exists(plot_dir):
     os.makedirs(plot_dir)
 
-with open(get_queue_length_name(args), "rb") as f:
+with open(data_path, "rb") as f:
     data = pickle.load(f)
     
 def sample_from_mid(ls, steps):
@@ -31,7 +27,7 @@ def sample_from_mid(ls, steps):
 
 def draw_heatmap(worker_id, data):
     # enumerate queue_length as dict
-    queue_length, step_start_time_ms = data
+    queue_length, step_executed_layer, step_start_time_ms = data
     
     plt.figure(figsize=(10, 2))
     figure, ax = plt.subplots()
@@ -59,13 +55,13 @@ def draw_heatmap(worker_id, data):
     plt.imshow(data, cmap='hot', origin='lower', extent=[0, args.steps, 0, nlayers])
     plt.xticks(np.arange(args.steps)[ : : 10], step_start_time_ms_sampled[ : : 10], rotation=45)
     
-    executed_layer_ids = np.argmax(data, axis=0)
-    for i, layer_id in enumerate(executed_layer_ids):
+    # executed_layer_ids = np.argmax(data, axis=0)
+    for i, layer_id in enumerate(sample_from_mid(step_executed_layer, args.steps)):
         plt.plot([i, i+1], [layer_id, layer_id], color='cyan', linestyle='--', linewidth=1)
     
     plt.xlabel('time (ms)')
     plt.ylabel('layer')
-    plt.title(f'queue length per layer (Rate={args.rate}, Nodes={args.num_nodes})')
+    plt.title('queue length per layer)')
     plt.colorbar(label='Queue Length', orientation='vertical', shrink=0.4)
     plt.savefig(f'{plot_dir}/{worker_id}.pdf', bbox_inches='tight')
     plt.close()

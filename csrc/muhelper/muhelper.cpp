@@ -366,7 +366,7 @@ MuPool::MuPool(
     this->num_batches_per_layer_ = std::vector<int>(num_layers, 0);
     this->queueing_timers = std::map<int, clock_t>();
 
-    this->layer_scheduler = std::make_shared<LayerScheduler>(this, layer_ids);
+    this->layer_scheduler = std::make_shared<LayerScheduler>(this, layer_ids, LayerScheduler::LayerScheduleType::MBFS);
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -683,6 +683,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
         this->data_queue[id].clear();
         this->tokens_per_layer_[id] = 0;
     }
+    this->num_batches_per_layer_[id] = 0;
 
     maintain_largest_batch();
 
@@ -909,6 +910,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
             this->attn_data_queue[layer_id], result, this->max_batch_size, 
             /*allow_sliced=*/ true, /*use_dp=*/ false);
         this->tokens_per_layer_[layer_id] -= num_tokens;
+        this->num_batches_per_layer_[layer_id] = 0;
         maintain_largest_batch();
     }
 

@@ -144,7 +144,7 @@ public:
         MBTFS,  // max-batch-token-first-serve
     };
 
-    LayerScheduler(MuPool* pool, std::vector<int> layer_ids);
+    LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type = LayerScheduleType::MBFS);
 
     int schedule();
 
