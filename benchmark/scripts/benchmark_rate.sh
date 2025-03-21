@@ -5,7 +5,7 @@ curl -X POST http://localhost:6699/set_schedule \
             "step": 1
         }'
 
-for i in {0..10}; do
+for i in {0..12}; do
     rate=$((1 + i * 3))
 
     curl -X POST http://localhost:6699/run_once \

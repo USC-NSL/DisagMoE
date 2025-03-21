@@ -1,3 +1,5 @@
+echo "mbfs"
+
 curl -X POST http://localhost:6699/set_schedule \
         -H "Content-Type: application/json" \
         -d '{
@@ -8,14 +10,15 @@ curl -X POST http://localhost:6699/set_schedule \
 curl -X POST http://localhost:6699/run_once \
         -H "Content-Type: application/json" \
         -d '{
-            "rate": 20,
-            "time": 60,
+            "rate": 25,
+            "time": 300,
             "distribution": "poisson"
         }'
 
 
 for i in {1..6}; do
     step=$((2 ** (i - 1)))
+    echo "mbflfs step: $step"
     curl -X POST http://localhost:6699/set_schedule \
         -H "Content-Type: application/json" \
         -d "{
@@ -26,12 +29,13 @@ for i in {1..6}; do
     curl -X POST http://localhost:6699/run_once \
         -H "Content-Type: application/json" \
         -d '{
-            "rate": 20,
-            "time": 60,
+            "rate": 25,
+            "time": 300,
             "distribution": "poisson"
         }'
 done
 
+echo "flfs"
 
 curl -X POST http://localhost:6699/set_schedule \
         -H "Content-Type: application/json" \
@@ -43,7 +47,7 @@ curl -X POST http://localhost:6699/set_schedule \
 curl -X POST http://localhost:6699/run_once \
         -H "Content-Type: application/json" \
         -d '{
-            "rate": 20,
-            "time": 60,
+            "rate": 25,
+            "time": 300,
             "distribution": "poisson"
         }'
