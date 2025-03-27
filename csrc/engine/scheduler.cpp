@@ -282,3 +282,95 @@ int LayerScheduler::_schedule_batches_tokens() {
     }
     return max_tokens > 0 ? lid : -1;
 }
+
+AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int max_batch_size, int bin_size, int hold_steps):
+    n_layers(n_layers), max_batch_size(max_batch_size), bin_size(bin_size), hold_steps(hold_steps), 
+    num_tokens_in_layer(std::vector<int>(n_layers, 0)), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
+    num_steps_to_hold(std::vector<int>(n_layers, 0)), last_scheduled_timestamp(std::vector<int>(n_layers, 0)) {
+
+}
+
+int AdvancedLayerScheduler::schedule() {
+    static float weight_decay = 0.8;
+    static int max_wait_time_ms = 10;
+    std::vector<int> ready_layers{};
+    std::vector<int> urgent_layers{};
+    std::vector<int> hold_layers{};
+
+    long long cur_time_ms = t_now_high();
+
+    for (int i = 0; i < n_layers; i++) {
+        if (layer_status[i] == LayerStatus::READY) {
+            int elapse = static_cast<int>(cur_time_ms - ready_timestamp_ms[i]);
+            if (elapse > max_wait_time_ms) {
+                // label as urgent
+                set_layer_to_urgent(i);
+                urgent_layers.emplace_back(i);
+            } else {
+                ready_layers.emplace_back(i);
+            }
+        } else if (layer_status[i] == LayerStatus::URGENT) {
+            urgent_layers.emplace_back(i);
+        } else if (layer_status[i] == LayerStatus::HOLD) {
+            hold_layers.emplace_back(i);
+        }
+    }
+
+    int layer_to_schedule = -1;
+
+    if (urgent_layers.size() > 0) {
+        layer_to_schedule = urgent_layers[0];
+    } else if (ready_layers.size() > 0) {
+        std::vector<float> scores(ready_layers.size());
+        for (int i = 0; i < ready_layers.size(); i++) {
+            int layer_id = ready_layers[i];
+            float decay = 1;
+            float score = .0f;
+            for (int j = 0; j < 4; j++) {
+                subsequence_layer = (layer_id + j) % n_layers;
+                score += num_tokens_in_layer[subsequence_layer] * decay;
+                decay *= weight_decay;
+            }
+            scores[i] = score;
+        }
+        float max_score = .0f;
+        for (int i = 0; i < ready_layers.size(); i++) {
+            if (scores[i] > max_score) {
+                max_score = scores[i];
+                layer_to_schedule = ready_layers[i];
+            }
+        }
+    } else if (hold_layers.size() > 0) {
+        layer_to_schedule = hold_layers[0];
+    }
+    if (layer_to_schedule != -1) {
+        for (auto &layer: hold_layers) {
+            if (layer == layer_to_schedule) {
+                continue;
+            }
+            num_steps_to_hold[layer]--;
+            if (num_steps_to_hold[layer] <= 0) {
+                set_layer_to_ready(layer);
+            }
+        }
+    }
+    set_layer_to_idle(layer_to_schedule);
+
+    return layer_to_schedule;
+}
+
+void AdvancedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
+    static int THRESHHOLD = 256;
+    num_tokens_in_layer[layer_id] += num_tokens;
+    if (layer_status[layer_id] == LayerStatus::IDLE) {
+        if (num_tokens_in_layer[layer_id] >= THRESHHOLD) {
+            set_layer_to_ready(layer_id);
+        } else {
+            set_layer_to_hold(layer_id);
+        }
+    } else if (layer_status[layer_id] == LayerStatus::HOLD) {
+        if (num_tokens_in_layer[layer_id] >= THRESHHOLD) {
+            set_layer_to_ready(layer_id);
+        }
+    }
+}
