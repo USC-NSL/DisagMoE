@@ -11,6 +11,7 @@
 #include "muhelper.h"
 #include "block_manager.h"
 #include "cuda_utils.h"
+#include "utils.hpp"
 
 class Scheduler;
 
@@ -231,4 +232,4 @@ public:
 
     void add_tokens_to_layer(int layer_id, int num_tokens); // add_tokens_to_layer is protected by a external lock
 
-}
+};

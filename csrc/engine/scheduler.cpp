@@ -286,7 +286,7 @@ int LayerScheduler::_schedule_batches_tokens() {
 AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int max_batch_size, int bin_size, int hold_steps):
     n_layers(n_layers), max_batch_size(max_batch_size), bin_size(bin_size), hold_steps(hold_steps), 
     num_tokens_in_layer(std::vector<int>(n_layers, 0)), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
-    num_steps_to_hold(std::vector<int>(n_layers, 0)), last_scheduled_timestamp(std::vector<int>(n_layers, 0)) {
+    num_steps_to_hold(std::vector<int>(n_layers, 0)), ready_timestamp_ms(std::vector<long long>(n_layers, 0)) {
 
 }
 
@@ -327,7 +327,7 @@ int AdvancedLayerScheduler::schedule() {
             float decay = 1;
             float score = .0f;
             for (int j = 0; j < 4; j++) {
-                subsequence_layer = (layer_id + j) % n_layers;
+                int subsequence_layer = (layer_id + j) % n_layers;
                 score += num_tokens_in_layer[subsequence_layer] * decay;
                 decay *= weight_decay;
             }
