@@ -53,7 +53,18 @@ def draw_heatmap(worker_id, data):
     data = np.array([sample_from_mid(queue_length[layer_id], args.steps) for layer_id in layer_ids])
     
     plt.imshow(data, cmap='hot', origin='lower', extent=[0, args.steps, 0, nlayers])
-    plt.xticks(np.arange(args.steps)[-1 : ], step_start_time_ms_sampled[-1 : ], rotation=0)
+    
+    time_step_ms = 20
+    # label xtick every time step
+    total_time = step_start_time_ms_sampled[-1]
+    per_step_time = total_time / args.steps
+    xticks = np.arange(0, args.steps+1, time_step_ms/per_step_time)
+    xtick_labels = np.arange(0, total_time+1, time_step_ms)
+    xtick_labels = [int(i) for i in xtick_labels]
+    xticks = [int(i) for i in xticks]
+    plt.xticks(xticks, xtick_labels)
+    
+    # plt.xticks(xticks, xtick_labels)
     
     # executed_layer_ids = np.argmax(data, axis=0)
     for i, layer_id in enumerate(sample_from_mid(step_executed_layer, args.steps)):
