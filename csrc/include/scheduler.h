@@ -55,9 +55,9 @@ public:
         return cur_queueing_delay;
     }
 
-    void set_schedule_policy(std::string policy);
+    // void set_schedule_policy(std::string policy);
 
-    void set_schedule_block(int step);
+    // void set_schedule_block(int step);
 };
 
 class Scheduler: public SchedulerBase {
@@ -196,8 +196,6 @@ private:
     };
 
     int n_layers;
-    int max_batch_size;
-    int bin_size;
     int hold_steps;
 
     std::vector<int> num_tokens_in_layer;
@@ -226,7 +224,7 @@ private:
 
 public:
 
-    AdvancedLayerScheduler(int n_layers, int max_batch_size=256, int bin_size=32, int hold_steps=2);
+    AdvancedLayerScheduler(int n_layers, int hold_steps=2);
 
     int schedule(); // schedule is protected by a external lock
 

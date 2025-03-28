@@ -957,11 +957,11 @@ class Engine:
         if self.has_expert:
             self.expert_scheduler.set_schedule_policy(policy)
     
-    def set_schedule_block(self, step: int):
-        if self.has_attn:
-            self.attn_scheduler.set_schedule_block(step)
-        if self.has_expert:
-            self.expert_scheduler.set_schedule_block(step)
+    # def set_schedule_block(self, step: int):
+    #     if self.has_attn:
+    #         self.attn_scheduler.set_schedule_block(step)
+    #     if self.has_expert:
+    #         self.expert_scheduler.set_schedule_block(step)
         
 class SamplerEngine(Engine):
     

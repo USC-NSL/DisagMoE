@@ -378,10 +378,10 @@ class Controller:
             worker.set_schedule_policy.remote(policy) for worker in self.workers
         ])
     
-    def set_schedule_block(self, step: int):
-        ray.get([
-            worker.set_schedule_block.remote(step) for worker in self.workers
-        ])
+    # def set_schedule_block(self, step: int):
+    #     ray.get([
+    #         worker.set_schedule_block.remote(step) for worker in self.workers
+    #     ])
     
     def reset_workers(self):
         tasks = [worker.reset.remote() for worker in self.workers]

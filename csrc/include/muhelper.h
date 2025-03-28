@@ -123,6 +123,8 @@ public:
 
 class LayerScheduler;
 
+class AdvancedLayerScheduler;
+
 class MuPool: public MuHelper {
 protected:
     bool is_attn;
@@ -153,7 +155,7 @@ protected:
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
-    std::shared_ptr<LayerScheduler> layer_scheduler;
+    std::shared_ptr<AdvancedLayerScheduler> layer_scheduler;
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
@@ -200,9 +202,9 @@ public:
 
     int schedule_layer_id();
 
-    void set_layer_schedule_type(std::string type);
+    // void set_layer_schedule_type(std::string type);
 
-    void set_scheduler_block(int step);
+    // void set_scheduler_block(int step);
 
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);

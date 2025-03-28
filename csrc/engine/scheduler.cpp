@@ -14,14 +14,14 @@ SchedulerBase::SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::st
     
 }
 
-void SchedulerBase::set_schedule_policy(std::string policy) {
-    this->policy = policy;
-    this->pool->set_layer_schedule_type(policy);
-}
+// void SchedulerBase::set_schedule_policy(std::string policy) {
+//     this->policy = policy;
+//     this->pool->set_layer_schedule_type(policy);
+// }
 
-void SchedulerBase::set_schedule_block(int step) {
-    this->pool->set_scheduler_block(step);
-}
+// void SchedulerBase::set_schedule_block(int step) {
+//     this->pool->set_scheduler_block(step);
+// }
 
 scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     return std::make_shared<Scheduler>(pool, layer_ids, policy);
@@ -42,11 +42,11 @@ TensorBatch Scheduler::schedule() {
 
     auto batches = std::move(this->_schedule());
     auto batch = TensorBatch::merge(batches);
-    if (batch.metadata) {
-        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
-    } else {
-        this->cur_queueing_delay = 0;
-    }
+    // if (batch.metadata) {
+    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
+    // } else {
+    //     this->cur_queueing_delay = 0;
+    // }
     return batch;
 }
 
@@ -75,11 +75,11 @@ AttentionBatch AttentionScheduler::schedule() {
     auto batches = std::move(this->_schedule());
     // maybe moving merge to mu_pool results in less memory copy
     auto batch = AttentionBatch::merge(batches);
-    if (batch.metadata) {
-        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
-    } else {
-        this->cur_queueing_delay = 0;
-    }
+    // if (batch.metadata) {
+    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
+    // } else {
+    //     this->cur_queueing_delay = 0;
+    // }
     return batch;
 }
 
@@ -283,8 +283,8 @@ int LayerScheduler::_schedule_batches_tokens() {
     return max_tokens > 0 ? lid : -1;
 }
 
-AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int max_batch_size, int bin_size, int hold_steps):
-    n_layers(n_layers), max_batch_size(max_batch_size), bin_size(bin_size), hold_steps(hold_steps), 
+AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
+    n_layers(n_layers), hold_steps(hold_steps), 
     num_tokens_in_layer(std::vector<int>(n_layers, 0)), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
     num_steps_to_hold(std::vector<int>(n_layers, 0)), ready_timestamp_ms(std::vector<long long>(n_layers, 0)) {
 

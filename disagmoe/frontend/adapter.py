@@ -27,8 +27,8 @@ class Scheduler:
     def set_schedule_policy(self, policy: str) -> None:
         ...
         
-    def set_schedule_block(self, step: int) -> None:
-        ...
+    # def set_schedule_block(self, step: int) -> None:
+    #     ...
 
 class MuDispatcher:
         
