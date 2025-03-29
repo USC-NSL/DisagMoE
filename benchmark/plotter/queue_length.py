@@ -51,7 +51,7 @@ def draw_heatmap(worker_id, data):
     
     plt.imshow(data, cmap='hot', origin='lower', extent=[0, args.steps, 0, nlayers])
     
-    time_step_ms = 20
+    time_step_ms = (args.steps // 10)
     # label xtick every time step
     total_time = step_start_time_ms_sampled[-1]
     per_step_time = total_time / args.steps
