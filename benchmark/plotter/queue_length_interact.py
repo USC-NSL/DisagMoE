@@ -6,7 +6,7 @@ import numpy as np
 parser = ArgumentParser()
 parser.add_argument('path', type=str, help="Path to the file or corresponding data directory")
 parser.add_argument('--worker', type=int, required=True, help="Worker ID to plot")
-parser.add_argument('--steps', type=int, default=2000)
+parser.add_argument('--steps', type=int, default=2000, help="Number of steps to plot")
 args = parser.parse_args()
 
 data_path = f"{args.path}/queue_length.pkl" if not args.path.endswith('.pkl') else f"{args.path}"
