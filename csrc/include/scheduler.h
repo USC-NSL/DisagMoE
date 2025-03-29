@@ -11,6 +11,7 @@
 #include "muhelper.h"
 #include "block_manager.h"
 #include "cuda_utils.h"
+#include "utils.hpp"
 
 class Scheduler;
 
@@ -54,9 +55,9 @@ public:
         return cur_queueing_delay;
     }
 
-    void set_schedule_policy(std::string policy);
+    // void set_schedule_policy(std::string policy);
 
-    void set_schedule_block(int step);
+    // void set_schedule_block(int step);
 };
 
 class Scheduler: public SchedulerBase {
@@ -140,10 +141,11 @@ public:
     enum LayerScheduleType {
         MBFS,   // max-batch-first-serve
         FLFS,   // first-layer-first-serve
-        MBFLFS  // max-block-first-layer-first-serve
+        MBFLFS,  // max-block-first-layer-first-serve
+        MBTFS,  // max-batch-token-first-serve
     };
 
-    LayerScheduler(MuPool* pool, std::vector<int> layer_ids);
+    LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type = LayerScheduleType::MBFS);
 
     int schedule();
 
@@ -178,4 +180,54 @@ private:
             * when step=n_layers, this is equivalent to FLFS
     */
     int _schedule_mbflfs();
+
+    int _schedule_batches_tokens();
+
+};
+
+class AdvancedLayerScheduler {
+
+private:
+    enum LayerStatus {
+        HOLD,
+        READY,
+        URGENT,
+        IDLE,
+    };
+
+    int n_layers;
+    int hold_steps;
+
+    std::vector<int> num_tokens_in_layer;
+    std::vector<int> num_steps_to_hold;
+    std::vector<long long> ready_timestamp_ms;
+    std::vector<LayerStatus> layer_status;
+
+    void set_layer_to_idle(int layer_id) {
+        num_tokens_in_layer[layer_id] = 0;
+        layer_status[layer_id] = LayerStatus::IDLE;
+    }
+
+    void set_layer_to_ready(int layer_id) {
+        layer_status[layer_id] = LayerStatus::READY;
+        ready_timestamp_ms[layer_id] = t_now_high();
+    }
+
+    void set_layer_to_hold(int layer_id) {
+        layer_status[layer_id] = LayerStatus::HOLD;
+        num_steps_to_hold[layer_id] = hold_steps;
+    }
+
+    void set_layer_to_urgent(int layer_id) {
+        layer_status[layer_id] = LayerStatus::URGENT;
+    }
+
+public:
+
+    AdvancedLayerScheduler(int n_layers, int hold_steps=2);
+
+    int schedule(); // schedule is protected by a external lock
+
+    void add_tokens_to_layer(int layer_id, int num_tokens); // add_tokens_to_layer is protected by a external lock
+
 };

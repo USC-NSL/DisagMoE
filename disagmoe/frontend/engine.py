@@ -786,10 +786,15 @@ class Engine:
                 pool_snapshot_dict[layer] = size
                 queueing_tokens += size
                 queueing_batches += 1
+                
+            executed_layer_id = batch.metadata.layer_id
+            if self.has_expert:
+                executed_layer_id -= 1
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
-                        real_batch_size, batch.metadata.layer_id,
+                        real_batch_size, executed_layer_id,
+                        self.executor.layer_mappings[executed_layer_id],
                         pool_snapshot_dict)
             )
         else:
@@ -947,16 +952,16 @@ class Engine:
         self.release_seqs(list(self.decode_seq_lens.keys()))
         
     def set_schedule_policy(self, policy: str):
-        if self.attn_scheduler is not None:
+        if self.has_attn:
             self.attn_scheduler.set_schedule_policy(policy)
-        if self.expert_scheduler is not None:
+        if self.has_expert:
             self.expert_scheduler.set_schedule_policy(policy)
     
-    def set_schedule_block(self, step: int):
-        if self.attn_scheduler is not None:
-            self.attn_scheduler.set_schedule_block(step)
-        if self.expert_scheduler is not None:
-            self.expert_scheduler.set_schedule_block(step)
+    # def set_schedule_block(self, step: int):
+    #     if self.has_attn:
+    #         self.attn_scheduler.set_schedule_block(step)
+    #     if self.has_expert:
+    #         self.expert_scheduler.set_schedule_block(step)
         
 class SamplerEngine(Engine):
     

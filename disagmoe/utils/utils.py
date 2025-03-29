@@ -164,6 +164,7 @@ class StepInfo:
     end_timestamp_ms: float
     batch_size: int
     layer_id: int
+    internal_layer_id: int
     pool_snapshot: Dict[int, int]
     
     thread_id: int = -1

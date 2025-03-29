@@ -1,4 +1,5 @@
 import os
+from argparse import ArgumentParser
 
 def get_dir_path(args):
     dir_path = f"reports/rate={args.rate}-nodes={args.num_nodes}-dp={args.dp_size}-ep={args.ep_size}-"\
@@ -36,9 +37,12 @@ def get_trace_metrics_name(args):
     dir_path = get_dir_path(args)
     return f"{dir_path}/trace_metrics.json"
 
-def get_plot_dir(args):
-    data_dir_path = get_dir_path(args)
+def get_plot_dir(data_dir_path):
     plot_dir_path = f"{data_dir_path}/plots"
     if not os.path.exists(plot_dir_path):
         os.makedirs(plot_dir_path)
     return plot_dir_path
+
+def add_args(parser: ArgumentParser):
+    parser.add_argument('path', type=str, help="Directory where data is saved")
+    return parser

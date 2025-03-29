@@ -1,30 +1,18 @@
-DP_SIZE=1
-EP_SIZE=2
-NUM_NODES=1
+#!/usr/bin/bash
 
-RATES=(10)
+benchmark_dirs=(/home/shaoyuw/DisagMoE/reports/)
 
-for rate in "${RATES[@]}"; do
-    python benchmark/plotter/output_req.py \
-        --dp-size $DP_SIZE \
-        --ep-size $EP_SIZE \
-        --num-nodes $NUM_NODES \
-        --rate $rate
-    python benchmark/plotter/sampler_step.py \
-        --dp-size $DP_SIZE \
-        --ep-size $EP_SIZE \
-        --num-nodes $NUM_NODES \
-        --rate $rate
+for benchmark_dir in "${benchmark_dirs[@]}"; do
 
-    python benchmark/plotter/queueing_delay.py \
-        --dp-size $DP_SIZE \
-        --ep-size $EP_SIZE \
-        --num-nodes $NUM_NODES \
-        --rate $rate
+working_dirs=($(ls -d $benchmark_dir/*))
 
-    python benchmark/plotter/ttft.py \
-        --dp-size $DP_SIZE \
-        --ep-size $EP_SIZE \
-        --num-nodes $NUM_NODES \
-        --rate $rate
+for working_dir in "${working_dirs[@]}"; do
+    if [[ ! -d "$working_dir" ]]; then
+        continue
+    fi
+    python benchmark/plotter/output_req.py "$working_dir"
+    python benchmark/plotter/sampler_step.py "$working_dir"
+    python benchmark/plotter/queue_length.py "$working_dir"
+done
+
 done

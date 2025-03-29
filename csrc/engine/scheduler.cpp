@@ -14,14 +14,14 @@ SchedulerBase::SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::st
     
 }
 
-void SchedulerBase::set_schedule_policy(std::string policy) {
-    this->policy = policy;
-    this->pool->set_layer_schedule_type(policy);
-}
+// void SchedulerBase::set_schedule_policy(std::string policy) {
+//     this->policy = policy;
+//     this->pool->set_layer_schedule_type(policy);
+// }
 
-void SchedulerBase::set_schedule_block(int step) {
-    this->pool->set_scheduler_block(step);
-}
+// void SchedulerBase::set_schedule_block(int step) {
+//     this->pool->set_scheduler_block(step);
+// }
 
 scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
     return std::make_shared<Scheduler>(pool, layer_ids, policy);
@@ -42,11 +42,11 @@ TensorBatch Scheduler::schedule() {
 
     auto batches = std::move(this->_schedule());
     auto batch = TensorBatch::merge(batches);
-    if (batch.metadata) {
-        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
-    } else {
-        this->cur_queueing_delay = 0;
-    }
+    // if (batch.metadata) {
+    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
+    // } else {
+    //     this->cur_queueing_delay = 0;
+    // }
     return batch;
 }
 
@@ -75,11 +75,11 @@ AttentionBatch AttentionScheduler::schedule() {
     auto batches = std::move(this->_schedule());
     // maybe moving merge to mu_pool results in less memory copy
     auto batch = AttentionBatch::merge(batches);
-    if (batch.metadata) {
-        this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
-    } else {
-        this->cur_queueing_delay = 0;
-    }
+    // if (batch.metadata) {
+    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
+    // } else {
+    //     this->cur_queueing_delay = 0;
+    // }
     return batch;
 }
 
@@ -194,8 +194,8 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 
 */
 
-LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids): pool(pool), step(1), n_layers(layer_ids.size()), type(LayerScheduleType::MBFS)
-    {}
+LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type): 
+    pool(pool), step(1), n_layers(layer_ids.size()), type(type) { }
 
 int LayerScheduler::schedule() {
     if (pool->get_largest_batch_layer_id() == -1)
@@ -207,6 +207,8 @@ int LayerScheduler::schedule() {
             return this->_schedule_flfs();
         case LayerScheduleType::MBFLFS:
             return this->_schedule_mbflfs();
+        case LayerScheduleType::MBTFS:
+            return this->_schedule_batches_tokens();
         default:
             throw std::runtime_error("Unknown schedule type.");
     }
@@ -219,6 +221,8 @@ void LayerScheduler::set_schedule_type(std::string type) {
         this->type = LayerScheduler::LayerScheduleType::FLFS;
     } else if (type == "mbflfs") {
         this->type = LayerScheduler::LayerScheduleType::MBFLFS;
+    } else if (type == "mbtfs") {
+        this->type = LayerScheduler::LayerScheduleType::MBTFS;
     } else {
         throw std::runtime_error(type + " schedule not implemented.");
     }
@@ -261,4 +265,112 @@ int LayerScheduler::_schedule_mbflfs() {
     }
 
     return -1;
+}
+
+int LayerScheduler::_schedule_batches_tokens() {
+    int lid = -1;
+    int max_batches = 0, max_tokens = 0;
+
+    for (int i = 0; i < n_layers; i ++) {
+        int num_batches = pool->num_batches_in_layer(i);
+        int num_tokens = pool->tokens_in_layer(i);
+        if (num_batches > max_batches || (num_batches == max_batches && num_tokens > max_tokens)) {
+            lid = i;
+            max_batches = num_batches;
+            max_tokens = num_tokens;
+        }
+    }
+    return max_tokens > 0 ? lid : -1;
+}
+
+AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
+    n_layers(n_layers), hold_steps(hold_steps), 
+    num_tokens_in_layer(std::vector<int>(n_layers, 0)), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
+    num_steps_to_hold(std::vector<int>(n_layers, 0)), ready_timestamp_ms(std::vector<long long>(n_layers, 0)) {
+
+}
+
+int AdvancedLayerScheduler::schedule() {
+    static float weight_decay = 0.8;
+    static int max_wait_time_ms = 10;
+    std::vector<int> ready_layers{};
+    std::vector<int> urgent_layers{};
+    std::vector<int> hold_layers{};
+
+    long long cur_time_ms = t_now_high();
+
+    for (int i = 0; i < n_layers; i++) {
+        if (layer_status[i] == LayerStatus::READY) {
+            int elapse = static_cast<int>(cur_time_ms - ready_timestamp_ms[i]);
+            if (elapse > max_wait_time_ms) {
+                // label as urgent
+                set_layer_to_urgent(i);
+                urgent_layers.emplace_back(i);
+            } else {
+                ready_layers.emplace_back(i);
+            }
+        } else if (layer_status[i] == LayerStatus::URGENT) {
+            urgent_layers.emplace_back(i);
+        } else if (layer_status[i] == LayerStatus::HOLD) {
+            hold_layers.emplace_back(i);
+        }
+    }
+
+    int layer_to_schedule = -1;
+
+    if (urgent_layers.size() > 0) {
+        layer_to_schedule = urgent_layers[0];
+    } else if (ready_layers.size() > 0) {
+        std::vector<float> scores(ready_layers.size());
+        for (int i = 0; i < ready_layers.size(); i++) {
+            int layer_id = ready_layers[i];
+            float decay = 1;
+            float score = .0f;
+            for (int j = 0; j < 4; j++) {
+                int subsequence_layer = (layer_id + j) % n_layers;
+                score += num_tokens_in_layer[subsequence_layer] * decay;
+                decay *= weight_decay;
+            }
+            scores[i] = score;
+        }
+        float max_score = .0f;
+        for (int i = 0; i < ready_layers.size(); i++) {
+            if (scores[i] > max_score) {
+                max_score = scores[i];
+                layer_to_schedule = ready_layers[i];
+            }
+        }
+    } else if (hold_layers.size() > 0) {
+        layer_to_schedule = hold_layers[0];
+    }
+    if (layer_to_schedule != -1) {
+        for (auto &layer: hold_layers) {
+            if (layer == layer_to_schedule) {
+                continue;
+            }
+            num_steps_to_hold[layer]--;
+            if (num_steps_to_hold[layer] <= 0) {
+                set_layer_to_ready(layer);
+            }
+        }
+    }
+    set_layer_to_idle(layer_to_schedule);
+
+    return layer_to_schedule;
+}
+
+void AdvancedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
+    static int THRESHHOLD = 256;
+    num_tokens_in_layer[layer_id] += num_tokens;
+    if (layer_status[layer_id] == LayerStatus::IDLE) {
+        if (num_tokens_in_layer[layer_id] >= THRESHHOLD) {
+            set_layer_to_ready(layer_id);
+        } else {
+            set_layer_to_hold(layer_id);
+        }
+    } else if (layer_status[layer_id] == LayerStatus::HOLD) {
+        if (num_tokens_in_layer[layer_id] >= THRESHHOLD) {
+            set_layer_to_ready(layer_id);
+        }
+    }
 }

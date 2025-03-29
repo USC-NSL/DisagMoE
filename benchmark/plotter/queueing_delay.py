@@ -1,19 +1,15 @@
-from benchmark.plotter.namer import get_worker_queueing_delay_name, get_plot_dir
+from benchmark.plotter.namer import add_args, get_plot_dir
 from argparse import ArgumentParser
 import pandas as pd
 import matplotlib.pyplot as plt
 
 parser = ArgumentParser()
-parser.add_argument('--rate', type=float, required=True)
-parser.add_argument('--num-nodes', type=int, default=1)
-parser.add_argument('--dp-size', type=int, default=1)
-parser.add_argument('--ep-size', type=int, default=1)
-
+parser = add_args(parser)
 args = parser.parse_args()
 
 for name in ["exp", "attn"]:
-    fn = get_worker_queueing_delay_name(args, name)
-    df = pd.read_csv(fn)
+    fn = f"{args.path}/{name}_queueing_delay.csv"
+    df = pd.read_csv(filepath_or_buffer=fn)
 
     worker_id = 0
     values = df.iloc[worker_id] * 1e3
@@ -23,7 +19,7 @@ for name in ["exp", "attn"]:
     plt.xlabel('Steps')
     plt.ylabel('Queueing Delay (ms)')
     plt.title(f'Average Queueing Delay for {worker_name}')
-    plt.savefig(f'{get_plot_dir(args)}/queueing_delay_steps.png')
+    plt.savefig(f'{get_plot_dir(args.path)}/queueing_delay_steps.png')
     plt.close()
     
     sorted_values = sorted(values)
@@ -54,5 +50,5 @@ for name in ["exp", "attn"]:
     plt.xlabel('Queueing Delay (ms)')
     plt.ylabel('CDF')
     plt.title(f'CDF of Queueing Delay for {worker_name}')
-    plt.savefig(f'{get_plot_dir(args)}/queueing_delay_cdf.png')
+    plt.savefig(f'{get_plot_dir(args.path)}/queueing_delay_cdf.png')
     plt.close()
