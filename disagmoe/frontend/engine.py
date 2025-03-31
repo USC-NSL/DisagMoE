@@ -158,6 +158,7 @@ class Engine:
                 self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
                 self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
             self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
+            self._log_memory_usage("After initialize cache")
             self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
             self.block_mgr = BlockManager_C(
                 self.cache_config.block_size, 
@@ -172,6 +173,7 @@ class Engine:
             self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
+            self._log_memory_usage("After build CUDA graphs")
             
         self._logger.info("Executors built")
         

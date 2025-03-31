@@ -1,14 +1,14 @@
 OUTPUT_LEN=300
-N_NODE=4
+N_NODE=1
 N_GPU_PER_NODE=4
 NUM_LAYERS=32
-NUM_EXPERTS=8
+NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=192
 MAX_BATCH_SIZE_EXP=256
-GRAPH_STRIDE=4
-step_attn=4
+GRAPH_STRIDE=8
+step_attn=1
 dp_size=2
-step_exp=4
+step_exp=1
 ep_size=2
 top_k=1
 
@@ -23,6 +23,7 @@ python benchmark/server.py \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
+    -u 0.65 \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \

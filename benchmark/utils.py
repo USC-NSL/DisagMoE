@@ -22,7 +22,7 @@ def get_parser_base():
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")
-    parser.add_argument("-u", "--gpu-usage", type=float, default=0.7, help="GPU memory usage")
+    parser.add_argument("-u", "--gpu-usage", type=float, default=0.65, help="GPU memory usage")
     parser.add_argument("--tp-size", type=int, default=1, help="tensor parallel size")
     parser.add_argument("--ep-size", type=int, default=2, help="expert parallel size")
     parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
