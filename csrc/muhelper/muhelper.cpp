@@ -664,12 +664,11 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-    int id = schedule_layer_id();
-
-    if (id == -1) {
-        // DMOE_LOG(INFO) << "No available batch" << LEND;
+    if (this->largest_batch_size_ == 0) {
         return {};
     }
+    int id = schedule_layer_id();
+
     // DMOE_LOG(INFO) << "Fetched " << id << "-th layer" << LEND;
 
     std::vector<TensorBatch> result;
@@ -898,14 +897,13 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
     int num_tokens = 0;
     std::vector<AttentionBatch> result{};
 
-    layer_id = this->schedule_layer_id();
-
-    if (layer_id == -1) {
-        // DMOE_LOG(INFO) << "No available batch" << LEND;
+    if (this->largest_batch_size_ == 0) {
         if (selected_layer_id)
             *selected_layer_id = -1;
         return {};
     }
+
+    layer_id = this->schedule_layer_id();
 
     ASSERT(this->max_batch_size > 0);
     num_tokens = schedule_with_limit<AttentionBatch>(

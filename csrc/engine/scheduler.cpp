@@ -194,12 +194,17 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 
 */
 
-LayerScheduler::LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type): 
-    pool(pool), step(1), n_layers(layer_ids.size()), type(type) { }
+LayerScheduler::LayerScheduler(int n_layers, LayerScheduler::LayerScheduleType type): 
+    n_layers(n_layers), step(1), type(type), 
+    num_tokens_in_layer(std::vector<int>(n_layers, 0)), num_batches_in_layer(std::vector<int>(n_layers, 0)) { }
+
+void LayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
+    ASSERT(layer_id >= 0 && layer_id < n_layers);
+    this->num_tokens_in_layer[layer_id] += num_tokens;
+    this->num_batches_in_layer[layer_id] += 1;
+}
 
 int LayerScheduler::schedule() {
-    if (pool->get_largest_batch_layer_id() == -1)
-        return -1;
     switch (this->type) {
         case LayerScheduleType::MBFS:
             return this->_schedule_mbfs();
@@ -233,13 +238,22 @@ void LayerScheduler::set_block_step(int step) {
 }
 
 int LayerScheduler::_schedule_mbfs() {
-    return pool->get_largest_batch_layer_id();
+    int scheduled_layer_id = 0;
+    for (int i = 0; i < n_layers; i++) {
+        if (num_tokens_in_layer[i] > num_tokens_in_layer[scheduled_layer_id]) {
+            scheduled_layer_id = i;
+        }
+    }
+    clean_layer_status(scheduled_layer_id);
+    return scheduled_layer_id;
 }
 
 int LayerScheduler::_schedule_flfs() {
     for (int i = 0; i < n_layers; i++) {
-        if (pool->tokens_in_layer(i) > 0)
+        if (num_tokens_in_layer[i] > 0) {
+            clean_layer_status(i);
             return i;
+        }
     }
     return -1;
 }
@@ -251,7 +265,7 @@ int LayerScheduler::_schedule_mbflfs() {
     for (int i = 0; i < n_layers; i += step) {
         int cur_sum = 0;
         for (int j = i; j < i + step && j < n_layers; j ++)
-            cur_sum += pool->tokens_in_layer(j);
+            cur_sum += num_tokens_in_layer[j];
         if (cur_sum > block_sum) {
             block_sum = cur_sum;
             block_i = i;
@@ -260,8 +274,10 @@ int LayerScheduler::_schedule_mbflfs() {
 
     // step 2. find the first layer in this block
     for (int i = block_i; i < block_i + step && i < n_layers; i++) {
-        if (pool->tokens_in_layer(i) > 0)
+        if (num_tokens_in_layer[i] > 0) {
+            clean_layer_status(i);
             return i;
+        }
     }
 
     return -1;
@@ -272,27 +288,27 @@ int LayerScheduler::_schedule_batches_tokens() {
     int max_batches = 0, max_tokens = 0;
 
     for (int i = 0; i < n_layers; i ++) {
-        int num_batches = pool->num_batches_in_layer(i);
-        int num_tokens = pool->tokens_in_layer(i);
+        int num_batches = num_batches_in_layer[i];
+        int num_tokens = num_tokens_in_layer[i];
         if (num_batches > max_batches || (num_batches == max_batches && num_tokens > max_tokens)) {
             lid = i;
             max_batches = num_batches;
             max_tokens = num_tokens;
         }
     }
-    return max_tokens > 0 ? lid : -1;
+    clean_layer_status(lid);
+    return lid;
 }
 
 AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
-    n_layers(n_layers), hold_steps(hold_steps), 
-    num_tokens_in_layer(std::vector<int>(n_layers, 0)), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
+    LayerScheduler(n_layers),
+    hold_steps(hold_steps), layer_status(std::vector<LayerStatus>(n_layers, LayerStatus::IDLE)),
     num_steps_to_hold(std::vector<int>(n_layers, 0)), ready_timestamp_ms(std::vector<long long>(n_layers, 0)) {
-
 }
 
 int AdvancedLayerScheduler::schedule() {
     static float weight_decay = 0.8;
-    static int max_wait_time_ms = 10;
+    static int max_wait_time_ms = 30;
     std::vector<int> ready_layers{};
     std::vector<int> urgent_layers{};
     std::vector<int> hold_layers{};
@@ -320,6 +336,14 @@ int AdvancedLayerScheduler::schedule() {
 
     if (urgent_layers.size() > 0) {
         layer_to_schedule = urgent_layers[0];
+        long long min_timestamp = ready_timestamp_ms[layer_to_schedule];
+        for (int i = 1; i < urgent_layers.size(); i++) {
+            int layer_id = urgent_layers[i];
+            if (ready_timestamp_ms[layer_id] < min_timestamp) {
+                min_timestamp = ready_timestamp_ms[layer_id];
+                layer_to_schedule = layer_id;
+            }
+        }
     } else if (ready_layers.size() > 0) {
         std::vector<float> scores(ready_layers.size());
         for (int i = 0; i < ready_layers.size(); i++) {

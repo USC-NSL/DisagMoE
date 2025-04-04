@@ -145,18 +145,24 @@ public:
         MBTFS,  // max-batch-token-first-serve
     };
 
-    LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type = LayerScheduleType::MBFS);
+    LayerScheduler(int n_layers, LayerScheduleType type = LayerScheduleType::MBFS);
 
-    int schedule();
+    virtual int schedule();
 
     void set_schedule_type(std::string type);
 
     void set_block_step(int step);
 
+    virtual void add_tokens_to_layer(int layer_id, int num_tokens);
+
+protected:
+    int n_layers;
+    std::vector<int> num_tokens_in_layer;
+
 private:
-    MuPool* pool;
     LayerScheduleType type;
-    int step, n_layers;
+    int step;
+    std::vector<int> num_batches_in_layer;
 
     /*
         max-batch-first-serve
@@ -183,9 +189,14 @@ private:
 
     int _schedule_batches_tokens();
 
+    void clean_layer_status(int layer_id) {
+        num_tokens_in_layer[layer_id] = 0;
+        num_batches_in_layer[layer_id] = 0;
+    }
+
 };
 
-class AdvancedLayerScheduler {
+class AdvancedLayerScheduler: public LayerScheduler {
 
 private:
     enum LayerStatus {
@@ -195,10 +206,8 @@ private:
         IDLE,
     };
 
-    int n_layers;
     int hold_steps;
 
-    std::vector<int> num_tokens_in_layer;
     std::vector<int> num_steps_to_hold;
     std::vector<long long> ready_timestamp_ms;
     std::vector<LayerStatus> layer_status;
