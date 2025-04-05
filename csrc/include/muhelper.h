@@ -155,7 +155,7 @@ protected:
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
-    std::shared_ptr<AdvancedLayerScheduler> layer_scheduler;
+    std::shared_ptr<LayerScheduler> layer_scheduler;
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
