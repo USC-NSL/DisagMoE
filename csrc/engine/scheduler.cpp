@@ -199,9 +199,13 @@ LayerScheduler::LayerScheduler(int n_layers, LayerScheduler::LayerScheduleType t
     num_tokens_in_layer(std::vector<int>(n_layers, 0)), num_batches_in_layer(std::vector<int>(n_layers, 0)) { }
 
 void LayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
-    ASSERT(layer_id >= 0 && layer_id < n_layers);
     this->num_tokens_in_layer[layer_id] += num_tokens;
     this->num_batches_in_layer[layer_id] += 1;
+}
+
+void LayerScheduler::tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches) {
+    this->num_tokens_in_layer[layer_id] = num_tokens;
+    this->num_batches_in_layer[layer_id] = num_batches;
 }
 
 int LayerScheduler::schedule() {
@@ -397,4 +401,10 @@ void AdvancedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
             set_layer_to_ready(layer_id);
         }
     }
+}
+
+void AdvancedLayerScheduler::tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches) {
+    num_tokens_in_layer[layer_id] = num_tokens;
+    num_batches_in_layer[layer_id] = num_batches;
+    set_layer_to_ready(layer_id);
 }

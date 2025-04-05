@@ -153,16 +153,26 @@ public:
 
     void set_block_step(int step);
 
+    void remove_tokens_from_layer(int layer_id, int num_tokens) {
+        ASSERT(layer_id >= 0 && layer_id < n_layers);
+        num_tokens_in_layer[layer_id] -= num_tokens;
+        if (num_tokens_in_layer[layer_id] < 0) {
+            num_tokens_in_layer[layer_id] = 0;
+        }
+    }
+
     virtual void add_tokens_to_layer(int layer_id, int num_tokens);
+
+    virtual void tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches);
 
 protected:
     int n_layers;
     std::vector<int> num_tokens_in_layer;
+    std::vector<int> num_batches_in_layer;
 
 private:
     LayerScheduleType type;
     int step;
-    std::vector<int> num_batches_in_layer;
 
     /*
         max-batch-first-serve
@@ -235,8 +245,10 @@ public:
 
     AdvancedLayerScheduler(int n_layers, int hold_steps=2);
 
-    int schedule(); // schedule is protected by a external lock
+    int schedule() override; // schedule is protected by a external lock
 
-    void add_tokens_to_layer(int layer_id, int num_tokens); // add_tokens_to_layer is protected by a external lock
+    void add_tokens_to_layer(int layer_id, int num_tokens) override; // add_tokens_to_layer is protected by a external lock
+
+    void tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches) override;
 
 };

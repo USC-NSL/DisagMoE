@@ -366,7 +366,7 @@ MuPool::MuPool(
     this->num_batches_per_layer_ = std::vector<int>(num_layers, 0);
     this->queueing_timers = std::map<int, clock_t>();
 
-    this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers);
+    this->layer_scheduler = std::make_shared<LayerScheduler>(num_layers, LayerScheduler::LayerScheduleType::FLFS);
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -606,14 +606,15 @@ int schedule_with_limit_slice(std::vector<DataBatch> &data_list,
                               int max_batch_size) {
     int num_tokens = 0;
     std::vector<DataBatch>().swap(results);
-    std::reverse(data_list.begin(), data_list.end());
+    int num_batches = 0;
+    ASSERT(!data_list.empty());
     for (int i = data_list.size() - 1; i >= 0; i --) {
         int cur_num_tokens = data_list[i].metadata->num_tokens();
         int next_num_tokens = num_tokens + cur_num_tokens;
         if (next_num_tokens <= max_batch_size) {
             results.push_back(data_list[i]);
             num_tokens = next_num_tokens;
-            data_list.pop_back();
+            num_batches ++;
             if (num_tokens == max_batch_size)
                 break;
         } else {
@@ -633,8 +634,9 @@ int schedule_with_limit_slice(std::vector<DataBatch> &data_list,
             break;
         }
     }
-    if (!data_list.empty())
-        std::reverse(data_list.begin(), data_list.end());
+    for (int i = 0; i < num_batches; i ++) {
+        data_list.pop_back();
+    }
     return num_tokens;
 }
 
@@ -678,12 +680,16 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
             this->data_queue[id], result, this->max_batch_size, 
             /*allow_sliced=*/ true, /*use_dp=*/ false);
         this->tokens_per_layer_[id] -= num_tokens;
+        if (this->tokens_per_layer_[id] > 0) {
+            int num_batches = this->data_queue[id].size();
+            this->num_batches_per_layer_[id] = num_batches;
+            this->layer_scheduler->tokens_remain_in_layer(id, this->tokens_per_layer_[id], num_batches);
+        }
     } else {
         result = std::move(this->data_queue[id]);
         this->data_queue[id].clear();
         this->tokens_per_layer_[id] = 0;
     }
-    this->num_batches_per_layer_[id] = 0;
 
     maintain_largest_batch();
 
@@ -893,7 +899,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
     // DMOE_LOG(INFO) << "fetching largest batch" << LEND;
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
-    int layer_id = -1;
+    int id = -1;
     int num_tokens = 0;
     std::vector<AttentionBatch> result{};
 
@@ -903,20 +909,28 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
         return {};
     }
 
-    layer_id = this->schedule_layer_id();
+    id = this->schedule_layer_id();
 
     ASSERT(this->max_batch_size > 0);
     num_tokens = schedule_with_limit<AttentionBatch>(
-        this->attn_data_queue[layer_id], result, this->max_batch_size, 
+        this->attn_data_queue[id], result, this->max_batch_size, 
         /*allow_sliced=*/ true, /*use_dp=*/ false);
-    this->tokens_per_layer_[layer_id] -= num_tokens;
-    this->num_batches_per_layer_[layer_id] = 0;
+    this->tokens_per_layer_[id] -= num_tokens;
+
+    if (this->tokens_per_layer_[id] > 0) {
+        int num_batches = this->data_queue[id].size();
+        this->num_batches_per_layer_[id] = num_batches;
+        this->layer_scheduler->tokens_remain_in_layer(id, this->tokens_per_layer_[id], num_batches);
+    } else {
+        this->num_batches_per_layer_[id] = 0;
+    }
+
     maintain_largest_batch();
 
-    // DMOE_LOG(DEBUG) << "Fetched " << layer_id << " layer with #tokens=" << num_tokens << LEND;
+    // DMOE_LOG(DEBUG) << "Fetched " << id << " layer with #tokens=" << num_tokens << LEND;
 
     if (selected_layer_id)
-        *selected_layer_id = layer_id;
+        *selected_layer_id = id;
     return result;
 }
 
