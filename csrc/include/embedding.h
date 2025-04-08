@@ -49,7 +49,7 @@ public:
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
 
-    virtual void process_batch(torch::Tensor data, metadata_t meta);
+    virtual int process_batch(torch::Tensor data, metadata_t meta);
 
     int sample(uintptr_t buf, metadata_t meta);
 
@@ -82,7 +82,7 @@ public:
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos);
 
-    void process_batch(torch::Tensor data, metadata_t meta) override;
+    int process_batch(torch::Tensor data, metadata_t meta) override;
 
 };
 
