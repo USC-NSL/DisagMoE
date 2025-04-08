@@ -100,6 +100,7 @@ struct TokenTopKInfo {
 
     TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, float weight, torch::Tensor tensor):
         seq_id(seq_id), init_prefill_len(init_prefill_len), 
+        attn_dp_rank(attn_dp_rank),
         topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
@@ -473,6 +474,7 @@ struct Metadata {
             for (int k = 0; k < topk; k ++) {
                 topk_weights[k * n + i] = token.topk_weights[k];
             }
+            std::cout << "seq " << token.seq_id << " dp rank " << token.attn_dp_rank << std::endl;
         }
 
         return std::make_shared<Metadata>(Metadata {

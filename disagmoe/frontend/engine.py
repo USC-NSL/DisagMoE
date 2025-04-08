@@ -402,7 +402,6 @@ class Engine:
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
         init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids
-            
         # if the first layer in this attention worker, update block table and decode_seq_lens
 
         if meta_py.layer_id == self.model_config.layer_ids[0]:
@@ -840,7 +839,9 @@ class Engine:
             meta: Metadata = batch.metadata
             
             self.stats_pre_process(batch)
+            print(f"{"attn" if self.has_attn else "expert" } before process layer {meta.layer_id} {meta.attn_dp_ranks}")
             output, meta = self._process_batch(meta, batch.data)
+            print(f"{"attn" if self.has_attn else "expert" } after process layer {meta.layer_id} {meta.attn_dp_ranks}")
             self.post_process(output, meta, self.dispatcher)
             self.stats_post_process(batch)
     

@@ -552,7 +552,9 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
     maintain_largest_batch();
 
-    return std::move(this->data_queue[id]);
+    auto results(std::move(this->data_queue[id]));
+    this->data_queue[id].clear();
+    return results;
 }
 
 void MuPool::set_max_batch_size(int max_batch_size) {
@@ -771,7 +773,9 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
 
     if (selected_layer_id)
         *selected_layer_id = id;
-    return std::move(this->attn_data_queue[id]);
+    auto results(std::move(this->attn_data_queue[id]));
+    this->attn_data_queue[id].clear();
+    return results;
 }
 
 std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
@@ -839,6 +843,8 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
     
     for (int i = 0; i < n; i++) {
         int seq_id = meta->req_ids[i];
+        DMOE_LOG(INFO) << "seq " << seq_id << ", dp rank " << meta->attn_dp_ranks[i] << LEND;
+
         auto it = this->pool_.find(seq_id);
         if (it == this->pool_.end()) {
             this->pool_[seq_id] = TokenTopKInfo(
@@ -916,7 +922,7 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
         }
         for (auto &token: ready_tokens) {
             this->attn_token_queues[lid].emplace_back(token);
-            // DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << LEND;
+            DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << ", dp rank: " << token.attn_dp_rank << LEND;
         }
     }
     // DMOE_LOG(INFO) << "largest batch size: " << this->largest_batch_size_ << LEND;
@@ -944,7 +950,9 @@ std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *select
 
     if (selected_layer_id)
         *selected_layer_id = id;
-    return {AttentionBatch::pack_tokens(this->layer_id_V2P[id], this->attn_token_queues[id])};
+    auto batch = AttentionBatch::pack_tokens(this->layer_id_V2P[id], this->attn_token_queues[id]);
+    this->attn_token_queues[id].clear();
+    return {batch};
 }
 
 
