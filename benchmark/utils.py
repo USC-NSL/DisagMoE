@@ -32,7 +32,7 @@ def get_parser_base():
     parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     parser.add_argument("--graph-stride", type=int, default=8, help="CUDA graph batch size stride")
-    parser.add_argument("--max-batch-size-attn", type=int, default=256, help="max batch size for attention")
+    parser.add_argument("--max-batch-size-attn", type=int, default=160, help="max batch size for attention cuda graph")
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
     parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")

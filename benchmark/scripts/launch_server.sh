@@ -1,24 +1,26 @@
 OUTPUT_LEN=300
+INPUT_LEN=200
 N_NODE=1
-N_GPU_PER_NODE=4
+N_GPU_PER_NODE=8
 NUM_LAYERS=32
-NUM_EXPERTS=4
-MAX_BATCH_SIZE_ATTN=192
-MAX_BATCH_SIZE_EXP=256
+NUM_EXPERTS=8
+MAX_BATCH_SIZE_ATTN=160
+MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=2
+dp_size=4
 step_exp=1
-ep_size=2
-top_k=1
+ep_size=4
+top_k=2
 
 if [ ! -d "./reports" ]; then
     mkdir -p ./reports
 fi
 
-REPORT_DIR=./reports/distributed_layer_schedule.csv
+REPORT_DIR=./reports/benchmark.csv
 
 python benchmark/server.py \
+    -u $INPUT_LEN \
     -o $OUTPUT_LEN \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \

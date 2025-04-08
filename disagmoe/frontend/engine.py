@@ -635,7 +635,7 @@ class Engine:
         self._timer.stop("preprocess")
         self._timer.start("execute")
         
-        if not self.model_config.enable_cuda_graph_attn:
+        if not self.model_config.enable_cuda_graph_attn or num_tokens > self.attn_max_batch_size:
             # topk_weights and expert_ids: [batch_size, top_k]
             hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
@@ -688,6 +688,7 @@ class Engine:
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
         num_tokens = meta_c.num_tokens()
+        assert num_tokens < self.expert_max_batch_size, f"num_tokens {num_tokens} > expert_max_batch_size {self.expert_max_batch_size}"
         if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
             meta_c.get_expert_batch_sizes_cuda(
                 self.model_config.num_experts, self.inner_exp_rank,
