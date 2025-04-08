@@ -843,7 +843,7 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
     
     for (int i = 0; i < n; i++) {
         int seq_id = meta->req_ids[i];
-        DMOE_LOG(INFO) << "seq " << seq_id << ", dp rank " << meta->attn_dp_ranks[i] << LEND;
+        // DMOE_LOG(INFO) << "seq " << seq_id << ", dp rank " << meta->attn_dp_ranks[i] << LEND;
 
         auto it = this->pool_.find(seq_id);
         if (it == this->pool_.end()) {
@@ -922,7 +922,7 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
         }
         for (auto &token: ready_tokens) {
             this->attn_token_queues[lid].emplace_back(token);
-            DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << ", dp rank: " << token.attn_dp_rank << LEND;
+            // DMOE_LOG(INFO) << "layer_id: " << meta->layer_id << ", ready token: " << token.seq_id << ", dp rank: " << token.attn_dp_rank << LEND;
         }
     }
     // DMOE_LOG(INFO) << "largest batch size: " << this->largest_batch_size_ << LEND;

@@ -297,7 +297,7 @@ void TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
 
-    DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
+    // DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
 }
 
 
