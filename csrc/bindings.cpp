@@ -68,6 +68,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
         .def("start", &TopKSampler::start)
         .def("wait_slo_stats", &TopKSampler::wait_slo_stats)
+        .def("fetch_step_infos", &Sampler::fetch_step_infos)
+        .def("reset", &Sampler::reset)
         .def("fetch_finished_slo_stats", &TopKSampler::fetch_finished_slo_stats);
 
     REGISTER_STRUCT(TensorBatch)

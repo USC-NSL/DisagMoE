@@ -474,7 +474,6 @@ struct Metadata {
             for (int k = 0; k < topk; k ++) {
                 topk_weights[k * n + i] = token.topk_weights[k];
             }
-            std::cout << "seq " << token.seq_id << " dp rank " << token.attn_dp_rank << std::endl;
         }
 
         return std::make_shared<Metadata>(Metadata {

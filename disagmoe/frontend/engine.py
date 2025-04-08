@@ -687,7 +687,6 @@ class Engine:
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
         num_tokens = meta_c.num_tokens()
-        assert num_tokens < self.expert_max_batch_size, f"num_tokens {num_tokens} > expert_max_batch_size {self.expert_max_batch_size}"
         if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
             meta_c.get_expert_batch_sizes_cuda(
                 self.model_config.num_experts, self.inner_exp_rank,
@@ -717,7 +716,12 @@ class Engine:
         
         with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
-            self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
+            
+            if num_tokens > self.expert_max_batch_size:
+                new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
+            else:
+                new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
             if self.model_config.top_k > 1:
                 topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             h2d_event.record(self.h2d_stream)
@@ -727,7 +731,7 @@ class Engine:
         if self.model_config.top_k > 1:
             output = output * topk_weights
         
-        output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
+        output = permute_tokens(output, new_mappings_gpu)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 

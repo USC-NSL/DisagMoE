@@ -27,6 +27,9 @@ class MoEExperts(torch.nn.Module):
             self.intermediate_size //= self.tp_size
         self.create_weights(enable_cutlass_cache=enable_cutlass_cache,
                             max_batch_size=max_batch_size)
+        self.gmm_with_cache = None
+        self.gmm = gmm
+        self.gmm_cache_max_batch_size = max_batch_size
         
     def create_weights(self, params_dtype: torch.dtype = None, 
                        enable_cutlass_cache: bool = False,
@@ -74,18 +77,25 @@ class MoEExperts(torch.nn.Module):
             def _gmm(hiddens, weight, batch_sizes, **kwargs):
                 return gmm_with_arguments(hiddens, weight, batch_sizes, self.cutlass_workspace, self.arguments_ptr, **kwargs)
             
-            self.gmm = _gmm
-        else:
-            self.gmm = gmm
+            self.gmm_with_cache = _gmm
         
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
-        # Here use grouped gemm, tokens must be permuted by corresponding expert_id
-        up = self.gmm(hiddens, self.w1_weight, batch_sizes, c=self.cache_up)
-        up[:bs] = self.act_fn(up[:bs])
-        up_r = self.gmm(hiddens, self.w3_weight, batch_sizes, c=self.cache_up_r)
-        up[:bs] *= up_r[:bs]
-        down = self.gmm(up, self.w2_weight, batch_sizes, c=self.cache_down)
-        return down[:bs]
+        output = None
+        if bs < self.gmm_cache_max_batch_size and self.gmm_with_cache is not None:
+            up = self.gmm(hiddens, self.w1_weight, batch_sizes, c=self.cache_up)
+            up[:bs] = self.act_fn(up[:bs])
+            up_r = self.gmm(hiddens, self.w3_weight, batch_sizes, c=self.cache_up_r)
+            up[:bs] *= up_r[:bs]
+            down = self.gmm(up, self.w2_weight, batch_sizes, c=self.cache_down)
+            output = down[:bs]
+        else:
+            up = self.gmm(hiddens, self.w1_weight, batch_sizes)
+            up = self.act_fn(up)
+            up_r = self.gmm(hiddens, self.w3_weight, batch_sizes)
+            up *= up_r
+            down = self.gmm(up, self.w2_weight, batch_sizes)
+            output = down
+        return output
 
 class MoEExpertsSerial(MoEExperts):
     
