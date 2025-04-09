@@ -189,11 +189,10 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     tx_range _{"ZmqChannel::send"};
 
     // DMOE_LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
-
-    void* buf = this->_tensor_copy(data, metadata, /*to_gpu=*/ false);
-    size_t size = metadata.num_element() * metadata.get_datatype_size();
+    std::vector<int> token_ids(metadata.num_tokens(), 0);
+    size_t size = metadata.num_tokens() * sizeof(int);
     // DMOE_LOG(DEBUG) << "send size: " << size << " rank: " << this->rank_offset << LEND;
-    this->mq->send(zmq::buffer(buf, size));
+    this->mq->send(zmq::buffer(token_ids.data(), size));
     
     // if (data != (uintptr_t) buf)
     //     std::free(buf);
@@ -206,13 +205,10 @@ void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
 
     // DMOE_LOG(DEBUG) << "ZMQ Recving from " << get_peer_id() << LEND;
 
-    size_t size = metadata.num_element() * metadata.get_datatype_size();
+    size_t size = metadata.num_tokens() * sizeof(int);
     zmq::message_t msg(size);
     // DMOE_LOG(DEBUG) << "recv size: " << size << " rank: " << this->rank_offset << LEND;
     auto err = this->mq->recv(msg, zmq::recv_flags::none);
-    this->_tensor_copy((uintptr_t) msg.data(), metadata, 
-        /*to_gpu=*/ !is_embedding_node(local), data);
-
     // DMOE_LOG(DEBUG) << "ZMQ Recved" << LEND;
 }
 
