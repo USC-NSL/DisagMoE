@@ -3,14 +3,18 @@ import matplotlib.pyplot as plt
 import random
 import numpy as np
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
+
+torch.set_default_device(device)
+torch.set_default_dtype(torch.bfloat16)
 
 plt.figure(figsize=(10, 6))
 
 @torch.inference_mode()
 def benchmark_hidden_size(hidden_size, intermediate_size):
-    row_sizes = np.concatenate((np.arange(4, 128 + 1, 4), np.arange(128, 512 + 1, 32)))
+    
+    row_sizes = np.concatenate((np.arange(4, 128, 4), np.arange(128, 512 + 1, 32)))
     num_runs = 20
     num_repeats = 5
 
@@ -32,19 +36,20 @@ def benchmark_hidden_size(hidden_size, intermediate_size):
         t1 = torch.matmul(x, BC)
         t2 = t1[:, :intermediate_size] * t1[:, intermediate_size:]
         _ = torch.matmul(t2, D)
-        
+    
     # Warm-up
     for _ in range(10):
-        _ = torch.matmul(torch.randn(512, hidden_size, device=device), B)
+        run_fuse_w13(torch.randn(512, hidden_size, device=device))
 
-    results = {rows: [] for rows in row_sizes}
-
-    for _ in range(num_repeats):
-        random.shuffle(row_sizes)
-        for rows in row_sizes:
-            A = torch.randn(rows, hidden_size, device=device)
+    results = []
+    
+    for rows in row_sizes:
+        batch_size_results = []
+        A = torch.randn(rows, hidden_size, device=device)
+        for _ in range(num_repeats):
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
             start.record()
             for _ in range(num_runs):
                 run_fuse_w13(A)
@@ -52,17 +57,17 @@ def benchmark_hidden_size(hidden_size, intermediate_size):
             torch.cuda.synchronize()
             total_time = start.elapsed_time(end)
             avg_time = total_time / num_runs
-            results[rows].append(avg_time)
+            batch_size_results.append(avg_time)
+        results.append(np.mean(batch_size_results))
 
-    # Average over repeats
-    avg_times = {rows: np.mean(times) for rows, times in results.items()}
+    torch.cuda.empty_cache()
     
     # Plot
-    plt.plot(list(avg_times.keys()), list(avg_times.values()), marker="o", label=f"hidden_size={hidden_size}, intermediate_size={intermediate_size}")
+    plt.plot(row_sizes, results, marker="o", label=f"hidden_size={hidden_size}, intermediate_size={intermediate_size}")
     
-hidden_size_k = np.array([4, 5, 6])
+hidden_size_k = np.array([4, 5, 6, 7])
 hidden_size_k = hidden_size_k * 1024
-intermediate_size_k = np.array([12, 8, 16])
+intermediate_size_k = np.array([12, 8, 16, 2])
 intermediate_size_k = intermediate_size_k * 1024
 
 for hidden_size, intermediate_size in zip(hidden_size_k, intermediate_size_k):
