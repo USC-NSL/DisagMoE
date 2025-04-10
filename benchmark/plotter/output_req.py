@@ -16,11 +16,11 @@ df_sorted = df.sort_values(by=df.columns[0])
 
 max_timestamp = max(df_sorted[df.columns[0]])
 
-time_bins = range(0, int(max_timestamp))
+time_bins = range(0, int(max_timestamp), 2)
 # give df a new column and fill all as 1
 df_sorted['num_reqs'] = 1
 time_sums = df_sorted.groupby(pd.cut(df_sorted[df.columns[0]], bins=time_bins))['num_reqs'].sum()
-
+time_sums /= 2
 plt.figure()
 plt.plot(time_bins[:-1], time_sums, '-')
 plt.xlabel('time (s)')

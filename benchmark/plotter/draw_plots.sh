@@ -17,7 +17,7 @@ for working_dir in "${working_dirs[@]}"; do
         continue
     fi
     python benchmark/plotter/output_req.py "$working_dir"
-    python benchmark/plotter/sampler_step.py "$working_dir"
+    python benchmark/plotter/sampler_step.py --gap-t 5 "$working_dir"
     python benchmark/plotter/queue_length.py "$working_dir"
 
 done
