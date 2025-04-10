@@ -74,18 +74,10 @@ class BenchmarkMetrics:
             new_row = {
                 "num_requests": args.num_requests,
                 "rate": args.rate,
-                "dist_type": args.generator_type,
                 "output_len": args.output_len,
-                "step_attn": args.step_attn,
                 "DP_size": args.dp_size,
-                "max_batch_size_attn": args.max_batch_size_attn,
-                "step_expert": args.step_expert,
                 "EP_size": args.ep_size,
-                "max_batch_size_expert": args.max_batch_size_expert,
-                "num_nodes": args.num_nodes,
-                "num_gpus": args.num_gpus,
                 "num_experts": args.num_experts,
-                "num_layers": args.num_layers,
                 **metrics
             }
             df.loc[len(df)] = new_row

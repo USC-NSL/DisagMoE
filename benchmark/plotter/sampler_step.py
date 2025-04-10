@@ -6,7 +6,7 @@ from benchmark.plotter.namer import add_args, get_plot_dir
 parser = ArgumentParser()
 parser = add_args(parser)
 parser.add_argument('--gap-i', type=int, default=1)
-parser.add_argument('--gap-t', type=int, default=1)
+parser.add_argument('--gap-t', type=int, default=5)
 
 CLK = 1e6
 
@@ -42,7 +42,8 @@ time_bins = [
 # print(df['time_stamp'])
 # print(time_bins)
 time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].sum()
-
+time_sums /= gap_t
+print(f"peak throughput: {time_sums.max()} tokens/s")
 plt.figure(figsize=(10, 5))
 plt.plot(time_bins[:-1], time_sums, '-')
 plt.axvline(x=120, color='green', linestyle='dotted')
