@@ -200,25 +200,28 @@ def generate_step_trace(args,
     for pid, (worker_stats, p_traces, metric) in enumerate(step_stats):
         layers = set()
         for step_info in worker_stats:
-            layers.add(step_info.layer_id)
+            if step_info.layer_id >= 0:
+                layers.add(step_info.layer_id)
         layers = sorted(list(layers))
         
         worker_queue_length_per_step = {layer: [] for layer in layers}
         step_start_time_ms = []
         step_executed_layer = []
         for step_info in worker_stats:
-            events.append({
-                "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
-                "cat": "step",
-                "ph": "X",
-                "ts": ms_to_us(step_info.start_timestamp_ms),
-                "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
-                "pid": pid,
-                "tid": 0,
-                "args": {
-                    "pool_snapshot": f"{step_info.pool_snapshot}"
-                }
-            })
+            # empty step is labeled as -1
+            if step_info.layer_id >= 0:
+                events.append({
+                    "name": f"layer {step_info.layer_id}, batch {step_info.batch_size}",
+                    "cat": "step",
+                    "ph": "X",
+                    "ts": ms_to_us(step_info.start_timestamp_ms),
+                    "dur": ms_to_us(step_info.end_timestamp_ms - step_info.start_timestamp_ms),
+                    "pid": pid,
+                    "tid": 0,
+                    "args": {
+                        "pool_snapshot": f"{step_info.pool_snapshot}"
+                    }
+                })
             step_start_time_ms.append(step_info.start_timestamp_ms)
             step_executed_layer.append(step_info.internal_layer_id)
             for layer in layers:

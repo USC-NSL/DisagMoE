@@ -8,11 +8,12 @@ import numpy as np
 parser = ArgumentParser()
 parser = add_args(parser)
 parser.add_argument('--steps', type=int, default=200)
+parser.add_argument('-t', '--time-unit', default=0.2, type=float, help='time step in ms')
 args = parser.parse_args()
 
 data_path = f"{args.path}/queue_length.pkl"
 
-plot_dir = f"{get_plot_dir(args.path)}/queue_length_over_time/"
+plot_dir = f"{get_plot_dir(args.path)}/queue_length_over_wall_time/"
 if not os.path.exists(plot_dir):
     os.makedirs(plot_dir)
 
@@ -24,6 +25,25 @@ def sample_from_mid(ls, steps):
         return ls
     start = (len(ls) - steps) // 2
     return ls[start:start+steps]
+
+def step_to_timestamp(q, t):
+    # q: [step, layer]
+    
+    nsteps = len(q)
+    
+    start_time_ms = t[0]
+    end_time_ms = t[-1]
+    
+    queue_length_over_time = []
+    base_t = start_time_ms
+    cur_step = 0
+    while base_t < end_time_ms:
+        while cur_step < nsteps - 1 and base_t > t[cur_step + 1]:
+            cur_step += 1
+        queue_length_over_time.append(q[cur_step])
+        base_t += args.time_unit
+    
+    return np.array(queue_length_over_time)
 
 def draw_heatmap(worker_id, data):
     # enumerate queue_length as dict
@@ -44,19 +64,26 @@ def draw_heatmap(worker_id, data):
     
     step_ids = np.array(sample_from_mid(list(range(nsteps)), args.steps))
     step_start_time_ms_sampled = np.array(sample_from_mid(step_start_time_ms, args.steps))
-    step_start_time_ms_sampled = step_start_time_ms_sampled - step_start_time_ms_sampled[0]
-    step_start_time_ms_sampled = np.round(step_start_time_ms_sampled, 1)
+    step_start_time_ms = step_start_time_ms_sampled - step_start_time_ms_sampled[0]
     
-    data = np.array([sample_from_mid(queue_length[layer_id], args.steps) for layer_id in layer_ids])
+    # [layer, step]
+    queue_length_over_step = np.array([sample_from_mid(queue_length[layer_id], args.steps) for layer_id in layer_ids])
+    executed_layer_over_step = np.array(sample_from_mid(step_executed_layer, args.steps))
+    queue_length_over_time = step_to_timestamp(queue_length_over_step.transpose(), step_start_time_ms).transpose()
+    executed_layer_over_time = step_to_timestamp(executed_layer_over_step, step_start_time_ms)
     
-    plt.imshow(data, cmap='hot', origin='lower', extent=[0, args.steps, 0, nlayers])
+    total_time = step_start_time_ms[-1]
+    x_lim = int(total_time / args.time_unit)
+    print(f"worker {worker_id} total time: {total_time} ms")
+    print(f"queue length shape {queue_length_over_time.shape}")
+    print(f"layer_ids {layer_ids}")
     
-    time_step_ms = (args.steps // 10)
+    plt.imshow(queue_length_over_time, cmap='hot', origin='lower', extent=[0, x_lim, 0, nlayers])
+    
     # label xtick every time step
-    total_time = step_start_time_ms_sampled[-1]
-    per_step_time = total_time / args.steps
-    xticks = np.arange(0, args.steps+1, time_step_ms/per_step_time)
-    xtick_labels = np.arange(0, total_time+1, time_step_ms)
+    xtick_time_step = 20 # ms 
+    xticks = np.arange(0, x_lim, int(xtick_time_step / args.time_unit))
+    xtick_labels = np.arange(0, int(total_time), xtick_time_step)
     num_xticks = min(len(xticks), len(xtick_labels))
     xticks = xticks[:num_xticks]
     xtick_labels = xtick_labels[:num_xticks]
@@ -64,21 +91,20 @@ def draw_heatmap(worker_id, data):
     xticks = [int(i) for i in xticks]
     plt.xticks(xticks, xtick_labels)
     
-    # plt.xticks(xticks, xtick_labels)
-    
-    # executed_layer_ids = np.argmax(data, axis=0)
-    for i, layer_id in enumerate(sample_from_mid(step_executed_layer, args.steps)):
+    for i, layer_id in enumerate(executed_layer_over_time):
+        if executed_layer_over_time[i] == -1:
+            continue
         plt.plot([i, i+1], [layer_id, layer_id], color='cyan', linestyle='--', linewidth=2)
         
-    ax.set_xlim(0, args.steps)
+    ax.set_xlim(0, x_lim)
     ax.set_ylim(0, nlayers)
     
-    ax.set_aspect(2.5)
+    ax.set_aspect(10)
     plt.xlabel('time (ms)')
     plt.ylabel('layer')
     plt.title('queue length per layer')
     plt.colorbar(label='Queue Length', orientation='vertical', shrink=0.5)
-    plt.savefig(f'{plot_dir}/{worker_id}.png', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{plot_dir}/{worker_id}.png', bbox_inches='tight', dpi=900)
     plt.close()
 
 # for each row of df, do draw_plot

@@ -774,7 +774,19 @@ class Engine:
     def stats_pre_process(self, batch: TensorBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
         self._step_start_timestamp_ms = time_ms()
-    
+        
+    def record_empty_step(self):
+        if not self.model_config.enable_trace:
+            return
+        
+        step_end_timestamp_ms = time_ms()
+        self._step_stats.append(
+            StepInfo(self._step_start_timestamp_ms, 
+                    step_end_timestamp_ms, 
+                    0, -1, -1, 
+                    {x: 0 for x in self.model_config.layer_ids})
+        )
+        
     def stats_post_process(self, batch: TensorBatch):
         step_end_timestamp_ms = time_ms()
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
@@ -824,11 +836,22 @@ class Engine:
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
+        
+        prev_schedule_empty = True
+        self._step_start_timestamp_ms = time_ms()
         while not self.end_flag:
             self._timer.start("schedule")
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
+                if not prev_schedule_empty:
+                    prev_schedule_empty = True
+                    self._step_start_timestamp_ms = time_ms()
                 continue
+            
+            if prev_schedule_empty:
+                self.record_empty_step()
+                prev_schedule_empty = False
+            
             self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
