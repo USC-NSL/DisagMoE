@@ -5,6 +5,7 @@ import numpy as np
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
+torch.cuda.set_device(device)
 torch.set_default_device(device)
 torch.set_default_dtype(torch.bfloat16)
 
@@ -13,35 +14,20 @@ plt.figure(figsize=(10, 6))
 @torch.inference_mode()
 def benchmark_hidden_size(hidden_size, intermediate_size, label):
     
-    # row_sizes = np.concatenate((np.arange(4, 128, 4), np.arange(128, 512 + 1, 32)))
-    row_sizes = np.concatenate((np.arange(128, 512, 32), np.arange(512, 2048 + 1, 128)))
+    row_sizes = np.concatenate((np.arange(4, 128, 4), np.arange(128, 512 + 1, 32)))
+    # row_sizes = np.concatenate((np.arange(128, 512, 32), np.arange(512, 2048 + 1, 128)))
     
     num_runs = 20
     num_repeats = 5
 
-    B = torch.randn(hidden_size, intermediate_size, device=device)
-    C = torch.randn(hidden_size, intermediate_size, device=device)
-    D = torch.randn(intermediate_size, hidden_size, device=device)
-
-    
     BC = torch.randn(hidden_size, intermediate_size * 2, device=device)
     D = torch.randn(intermediate_size, hidden_size, device=device)
-    
-    def run(x):
-        t1 = torch.matmul(x, B)
-        t2 = torch.matmul(x, C)
-        t = t1 * t2
-        _ = torch.matmul(t, D)
         
     def run_fuse_w13(x):
         t1 = torch.matmul(x, BC)
         t2 = t1[:, :intermediate_size] * t1[:, intermediate_size:]
         _ = torch.matmul(t2, D)
         
-        # Warm-up
-    for _ in range(10):
-        run_fuse_w13(torch.randn(512, hidden_size, device=device))
-
     results = []
     
     for rows in row_sizes:
@@ -49,11 +35,13 @@ def benchmark_hidden_size(hidden_size, intermediate_size, label):
         A = torch.randn(rows, hidden_size, device=device)
         for _ in range(2):
             run_fuse_w13(A)
-        # create cuda graph for run_fuse_w13
+            
         stream = torch.cuda.Stream()
         graph = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize(device)
         with torch.cuda.graph(graph, stream=stream):
             run_fuse_w13(A)
+        torch.cuda.synchronize(device)
         for _ in range(2):
             graph.replay()
             
@@ -63,8 +51,8 @@ def benchmark_hidden_size(hidden_size, intermediate_size, label):
             torch.cuda.synchronize()
             start.record()
             for _ in range(num_runs):
-                # graph.replay()
-                run_fuse_w13(A)
+                graph.replay()
+                # run_fuse_w13(A)
             end.record()
             torch.cuda.synchronize()
             total_time = start.elapsed_time(end)
@@ -87,11 +75,10 @@ labels = [f"{model}: hidden={h}k, intermediate={i}k" for model, h, i in zip(mode
 for hidden_size, intermediate_size, label in zip(hidden_sizes, intermediate_sizes, labels):
     benchmark_hidden_size(hidden_size, intermediate_size, label)
 
-
 plt.title("Time Cost vs. Batch Size")
 plt.xlabel("batch size")
 plt.ylabel("Avg Execution Time (ms)")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("expert_cost_fuse_w13_large.png", dpi=300)
+plt.savefig("expert_cost_fuse_w13.png", dpi=300)
