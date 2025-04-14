@@ -20,11 +20,13 @@ if not os.path.exists(plot_dir):
 with open(data_path, "rb") as f:
     data = pickle.load(f)
     
-def sample_from_mid(ls, steps):
+def sample(ls, steps):
+    starting_percentile = 0.3
     if len(ls) <= steps:
         return ls
-    start = (len(ls) - steps) // 2
-    return ls[start:start+steps]
+    start = int(len(ls) * starting_percentile)
+    end = start + steps
+    return ls[start:end]
 
 def step_to_timestamp(q, t):
     # q: [step, layer]
@@ -49,7 +51,7 @@ def draw_heatmap(worker_id, data):
     # enumerate queue_length as dict
     queue_length, step_executed_layer, step_start_time_ms = data
     
-    plt.figure(figsize=(20, 8))
+    plt.figure(figsize=(20, 12))
     figure, ax = plt.subplots()
     
     layer_ids = []
@@ -62,13 +64,13 @@ def draw_heatmap(worker_id, data):
     layer_ids.sort()
     nlayers = len(layer_ids)
     
-    step_ids = np.array(sample_from_mid(list(range(nsteps)), args.steps))
-    step_start_time_ms_sampled = np.array(sample_from_mid(step_start_time_ms, args.steps))
+    step_ids = np.array(sample(list(range(nsteps)), args.steps))
+    step_start_time_ms_sampled = np.array(sample(step_start_time_ms, args.steps))
     step_start_time_ms = step_start_time_ms_sampled - step_start_time_ms_sampled[0]
     
     # [layer, step]
-    queue_length_over_step = np.array([sample_from_mid(queue_length[layer_id], args.steps) for layer_id in layer_ids])
-    executed_layer_over_step = np.array(sample_from_mid(step_executed_layer, args.steps))
+    queue_length_over_step = np.array([sample(queue_length[layer_id], args.steps) for layer_id in layer_ids])
+    executed_layer_over_step = np.array(sample(step_executed_layer, args.steps))
     queue_length_over_time = step_to_timestamp(queue_length_over_step.transpose(), step_start_time_ms).transpose()
     executed_layer_over_time = step_to_timestamp(executed_layer_over_step, step_start_time_ms)
     
@@ -94,12 +96,12 @@ def draw_heatmap(worker_id, data):
     for i, layer_id in enumerate(executed_layer_over_time):
         if executed_layer_over_time[i] == -1:
             continue
-        plt.plot([i, i+1], [layer_id, layer_id], color='cyan', linestyle='--', linewidth=2)
+        plt.plot([i, i+1], [layer_id, layer_id], color='cyan', linestyle='--', linewidth=1)
         
     ax.set_xlim(0, x_lim)
     ax.set_ylim(0, nlayers)
+    ax.set_aspect(15)
     
-    ax.set_aspect(10)
     plt.xlabel('time (ms)')
     plt.ylabel('layer')
     plt.title('queue length per layer')
