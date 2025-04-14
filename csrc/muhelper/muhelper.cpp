@@ -330,8 +330,11 @@ MuPool::MuPool(
     std::vector<int> layer_ids, 
     int device_id,
     std::vector<Channel_t> channels,
+    LayerSchedulePolicy policy,
+    int num_groups,
     bool is_attn): 
-    MuHelper(layer_ids, device_id, channels), 
+    MuHelper(layer_ids, device_id, channels),
+    num_groups(num_groups), 
     is_attn(is_attn),
     ctx(channels.size()),
     mq(ctx, zmq::socket_type::pull),
@@ -341,10 +344,11 @@ MuPool::MuPool(
     int max_layer_id = 0;
     for (auto id: layer_ids)
         max_layer_id = std::max(max_layer_id, id);
+    this->num_layers = num_layers;
     this->layer_id_P2V = std::vector<int>(max_layer_id + 1);
     this->layer_id_V2P = std::vector<int>(num_layers);
 
-    this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers);
+    this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers * num_groups);
     for (size_t i = 0; i < num_layers; i ++) {
         this->layer_id_P2V[layer_ids[i]] = i;
         this->layer_id_V2P[i] = layer_ids[i];
@@ -362,11 +366,23 @@ MuPool::MuPool(
         this->peer_channels[ channels[i]->get_peer_id() ] = channels[i];
     }
 
-    this->tokens_per_layer_ = std::vector<int>(num_layers, 0);
-    this->num_batches_per_layer_ = std::vector<int>(num_layers, 0);
+    this->tokens_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
+    this->num_batches_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
     this->queueing_timers = std::map<int, clock_t>();
 
-    this->layer_scheduler = std::make_shared<LayerScheduler>(num_layers, LayerScheduler::LayerScheduleType::FLFS);
+    if (policy != LayerSchedulePolicy::GROUP) {
+        ASSERT (num_groups == 1);
+    }
+
+    if (policy == LayerSchedulePolicy::BASE) {
+        this->layer_scheduler = std::make_shared<LayerScheduler>(num_layers, LayerScheduler::LayerScheduleType::MBFLFS);
+    } else if (policy == LayerSchedulePolicy::GROUP) {
+        this->layer_scheduler = std::make_shared<GroupLayerScheduler>(num_layers, num_groups);
+    } else if (policy == LayerSchedulePolicy::ADVANCED) {
+        this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers, 0);
+    } else {
+        ASSERT(false);
+    }
 }
 
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
@@ -414,11 +430,9 @@ void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_fro
     int lid = this->layer_id_P2V[meta->layer_id];
     int num_tokens = meta->num_tokens();
 
-    // {
-    //     std::lock_guard<std::mutex> lock(this->request_mutex);
-    //     this->cur_request_count += num_tokens;
-    //     this->request_cv.notify_all();
-    // }
+    if (this->num_groups > 1) {
+        lid = get_layer_group_id(lid, meta->get_dp_rank() % this->num_groups);
+    }
     
     {
         std::lock_guard<std::mutex> lock(this->batch_mutex);
@@ -496,6 +510,7 @@ void MuPool::run() {
         // this->start_queueing_timer(meta->req_ids);
 
         this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
+        this->peer_channels[peer_id]->sync();
     }
 }
 
@@ -536,7 +551,15 @@ void MuPool::maintain_largest_batch() {
 
 std::vector<int> MuPool::get_pool_snapshot() {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
-    return this->tokens_per_layer_;
+    if (num_groups == 1) {
+        return this->tokens_per_layer_;
+    }
+    std::vector<int> snapshot(this->num_layers, 0);
+    for (int i = 0; i < this->num_layers; i++) {
+        for (int j = 0; j < this->num_groups; j++)
+            snapshot[i] += this->tokens_per_layer_[get_layer_group_id(i, j)];
+    }
+    return snapshot;
 }
 
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {
@@ -545,6 +568,7 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
     if (this->largest_batch_size_ == 0) {
         return {};
     }
+
     int id = schedule_layer_id();
 
     this->tokens_per_layer_[id] = 0;
@@ -578,8 +602,9 @@ MuAttentionPool::MuAttentionPool(
     int device_id,
     std::vector<Channel_t> channels,
     std::vector<int> device_group_ids,
-    Channel_t group_comm
-): MuPool(layer_ids, device_id, channels, true), 
+    Channel_t group_comm,
+    LayerSchedulePolicy policy
+): MuPool(layer_ids, device_id, channels, policy, /* num_groups */ 1, true), 
     device_group_ids(device_group_ids),
     group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
     this->local_zmq_port_offset = 1;
@@ -764,6 +789,7 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
     }
 
     int id = this->schedule_layer_id();
+
     this->tokens_per_layer_[id] = 0;
     this->num_batches_per_layer_[id] = 0;
 
@@ -872,8 +898,9 @@ MuAttentionTopKPool::MuAttentionTopKPool(
     std::vector<Channel_t> channels,
     std::vector<int> device_group_ids,
     Channel_t group_comm,
-    int top_k
-): MuAttentionPool(layer_ids, device_id, channels, device_group_ids, group_comm), top_k(top_k) {
+    int top_k,
+    LayerSchedulePolicy policy
+): MuAttentionPool(layer_ids, device_id, channels, device_group_ids, group_comm, policy), top_k(top_k) {
     int num_layers = layer_ids.size();
     this->attn_token_queues = std::vector<std::vector<TokenTopKInfo>>(num_layers);
     this->topk_pools = std::vector<TokenTopKPool>{};

@@ -75,7 +75,6 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
-    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 void NcclChannel::sync() {
@@ -114,7 +113,6 @@ void TensorLocalChannel::recv(uintptr_t data, const Metadata& metadata) {
     uintptr_t data_to_recv = data_buffer.front();
     data_buffer.pop();
     cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 void TensorLocalChannel::sync() {

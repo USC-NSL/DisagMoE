@@ -143,6 +143,7 @@ public:
         FLFS,   // first-layer-first-serve
         MBFLFS,  // max-block-first-layer-first-serve
         MBTFS,  // max-batch-token-first-serve
+        BIN,   // bin
     };
 
     LayerScheduler(int n_layers, LayerScheduleType type = LayerScheduleType::MBFS);
@@ -151,7 +152,7 @@ public:
 
     void set_schedule_type(std::string type);
 
-    void set_block_step(int step);
+    void set_block_size(int block_size);
 
     void remove_tokens_from_layer(int layer_id, int num_tokens) {
         ASSERT(layer_id >= 0 && layer_id < n_layers);
@@ -163,16 +164,23 @@ public:
 
     virtual void add_tokens_to_layer(int layer_id, int num_tokens);
 
-    virtual void tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches);
+    std::vector<int> get_tokens_per_layer() {
+        return num_tokens_in_layer;
+    }
 
 protected:
     int n_layers;
     std::vector<int> num_tokens_in_layer;
     std::vector<int> num_batches_in_layer;
 
+    void clean_layer_status(int layer_id) {
+        num_tokens_in_layer[layer_id] = 0;
+        num_batches_in_layer[layer_id] = 0;
+    }
+
 private:
     LayerScheduleType type;
-    int step;
+    int block_size;
 
     /*
         max-batch-first-serve
@@ -184,25 +192,24 @@ private:
     */
     int _schedule_flfs();
 
+    int _schedule_bin();
+
     /*
         max-block-first-layer-first-serve
 
-        1. Group layers into blocks with step size
+        1. Group layers into blocks with block size
         2. Find the block with the largest token count
         3. Find the first layer with tokens in the block
 
         NOTE(hogura|20250317): 
-            * when step=1, this is equivalent to MBFS
-            * when step=n_layers, this is equivalent to FLFS
+            * when block_size=1, this is equivalent to MBFS
+            * when block_size=n_layers, this is equivalent to FLFS
     */
     int _schedule_mbflfs();
 
     int _schedule_batches_tokens();
 
-    void clean_layer_status(int layer_id) {
-        num_tokens_in_layer[layer_id] = 0;
-        num_batches_in_layer[layer_id] = 0;
-    }
+
 
 };
 
@@ -249,6 +256,33 @@ public:
 
     void add_tokens_to_layer(int layer_id, int num_tokens) override; // add_tokens_to_layer is protected by a external lock
 
-    void tokens_remain_in_layer(int layer_id, int num_tokens, int num_batches) override;
+};
+
+class GroupLayerScheduler: public LayerScheduler {
+
+private:
+    int n_groups;
+
+    inline int get_layer_group_id(int layer_id, int group_id) {
+        return layer_id * n_groups + group_id;
+    }
+
+    using LayerScheduler::clean_layer_status;
+
+    void clean_layer_status(int layer_id, int group_id) {
+        int layer_group_id = get_layer_group_id(layer_id, group_id);
+        num_tokens_in_layer[layer_group_id] = 0;
+        num_batches_in_layer[layer_group_id] = 0;
+    }
+
+public:
+
+    GroupLayerScheduler(int n_layers, int n_groups = 1);
+
+    int schedule() override;
+
+    using LayerScheduler::add_tokens_to_layer;
+
+    void add_tokens_to_layer(int layer_id, int num_tokens, int group_id = 0);
 
 };

@@ -162,6 +162,13 @@ struct Metadata {
         return ncclBfloat16;
     }
 
+    inline int get_dp_rank() const {
+        // NOTE: this is only used in expert worker, 
+        //       caller must make sure all tokens in 
+        //       the batch are from the same dp rank
+        return attn_dp_ranks[0];
+    }
+
     constexpr size_t get_datatype_size() const {
         return 2; // bf16
     }
