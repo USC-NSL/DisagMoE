@@ -271,18 +271,17 @@ private:
 
     void clean_layer_status(int layer_id, int group_id) {
         int layer_group_id = get_layer_group_id(layer_id, group_id);
-        num_tokens_in_layer[layer_group_id] = 0;
-        num_batches_in_layer[layer_group_id] = 0;
+        clean_layer_status(layer_group_id);
     }
 
 public:
 
-    GroupLayerScheduler(int n_layers, int n_groups = 1);
+    GroupLayerScheduler(int num_layers, int num_groups);
 
     int schedule() override;
 
     using LayerScheduler::add_tokens_to_layer;
 
-    void add_tokens_to_layer(int layer_id, int num_tokens, int group_id = 0);
+    void add_tokens_to_layer(int layer_id, int group_id, int num_tokens);
 
 };

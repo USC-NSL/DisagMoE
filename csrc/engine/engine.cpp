@@ -168,7 +168,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
         attn_scheduler = AttentionScheduler::build(pool, layer_ids, "mbfs");
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels);
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, 2);
         expert_scheduler = Scheduler::build(pool, layer_ids, "mbfs");
     }
 

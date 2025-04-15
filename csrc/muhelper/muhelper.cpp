@@ -571,6 +571,8 @@ std::vector<TensorBatch> MuPool::fetch_largest_batch() {
 
     int id = schedule_layer_id();
 
+    ASSERT (this->tokens_per_layer_[id] > 0);
+    ASSERT (this->data_queue[id].size() > 0);
     this->tokens_per_layer_[id] = 0;
     this->num_batches_per_layer_[id] = 0;
 

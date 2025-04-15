@@ -46,3 +46,8 @@ const int ZMQ_OFFSET_BASE = 16;
 #define ASSERT(condition) do {if (!(condition)) { \
     throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
 }} while(0)
+
+#define ASSERT_MSG(condition, msg) do {if (!(condition)) { \
+    throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + \
+    " Assertion failed: " + std::string(#condition) + ", message: " + msg); \
+}} while(0)

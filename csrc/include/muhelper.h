@@ -185,7 +185,7 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        LayerSchedulePolicy policy = LayerSchedulePolicy::GROUP,
+        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
         int num_groups = 1,
         bool is_attn = false
     );

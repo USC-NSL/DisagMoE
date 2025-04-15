@@ -417,28 +417,27 @@ void AdvancedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
     }
 }
 
-GroupLayerScheduler::GroupLayerScheduler(int n_layers, int n_groups):
-    n_groups(n_groups), LayerScheduler(n_layers * n_groups)  { 
-
+GroupLayerScheduler::GroupLayerScheduler(int num_layers, int num_groups):
+    LayerScheduler(num_layers * num_groups), n_groups(num_groups) { 
+    this->n_layers = num_layers;
 }
 
-void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens, int group_id) {
+void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int num_tokens) {
     int layer_group_id = get_layer_group_id(layer_id, group_id);
-    this->num_tokens_in_layer[layer_group_id] += num_tokens;
-    this->num_batches_in_layer[layer_group_id] += 1;
+    add_tokens_to_layer(layer_group_id, num_tokens);
 }
 
 int GroupLayerScheduler::schedule() {
     static float weight_decay = 0.8;
-    std::vector<float> scores(n_groups * n_layers);
+    std::vector<float> scores(n_layers * n_groups);
     for (int i = 0; i < n_layers; i++) {
         for (int j = 0; j < n_groups; j++) {
             int layer_group_id = get_layer_group_id(i, j);
             float decay = 1;
             float score = .0f;
             for (int k = 0; k < 4; k++) {
-                int subsequent_layer = (i + k) % n_layers;
-                int cur_layer_group_id = get_layer_group_id(subsequent_layer, j);
+                int cur_layer = (i + k) % n_layers;
+                int cur_layer_group_id = get_layer_group_id(cur_layer, j);
                 score += num_tokens_in_layer[cur_layer_group_id] * decay;
                 decay *= weight_decay;
             }
