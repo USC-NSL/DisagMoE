@@ -195,7 +195,7 @@ std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
 */
 
 LayerScheduler::LayerScheduler(int n_layers, LayerScheduler::LayerScheduleType type): 
-    n_layers(n_layers), block_size(4), type(type), 
+    n_layers(n_layers), block_size(8), type(type), 
     num_tokens_in_layer(std::vector<int>(n_layers, 0)), num_batches_in_layer(std::vector<int>(n_layers, 0)) { }
 
 void LayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
