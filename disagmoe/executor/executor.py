@@ -57,13 +57,14 @@ class AttnExecutor(Executor):
         )
         self.operators = [
             MoEAttention(
+                layer_id,
                 self.model_config.hidden_size, 
                 self.model_config.num_heads, 
                 self.model_config.num_kv_heads, 
                 self.model_config.num_experts,
                 self.model_config.top_k,
                 cache_config=self.vllm_cache_config,
-            ) for _ in range(self.num_layers)
+            ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         
@@ -376,12 +377,13 @@ class ParallelAttnExecutor(AttnExecutor):
         self.cache_config = cache_config
         self.operators = [
             MoEAttention(
+                layer_id,
                 self.model_config.hidden_size, 
                 self.model_config.num_heads, 
                 self.model_config.num_kv_heads, 
                 self.model_config.num_experts,
                 tp_size=model_config.tp_size,
                 tp_rank=model_config.rank,
-            ) for _ in range(self.num_layers)
+            ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16

@@ -13,6 +13,7 @@ _env_vars = {
     "GROUPED_GEMM_CUTLASS": "",
     "LD_LIBRARY_PATH": "",
     "ENABLE_NVTX": "0",
+    "DMOE_WEIGHTED_ROUTER_FILE": None,
 }
 
 ENV_VARS = {
