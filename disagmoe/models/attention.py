@@ -166,12 +166,12 @@ class MoEAttention(nn.Module):
         self.pre_attention_layernorm = RMSNorm(hidden_size)
         self.post_attention_layernorm = RMSNorm(hidden_size)
         
-        if os.environ.get("DMOE_WEIGHTED_ROUTER_FILE") is not None:
-            file_name = os.environ.get("DMOE_WEIGHTED_ROUTER_FILE")
+        routing_trace_file_path = os.environ.get("DMOE_WEIGHTED_ROUTER_FILE")
+        if routing_trace_file_path is not None and routing_trace_file_path != "":
             category = os.environ.get("DMOE_WEIGHTED_ROUTER_CATEGORY", "closed_qa")
-            assert os.path.exists(file_name), f"Weighted router file {file_name} does not exist."
+            assert os.path.exists(routing_trace_file_path), f"Weighted router file {routing_trace_file_path} does not exist."
             import pandas as pd
-            df = pd.read_csv(file_name)
+            df = pd.read_csv(routing_trace_file_path)
             df = df[df['category'] == category]
             df = df[df['layer_id'] == layer_id]
             df = df.iloc[:, list(range(-8, 0))]
