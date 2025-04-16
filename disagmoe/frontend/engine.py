@@ -1002,6 +1002,7 @@ class SamplerEngine(Engine):
     def init_core(self, core_args: InitCoreArgs,):
         self.sampler = init_sampler(
             self.device_id,
+            self.min_output_len,
             self.max_output_len,
             self.model_config.top_k,
             ParallelConfig.from_c(
@@ -1027,7 +1028,8 @@ class SamplerEngine(Engine):
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
-    def set_sampling_params(self, max_output_len: int):
+    def set_sampling_params(self, min_output_len: int, max_output_len: int):
+        self.min_output_len = min_output_len
         self.max_output_len = max_output_len
         
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:

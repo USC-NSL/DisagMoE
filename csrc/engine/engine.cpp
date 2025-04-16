@@ -271,6 +271,7 @@ void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatch
 
 Sampler_t init_sampler(
     int local,
+    int min_output_len,
     int max_output_len,
     int top_k,
     ParallelConfig cfg,
@@ -300,11 +301,11 @@ Sampler_t init_sampler(
     Sampler_t sampler;
     if (top_k == 1) {
         sampler = std::make_shared<Sampler>(
-            local, max_output_len, cfg, in_channels, out_channels, out_channel_infos
+            local, min_output_len, max_output_len, cfg, in_channels, out_channels, out_channel_infos
         );
     } else {
         sampler = std::make_shared<TopKSampler>(
-            local, max_output_len, top_k, cfg, in_channels, out_channels, out_channel_infos
+            local, min_output_len, max_output_len, top_k, cfg, in_channels, out_channels, out_channel_infos
         );
     }
     return sampler;

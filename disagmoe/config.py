@@ -62,7 +62,8 @@ class CacheConfig(vllm.config.CacheConfig):
 
 
 @dataclass
-class SamplingConfig:    
+class SamplingConfig:
+    min_output_len: int    
     max_output_len: int
 
 

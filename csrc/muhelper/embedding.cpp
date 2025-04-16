@@ -12,6 +12,7 @@
 #include <chrono>
 
 Sampler::Sampler(int device_id, 
+                int min_output_len,
                 int max_output_len,
                 ParallelConfig cfg,
                 std::vector<Channel_t> in_channels, 
@@ -28,6 +29,7 @@ Sampler::Sampler(int device_id,
     ctx = zmq::context_t(in_channels.size());
     recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
 
+    this->min_output_len = min_output_len;
     this->max_output_len = max_output_len;
 
     // copied from MuPool
@@ -110,18 +112,20 @@ int Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
                 slo_stats[rid].t_tokens.push_back(t_now());
-            }
-            else {
+            } else {
                 // Finished.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
                 this->_active_token_count -= output_lens[rid];
+                output_lens.erase(rid);
+                required_output_lens.erase(rid);
                 // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                 //           << output_lens[rid] << " tokens." << LEND;
             }
         } else {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
+            required_output_lens[rid] = rand() % (this->max_output_len - this->min_output_len) + this->min_output_len;
             continue_ids.push_back(i);
             // TODO(hogura|20250306): replace all time & clock with chrono::now()
             slo_stats[rid] = SloStat {rid, t_now(), t_now_high(), 0, {}};
@@ -211,7 +215,7 @@ int Sampler::sample(uintptr_t buf, metadata_t meta) {
 }
 
 bool Sampler::check_finished(int token, int req_id) {
-    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= this->max_output_len;
+    return token == EOS_TOKEN_ID || this->output_lens[req_id] >= this->required_output_lens[req_id];
 }
 
 void Sampler::start() {
@@ -219,6 +223,7 @@ void Sampler::start() {
 }
 
 TopKSampler::TopKSampler(int device_id, 
+                int min_output_len,
                 int max_output_len,
                 int top_k,
                 ParallelConfig cfg,
@@ -226,7 +231,7 @@ TopKSampler::TopKSampler(int device_id,
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos):
     top_k(top_k), token_pool(TokenTopKPool(top_k)),
-    Sampler(device_id, max_output_len, cfg, in_channels, out_channels, out_channel_infos) {
+    Sampler(device_id, min_output_len, max_output_len, cfg, in_channels, out_channels, out_channel_infos) {
 }
 
 int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
@@ -272,6 +277,8 @@ int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
                 // Finished, end.
                 finished_seqs.insert(rid);
                 eos_seqs.erase(rid);
+                output_lens.erase(rid);
+                required_output_lens.erase(rid);
                 this->_active_token_count -= output_lens[rid];
                 // DMOE_LOG(INFO) << "Request " << rid << " ended, generated " 
                 //           << output_lens[rid] << " tokens." << LEND;
@@ -281,6 +288,7 @@ int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
             slo_stats[rid] = SloStat {rid, t_now(), 0, {}};
+            required_output_lens[rid] = rand() % (this->max_output_len - this->min_output_len) + this->min_output_len;
         }
     }
     // Step 2. update metadata

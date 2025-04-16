@@ -35,12 +35,12 @@ class BenchmarkMetrics:
     req_throughput: float = -1
     token_throughput: float = -1
     
+    req_latency_mean_ms: float = -1
     req_latency_median_ms: float = -1
-    req_latency_p90_ms: float = -1
     req_latency_p99_ms: float = -1
     
+    itl_latency_mean_ms: float = -1
     itl_latency_median_ms: float = -1
-    itl_latency_p90_ms: float = -1
     itl_latency_p99_ms: float = -1
     
     def __repr__(self):
@@ -48,11 +48,11 @@ class BenchmarkMetrics:
                 f"e2e_duration: {self.e2e_duration:.2f}s\n" \
                 f"req_throughput: {self.req_throughput:.0f} req/s\n" \
                 f"token_throughput: {self.token_throughput:.0f} tokens/s\n" \
+                f"req_latency_mean: {self.req_latency_mean_ms:.0f}ms\n" \
                 f"req_latency_median: {self.req_latency_median_ms:.0f}ms\n" \
-                f"req_latency_p90: {self.req_latency_p90_ms:.0f}ms\n" \
                 f"req_latency_p99: {self.req_latency_p99_ms:.0f}ms\n" \
+                f"itl_latency_mean: {self.itl_latency_mean_ms:.0f}ms\n" \
                 f"itl_latency_median: {self.itl_latency_median_ms:.0f}ms\n" \
-                f"itl_latency_p90: {self.itl_latency_p90_ms:.0f}ms\n" \
                 f"itl_latency_p99: {self.itl_latency_p99_ms:.0f}ms\n"
 
     def write_to_file(self, args):
@@ -61,11 +61,8 @@ class BenchmarkMetrics:
         try:
             import pandas as pd
             if not os.path.exists(filename):
-                df = pd.DataFrame(columns=["num_requests", "rate", "dist_type",
-                                           "output_len",
-                                           "step_attn", "DP_size", "max_batch_size_attn", 
-                                           "step_expert", "EP_size", "max_batch_size_expert",
-                                           "num_nodes", "num_gpus", "num_experts", "num_layers"] + list(metrics.keys()))
+                df = pd.DataFrame(columns=["num_requests", "rate", "DP_size", "EP_size", 
+                                           "num_experts"] + list(metrics.keys()))
             else:
                 if filename.endswith(".csv"):
                     df = pd.read_csv(filename)
@@ -74,7 +71,6 @@ class BenchmarkMetrics:
             new_row = {
                 "num_requests": args.num_requests,
                 "rate": args.rate,
-                "output_len": args.output_len,
                 "DP_size": args.dp_size,
                 "EP_size": args.ep_size,
                 "num_experts": args.num_experts,
@@ -123,7 +119,7 @@ def launch(args):
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
-    sampling_config = SamplingConfig(max_output_len=args.output_len)
+    sampling_config = SamplingConfig(min_output_len=args.min_output_len, max_output_len=args.max_output_len)
     
     master.init_engine(mp, model_config, cache_config, sampling_config)
     
@@ -157,12 +153,12 @@ def analyze_results(results: List[SloStat], duration: float):
         req_throughput=num_reqs / duration,
         token_throughput=total_output_tokens / duration,
         
+        req_latency_mean_ms=np.mean(req_latency) * 1000,
         req_latency_median_ms=np.median(req_latency) * 1000,
-        req_latency_p90_ms=np.percentile(req_latency, 90) * 1000,
         req_latency_p99_ms=np.percentile(req_latency, 99) * 1000,
         
+        itl_latency_mean_ms=np.mean(itls) * 1000,
         itl_latency_median_ms=np.median(itls) * 1000,
-        itl_latency_p90_ms=np.percentile(itls, 90) * 1000,
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
 
@@ -300,10 +296,13 @@ def analyze_throughput(args,
 
     
 async def run_benchmark(master: Controller, args, 
-                        generator_type, num_requests, input_len, output_len, rate, warmup=False):
+                        generator_type, num_requests, 
+                        min_input_len, max_input_len, 
+                        min_output_len, max_output_len, 
+                        rate, warmup=False):
     GeneratorType = get_generator(generator_type)
-    generator = GeneratorType(rate, 1, input_len)
-    workload = generator.generate(num_requests)
+    generator = GeneratorType(rate, 1, min_input_len, max_input_len)
+    workload = generator.generate_num(num_requests)
     pbar = tqdm.tqdm(total=num_requests)
     t_start = time.perf_counter()
     tasks = []
@@ -344,7 +343,9 @@ async def benchmark_warmup(master: Controller, args):
     _num_warmup_rate = 5
     await run_benchmark(
         master, args, args.generator_type, _num_warmup_requests, 
-        args.input_len, args.output_len, _num_warmup_rate, warmup=True
+        args.min_input_len, args.max_input_len,
+        args.min_output_len, args.max_output_len, 
+        _num_warmup_rate, warmup=True
     )
     master.reset()
     logger.info("Warmup done.")
@@ -379,7 +380,9 @@ async def benchmark_serving(
     # run benchmark
     logger.info("Now running benchmark.")
     results, req_finish_timestamps = await run_benchmark(
-        master, args, args.generator_type, args.num_requests, args.input_len, args.output_len, args.rate
+        master, args, args.generator_type, args.num_requests,
+        args.min_input_len, args.max_input_len,
+        args.min_output_len, args.max_output_len,  args.rate
     )
     
     if not is_api_server:
