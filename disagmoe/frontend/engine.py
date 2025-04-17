@@ -227,6 +227,7 @@ class Engine:
                 self.model_config.top_k,
                 self.has_attn,
                 self.has_expert,
+                core_args.expert_wise_schedule,
                 ParallelConfig.from_c(
                     self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                     self.model_config.ep_size,
@@ -687,18 +688,23 @@ class Engine:
         range_push("engine.copy_batch_sizes")
         # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
         num_tokens = meta_c.num_tokens()
-        if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-            meta_c.get_expert_batch_sizes_cuda(
-                self.model_config.num_experts, self.inner_exp_rank,
-                self._static_bs_cuda, self.stream.cuda_stream
-            )
-            batch_sizes = self._static_bs_cuda
+        
+        if self.model_config.enable_grouped_gemm:
+            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                meta_c.get_expert_batch_sizes_cuda(
+                    self.model_config.num_experts, self.inner_exp_rank,
+                    self._static_bs_cuda, self.stream.cuda_stream
+                )
+                batch_sizes = self._static_bs_cuda
+            else:
+                batch_sizes = torch.tensor(
+                    [batch_sizes[i] for i in self.inner_exp_rank],
+                    dtype=torch.int64, device="cuda"
+                )
         else:
             batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            batch_sizes = torch.tensor(
-                [batch_sizes[i] for i in self.inner_exp_rank],
-                dtype=torch.int64, device="cuda"
-            )
+            batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
+            
         range_pop()
         self._timer.stop("preprocess")
         self._timer.start("execute")
@@ -999,7 +1005,7 @@ class SamplerEngine(Engine):
         self.sampler: Sampler = None
         self.max_output_len = -1
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.sampler = init_sampler(
             self.device_id,
             self.min_output_len,
@@ -1072,7 +1078,7 @@ class TokenizerEngine(Engine):
     def fetch_submitted_time(self):
         return self.t_submitted
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.tokenizer = init_tokenizer(
             self.device_id,
             ParallelConfig.from_c(

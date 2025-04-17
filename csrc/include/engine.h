@@ -15,6 +15,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     int top_k,
     bool has_attn,
     bool has_expert,
+    bool expert_wise_schedule,
     ParallelConfig cfg,
     const std::vector<int> &layer_ids,
     // P2P Channels

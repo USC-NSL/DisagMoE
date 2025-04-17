@@ -410,42 +410,33 @@ void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
 }
 
 void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // TODO(hogura|20241014): sync prefill sequences
-    /*
-    TODO(shaoyuw|20241011): separate sequences into waiting queue and running queue
-    completed_sequences = fill(batch)
-    flash_attn_metadata = concat(completed_sequences, decode_tokens from batch)
+    int layer_id = this->layer_id_P2V[meta->layer_id];
 
-
-    1. split batch to prefill and decode tokens
-    2. use prefill tokens to compose prefill sequence (sync for prefill sequences) (memcpy, custom kernel)
-    3. if a prefill sequence is complete, check if this sequence exists in block table
-    4. if not, add them to waiting queue; else add to corresponding running queue with decoding tokens (memcpy)
-
-    waiting_queue, each element is a sequence
-
-    running_queue[layers]
-
-    */
-    int lid = this->layer_id_P2V[meta->layer_id];
-    int num_tokens = meta->num_tokens();
-
-    if (this->num_groups > 1) {
-        lid = get_layer_group_id(lid, meta->get_dp_rank() % this->num_groups);
-    }
-    
-    {
-        std::lock_guard<std::mutex> lock(this->batch_mutex);
-        this->data_queue[lid].push_back((TensorBatch) {tensor, meta});
-        this->layer_scheduler->add_tokens_to_layer(lid, num_tokens);
-        this->num_batches_per_layer_[lid] += 1;
-        int &tokens_cur_layer = this->tokens_per_layer_[lid];
+    auto add_one_batch = [&](int qid, const TensorBatch &batch) {
+        // NOTE: batch_mutex should be held outside this function
+        int num_tokens = batch.metadata->num_tokens();
+        this->data_queue[qid].push_back(batch);
+        this->layer_scheduler->add_tokens_to_layer(qid, num_tokens);
+        this->num_batches_per_layer_[qid] += 1;
+        int &tokens_cur_layer = this->tokens_per_layer_[qid];
         tokens_cur_layer += num_tokens;
         if (tokens_cur_layer > this->largest_batch_size_) {
             this->largest_batch_size_ = tokens_cur_layer;
-            this->largest_batch_layer_id_ = lid;
+            this->largest_batch_layer_id_ = qid;
         }
+    };
 
+    if (this->num_groups > 1) {
+        std::vector<TensorBatch> batches = TensorBatch::split_by_expert_id(tensor, meta);
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+        for (auto &batch: batches) {
+            int expert_id = batch.metadata->get_expert_id();
+            int qid = get_layer_group_id(layer_id, expert_id % this->num_groups);
+            add_one_batch(qid, batch);
+        }
+    } else {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+        add_one_batch(layer_id, TensorBatch{tensor, meta});
     }
 }
 
