@@ -560,20 +560,24 @@ struct TensorBatch {
     torch::Tensor data;
     metadata_t metadata;
 
-    std::vector<TensorBatch> split_by_expert_id() {
-        auto seg_indices = metadata->get_expert_seg_indices();
+    static std::vector<TensorBatch> split_by_expert_id(torch::Tensor tensor, metadata_t meta) {
+        auto seg_indices = meta->get_expert_seg_indices();
         int n = seg_indices.size() - 1;
         if (n == 1) {
             // only one segment
-            return {TensorBatch{data, metadata}};
+            return {TensorBatch{tensor, meta}};
         }
         std::vector<TensorBatch> batches;
-        auto metas = metadata->split_by_indices(seg_indices);
-        auto tensors = split_tensor(data, seg_indices);
+        auto metas = meta->split_by_indices(seg_indices);
+        auto tensors = split_tensor(tensor, seg_indices);
         for (int i = 0; i < n; i++) {
             batches.emplace_back(TensorBatch{tensors[i], metas[i]});
         }
         return batches;
+    }
+
+    std::vector<TensorBatch> split_by_expert_id() {
+        return TensorBatch::split_by_expert_id(this->data, this->metadata);
     }
 
     // NOTE: merge by exp_ids, this function is only called in expert worker

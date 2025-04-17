@@ -37,6 +37,7 @@ class InitCoreArgs:
     out_nccl_ids_ext: Dict[int, int]
     
     expert_ranks: List[Tuple[int, int, int]]
+    expert_wise_schedule: bool = False
     
     # Group Channels
     out_device_group_ids: Dict[int, List[int]] = None

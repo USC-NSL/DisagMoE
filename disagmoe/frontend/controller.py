@@ -45,7 +45,7 @@ class AsyncResult:
 
 class Controller:
     
-    def __init__(self, n_node: int, n_gpu_per_node: int, enable_nsys=False):
+    def __init__(self, n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
         # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
@@ -63,6 +63,7 @@ class Controller:
         self.request_results: Dict[int, AsyncResult] = dict()
         self.is_polling = False
         self.enable_nsys = enable_nsys
+        self.expert_wise_schedule = expert_wise_schedule
         
         self.dp_scheduler: DPScheduler = None
         
@@ -271,6 +272,7 @@ class Controller:
                         tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                     expert_ranks=model_place.out_expert_ranks_at(device_id),
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
+                    expert_wise_schedule=self.expert_wise_schedule,
                 )
             ) for worker, device_id in zip(
                 self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -426,7 +428,8 @@ class Controller:
 controller: Controller
 
 
-def init_controller(n_node: int, n_gpu_per_node: int, enable_nsys=False):
+def init_controller(n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
     global controller
-    controller = Controller(n_node, n_gpu_per_node, enable_nsys)
+    controller = Controller(n_node, n_gpu_per_node,
+                            expert_wise_schedule=expert_wise_schedule, enable_nsys=enable_nsys)
     return controller

@@ -38,6 +38,7 @@ def get_parser_base():
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
     parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")
+    parser.add_argument("--expert-wise-schedule", action="store_true", default=False, help="enable expert-wise schedule")
 
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")

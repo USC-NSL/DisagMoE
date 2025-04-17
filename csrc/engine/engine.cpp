@@ -115,6 +115,7 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     int top_k,
     bool has_attn,
     bool has_expert,
+    bool expert_wise_schedule,
     ParallelConfig cfg,
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
@@ -123,7 +124,8 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids,
     const std::vector<int> &device_group_ids,
-    int local_attn_dp_rank) {
+    int local_attn_dp_rank
+) {
 
     ASSERT (has_attn ^ has_expert == true);
 
@@ -168,7 +170,14 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
         attn_scheduler = AttentionScheduler::build(pool, layer_ids, "mbfs");
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, 1);
+        LayerSchedulePolicy policy = LayerSchedulePolicy::GROUP;
+        int num_groups = 1;
+        if (expert_wise_schedule) {
+            policy = LayerSchedulePolicy::GROUP;
+            num_groups = cfg.n_exp_per_rank;
+            DMOE_LOG(INFO) << local_id << " expert wise schedule, #experts per EP rank: " << num_groups << LEND;
+        }
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, num_groups);
         expert_scheduler = Scheduler::build(pool, layer_ids, "mbfs");
     }
 

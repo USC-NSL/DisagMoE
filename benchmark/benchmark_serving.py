@@ -97,7 +97,7 @@ def launch(args):
     model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph_attn = args.cuda_graph_attn
     model_config.enable_cuda_graph_expert = False
-    model_config.enable_grouped_gemm = not args.serial_gemm
+    model_config.enable_grouped_gemm = not args.serial_gemm and not args.expert_wise_schedule
     model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
     model_config.max_batch_size_attn = args.max_batch_size_attn
@@ -113,7 +113,12 @@ def launch(args):
 
     global master
 
-    master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
+    master = init_controller(
+        cluster_config.n_node, 
+        cluster_config.n_gpu, 
+        expert_wise_schedule=args.expert_wise_schedule,
+        enable_nsys=args.nsys
+    )
 
     cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
