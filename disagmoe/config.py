@@ -27,8 +27,8 @@ class ModelConfig:
     enable_grouped_gemm: bool = True
     
     graph_stride: int = 8
-    max_batch_size_attn: int = 256
-    max_batch_size_expert: int = 384
+    max_batch_size_attn: int = 160
+    max_batch_size_expert: int = 512
     max_seq_len: int = 4096
     
     # FIXME(hogura|20250110): temporary field, should be moved to other place
@@ -62,7 +62,8 @@ class CacheConfig(vllm.config.CacheConfig):
 
 
 @dataclass
-class SamplingConfig:    
+class SamplingConfig:
+    min_output_len: int    
     max_output_len: int
 
 

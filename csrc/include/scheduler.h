@@ -143,20 +143,44 @@ public:
         FLFS,   // first-layer-first-serve
         MBFLFS,  // max-block-first-layer-first-serve
         MBTFS,  // max-batch-token-first-serve
+        BIN,   // bin
     };
 
-    LayerScheduler(MuPool* pool, std::vector<int> layer_ids, LayerScheduleType type = LayerScheduleType::MBFS);
+    LayerScheduler(int n_layers, LayerScheduleType type = LayerScheduleType::MBFS);
 
-    int schedule();
+    virtual int schedule();
 
     void set_schedule_type(std::string type);
 
-    void set_block_step(int step);
+    void set_block_size(int block_size);
+
+    void remove_tokens_from_layer(int layer_id, int num_tokens) {
+        ASSERT(layer_id >= 0 && layer_id < n_layers);
+        num_tokens_in_layer[layer_id] -= num_tokens;
+        if (num_tokens_in_layer[layer_id] < 0) {
+            num_tokens_in_layer[layer_id] = 0;
+        }
+    }
+
+    virtual void add_tokens_to_layer(int layer_id, int num_tokens);
+
+    std::vector<int> get_tokens_per_layer() {
+        return num_tokens_in_layer;
+    }
+
+protected:
+    int n_layers;
+    std::vector<int> num_tokens_in_layer;
+    std::vector<int> num_batches_in_layer;
+
+    void clean_layer_status(int layer_id) {
+        num_tokens_in_layer[layer_id] = 0;
+        num_batches_in_layer[layer_id] = 0;
+    }
 
 private:
-    MuPool* pool;
     LayerScheduleType type;
-    int step, n_layers;
+    int block_size;
 
     /*
         max-batch-first-serve
@@ -168,24 +192,28 @@ private:
     */
     int _schedule_flfs();
 
+    int _schedule_bin();
+
     /*
         max-block-first-layer-first-serve
 
-        1. Group layers into blocks with step size
+        1. Group layers into blocks with block size
         2. Find the block with the largest token count
         3. Find the first layer with tokens in the block
 
         NOTE(hogura|20250317): 
-            * when step=1, this is equivalent to MBFS
-            * when step=n_layers, this is equivalent to FLFS
+            * when block_size=1, this is equivalent to MBFS
+            * when block_size=n_layers, this is equivalent to FLFS
     */
     int _schedule_mbflfs();
 
     int _schedule_batches_tokens();
 
+
+
 };
 
-class AdvancedLayerScheduler {
+class AdvancedLayerScheduler: public LayerScheduler {
 
 private:
     enum LayerStatus {
@@ -195,10 +223,8 @@ private:
         IDLE,
     };
 
-    int n_layers;
     int hold_steps;
 
-    std::vector<int> num_tokens_in_layer;
     std::vector<int> num_steps_to_hold;
     std::vector<long long> ready_timestamp_ms;
     std::vector<LayerStatus> layer_status;
@@ -226,8 +252,36 @@ public:
 
     AdvancedLayerScheduler(int n_layers, int hold_steps=2);
 
-    int schedule(); // schedule is protected by a external lock
+    int schedule() override; // schedule is protected by a external lock
 
-    void add_tokens_to_layer(int layer_id, int num_tokens); // add_tokens_to_layer is protected by a external lock
+    void add_tokens_to_layer(int layer_id, int num_tokens) override; // add_tokens_to_layer is protected by a external lock
+
+};
+
+class GroupLayerScheduler: public LayerScheduler {
+
+private:
+    int n_groups;
+
+    inline int get_layer_group_id(int layer_id, int group_id) {
+        return layer_id * n_groups + group_id;
+    }
+
+    using LayerScheduler::clean_layer_status;
+
+    void clean_layer_status(int layer_id, int group_id) {
+        int layer_group_id = get_layer_group_id(layer_id, group_id);
+        clean_layer_status(layer_group_id);
+    }
+
+public:
+
+    GroupLayerScheduler(int num_layers, int num_groups);
+
+    int schedule() override;
+
+    using LayerScheduler::add_tokens_to_layer;
+
+    void add_tokens_to_layer(int layer_id, int group_id, int num_tokens);
 
 };

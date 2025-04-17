@@ -23,7 +23,7 @@ def run_once_endpoint():
     from flask import request
     
     data = request.get_json()
-    rate = data.get('rate', 1.0)
+    rate = data.get('rate', 10)
     time = data.get('time', 10)
     distribution = data.get('distribution', 'poisson')
     
@@ -31,7 +31,7 @@ def run_once_endpoint():
         return "Missing required parameters", 400
     
     try:
-        rate = float(rate)
+        rate = int(rate)
         time = int(time)
         distribution = str(distribution)
     except ValueError:

@@ -1,0 +1,6 @@
+Model,Hidden Size,Intermediate Size,Number of Experts,Active Experts per Token,Notes
+Mixtral 8x7B,4096,14336,8,2,"Each expert has 7B parameters"
+Mixtral 8x22B,6144,16384,8,2,"Each expert has 22B parameters"
+DBRX,6144,10752,16,4,"132B total parameters, 36B active per input"
+Llama 4,5120,8192,16 (Scout) / 128 (Maverick),1,"Scout: 109B total / 17B active; Maverick: 400B total / 17B active"
+DeepSeek V3,7168,2048,256,8,"1 shared expert + 256 routed, each routed expert has 2048 intermediate size"

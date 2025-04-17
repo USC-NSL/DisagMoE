@@ -28,9 +28,11 @@ protected:
     std::set<int> finished_seqs; // sequences that have reached EOS and ended another round of inference
     std::map<int, SloStat> slo_stats;
     std::map<int, int> output_lens;
+    std::unordered_map<int, int> required_output_lens;
 
     std::vector<SamplerStepInfo> step_infos; 
 
+    int min_output_len;
     int max_output_len;
 
     std::mutex result_lock;
@@ -43,13 +45,14 @@ protected:
 
 public:
     Sampler(int device_id, 
+            int min_output_len,
             int max_output_len,
             ParallelConfig cfg,
             std::vector<Channel_t> in_channels, 
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
 
-    virtual void process_batch(torch::Tensor data, metadata_t meta);
+    virtual int process_batch(torch::Tensor data, metadata_t meta);
 
     int sample(uintptr_t buf, metadata_t meta);
 
@@ -75,6 +78,7 @@ private:
 public:
 
     TopKSampler(int device_id, 
+                int min_output_len,
                 int max_output_len,
                 int top_k,
                 ParallelConfig cfg,
@@ -82,7 +86,7 @@ public:
                 std::vector<Channel_t> out_channels,
                 std::vector<ChannelInfo> out_channel_infos);
 
-    void process_batch(torch::Tensor data, metadata_t meta) override;
+    int process_batch(torch::Tensor data, metadata_t meta) override;
 
 };
 

@@ -161,14 +161,14 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     if (has_attn) {
         mu_attn_pool_t pool;
         if (top_k == 1) {
-            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1);
+            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::BASE);
         } else {
-            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k);
+            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::BASE);
         }
         attn_scheduler = AttentionScheduler::build(pool, layer_ids, "mbfs");
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels);
+        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, 1);
         expert_scheduler = Scheduler::build(pool, layer_ids, "mbfs");
     }
 
@@ -271,6 +271,7 @@ void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatch
 
 Sampler_t init_sampler(
     int local,
+    int min_output_len,
     int max_output_len,
     int top_k,
     ParallelConfig cfg,
@@ -300,11 +301,11 @@ Sampler_t init_sampler(
     Sampler_t sampler;
     if (top_k == 1) {
         sampler = std::make_shared<Sampler>(
-            local, max_output_len, cfg, in_channels, out_channels, out_channel_infos
+            local, min_output_len, max_output_len, cfg, in_channels, out_channels, out_channel_infos
         );
     } else {
         sampler = std::make_shared<TopKSampler>(
-            local, max_output_len, top_k, cfg, in_channels, out_channels, out_channel_infos
+            local, min_output_len, max_output_len, top_k, cfg, in_channels, out_channels, out_channel_infos
         );
     }
     return sampler;

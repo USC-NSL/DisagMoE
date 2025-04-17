@@ -49,6 +49,7 @@ void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatch
 
 Sampler_t init_sampler(
     int device_id,
+    int min_output_len,
     int max_output_len,
     int top_k,
     ParallelConfig cfg,

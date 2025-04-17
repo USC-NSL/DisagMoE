@@ -121,9 +121,17 @@ public:
     void debug_put(TensorBatch batch);
 };
 
+enum LayerSchedulePolicy {
+    BASE,
+    ADVANCED,
+    GROUP,
+};
+
 class LayerScheduler;
 
 class AdvancedLayerScheduler;
+
+class GroupLayerScheduler;
 
 class MuPool: public MuHelper {
 protected:
@@ -133,6 +141,9 @@ protected:
     // ctx must be ahead of mq
     zmq::context_t ctx;
     zmq::socket_t mq;
+
+    int num_layers;
+    int num_groups;
 
     std::vector<std::vector<TensorBatch>> data_queue;
     std::vector<int> layer_id_P2V; // physical layer id to virtual layer id (within this worker)
@@ -155,7 +166,7 @@ protected:
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
-    std::shared_ptr<AdvancedLayerScheduler> layer_scheduler;
+    std::shared_ptr<LayerScheduler> layer_scheduler;
 
     void recv_metadata(int &peer_id, metadata_t &meta);
 
@@ -165,11 +176,19 @@ protected:
 
     void start_queueing_timer(const std::vector<int> &req_ids);
 
+    inline int get_layer_group_id(int layer_id, int group_id) {
+        return layer_id * num_groups + group_id;
+    }
+
 public:
-    MuPool(std::vector<int> layer_ids,
-           int device_id,
-           std::vector<Channel_t> channels,
-           bool is_attn = false);
+    MuPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
+        int num_groups = 1,
+        bool is_attn = false
+    );
 
     void run() override;
 
@@ -235,11 +254,14 @@ protected:
 
 public:
 
-    MuAttentionPool(std::vector<int> layer_ids,
-           int device_id,
-           std::vector<Channel_t> channels,
-           std::vector<int> device_group_ids = {},
-           Channel_t group_comm = nullptr);
+    MuAttentionPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        std::vector<int> device_group_ids = {},
+        Channel_t group_comm = nullptr,
+        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
+    );
 
     virtual std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
 
@@ -297,12 +319,15 @@ class MuAttentionTopKPool: public MuAttentionPool {
 
 public:
 
-    MuAttentionTopKPool(std::vector<int> layer_ids,
-           int device_id,
-           std::vector<Channel_t> channels,
-           std::vector<int> device_group_ids = {},
-           Channel_t group_comm = nullptr,
-           int top_k = 1);
+    MuAttentionTopKPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        std::vector<int> device_group_ids = {},
+        Channel_t group_comm = nullptr,
+        int top_k = 1,
+        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
+    );
 
     int tokens_in_layer(int lid) override;
 

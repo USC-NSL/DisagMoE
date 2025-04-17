@@ -100,6 +100,7 @@ struct TokenTopKInfo {
 
     TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, float weight, torch::Tensor tensor):
         seq_id(seq_id), init_prefill_len(init_prefill_len), 
+        attn_dp_rank(attn_dp_rank),
         topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
@@ -159,6 +160,13 @@ struct Metadata {
 
     inline ncclDataType_t get_nccl_datatype() const {
         return ncclBfloat16;
+    }
+
+    inline int get_dp_rank() const {
+        // NOTE: this is only used in expert worker, 
+        //       caller must make sure all tokens in 
+        //       the batch are from the same dp rank
+        return attn_dp_ranks[0];
     }
 
     constexpr size_t get_datatype_size() const {

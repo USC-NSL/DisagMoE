@@ -21,7 +21,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe import (
 
 import triton
 import triton.language as tl
-
+import os
 
 @triton.jit
 def compute_seg_indptr_triton_kernel(reorder_topk_ids, seg_indptr, num_toks):
@@ -48,12 +48,36 @@ def compute_src2dst_triton_kernel(
     mask = dst_id < num_toks
     src_id = tl.load(reorder_ids + dst_id, mask=mask)
     tl.store(src2dst + src_id, dst_id, mask=mask)
-
+    
+@torch.compile
+def multinomial_no_replacement(probs, num_samples):
+    """
+    probs: [batch_size, num_classes] or [num_classes] (will be normalized)
+    num_samples: number of samples to draw (must be <= num_classes)
+    Returns: [batch_size, num_samples] or [num_samples]
+    """
+    # Normalize and reshape to [batch_size, num_classes]
+    if probs.dim() == 1:
+        probs = probs.unsqueeze(0)
+    probs = probs / probs.sum(dim=-1, keepdim=True)
+    
+    batch_size, num_classes = probs.shape
+    assert num_samples <= num_classes, "Can't sample more than population"
+    
+    # Gumbel trick: logp + Uniform noise
+    gumbel_noise = -torch.empty_like(probs).exponential_().log()  # ~Gumbel(0,1)
+    noisy_logits = torch.log(probs) + gumbel_noise
+    
+    # Top-k selection (equivalent to sampling without replacement)
+    _, samples = torch.topk(noisy_logits, num_samples, dim=-1)
+    
+    return samples
 
 class MoEAttention(nn.Module):
 
     def __init__(
         self,
+        layer_id: int,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -141,6 +165,29 @@ class MoEAttention(nn.Module):
         
         self.pre_attention_layernorm = RMSNorm(hidden_size)
         self.post_attention_layernorm = RMSNorm(hidden_size)
+        
+        routing_trace_file_path = os.environ.get("DMOE_WEIGHTED_ROUTER_FILE")
+        if routing_trace_file_path is not None and routing_trace_file_path != "":
+            category = os.environ.get("DMOE_WEIGHTED_ROUTER_CATEGORY", "closed_qa")
+            assert os.path.exists(routing_trace_file_path), f"Weighted router file {routing_trace_file_path} does not exist."
+            import pandas as pd
+            df = pd.read_csv(routing_trace_file_path)
+            df = df[df['category'] == category]
+            df = df[df['layer_id'] == layer_id]
+            df = df.iloc[:, list(range(-8, 0))]
+            
+            data = torch.tensor(df.values, dtype=torch.int32).sum(dim=0)
+            self.weighted_router = data / data.sum(dim=-1, keepdim=True)
+        else:
+            self.weighted_router = None
+
+    def _random_routing_with_weights(self, router_logits: torch.Tensor) -> torch.Tensor:
+        num_tokens = router_logits.shape[0]
+        weights = self.weighted_router.expand(num_tokens, -1)
+        topk_ids = multinomial_no_replacement(weights, self.top_k)
+        sampled_weights = torch.gather(weights, 1, topk_ids)
+        topk_weights = sampled_weights / sampled_weights.sum(dim=1, keepdim=True)
+        return topk_weights, topk_ids
 
     def permute_by_exp_ids(self, hidden_states: torch.Tensor, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -174,12 +221,13 @@ class MoEAttention(nn.Module):
         output, residual = self.post_attention_layernorm(output, residual)
         router_logits, _ = self.gate(output)
         
-        # random routing
-        random_logits = torch.rand_like(router_logits)
-        
-        topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
-                                gating_output=random_logits,
-                                topk=self.top_k,
-                                renormalize=True)
+        if self.weighted_router is not None:
+            topk_weights, topk_ids = self._random_routing_with_weights(router_logits)
+        else:
+            router_logits = torch.rand_like(router_logits)
+            topk_weights, topk_ids = fused_topk(hidden_states=hidden_states,
+                                    gating_output=router_logits,
+                                    topk=self.top_k,
+                                    renormalize=True)
         
         return output, topk_weights, topk_ids

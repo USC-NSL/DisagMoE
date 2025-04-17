@@ -158,6 +158,7 @@ class Engine:
                 self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
                 self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
             self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
+            self._log_memory_usage("After initialize cache")
             self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
             self.block_mgr = BlockManager_C(
                 self.cache_config.block_size, 
@@ -172,6 +173,7 @@ class Engine:
             self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
+            self._log_memory_usage("After build CUDA graphs")
             
         self._logger.info("Executors built")
         
@@ -400,7 +402,6 @@ class Engine:
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
         init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids
-            
         # if the first layer in this attention worker, update block table and decode_seq_lens
 
         if meta_py.layer_id == self.model_config.layer_ids[0]:
@@ -633,7 +634,7 @@ class Engine:
         self._timer.stop("preprocess")
         self._timer.start("execute")
         
-        if not self.model_config.enable_cuda_graph_attn:
+        if not self.model_config.enable_cuda_graph_attn or num_tokens > self.attn_max_batch_size:
             # topk_weights and expert_ids: [batch_size, top_k]
             hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
         else:
@@ -715,7 +716,12 @@ class Engine:
         
         with torch.cuda.stream(self.h2d_stream):
             new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
-            self.static_mappings_gpu[:num_tokens].copy_(new_mappings_cpu, non_blocking=True)
+            
+            if num_tokens > self.expert_max_batch_size:
+                new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
+            else:
+                new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
             if self.model_config.top_k > 1:
                 topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
             h2d_event.record(self.h2d_stream)
@@ -725,7 +731,7 @@ class Engine:
         if self.model_config.top_k > 1:
             output = output * topk_weights
         
-        output = permute_tokens(output, self.static_mappings_gpu[:num_tokens])
+        output = permute_tokens(output, new_mappings_gpu)
         meta_c.update_exp_ids([], [])
         meta_c.step_layer()
 
@@ -768,7 +774,19 @@ class Engine:
     def stats_pre_process(self, batch: TensorBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
         self._step_start_timestamp_ms = time_ms()
-    
+        
+    def record_empty_step(self):
+        if not self.model_config.enable_trace:
+            return
+        
+        step_end_timestamp_ms = time_ms()
+        self._step_stats.append(
+            StepInfo(self._step_start_timestamp_ms, 
+                    step_end_timestamp_ms, 
+                    0, -1, -1, 
+                    {x: 0 for x in self.model_config.layer_ids})
+        )
+        
     def stats_post_process(self, batch: TensorBatch):
         step_end_timestamp_ms = time_ms()
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
@@ -818,11 +836,22 @@ class Engine:
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
+        
+        prev_schedule_empty = True
+        self._step_start_timestamp_ms = time_ms()
         while not self.end_flag:
             self._timer.start("schedule")
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
+                if not prev_schedule_empty:
+                    prev_schedule_empty = True
+                    self._step_start_timestamp_ms = time_ms()
                 continue
+            
+            if prev_schedule_empty:
+                self.record_empty_step()
+                prev_schedule_empty = False
+            
             self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
@@ -973,6 +1002,7 @@ class SamplerEngine(Engine):
     def init_core(self, core_args: InitCoreArgs,):
         self.sampler = init_sampler(
             self.device_id,
+            self.min_output_len,
             self.max_output_len,
             self.model_config.top_k,
             ParallelConfig.from_c(
@@ -998,7 +1028,8 @@ class SamplerEngine(Engine):
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
-    def set_sampling_params(self, max_output_len: int):
+    def set_sampling_params(self, min_output_len: int, max_output_len: int):
+        self.min_output_len = min_output_len
         self.max_output_len = max_output_len
         
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:

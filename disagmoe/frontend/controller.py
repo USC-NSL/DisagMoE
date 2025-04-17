@@ -184,9 +184,11 @@ class Controller:
                                        num_reserved_blocks=RESERVED_BLOCKS)
             
         if not sampling_config:
-            self.max_output_len = 64
-            print(f"Sampler using default max output len: {self.max_output_len}")
+            self.min_output_len = 100
+            self.max_output_len = 200
+            print(f"Sampler using default output len: [{self.min_output_len}, {self.max_output_len})")
         else:
+            self.min_output_len = sampling_config.min_output_len
             self.max_output_len = sampling_config.max_output_len
             
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
@@ -239,7 +241,7 @@ class Controller:
                 )
         ])
         
-        ray.get(self.sampler_worker.set_sampling_params.remote(self.max_output_len))
+        ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
         
         # init core
         tasks = [

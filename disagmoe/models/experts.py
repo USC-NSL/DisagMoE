@@ -27,6 +27,9 @@ class MoEExperts(torch.nn.Module):
             self.intermediate_size //= self.tp_size
         self.create_weights(enable_cutlass_cache=enable_cutlass_cache,
                             max_batch_size=max_batch_size)
+        self.gmm_with_cache = None
+        self.gmm = gmm
+        self.gmm_cache_max_batch_size = max_batch_size
         
     def create_weights(self, params_dtype: torch.dtype = None, 
                        enable_cutlass_cache: bool = False,
@@ -36,12 +39,12 @@ class MoEExperts(torch.nn.Module):
             params_dtype = torch.bfloat16
             
         # Fused gate_up_proj (column parallel)
-        self.w1_weight = torch.nn.Parameter(torch.randn(self.num_experts,
+        self.w13_weight = torch.nn.Parameter(torch.randn(self.num_experts,
                                                     self.hidden_size,
-                                                    self.intermediate_size,
+                                                    self.intermediate_size * 2,
                                                     dtype=params_dtype).cuda(),
                                         requires_grad=False)
-        self.register_parameter("w1_weight", self.w1_weight)
+        self.register_parameter("w13_weight", self.w13_weight)
 
         # down_proj (row parallel)
         self.w2_weight = torch.nn.Parameter(torch.randn(self.num_experts,
@@ -51,17 +54,16 @@ class MoEExperts(torch.nn.Module):
                                         requires_grad=False)
         self.register_parameter("w2_weight", self.w2_weight)
         
-        self.w3_weight = torch.nn.Parameter(torch.randn(self.num_experts,
-                                                    self.hidden_size,
-                                                    self.intermediate_size,
-                                                    dtype=params_dtype).cuda(),
-                                        requires_grad=False)
-        self.register_parameter("w3_weight", self.w3_weight)
+        # self.w3_weight = torch.nn.Parameter(torch.randn(self.num_experts,
+        #                                             self.hidden_size,
+        #                                             self.intermediate_size,
+        #                                             dtype=params_dtype).cuda(),
+        #                                 requires_grad=False)
+        # self.register_parameter("w3_weight", self.w3_weight)
         
-        self.act_fn = torch.nn.SiLU()
+        self.act_fn = torch.nn.SiLU(inplace=True)
 
-        self.cache_up = torch.empty((max_batch_size, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_up_r = torch.empty((max_batch_size, self.intermediate_size), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_up = torch.empty((max_batch_size, self.intermediate_size * 2), dtype=params_dtype, device=torch.device("cuda"))
         self.cache_down = torch.empty((max_batch_size, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
         if enable_cutlass_cache:
             from grouped_gemm.backend import get_arguments, gmm_with_arguments
@@ -74,18 +76,24 @@ class MoEExperts(torch.nn.Module):
             def _gmm(hiddens, weight, batch_sizes, **kwargs):
                 return gmm_with_arguments(hiddens, weight, batch_sizes, self.cutlass_workspace, self.arguments_ptr, **kwargs)
             
-            self.gmm = _gmm
-        else:
-            self.gmm = gmm
+            self.gmm_with_cache = _gmm
         
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
-        # Here use grouped gemm, tokens must be permuted by corresponding expert_id
-        up = self.gmm(hiddens, self.w1_weight, batch_sizes, c=self.cache_up)
-        up[:bs] = self.act_fn(up[:bs])
-        up_r = self.gmm(hiddens, self.w3_weight, batch_sizes, c=self.cache_up_r)
-        up[:bs] *= up_r[:bs]
-        down = self.gmm(up, self.w2_weight, batch_sizes, c=self.cache_down)
-        return down[:bs]
+        output = None
+        if bs < self.gmm_cache_max_batch_size and self.gmm_with_cache is not None:
+            up = self.gmm(hiddens, self.w13_weight, batch_sizes, c=self.cache_up)
+            up_1 = up[:bs, :self.intermediate_size]
+            up_3 = up[:bs, self.intermediate_size:]
+            up_1 = self.act_fn(up_1)
+            up_1 *= up_3
+            down = self.gmm(up_1, self.w2_weight, batch_sizes, c=self.cache_down)
+            output = down[:bs]
+        else:
+            up = self.gmm(hiddens, self.w13_weight, batch_sizes)
+            up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
+            down = self.gmm(up, self.w2_weight, batch_sizes)
+            output = down
+        return output
 
 class MoEExpertsSerial(MoEExperts):
     
