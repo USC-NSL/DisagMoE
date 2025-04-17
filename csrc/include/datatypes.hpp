@@ -21,22 +21,34 @@
 
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
-    std::vector<T> res{};
-    res.clear();
-    if (r < 0)
-        r = a.size();
-    if (l == r)
-        return {};
-    if (a.empty())
-        return {};
-    ASSERT(l <= r);
-    ASSERT(r <= a.size());
-    res.reserve(r - l);
-    for (auto i = a.begin() + l; i != a.begin() + r; i ++)
-        res.emplace_back(*i);
+    if (a.empty()) return {};
+    return std::vector<T>(a.begin() + l, a.begin() + r);
+}
+
+template<class T>
+inline std::vector<std::vector<T>> split_vector(const std::vector<T> &vec, const std::vector<int> &indices) {
+    std::vector<std::vector<T>> res{};
+    if (vec.empty()) return {};
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(std::vector<T>(vec.begin() + l, vec.begin() + r));
+    }
     return res;
 }
 
+inline std::vector<torch::Tensor> split_tensor(const torch::Tensor &tensor, const std::vector<int> &indices) {
+    std::vector<torch::Tensor> res{};
+    ASSERT (tensor.size(0) == indices.back());
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(tensor.slice(0, l, r));
+    }
+    return res;
+}
 
 template<class T>
 inline void extend(std::vector<T> &a, const std::vector<T> &other) {
@@ -169,8 +181,52 @@ struct Metadata {
         return attn_dp_ranks[0];
     }
 
+    inline int get_expert_id() const {
+        // NOTE: this is only used in expert worker,
+        //       caller must make sure all tokens in
+        //       the batch have the same expert id
+        return exp_ids[0];
+    }
+
+    inline std::vector<int> get_expert_seg_indices() const {
+        // NOTE: this is only used in expert worker, 
+        //       caller must make sure all tokens are permuted by expert_id
+        std::vector<int> indices{0};
+        int n = exp_ids.size();
+        for (int i = 1; i < n; i ++) {
+            if (exp_ids[i] != exp_ids[i - 1]) {
+                indices.emplace_back(i);
+            }
+        }
+        indices.emplace_back(n);
+        return indices;
+    }
+
     constexpr size_t get_datatype_size() const {
         return 2; // bf16
+    }
+
+    inline std::vector<metadata_t> split_by_indices(const std::vector<int> &indices) {
+        int n = indices.size() - 1;
+        std::vector<std::vector<int>> split_req_ids = split_vector(req_ids, indices);
+        std::vector<std::vector<int>> split_exp_ids = split_vector(exp_ids, indices);
+        std::vector<std::vector<int>> split_attn_dp_ranks = split_vector(attn_dp_ranks, indices);
+        std::vector<std::vector<int>> split_init_prefill_lens = split_vector(init_prefill_lens, indices);
+        std::vector<std::vector<float>> split_topk_weights = split_vector(topk_weights, indices);
+        std::vector<metadata_t> metas;
+        for (int i = 0; i < n; i ++) {
+            metas.emplace_back(std::make_shared<Metadata>(
+                Metadata {
+                    {split_req_ids[i].size(), shape[1]},
+                    this->dtype, this->layer_id,
+                    split_req_ids[i], split_exp_ids[i],
+                    split_attn_dp_ranks[i],
+                    split_init_prefill_lens[i],
+                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i]
+                }
+            ));
+        }
+        return metas;
     }
 
     inline Metadata slice(int l, int r) {
@@ -503,6 +559,22 @@ struct Metadata {
 struct TensorBatch {
     torch::Tensor data;
     metadata_t metadata;
+
+    std::vector<TensorBatch> split_by_expert_id() {
+        auto seg_indices = metadata->get_expert_seg_indices();
+        int n = seg_indices.size() - 1;
+        if (n == 1) {
+            // only one segment
+            return {TensorBatch{data, metadata}};
+        }
+        std::vector<TensorBatch> batches;
+        auto metas = metadata->split_by_indices(seg_indices);
+        auto tensors = split_tensor(data, seg_indices);
+        for (int i = 0; i < n; i++) {
+            batches.emplace_back(TensorBatch{tensors[i], metas[i]});
+        }
+        return batches;
+    }
 
     // NOTE: merge by exp_ids, this function is only called in expert worker
     static TensorBatch merge(const std::vector<TensorBatch>& batches) {
