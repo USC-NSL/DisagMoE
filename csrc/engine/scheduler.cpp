@@ -326,7 +326,7 @@ AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
 
 int AdvancedLayerScheduler::schedule() {
     static float weight_decay = 0.8;
-    static int max_wait_time_ms = 30;
+    static int max_wait_time_ms = 100;
     static int lookahead_steps = 8;
     std::vector<int> ready_layers{};
     std::vector<int> urgent_layers{};

@@ -163,9 +163,9 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     if (has_attn) {
         mu_attn_pool_t pool;
         if (top_k == 1) {
-            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::BASE);
+            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::ADVANCED);
         } else {
-            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::BASE);
+            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::ADVANCED);
         }
         attn_scheduler = AttentionScheduler::build(pool, layer_ids, "mbfs");
     } 
