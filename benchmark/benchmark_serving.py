@@ -282,6 +282,14 @@ def analyze_throughput(args,
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
     sampler_df.to_csv(sampler_fn, index=False)
     
+    def get_peak_throughput(time_bin=5):
+        sampler_df['time_stamp'] = (sampler_df['time_stamp'] - sampler_df['time_stamp'].iloc[0]) / (10 ** 6)
+        seg = int((sampler_df['time_stamp'].iloc[-1] - sampler_df['time_stamp'].iloc[0] + time_bin - 1) // time_bin)
+        time_bins = [sampler_df['time_stamp'].iloc[0] + i * time_bin for i in range(seg + 1)]
+        time_sums = sampler_df.groupby(pd.cut(sampler_df['time_stamp'], bins=time_bins))['num_tokens'].sum()
+        time_sums /= time_bin
+        return time_sums.max()
+    
     # queueing delay
     attn_fn = get_worker_queueing_delay_name(args, "attn")
     attn_df = pd.DataFrame(attn_queueing_delays)
@@ -298,6 +306,8 @@ def analyze_throughput(args,
             for stat in slo_stats
     ])
     ttft_df.to_csv(ttft_fn, index=False)
+    
+    return get_peak_throughput()
 
     
 async def run_benchmark(master: Controller, args, 
@@ -330,17 +340,13 @@ async def run_benchmark(master: Controller, args,
         return None
     
     logger.info("Benchmark finished, now analyznig results ...")
-    metrics = analyze_results(results, t_duration)
-    logger.debug(f"{metrics}")
-    
+
     req_finish_timestamps.sort()
     for i in range(num_requests):
         req_finish_timestamps[i] -= t_start
+
     
-    metrics.write_to_file(args)
-    logger.info("Results written to file.")
-    
-    return results, req_finish_timestamps
+    return results, req_finish_timestamps, t_duration
 
 async def benchmark_warmup(master: Controller, args):
     logger.info("Now running warmup ...")
@@ -355,7 +361,9 @@ async def benchmark_warmup(master: Controller, args):
     master.reset()
     logger.info("Warmup done.")
 
-def post_benchmark(master, args, results, req_finish_timestamps):
+def post_benchmark(master, args, results, req_finish_timestamps, duration):
+    metrics = analyze_results(results, duration)
+    
     if args.trace:
         step_stats = master.fetch_step_stats()
         generate_step_trace(args, step_stats)
@@ -364,11 +372,16 @@ def post_benchmark(master, args, results, req_finish_timestamps):
         sampler_step_infos = master.fetch_sampler_step_infos()
         attn_delays, exp_delays = master.fetch_queueing_delays()
         t_submitted = master.fetch_submitted_time()
-        analyze_throughput(args, 
+        throughput = analyze_throughput(args, 
                            req_finish_timestamps,
                            sampler_step_infos, 
                            attn_delays, exp_delays,
                            t_submitted, results)
+        metrics.token_throughput = throughput
+        
+    metrics.write_to_file(args)
+    logger.info("Results written to file.")
+    return metrics
 
 async def benchmark_serving(
     master: Controller,
@@ -384,7 +397,7 @@ async def benchmark_serving(
     
     # run benchmark
     logger.info("Now running benchmark.")
-    results, req_finish_timestamps = await run_benchmark(
+    results, req_finish_timestamps, duration = await run_benchmark(
         master, args, args.generator_type, args.num_requests,
         args.min_input_len, args.max_input_len,
         args.min_output_len, args.max_output_len,  args.rate
@@ -394,10 +407,12 @@ async def benchmark_serving(
         await master.stop_scheduler()
         master.stop_workers()
     
-    post_benchmark(master, args, results, req_finish_timestamps)
+    metrics = post_benchmark(master, args, results, req_finish_timestamps, duration)
     
     master.reset()
-
+    
+    return metrics
+    
 def get_args():
     args = get_parser_base().parse_args()
     

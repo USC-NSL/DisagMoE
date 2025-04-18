@@ -7,6 +7,7 @@ from copy import copy
 
 from benchmark.benchmark_serving import benchmark_serving, launch, benchmark_warmup
 from benchmark.utils import get_parser_base
+from benchmark.workload import get_generator
 
 from disagmoe.utils.logger import get_logger
 from disagmoe.frontend.controller import Controller
@@ -24,35 +25,42 @@ def run_once_endpoint():
     
     data = request.get_json()
     rate = data.get('rate', 10)
-    time = data.get('time', 10)
+    duration = data.get('time', 10)
     distribution = data.get('distribution', 'poisson')
     
-    if rate is None or time is None or distribution is None:
+    if rate is None or duration is None or distribution is None:
         return "Missing required parameters", 400
     
     try:
         rate = int(rate)
-        time = int(time)
+        duration = int(duration)
         distribution = str(distribution)
     except ValueError:
-        return f"Invalid parameter types: {rate, time, distribution}", 400
+        return f"Invalid parameter types: {rate, duration, distribution}", 400
     
     new_args = copy(args)
     new_args.rate = rate
-    new_args.num_requests = int(time * rate)
     new_args.generator_type = distribution
+    generator_type = get_generator(distribution)
+    generator = generator_type(rate, 0, 0, 0)
+    new_args.num_requests = generator.get_num_requests(duration)
     
     async def _runner():
         global master
         master.start_polling_results()
         await master.start_scheduler()
-        await benchmark_serving(master, new_args, is_api_server=True)
+        metrics = await benchmark_serving(master, new_args, is_api_server=True)
+        print("Metrics:", metrics)
         await master.stop_scheduler()
+        return metrics
     
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    asyncio.run(_runner())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    return "run_once executed successfully", 200
+    metrics = loop.run_until_complete(_runner())
+    loop.close()
+    
+    return f"run_once executed successfully\n{metrics}\n", 200
 
 
 @app.route('/set_schedule', methods=['POST'])
