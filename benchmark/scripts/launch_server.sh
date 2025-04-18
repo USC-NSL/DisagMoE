@@ -14,6 +14,7 @@ dp_size=2
 step_exp=1
 ep_size=2
 top_k=1
+placement=coordinate
 
 REPORT_DIR=./reports
 
@@ -41,7 +42,7 @@ python benchmark/server.py \
     --step-exp $step_exp \
     --dp-size $dp_size \
     --ep-size $ep_size \
-    # -ca \
     --file $REPORT_TABLE \
     --analyze-throughput \
+    --placement $placement \
     --trace

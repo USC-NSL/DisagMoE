@@ -218,6 +218,7 @@ class PlacementBase:
             self.model_config.num_layers, self.model_config.num_experts,
             self.cluster_config.n_node, self.cluster_config.n_gpu
         )
+        print(place)
         place = self._add_edges(place)
         place = self._update_expert_rank(place)
         place = self._update_attn_dp_rank(place)
@@ -507,11 +508,62 @@ class ColocatePlacement(PlacementBase):
         place.attn_dp_ranks = {dev_id: dev_id for dev_id in place.attn}
         return place
 
+class CoordinatePlacement(ColocatePlacement):
+    """
+        Each node is seperated into two groups, [0, gpu_attn) for attn DP, and [gpu_attn, n_gpu) for experts.
+    """
+    
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, gpu_attn: int=-1):
+        super().__init__(model_config, cluster_config)
+        self.gpu_attn = gpu_attn if gpu_attn != -1 else cluster_config.n_gpu // 2
+        
+    @override
+    def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
+        num_devices = n_node * n_gpu_per_node
+        
+        all_layers = list(range(n_layer))
+        attns = {}
+        experts = {}
+        
+        cnt_expert = 0
+        attn_dp_cnt = 0
+        attn_dp_ranks = {}
+        for i in range(n_node):
+            for j in range(n_gpu_per_node):
+                dev_id = i * n_gpu_per_node + j
+                if j < self.gpu_attn:
+                    attns[dev_id] = all_layers
+                    attn_dp_ranks[dev_id] = attn_dp_cnt
+                    attn_dp_cnt += 1
+                else:
+                    experts[dev_id] = []
+                    for _ in range(self.model_config.num_experts_per_rank):
+                        assert cnt_expert < n_expert
+                        for layer_id in all_layers:
+                            experts[dev_id].append((layer_id, cnt_expert))
+                        cnt_expert += 1
+        
+        device_groups = {
+            i: [i] for i in range(num_devices)
+        }
+        
+        return ModelPlacement(
+            attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, 
+            {}, {},
+            attn_dp_ranks=attn_dp_ranks, 
+            device_groups=device_groups
+        )
+
+    @override
+    def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
+        return place
+
 _placement_cls: Dict[str, PlacementBase] = {
     "colocate": ColocatePlacement,
     "single": SinglePlacement,
     "interleave": InterleavePlacement,
     "pipeline": PipelinePlacement,
+    "coordinate": CoordinatePlacement,
 }
 
 def get_model_placement(
@@ -527,8 +579,10 @@ def get_model_placement(
     
     if strategy == "pipeline":
         solver = cls(model_config, cluster_config, *args, **kwargs)
-    elif strategy == "colocate":
+    elif strategy in ["colocate", "coordinate"]:
         solver = cls(model_config, cluster_config)
+    else:
+        raise NotImplementedError()
         
     place: ModelPlacement = solver.solve()
     
