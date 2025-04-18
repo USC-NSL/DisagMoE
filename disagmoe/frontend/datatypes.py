@@ -37,6 +37,12 @@ class Metadata:
     attn_dp_ranks: List[int]
     init_prefill_lens: List[int]
     topk_weights: List[float]
+    
+    def get_dp_rank(self) -> int:
+        ...
+        
+    def get_expert_id(self) -> int:
+        ...
 
     def num_tokens(self) -> int:
         ...
@@ -99,7 +105,6 @@ class TensorBatch:
             batch_c.data,
             batch_c.metadata
         )
-
 @dataclass
 class AttentionBatchMetadata:
     layer_id: int

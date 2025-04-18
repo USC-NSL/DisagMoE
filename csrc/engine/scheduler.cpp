@@ -327,6 +327,7 @@ AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
 int AdvancedLayerScheduler::schedule() {
     static float weight_decay = 0.8;
     static int max_wait_time_ms = 30;
+    static int lookahead_steps = 8;
     std::vector<int> ready_layers{};
     std::vector<int> urgent_layers{};
     std::vector<int> hold_layers{};
@@ -366,9 +367,9 @@ int AdvancedLayerScheduler::schedule() {
         std::vector<float> scores(ready_layers.size());
         for (int i = 0; i < ready_layers.size(); i++) {
             int layer_id = ready_layers[i];
-            float decay = 1;
+            float decay = 1.f;
             float score = .0f;
-            for (int j = 0; j < 4; j++) {
+            for (int j = 0; j < lookahead_steps; j++) {
                 int cur_layer = (layer_id + j) % n_layers;
                 score += num_tokens_in_layer[cur_layer] * decay;
                 decay *= weight_decay;
@@ -429,19 +430,25 @@ void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int nu
 
 int GroupLayerScheduler::schedule() {
     static float weight_decay = 0.8;
+    static int lookahead_steps = 4;
     std::vector<float> scores(n_layers * n_groups);
     for (int i = 0; i < n_layers; i++) {
+        float lookahead_score = 0;
+        float decay = 1.f;
+        for (int k = 0; k < lookahead_steps; k++) {
+            int cur_layer = (i + k) % n_layers;
+            int num_tokens_cur_layer = 0;
+            for (int j = 0; j < n_groups; j++) {
+                int layer_group_id = get_layer_group_id(cur_layer, j);
+                num_tokens_cur_layer += num_tokens_in_layer[layer_group_id];
+            }
+            lookahead_score += num_tokens_cur_layer * decay / n_groups;
+            decay *= weight_decay;
+        }
+
         for (int j = 0; j < n_groups; j++) {
             int layer_group_id = get_layer_group_id(i, j);
-            float decay = 1;
-            float score = .0f;
-            for (int k = 0; k < 4; k++) {
-                int cur_layer = (i + k) % n_layers;
-                int cur_layer_group_id = get_layer_group_id(cur_layer, j);
-                score += num_tokens_in_layer[cur_layer_group_id] * decay;
-                decay *= weight_decay;
-            }
-            scores[layer_group_id] = score;
+            scores[layer_group_id] = lookahead_score + num_tokens_in_layer[layer_group_id];
         }
     }
     auto max_iter = std::max_element(scores.begin(), scores.end());

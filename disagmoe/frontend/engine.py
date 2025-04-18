@@ -803,22 +803,29 @@ class Engine:
             pool_snapshot_dict = dict()
             queueing_tokens = 0
             queueing_batches = 0
+            num_groups = len(self._pool_snapshot) // len(self.model_config.layer_ids)
             for i, size in enumerate(self._pool_snapshot):
                 if size <= 0:
                     continue
-                layer = self.model_config.layer_ids[i]
-                pool_snapshot_dict[layer] = size
+                # layer = self.model_config.layer_ids[i]
+                pool_snapshot_dict[i] = size
                 queueing_tokens += size
                 queueing_batches += 1
                 
             executed_layer_id = batch.metadata.layer_id
+            
+            # !!! This code should be fixed for co-location
             if self.has_expert:
                 executed_layer_id -= 1
+                
+            if num_groups > 1:
+                executed_layer_id = executed_layer_id * num_groups + batch.metadata.get_expert_id() % num_groups
+            
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
                         real_batch_size, executed_layer_id,
-                        self.executor.layer_mappings[executed_layer_id],
+                        executed_layer_id,
                         pool_snapshot_dict)
             )
         else:

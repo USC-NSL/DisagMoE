@@ -542,15 +542,16 @@ void MuPool::maintain_largest_batch() {
 
 std::vector<int> MuPool::get_pool_snapshot() {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
-    if (num_groups == 1) {
-        return this->tokens_per_layer_;
-    }
-    std::vector<int> snapshot(this->num_layers, 0);
-    for (int i = 0; i < this->num_layers; i++) {
-        for (int j = 0; j < this->num_groups; j++)
-            snapshot[i] += this->tokens_per_layer_[get_layer_group_id(i, j)];
-    }
-    return snapshot;
+    return this->tokens_per_layer_;
+    // if (num_groups == 1) {
+    //     return this->tokens_per_layer_;
+    // }
+    // std::vector<int> snapshot(this->num_layers, 0);
+    // for (int i = 0; i < this->num_layers; i++) {
+    //     for (int j = 0; j < this->num_groups; j++)
+    //         snapshot[i] += this->tokens_per_layer_[get_layer_group_id(i, j)];
+    // }
+    // return snapshot;
 }
 
 std::vector<TensorBatch> MuPool::fetch_largest_batch() {

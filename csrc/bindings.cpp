@@ -139,6 +139,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("init_prefill_lens", &Metadata::init_prefill_lens)
         .def_readwrite("topk_weights", &Metadata::topk_weights)
         .def("num_tokens", &Metadata::num_tokens)
+        .def("get_expert_id", &Metadata::get_expert_id)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)

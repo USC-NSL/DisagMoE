@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 from typing import Optional
 
+# triton grouped gemm copied from sglang
 @triton.jit
 def compute_m_range(
     pid,
