@@ -21,6 +21,10 @@ def get_ttft_name(args):
     dir_path = get_dir_path(args)
     return f"{dir_path}/ttft.csv"
 
+def get_req_submit_time_name(args):
+    dir_path = get_dir_path(args)
+    return f"{dir_path}/req_submit_time.csv"
+
 def get_req_finish_time_name(args):
     dir_path = get_dir_path(args)
     return f"{dir_path}/req_finish_time.csv"

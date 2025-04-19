@@ -1071,7 +1071,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        self._logger.info(f"tokenizer put request {req_id}")
+        # self._logger.info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         

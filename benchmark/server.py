@@ -44,6 +44,7 @@ def run_once_endpoint():
     generator_type = get_generator(distribution)
     generator = generator_type(rate, 0, 0, 0)
     new_args.num_requests = generator.get_num_requests(duration)
+    print(f"put {new_args.num_requests} requests")
     
     async def _runner():
         global master
@@ -58,7 +59,6 @@ def run_once_endpoint():
     asyncio.set_event_loop(loop)
     
     metrics = loop.run_until_complete(_runner())
-    loop.close()
     
     return f"run_once executed successfully\n{metrics}\n", 200
 

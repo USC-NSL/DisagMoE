@@ -353,7 +353,7 @@ class Controller:
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
         self.dp_scheduler.put_request(
-            self.tokenizer_worker.put_single_request.remote, req_id, input_len)
+            self.tokenizer_worker.put_single_request.remote, req_id, input_len + self.max_output_len, input_len)
         return res
         
     def fetch_submitted_time(self) -> Dict[int, int]:

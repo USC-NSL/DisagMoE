@@ -264,13 +264,20 @@ def generate_step_trace(args,
         pickle.dump(queue_length_per_step, f)
 
 def analyze_throughput(args, 
+                       req_submit_timestamps: List[float],
                        req_finish_timestamps: List[float],
                        sampler_step_infos: List[SamplerStepInfo], 
                        attn_queueing_delays: List[List[float]],
                        exp_queueing_delays: List[List[float]],
                        t_submitted: Dict[int, int],
                        slo_stats: List[SloStat]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, get_ttft_name, get_req_finish_time_name
+    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
+                                        get_ttft_name, get_req_finish_time_name, get_req_submit_time_name
+    
+    # request submit timestamp
+    req_submit_fn = get_req_submit_time_name(args)
+    req_submit_df = pd.DataFrame(req_submit_timestamps)
+    req_submit_df.to_csv(req_submit_fn, index=False)
     
     # request finish timestamp
     req_finish_fn = get_req_finish_time_name(args)
@@ -321,14 +328,15 @@ async def run_benchmark(master: Controller, args,
     pbar = tqdm.tqdm(total=num_requests)
     t_start = time.perf_counter()
     tasks = []
+    req_submit_timestamps = []
     req_finish_timestamps = []
     logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     for i in range(num_requests):
         t_elapsed = time.perf_counter() - t_start
         arrival, input_len = workload[i]
-        # logger.debug(f"Request {i} arrives at {arrival}s, input_len={input_len}")
         if t_elapsed < arrival:
             await asyncio.sleep(arrival - t_elapsed)
+        req_submit_timestamps.append(time.perf_counter() - t_start)
         resp = master.put_single_request(input_len)
         tasks.append(asyncio.create_task(process_response(resp, req_finish_timestamps, pbar)))
     
@@ -345,8 +353,7 @@ async def run_benchmark(master: Controller, args,
     for i in range(num_requests):
         req_finish_timestamps[i] -= t_start
 
-    
-    return results, req_finish_timestamps, t_duration
+    return results, req_submit_timestamps, req_finish_timestamps, t_duration
 
 async def benchmark_warmup(master: Controller, args):
     logger.info("Now running warmup ...")
@@ -361,7 +368,7 @@ async def benchmark_warmup(master: Controller, args):
     master.reset()
     logger.info("Warmup done.")
 
-def post_benchmark(master, args, results, req_finish_timestamps, duration):
+def post_benchmark(master, args, results, req_submit_timestamps, req_finish_timestamps, duration):
     metrics = analyze_results(results, duration)
     
     if args.trace:
@@ -373,10 +380,11 @@ def post_benchmark(master, args, results, req_finish_timestamps, duration):
         attn_delays, exp_delays = master.fetch_queueing_delays()
         t_submitted = master.fetch_submitted_time()
         throughput = analyze_throughput(args, 
-                           req_finish_timestamps,
-                           sampler_step_infos, 
-                           attn_delays, exp_delays,
-                           t_submitted, results)
+                            req_submit_timestamps,
+                            req_finish_timestamps,
+                            sampler_step_infos, 
+                            attn_delays, exp_delays,
+                            t_submitted, results)
         metrics.token_throughput = throughput
         
     metrics.write_to_file(args)
@@ -397,7 +405,7 @@ async def benchmark_serving(
     
     # run benchmark
     logger.info("Now running benchmark.")
-    results, req_finish_timestamps, duration = await run_benchmark(
+    results, req_submit_timestamps, req_finish_timestamps, duration = await run_benchmark(
         master, args, args.generator_type, args.num_requests,
         args.min_input_len, args.max_input_len,
         args.min_output_len, args.max_output_len,  args.rate
@@ -407,7 +415,7 @@ async def benchmark_serving(
         await master.stop_scheduler()
         master.stop_workers()
     
-    metrics = post_benchmark(master, args, results, req_finish_timestamps, duration)
+    metrics = post_benchmark(master, args, results, req_submit_timestamps, req_finish_timestamps, duration)
     
     master.reset()
     

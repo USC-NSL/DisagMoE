@@ -69,14 +69,14 @@ class OfflineGenerator(Generator):
     
 class IncrementalPoissonGenerator(Generator):
     
-    increment: int = 2 # rate increment
+    increment: int = 200 # rate increment
     interval: int = 60 # by seconds
     
     @override
     def get_num_requests(self, duration):
         num_reqs = 0
         rate = self.rate
-        while duration > self.interval:
+        while duration > 0:
             elapse = min(self.interval, duration)
             num_reqs += int(elapse * rate)
             duration -= elapse
@@ -85,16 +85,15 @@ class IncrementalPoissonGenerator(Generator):
     
     @override
     def generate_arrivals(self, n_request: int) -> List[float]:
-        
         arrivals = []
         current_time = 0.0
         total_reqs = 0
         rate = self.rate
         while total_reqs < n_request:
             num_reqs = min(rate * self.interval, n_request - total_reqs)
-            gap = np.random.exponential(1 / self.rate, int(num_reqs))
-            step_arrivals = np.cumsum(gap)
-            arrivals = np.concatenate((arrivals, step_arrivals + current_time))
+            gap = np.random.exponential(1 / rate, int(num_reqs))
+            step_arrivals = np.cumsum(gap) + current_time
+            arrivals = np.concatenate((arrivals, step_arrivals))
             rate += self.increment
             current_time += self.interval
             total_reqs += num_reqs

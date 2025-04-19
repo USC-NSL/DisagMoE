@@ -22,7 +22,7 @@ with open(data_path, "rb") as f:
     data = pickle.load(f)
     
 def sample(ls, steps):
-    starting_percentile = 0.3
+    starting_percentile = 0.8
     if len(ls) <= steps:
         return ls
     start = int(len(ls) * starting_percentile)
