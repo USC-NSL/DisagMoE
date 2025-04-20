@@ -146,7 +146,13 @@ public:
         BIN,   // bin
     };
 
-    LayerScheduler(int n_layers, LayerScheduleType type = LayerScheduleType::MBFS);
+    LayerScheduler(int n_layers);
+
+    LayerScheduler(int n_layers, LayerScheduleType type);
+
+    LayerScheduler(int n_layers, LayerScheduleType type, int lookback_steps);
+
+    LayerScheduler(int n_layers, LayerScheduleType type, int lookback_steps, int block_size);
 
     virtual int schedule();
 
@@ -168,10 +174,15 @@ public:
         return num_tokens_in_layer;
     }
 
+    void step_end();
+
 protected:
     int n_layers;
+    int lookback_steps;
     std::vector<int> num_tokens_in_layer;
     std::vector<int> num_batches_in_layer;
+    std::vector<std::queue<int>> history_tokens_in_layer;
+    std::vector<int> sum_history_tokens_in_layer;
 
     void clean_layer_status(int layer_id) {
         num_tokens_in_layer[layer_id] = 0;
@@ -208,8 +219,6 @@ private:
     int _schedule_mbflfs();
 
     int _schedule_batches_tokens();
-
-
 
 };
 
