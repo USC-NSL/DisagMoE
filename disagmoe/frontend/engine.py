@@ -690,6 +690,7 @@ class Engine:
         num_tokens = meta_c.num_tokens()
         
         if self.model_config.enable_grouped_gemm:
+            
             if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
                 meta_c.get_expert_batch_sizes_cuda(
                     self.model_config.num_experts, self.inner_exp_rank,
@@ -697,6 +698,7 @@ class Engine:
                 )
                 batch_sizes = self._static_bs_cuda
             else:
+                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
                 batch_sizes = torch.tensor(
                     [batch_sizes[i] for i in self.inner_exp_rank],
                     dtype=torch.int64, device="cuda"
@@ -1071,7 +1073,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        # self._logger.info(f"tokenizer put request {req_id}")
+        self._logger.info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         

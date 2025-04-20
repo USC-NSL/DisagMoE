@@ -67,9 +67,6 @@ def cuda_graph_preprocess_kernel(
         offsets_static = (token_indices[:, None] * static_input_stride + hidden_indices[None, :])
         tl.store(static_input_ptr + offsets_static, hidden_vals, mask=token_mask[:, None] & hidden_mask[None, :])
     
-    # Synchronize to ensure all threads complete the hidden_states copy
-    tl.synchronize()
-    
     # For 1D tensors (positions, slot_mapping, seq_lens, context_lens)
     if pid_hidden == 0:  # Only need one block in the hidden dimension
         token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
@@ -105,8 +102,6 @@ def cuda_graph_preprocess_kernel(
         block_indices = pid_hidden * HIDDEN_BLOCK_SIZE + tl.arange(0, HIDDEN_BLOCK_SIZE)
         token_mask = token_indices < num_tokens
         block_mask = block_indices < max_num_blocks
-        
-        block_indices = pid_hidden
         
         # Load from block_tables
         block_vals = tl.load(
@@ -426,8 +421,8 @@ class CUDAGraphAttnExecutor:
         max_num_blocks = meta.block_tables.shape[1]
         
         # Compute grid for kernel launch
-        TOKEN_BLOCK_SIZE = 128
-        HIDDEN_BLOCK_SIZE = 512
+        TOKEN_BLOCK_SIZE = 64
+        HIDDEN_BLOCK_SIZE = 256
         grid_token = (num_tokens + TOKEN_BLOCK_SIZE - 1) // TOKEN_BLOCK_SIZE
         grid_hidden = (hidden_dim + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
         grid_blocks = (max_num_blocks + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
