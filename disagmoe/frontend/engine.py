@@ -342,7 +342,8 @@ class Engine:
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
         peak_memory = self.init_gpu_memory - free_gpu_memory
         cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
-                            * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
+                            * self.model_config.num_kv_heads * self.cache_config.block_size \
+                                * self.cache_config.dtype_size * 2 # 2 for K&V
         
         num_gpu_blocks = int(
             (total_gpu_memory * self.cache_config.gpu_memory_utilization -

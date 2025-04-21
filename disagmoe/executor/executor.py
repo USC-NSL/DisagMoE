@@ -1,4 +1,5 @@
 import torch
+import os
 
 from torch import Tensor
 
@@ -176,8 +177,11 @@ class AttnExecutor(Executor):
         )
     
     def _make_kv_cache(self, num_layers, num_blocks, block_size, num_heads, head_size):
-        data_type = self.model_config.dtype
-        self.cache = torch.randn((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
+        data_type = self.cache_config.torch_dtype
+        if os.environ.get("VLLM_ATTENTION_BACKEND", "FLASHINFER") == "FLASHINFER":
+            self.cache = torch.zeros((num_layers, num_blocks, 2, block_size, num_heads, head_size), dtype=data_type)
+        else:
+            self.cache = torch.zeros((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
     
     def profile_execute(self, batch_size: int):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)

@@ -59,7 +59,19 @@ class CacheConfig(vllm.config.CacheConfig):
                          sliding_window, enable_prefix_caching, cpu_offload_gb)
         self.num_reserved_blocks = num_reserved_blocks
         self.num_gpu_blocks = num_gpu_blocks        
+        self.torch_dtype = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "fp8": torch.float8_e4m3fn
+        }[cache_dtype]
 
+    @property
+    def dtype_size(self):
+        return {
+            "fp8": 1,
+            "fp16": 2,
+            "bf16": 2,
+        }[self.cache_dtype]
 
 @dataclass
 class SamplingConfig:

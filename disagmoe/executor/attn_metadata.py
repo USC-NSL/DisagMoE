@@ -102,7 +102,8 @@ def _get_flash_infer_decode_wrapper():
     if _flash_infer_decode_wrapper is None:
         _flash_infer_decode_wrapper = BatchDecodeWithPagedKVCacheWrapper(
             get_flash_infer_workspace_buffer(),
-            "NHD"
+            "NHD",
+            use_tensor_cores=True,
         )
     return _flash_infer_decode_wrapper
 
@@ -132,19 +133,17 @@ def pack_flash_infer_metadata(
             paged_kv_indptr_tensor,
             paged_kv_last_page_len_tensor,
         )
-        block_table_bound_tensor = torch.zeros(paged_kv_indptr_tensor.numel() -
-                                                1,
-                                                device=paged_kv_indptr_tensor.device,
-                                                dtype=torch.int)
     else:
         # mocking=True when _warmup_attn
         block_table_1d = torch.zeros(
             (num_tokens + num_seqs * model_config.max_seq_len // cache_config.block_size, ), 
             dtype=torch.int32, device="cuda")
-        paged_kv_indptr_tensor = None
-        paged_kv_indices_tensor = None
-        paged_kv_last_page_len_tensor = None
-        block_table_bound_tensor = None
+        paged_kv_indptr_tensor = torch.zeros((num_tokens + 1,), dtype=torch.int32, device="cuda")
+        paged_kv_indices_tensor = torch.zeros((num_tokens,), dtype=torch.int32, device="cuda")
+        paged_kv_last_page_len_tensor = torch.zeros((num_tokens,), dtype=torch.int32, device="cuda")
+    block_table_bound_tensor = torch.zeros(num_tokens,
+                                            device=paged_kv_indptr_tensor.device,
+                                            dtype=torch.int)
 
     slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
     block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
@@ -162,11 +161,25 @@ def pack_flash_infer_metadata(
     assert mocking or model_config.enable_cuda_graph_attn or \
             max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
                 
+    decode_wrapper = _get_flash_infer_decode_wrapper()
+    decode_wrapper.plan(
+        paged_kv_indptr_tensor,
+        paged_kv_indices_tensor,
+        paged_kv_last_page_len_tensor,
+        model_config.num_heads,
+        model_config.num_kv_heads,
+        model_config.hidden_size // model_config.num_heads,
+        cache_config.block_size,
+        pos_encoding_mode="NONE",
+        kv_data_type=cache_config.torch_dtype,
+        q_data_type=model_config.dtype,
+    )
+
     return FlashInferMetadata(
         num_prefills=0,
         slot_mapping=slot_mapping_cuda,
         num_prefill_tokens=0,
-        num_decode_tokens=meta_py.num_decode_tokens,
+        num_decode_tokens=num_tokens,
         max_prefill_seq_len=0,
         block_tables=block_table_cuda,
         paged_kv_indptr=paged_kv_indptr_tensor,
@@ -181,7 +194,7 @@ def pack_flash_infer_metadata(
         seq_start_loc=seq_start_loc_cuda,
         query_start_loc=None,
         device=torch.get_default_device(),
-        data_type=cache_config.cache_dtype,
+        data_type=cache_config.torch_dtype,
         q_data_type=model_config.dtype,
         use_cuda_graph=model_config.enable_cuda_graph_attn,
         is_profile_run=mocking,

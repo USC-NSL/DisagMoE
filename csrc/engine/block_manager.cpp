@@ -181,6 +181,7 @@ torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
     torch::Tensor &res_paged_kv_last_page_len
 ) {
     AUTO_TX_RANGE;
+    // DMOE_LOG(DEBUG) << "A" << LEND;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
     int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
@@ -197,19 +198,21 @@ torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
 
     paged_kv_indptr.push_back(0);
 
+    // DMOE_LOG(DEBUG) << "B" << LEND;
     for (int i = 0; i < n; i++) {
         int id = meta->seq_ids[i];
         block_list_t list = get_seq_block_list(id);
 
         // adpated from vllm.attention.backends.flashinfer.FlashInferMetadataBuilder._update_paged_kv_tensors
-        int seq_len = meta->init_prefill_lens[i] + decode_seq_lens[i];
-        int block_table_bound = (seq_len + block_size_ - 1) / block_size_;
+        // DMOE_LOG(DEBUG) << "C" << LEND;
+        int block_table_bound = list->size();
         paged_kv_indptr.push_back(paged_kv_indptr.back() + block_table_bound);
-        int last_page_len = seq_len % block_size_;
+        int last_page_len = decode_seq_lens[i] % block_size_;
         if (last_page_len == 0) {
             last_page_len = block_size_;
         }
         paged_kv_last_page_len.push_back(last_page_len);
+        // DMOE_LOG(DEBUG) << "D" << LEND;
 
         for (int j = 0; j < list->size(); j++) {
             int v = (*list)[j];
@@ -218,10 +221,10 @@ torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
         }
     }
 
-    int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
+    // DMOE_LOG(DEBUG) << "E" << LEND;
 
     int slot_idx = n * m;
-    for (int i = 0; i < tokens_in_batch; i++) {
+    for (int i = 0; i < n; i++) {
         int last_idx = decode_seq_lens[i] - 1; // decode_index should be decode_lens - 1
         int block_id = last_idx / block_size_;
         int id_in_block = last_idx % block_size_;
@@ -235,6 +238,8 @@ torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
 
     auto block_table_cuda = block_table_1d_pinned.to(torch::kCUDA, true);
 
+    // DMOE_LOG(DEBUG) << "F" << LEND;
+
     res_paged_kv_indices = torch::tensor(
         paged_kv_indices, 
         torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
@@ -247,6 +252,8 @@ torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
         paged_kv_last_page_len, 
         torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
     );
+
+    // DMOE_LOG(DEBUG) << "G" << LEND;
 
     return std::move(block_table_cuda);
 }

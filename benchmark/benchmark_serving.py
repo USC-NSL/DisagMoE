@@ -12,6 +12,7 @@ from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
 
+import torch
 import gzip
 import json
 import asyncio
@@ -121,7 +122,7 @@ def launch(args):
     )
 
     cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, 
-                               cache_dtype="fp8_e5m2",
+                               cache_dtype=args.cache_dtype,
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 
