@@ -91,6 +91,16 @@ class BlockManager:
         
     def prepare_block_table(self, meta_c: AttentionBatchMetadata, decode_seq_lens: List[int]) -> torch.Tensor:
         ...
+    
+    def prepare_block_table_with_paged_indices(
+        self, 
+        meta_c: AttentionBatchMetadata, 
+        decode_seq_lens: List[int],
+        paged_kv_indices: torch.Tensor,
+        paged_kv_indptr: torch.Tensor,
+        paged_kv_last_page_len: torch.Tensor,
+    ) -> torch.Tensor:
+        ...
         
 class NcclGroupChannel:
     

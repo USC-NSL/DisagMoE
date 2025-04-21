@@ -165,9 +165,90 @@ torch::Tensor BlockManager::prepare_block_table(attn_metadata_t meta, const std:
         block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
         slot_idx ++;
     }
-    auto block_table_1d_pinned = torch::tensor(block_table_1d, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true));
+    auto block_table_1d_pinned = torch::tensor(
+        block_table_1d, 
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
+    );
 
     return block_table_1d_pinned.to(torch::kCUDA, true);
+}
+
+torch::Tensor BlockManager::prepare_block_table_with_paged_indices(
+    attn_metadata_t meta, 
+    const std::vector<int> &decode_seq_lens,
+    torch::Tensor &res_paged_kv_indices,
+    torch::Tensor &res_paged_kv_indptr,
+    torch::Tensor &res_paged_kv_last_page_len
+) {
+    AUTO_TX_RANGE;
+    // It should be ensured that every seq in batch has been alocated cache blocks
+    // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
+    int n = meta->seq_ids.size(); // decode seqs are already allocated in previous steps
+    size_t m = 0;
+    for (int i = 0; i < n; i++) {
+        int id = meta->seq_ids[i];
+        ASSERT (has_seq_block_list(id));
+        block_list_t list = get_seq_block_list(id);
+        m = std::max(m, list->size());
+    }
+    std::vector<int> block_table_1d(n * m + n, -1);
+
+    std::vector<int> paged_kv_indices(0), paged_kv_indptr(0), paged_kv_last_page_len(0);
+
+    paged_kv_indptr.push_back(0);
+
+    for (int i = 0; i < n; i++) {
+        int id = meta->seq_ids[i];
+        block_list_t list = get_seq_block_list(id);
+
+        // adpated from vllm.attention.backends.flashinfer.FlashInferMetadataBuilder._update_paged_kv_tensors
+        int seq_len = meta->init_prefill_lens[i] + decode_seq_lens[i];
+        int block_table_bound = (seq_len + block_size_ - 1) / block_size_;
+        paged_kv_indptr.push_back(paged_kv_indptr.back() + block_table_bound);
+        int last_page_len = seq_len % block_size_;
+        if (last_page_len == 0) {
+            last_page_len = block_size_;
+        }
+        paged_kv_last_page_len.push_back(last_page_len);
+
+        for (int j = 0; j < list->size(); j++) {
+            int v = (*list)[j];
+            block_table_1d[i * m + j] = v;
+            paged_kv_indices.push_back(v);
+        }
+    }
+
+    int tokens_in_batch = meta->num_prefill_tokens + meta->num_decode_tokens;
+
+    int slot_idx = n * m;
+    for (int i = 0; i < tokens_in_batch; i++) {
+        int last_idx = decode_seq_lens[i] - 1; // decode_index should be decode_lens - 1
+        int block_id = last_idx / block_size_;
+        int id_in_block = last_idx % block_size_;
+        block_table_1d[slot_idx] = block_table_1d[i * m + block_id] * block_size_ + id_in_block;
+        slot_idx ++;
+    }
+    auto block_table_1d_pinned = torch::tensor(
+        block_table_1d, 
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
+    );
+
+    auto block_table_cuda = block_table_1d_pinned.to(torch::kCUDA, true);
+
+    res_paged_kv_indices = torch::tensor(
+        paged_kv_indices, 
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
+    );
+    res_paged_kv_indptr = torch::tensor(
+        paged_kv_indptr, 
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
+    );
+    res_paged_kv_last_page_len = torch::tensor(
+        paged_kv_last_page_len, 
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU, 0).pinned_memory(true)
+    );
+
+    return std::move(block_table_cuda);
 }
 
 torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &decode_seq_lens) {

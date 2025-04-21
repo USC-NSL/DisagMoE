@@ -147,7 +147,7 @@ class AttnExecutor(Executor):
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.vllm_cache_config = VllmCacheConfig(
-            cache_dtype="auto",
+            cache_dtype=cache_config.cache_dtype,
             block_size=cache_config.block_size,
             gpu_memory_utilization=0, # useless in our case
             swap_space=0, #useless in our case
@@ -163,7 +163,7 @@ class AttnExecutor(Executor):
                 cache_config=self.vllm_cache_config,
             ) for layer_id in range(self.num_layers)
         ]
-        assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        # assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         
     @override
     def initialize_cache(self, num_blocks):

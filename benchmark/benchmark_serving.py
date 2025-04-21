@@ -120,7 +120,8 @@ def launch(args):
         enable_nsys=args.nsys
     )
 
-    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
+    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, 
+                               cache_dtype="fp8_e5m2",
                                num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
                                num_reserved_blocks=RESERVED_BLOCKS)
 

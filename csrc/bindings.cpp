@@ -166,7 +166,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("has_seq_block_list", &BlockManager::has_seq_block_list)
         .def("append_tokens", &BlockManager::append_tokens)
         .def("update_block_table", &BlockManager::update_block_table)
-        .def("prepare_block_table", &BlockManager::prepare_block_table);
+        .def("prepare_block_table", &BlockManager::prepare_block_table)
+        .def("prepare_block_table_with_paged_indices", &BlockManager::prepare_block_table_with_paged_indices);
 
     m.def("prepare_batch_infos", &prepare_batch_infos);
 

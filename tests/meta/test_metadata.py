@@ -50,7 +50,7 @@ for i in range(3):
         [1] * bs,
         []
     )
-    engine._pack_flash_attn_metadata(meta.to_c())
+    engine._pack_attn_metadata(meta.to_c())
 
 def main():
     meta = AttentionBatchMetadata(
@@ -65,7 +65,7 @@ def main():
         [1] * bs,
         []
     )
-    engine._pack_flash_attn_metadata(meta.to_c())
+    engine._pack_attn_metadata(meta.to_c())
 
 # engine.start_profile()
 

@@ -55,6 +55,14 @@ public:
     void update_block_table(attn_metadata_t meta, const std::vector<int> &context_lens);
 
     torch::Tensor prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+
+    torch::Tensor prepare_block_table_with_paged_indices(
+        attn_metadata_t meta, 
+        const std::vector<int> &decode_seq_lens,
+        torch::Tensor &paged_kv_indices,
+        torch::Tensor &paged_kv_indptr,
+        torch::Tensor &paged_kv_last_page_len
+    );
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
