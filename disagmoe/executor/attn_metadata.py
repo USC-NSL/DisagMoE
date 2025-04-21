@@ -12,8 +12,12 @@ from vllm.attention.backends.abstract import AttentionMetadata
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from disagmoe.config import ModelConfig, CacheConfig
 
-from disagmoe_c import prepare_batch_infos
+from flashinfer import BatchDecodeWithPagedKVCacheWrapper
+from flashinfer.decode import CUDAGraphBatchDecodeWithPagedKVCacheWrapper
+from flashinfer.prefill import BatchPrefillWithPagedKVCacheWrapper
     
+from disagmoe_c import prepare_batch_infos
+        
 def pack_flash_attn_metadata(
     block_mgr,
     model_config: ModelConfig,
@@ -72,7 +76,36 @@ def pack_flash_attn_metadata(
         block_tables=block_table_cuda,
         use_cuda_graph=model_config.enable_cuda_graph_attn,
     )
-    
+
+_flash_infer_prefill_wrapper: BatchPrefillWithPagedKVCacheWrapper = None
+_flash_infer_decode_wrapper: BatchDecodeWithPagedKVCacheWrapper = None
+_flash_infer_workspace_buffer: torch.Tensor = None
+
+def get_flash_infer_workspace_buffer():
+    global _flash_infer_workspace_buffer
+    if _flash_infer_workspace_buffer is None:
+        _flash_infer_workspace_buffer = torch.empty(
+            (256 * 1024 * 1024,), dtype=torch.uint8, device="cuda")
+    return _flash_infer_workspace_buffer
+
+def _get_flash_infer_prefill_wrapper():
+    global _flash_infer_prefill_wrapper
+    if _flash_infer_prefill_wrapper is None:
+        _flash_infer_prefill_wrapper = BatchPrefillWithPagedKVCacheWrapper(
+            get_flash_infer_workspace_buffer(),
+            "NHD"
+        )
+    return _flash_infer_prefill_wrapper
+
+def _get_flash_infer_decode_wrapper():
+    global _flash_infer_decode_wrapper
+    if _flash_infer_decode_wrapper is None:
+        _flash_infer_decode_wrapper = BatchDecodeWithPagedKVCacheWrapper(
+            get_flash_infer_workspace_buffer(),
+            "NHD"
+        )
+    return _flash_infer_decode_wrapper
+
 def pack_flash_infer_metadata(
         block_mgr,
         model_config: ModelConfig,
@@ -128,7 +161,7 @@ def pack_flash_infer_metadata(
     max_num_blocks = (max(seq_lens) - 1) // cache_config.block_size + 1
     assert mocking or model_config.enable_cuda_graph_attn or \
             max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
-    
+                
     return FlashInferMetadata(
         num_prefills=0,
         slot_mapping=slot_mapping_cuda,
@@ -151,8 +184,12 @@ def pack_flash_infer_metadata(
         data_type=cache_config.cache_dtype,
         q_data_type=model_config.dtype,
         use_cuda_graph=model_config.enable_cuda_graph_attn,
-        is_profile_run=mocking)
+        is_profile_run=mocking,
+        
+        decode_wrapper=_get_flash_infer_decode_wrapper(),
+        prefill_wrapper=_get_flash_infer_prefill_wrapper(),
+    )
 
 
-pack_attn_metadata = pack_flash_infer_metadata if os.environ.get("VLLM_ATTENTION_BACKEND", "flashinfer") == "flashinfer" \
+pack_attn_metadata = pack_flash_infer_metadata if os.environ.get("VLLM_ATTENTION_BACKEND", "FLASHINFER") == "FLASHINFER" \
                        else pack_flash_attn_metadata
