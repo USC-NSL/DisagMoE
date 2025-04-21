@@ -179,6 +179,9 @@ public:
 protected:
     int n_layers;
     int lookback_steps;
+    constexpr static float weight_decay = 0.8;
+    constexpr static int lookahead_steps = 8;
+
     std::vector<int> num_tokens_in_layer;
     std::vector<int> num_batches_in_layer;
     std::vector<std::queue<int>> history_tokens_in_layer;

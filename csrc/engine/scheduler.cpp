@@ -351,9 +351,7 @@ AdvancedLayerScheduler::AdvancedLayerScheduler(int n_layers, int hold_steps):
 }
 
 int AdvancedLayerScheduler::schedule() {
-    static float weight_decay = 0.8;
     static int max_wait_time_ms = 100;
-    static int lookahead_steps = 8;
     std::vector<int> ready_layers{};
     std::vector<int> urgent_layers{};
     std::vector<int> hold_layers{};
@@ -393,9 +391,13 @@ int AdvancedLayerScheduler::schedule() {
         std::vector<float> scores(ready_layers.size());
         for (int i = 0; i < ready_layers.size(); i++) {
             int layer_id = ready_layers[i];
-            float decay = 1.f;
-            float score = .0f;
-            for (int j = 0; j < lookahead_steps; j++) {
+            if (num_tokens_in_layer[layer_id] == 0) {
+                scores[i] = .0f;
+                continue;
+            }
+            float decay = weight_decay;
+            float score = num_tokens_in_layer[layer_id];
+            for (int j = 1; j < lookahead_steps; j++) {
                 int cur_layer = (layer_id + j) % n_layers;
                 score += num_tokens_in_layer[cur_layer] * decay;
                 decay *= weight_decay;
@@ -460,13 +462,12 @@ void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int nu
 }
 
 int GroupLayerScheduler::schedule() {
-    static float weight_decay = 0.8;
-    static int lookahead_steps = 4;
+
     std::vector<float> scores(n_layers * n_groups);
     for (int i = 0; i < n_layers; i++) {
         float lookahead_score = 0;
-        float decay = 1.f;
-        for (int k = 0; k < lookahead_steps; k++) {
+        float decay = weight_decay;
+        for (int k = 1; k < lookahead_steps; k++) {
             int cur_layer = (i + k) % n_layers;
             int num_tokens_cur_layer = 0;
             for (int j = 0; j < n_groups; j++) {
@@ -482,7 +483,11 @@ int GroupLayerScheduler::schedule() {
 
         for (int j = 0; j < n_groups; j++) {
             int layer_group_id = get_layer_group_id(i, j);
-            scores[layer_group_id] = lookahead_score + num_tokens_in_layer[layer_group_id];
+            if (num_tokens_in_layer[layer_group_id] > 0) {
+                scores[layer_group_id] = lookahead_score + num_tokens_in_layer[layer_group_id];
+            } else {
+                scores[layer_group_id] = .0f;
+            }
         }
     }
     auto max_iter = std::max_element(scores.begin(), scores.end());
