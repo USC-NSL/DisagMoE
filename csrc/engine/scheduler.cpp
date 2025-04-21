@@ -449,6 +449,11 @@ GroupLayerScheduler::GroupLayerScheduler(int num_layers, int num_groups):
     this->n_layers = num_layers;
 }
 
+GroupLayerScheduler::GroupLayerScheduler(int num_layers, int num_groups, int lookback_steps):
+    LayerScheduler(num_layers * num_groups, LayerScheduleType::FLFS, lookback_steps), n_groups(num_groups) { 
+    this->n_layers = num_layers;
+}
+
 void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int num_tokens) {
     int layer_group_id = get_layer_group_id(layer_id, group_id);
     add_tokens_to_layer(layer_group_id, num_tokens);

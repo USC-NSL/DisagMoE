@@ -287,6 +287,8 @@ public:
 
     GroupLayerScheduler(int num_layers, int num_groups);
 
+    GroupLayerScheduler(int num_layers, int num_groups, int lookback_steps);
+
     int schedule() override;
 
     using LayerScheduler::add_tokens_to_layer;

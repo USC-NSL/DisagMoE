@@ -377,7 +377,7 @@ MuPool::MuPool(
     if (policy == LayerSchedulePolicy::BASE) {
         this->layer_scheduler = std::make_shared<LayerScheduler>(num_layers, LayerScheduler::LayerScheduleType::MBFLFS);
     } else if (policy == LayerSchedulePolicy::GROUP) {
-        this->layer_scheduler = std::make_shared<GroupLayerScheduler>(num_layers, num_groups);
+        this->layer_scheduler = std::make_shared<GroupLayerScheduler>(num_layers, num_groups, 10);
     } else if (policy == LayerSchedulePolicy::ADVANCED) {
         this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers, 0);
     } else {
