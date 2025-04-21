@@ -342,7 +342,7 @@ class Controller:
             results = ray.get(self.sampler_worker.fetch_finished_results.remote())
             if len(results) != 0:
                 asyncio.create_task(self.process_finished_results(results))
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.1)
     
     def start_polling_results(self):
         self.is_polling = True
@@ -388,7 +388,7 @@ class Controller:
     #     ])
     
     def reset_workers(self):
-        tasks = [worker.reset.remote() for worker in self.workers]
+        tasks = [worker.reset.remote() for worker in self.workers + [self.sampler_worker]]
         ray.get(tasks)
     
     def stop_workers(self):
@@ -405,6 +405,7 @@ class Controller:
     def stop_profile(self):
         if not self._profile_enabled:
             return
+        self._profile_enabled = False
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)
         

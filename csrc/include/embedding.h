@@ -8,7 +8,12 @@
 
 struct SamplerStepInfo {
     int num_tokens;
-    float time_stamp;
+    long long time_stamp;
+
+    SamplerStepInfo() : num_tokens(0), time_stamp(0) {}
+    
+    SamplerStepInfo(int num_tokens, long long time_stamp):
+        num_tokens(num_tokens), time_stamp(time_stamp) {}
 };
 
 class Sampler: public MuExpertDispatcher {

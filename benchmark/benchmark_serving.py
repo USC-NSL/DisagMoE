@@ -128,9 +128,6 @@ def launch(args):
     
     master.init_engine(mp, model_config, cache_config, sampling_config)
     
-    if args.profile_dir is not None:
-        master.start_profile(args.profile_dir)
-
     master.start_engine()
     
     return master
@@ -153,7 +150,7 @@ def analyze_results(results: List[SloStat], duration: float):
         itls.extend(result.t_tokens)
         req_latency.append(result.t_decode)
         
-    return BenchmarkMetrics(
+    metrics = BenchmarkMetrics(
         e2e_duration=duration,
         req_throughput=num_reqs / duration,
         token_throughput=total_output_tokens / duration,
@@ -166,7 +163,8 @@ def analyze_results(results: List[SloStat], duration: float):
         itl_latency_median_ms=np.median(itls) * 1000,
         itl_latency_p99_ms=np.percentile(itls, 99) * 1000,
     )
-
+    
+    return metrics
 
 def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
     try:
@@ -290,7 +288,7 @@ def analyze_throughput(args,
     sampler_df.to_csv(sampler_fn, index=False)
     
     def get_peak_throughput(time_bin=5):
-        sampler_df['time_stamp'] = (sampler_df['time_stamp'] - sampler_df['time_stamp'].iloc[0]) / (10 ** 6)
+        sampler_df['time_stamp'] = (sampler_df['time_stamp'] - sampler_df['time_stamp'].iloc[0]) / (10 ** 3)
         seg = int((sampler_df['time_stamp'].iloc[-1] - sampler_df['time_stamp'].iloc[0] + time_bin - 1) // time_bin)
         time_bins = [sampler_df['time_stamp'].iloc[0] + i * time_bin for i in range(seg + 1)]
         time_sums = sampler_df.groupby(pd.cut(sampler_df['time_stamp'], bins=time_bins))['num_tokens'].sum()
@@ -402,7 +400,10 @@ async def benchmark_serving(
         master.start_polling_results()
         await master.start_scheduler()
         await benchmark_warmup(master, args)
-    
+        
+    if args.profile_dir is not None:
+        master.start_profile(args.profile_dir)
+
     # run benchmark
     logger.info("Now running benchmark.")
     results, req_submit_timestamps, req_finish_timestamps, duration = await run_benchmark(
@@ -414,6 +415,8 @@ async def benchmark_serving(
     if not is_api_server:
         await master.stop_scheduler()
         master.stop_workers()
+        
+    master.stop_profile()
     
     metrics = post_benchmark(master, args, results, req_submit_timestamps, req_finish_timestamps, duration)
     
@@ -442,9 +445,10 @@ def main():
     
     try:
         launch(args)
-        asyncio.run(benchmark_serving(master, args))
+        metrics = asyncio.run(benchmark_serving(master, args))
+        print(metrics)  # Or do something else with the metrics
     except Exception as e:
-        print("Error: failed to run benchmark, with exception:", e.with_traceback())
+        print("Error: failed to run benchmark, with exception:", e.with_traceback(None))
         BenchmarkMetrics().write_to_file(args)
     
 if __name__ == "__main__":

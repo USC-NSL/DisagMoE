@@ -8,7 +8,7 @@ parser = add_args(parser)
 parser.add_argument('--gap-i', type=int, default=1)
 parser.add_argument('--gap-t', type=int, default=5)
 
-CLK = 1e6
+ms_to_s = 1e-3
 
 args = parser.parse_args()
 
@@ -32,7 +32,7 @@ plt.close()
 
 # Summing up results in each gap for time_stamp
 
-df['time_stamp'] = (df['time_stamp'] - df['time_stamp'].iloc[0]) / CLK
+df['time_stamp'] = (df['time_stamp'] - df['time_stamp'].iloc[0]) * ms_to_s
 gap_t = args.gap_t
 seg = int((df['time_stamp'].iloc[-1] - df['time_stamp'].iloc[0] + gap_t - 1) // gap_t)
 time_bins = [

@@ -105,13 +105,13 @@ int Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         int rid = meta->req_ids[i];
         output_lens[rid] ++;
         this->_active_token_count ++;
-
+        auto cur_time_ms = t_now_high();
         if (meta->init_prefill_lens[i] == -1) {
             // at decode phase
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
-                slo_stats[rid].t_tokens.push_back(t_now());
+                slo_stats[rid].t_tokens.push_back(cur_time_ms);
             } else {
                 // Finished.
                 finished_seqs.insert(rid);
@@ -128,7 +128,7 @@ int Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             required_output_lens[rid] = rand() % (this->max_output_len - this->min_output_len) + this->min_output_len;
             continue_ids.push_back(i);
             // TODO(hogura|20250306): replace all time & clock with chrono::now()
-            slo_stats[rid] = SloStat {rid, t_now(), t_now_high(), 0, {}};
+            slo_stats[rid] = SloStat {rid, cur_time_ms, cur_time_ms, 0, {}};
         }
     }
     // Step 2. update metadata
@@ -152,18 +152,18 @@ int Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             std::make_shared<Metadata>(new_meta)
     });
 
+    auto cur_time_ms = t_now_high();
     // Step 4. sample tokens & marked finished
     for (int i: continue_ids) {
         int req_id = meta->req_ids[i];
         int token = sample(tensor_at((uint64_t)tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
             eos_seqs.insert(req_id);
-            slo_stats[req_id].t_decode = t_now();
+            slo_stats[req_id].t_decode = cur_time_ms;
         }
     }
-
-    this->step_infos.push_back(SamplerStepInfo {num_tokens, t_now()});
-
+    this->step_infos.emplace_back(num_tokens, cur_time_ms);
+    // DMOE_LOG(INFO) << "sampler processed tokens " << num_tokens << ", at timestamp " << cur_time_ms << LEND;
     // DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
     return num_tokens;
 }
@@ -265,13 +265,13 @@ int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
         int rid = ready_tokens[i].seq_id;
         output_lens[rid] ++;
         this->_active_token_count ++;
-
+        auto cur_time_ms = t_now_high();
         if (ready_tokens[i].init_prefill_len == -1) {
             // at decode phase
             if (eos_seqs.find(rid) == eos_seqs.end()) {
                 // Not marked as finished, can continue.
                 continue_ids.push_back(i);
-                slo_stats[rid].t_tokens.push_back(t_now());
+                slo_stats[rid].t_tokens.push_back(cur_time_ms);
             }
             else {
                 // Finished, end.
@@ -287,7 +287,7 @@ int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             // at prefill phase
             ASSERT (slo_stats.find(rid) == slo_stats.end());
             continue_ids.push_back(i);
-            slo_stats[rid] = SloStat {rid, t_now(), 0, {}};
+            slo_stats[rid] = SloStat {rid, cur_time_ms, 0, {}};
             required_output_lens[rid] = rand() % (this->max_output_len - this->min_output_len) + this->min_output_len;
         }
     }
@@ -310,17 +310,19 @@ int TopKSampler::process_batch(torch::Tensor tensor, metadata_t meta) {
             torch_tensor_slice(ready_tokens_tensor, continue_ids),
             std::make_shared<Metadata>(new_meta)
     });
-
     // Step 4. sample tokens & marked finished
+    auto cur_time_ms = t_now_high();
     for (int i: continue_ids) {
         int req_id = meta->req_ids[i];
         int token = sample(tensor_at((uint64_t)ready_tokens_tensor.data_ptr(), meta, i), meta);
         if (check_finished(token, req_id)) {
             eos_seqs.insert(req_id);
-            slo_stats[req_id].t_decode = t_now();
+            slo_stats[req_id].t_decode = cur_time_ms;
         }
         // TODO(hogura|20241007): send the generated tokens back to master node
     }
+
+    this->step_infos.emplace_back(num_tokens, cur_time_ms);
 
     // DMOE_LOG(INFO) << "sampler processed tokens " << this->_active_token_count << LEND;
     return num_tokens;

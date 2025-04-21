@@ -81,11 +81,10 @@ class DPScheduler:
             request_item: RequestItem = done.pop().result()
             rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
             
-            if rank < 0:
+            while rank < 0:
                 await self.sch_event.wait()
                 self.sch_event.clear()
                 rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
-                assert rank >= 0
             
             # self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
@@ -110,7 +109,7 @@ class DPScheduler:
         self.seq_max_len.pop(seq_id)
         if len(self.sch_event._waiters) > 0:
             self.sch_event.set()
-        # self._logger.debug(f"Delete seq {seq_id}, rank {rank}, current cache stats {self.kv_cache_stats}")
+        # self._logger.info(f"Delete seq {seq_id}, rank {rank}, current cache stats {self.kv_cache_stats}")
         
     def _schedule(self, seq_len: int) -> int:
         raise NotImplementedError()

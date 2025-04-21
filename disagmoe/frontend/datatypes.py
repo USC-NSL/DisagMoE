@@ -173,12 +173,13 @@ class SloStat:
     
     @staticmethod
     def from_c(stat_c: "SloStat_C") -> "SloStat":
+        ms_to_s = 1e-3
         return SloStat(
             stat_c.req_id,
-            stat_c.t_prefill / CPS,
-            stat_c.t_prefill_std / 1e3, # ms -> s
-            (stat_c.t_decode - stat_c.t_prefill) / CPS,
-            [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
+            stat_c.t_prefill * ms_to_s,
+            stat_c.t_prefill_std * ms_to_s,
+            (stat_c.t_decode - stat_c.t_prefill) * ms_to_s,
+            [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )
         
 @dataclass
@@ -200,7 +201,7 @@ class TraceContext:
 @dataclass
 class SamplerStepInfo:
     num_tokens: int
-    time_stamp: float
+    time_stamp: int
     
     @staticmethod
     def from_c(step_c: "SamplerStepInfo_C") -> "SamplerStepInfo":

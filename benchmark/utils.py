@@ -43,7 +43,7 @@ def get_parser_base():
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")
     parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
-    parser.add_argument("--step-attn", type=int, default=2, help="number of steps in attention placement")
+    parser.add_argument("--step-attn", type=int, default=1, help="number of steps in attention placement")
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")
     
     return parser
