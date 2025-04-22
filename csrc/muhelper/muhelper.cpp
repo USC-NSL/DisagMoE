@@ -382,7 +382,7 @@ MuPool::MuPool(
     } else if (policy == LayerSchedulePolicy::GROUP) {
         this->layer_scheduler = std::make_shared<GroupLayerScheduler>(num_layers, num_groups, 10);
     } else if (policy == LayerSchedulePolicy::ADVANCED) {
-        this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers, 0);
+        this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers, /*hold_steps*/ 0);
     } else {
         ASSERT(false);
     }
@@ -884,11 +884,10 @@ void TokenTopKPool::put_batch(TensorBatch batch) {
                 seq_id, 
                 meta->init_prefill_lens[i], 
                 meta->attn_dp_ranks[i],
-                meta->topk_weights[i],
                 batch.data[i]
             );
         } else {
-            it->second.append_tensor(meta->topk_weights[i], batch.data[i]);
+            it->second.append_tensor(batch.data[i]);
             if (it->second.count() == this->top_k) {
                 // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
                 this->ready_tokens.emplace_back(it->second);
@@ -931,7 +930,6 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
     int batched_tokens = 0;
     if (meta->layer_id == 0) {
         // NOTE: the first layer receives directly from tokenizer so there is no topk
-        ASSERT (meta->topk_weights.size() == 0);
         ready_tokens = meta->unpack_tokens();
         batched_tokens = ready_tokens.size();
         for (int i = 0; i < batched_tokens; i++) {
@@ -941,6 +939,10 @@ void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, 
         this->topk_pools[lid].put_batch((TensorBatch) {tensor, meta});
         ready_tokens = this->topk_pools[lid].fetch_ready_tokens();
         batched_tokens = ready_tokens.size();
+    }
+
+    if (batched_tokens == 0) {
+        return;
     }
 
     {
@@ -975,7 +977,6 @@ std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *select
         return {};
     }
     int id = this->layer_scheduler->schedule();
-
     this->tokens_per_layer_[id] = 0;
     this->num_batches_per_layer_[id] = 0;
 

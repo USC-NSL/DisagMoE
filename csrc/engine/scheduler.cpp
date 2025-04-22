@@ -425,6 +425,7 @@ int AdvancedLayerScheduler::schedule() {
             }
         }
     }
+    ASSERT (num_tokens_in_layer[layer_to_schedule] > 0);
     step_end();
     set_layer_to_idle(layer_to_schedule);
     return layer_to_schedule;
