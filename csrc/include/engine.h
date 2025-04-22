@@ -10,7 +10,7 @@
 using std::vector;
 using std::string;
 
-std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
+std::tuple<mu_pool_t, attn_scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     int top_k,
     bool has_attn,
@@ -50,9 +50,6 @@ void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatch
 
 Sampler_t init_sampler(
     int device_id,
-    int min_output_len,
-    int max_output_len,
-    int top_k,
     ParallelConfig cfg,
     const vector<int> &in_device_ids,
     const vector<int> &out_device_ids,

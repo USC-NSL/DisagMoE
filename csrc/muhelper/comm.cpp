@@ -139,12 +139,15 @@ void ZmqChannel::instantiate() {
         this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
+    std::string addr;
     if (is_sender) {
-        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
+        addr = get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+        this->mq->bind(addr);
     } else {
-        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
+        addr = get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+        this->mq->connect(addr);
     }
-    DMOE_LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
+    // DMOE_LOG(WARNING) << "ZmqChannel instantiated, local: " << this->local << ", remote: " << this->other << ", addr: " << addr << LEND;
 }
 
 void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {

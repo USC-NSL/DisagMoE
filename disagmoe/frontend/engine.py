@@ -2,10 +2,11 @@ import torch
 import time
 import enum
 import os
+import random
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
@@ -66,11 +67,16 @@ class Engine:
         self.expert_executor: ExpertsExecutor = None
         self.attn_dispatcher: MuDispatcher = None
         self.expert_dispatcher: MuDispatcher = None
+        self.attn_pool: MuPool = None
+        self.expert_pool: MuPool = None
+        self.dummy_sampler: DummySampler = None
         
         self.end_flag = False
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
         self.cache_config: CacheConfig = None
+        
+        self.model_total_num_layers = 0
         
         if device_id is not None:
             self._logger = get_logger(f"engine{device_id}")
@@ -82,6 +88,7 @@ class Engine:
         self.block_mgr: BlockManager = None
         
         self.decode_seq_lens = {}
+        self.finished_seq_lens = {}
         self.profiler = None
         self.inner_exp_rank = []
         self.device_group_ids = []
@@ -222,7 +229,7 @@ class Engine:
                 core_args.local_attn_dp_rank,
             )
         else:
-            self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
+            self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
                 self.device_id,
                 self.model_config.top_k,
                 self.has_attn,
@@ -258,6 +265,7 @@ class Engine:
         
         if self.has_attn:
             self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
+            self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
         
         if self.has_expert:
             self.expert_scheduler.set_max_batch_size(self.expert_max_batch_size)
@@ -314,6 +322,8 @@ class Engine:
         self.engine_type = engine_type
         self.model_config = model_config
         self.cache_config = cache_config
+        
+        self.model_total_num_layers = model_config.num_layers
         
         if self.has_attn:
             self.attn_max_batch_size = model_config.max_batch_size_attn 
@@ -412,7 +422,7 @@ class Engine:
                 self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
                 
             decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-
+            
             # self._logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
 
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
@@ -616,9 +626,11 @@ class Engine:
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+
+        
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
         meta_py = AttentionBatchMetadata.from_c(meta_c)
-        assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+        assert len(meta_py.seq_ids) > 0, f"Scheduled batch is empty, {input_tensor.shape}, {meta_py.seq_ids}"
 
         num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
 
@@ -627,6 +639,21 @@ class Engine:
             assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
             input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
             meta_c.shrink_topk(self.model_config.top_k)
+            
+        if meta_c.layer_id == self.model_total_num_layers:
+            continue_ids, finish_req_ids = self.dummy_sampler.sample_once(meta_py.seq_ids)
+            new_meta = meta_c.to_metadata()
+            continue_meta = new_meta.select_indices(continue_ids)
+            continue_meta.init_prefill_lens = [-1] * len(continue_ids)
+            # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
+            self.release_seqs(finish_req_ids)
+            
+            new_meta.set_finish_signal(continue_ids)            
+            sampled_batch: TensorBatch = TensorBatch_C()
+            sampled_batch.data = input_tensor
+            sampled_batch.metadata = new_meta
+            self.attn_dispatcher.send_to_sampler(sampled_batch)
+            return input_tensor[continue_ids], continue_meta
 
         # TODO(hogura|20241014): fill the real positions
         positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
@@ -749,17 +776,25 @@ class Engine:
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
         assert not self.is_attn_worker
-        batch: TensorBatch = TensorBatch_C()
-        batch.data = output
-        batch.metadata = meta
-        self._timer.stop("postprocess")
-        
-        range_push("Engine.stream_sync")
-        self._timer.start("stream_sync")
-        self.stream.synchronize()
-        self._timer.stop("stream_sync")
-        range_pop()
-        dispatcher.put(batch, 0)
+        if self.has_attn and meta.layer_id == self.model_total_num_layers and meta.shape[0] > 0: # a hack for sampling check
+            assert self.dummy_sampler is not None
+            meta.layer_id = 0
+            batch: TensorBatch = TensorBatch_C()
+            batch.data = output
+            batch.metadata = meta
+            self.attn_pool.put_batch(batch)
+        else:
+            batch: TensorBatch = TensorBatch_C()
+            batch.data = output
+            batch.metadata = meta
+            self._timer.stop("postprocess")
+            
+            range_push("Engine.stream_sync")
+            self._timer.start("stream_sync")
+            self.stream.synchronize()
+            self._timer.stop("stream_sync")
+            range_pop()
+            dispatcher.put(batch, 0)
 
     @torch.inference_mode()
     def attn_worker_loop(self):
@@ -935,15 +970,16 @@ class Engine:
         return self._queueing_delays
     
     def release_seqs(self, seq_ids: List[int]):
-        # TODO(optimize): master should only send release request to the driver
         if not self.has_attn:
             return
         if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
-        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        # self._logger.info(f"releasing seqs {seq_ids}")
+        if len(seq_ids) == 0:
+            return
+        for i in seq_ids:
+            self.finished_seq_lens[i] = self.decode_seq_lens[i]
         for i in seq_ids:
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
             self.decode_seq_lens.pop(i)
@@ -1006,20 +1042,53 @@ class Engine:
     #         self.attn_scheduler.set_schedule_block(step)
     #     if self.has_expert:
     #         self.expert_scheduler.set_schedule_block(step)
+
+class DummySampler:
+    
+    def __init__(self, min_output_len: int, max_output_len: int):
+        if max_output_len == min_output_len:
+            max_output_len += 1
+        self.min_output_len = min_output_len
+        self.max_output_len = max_output_len
+        self.req_max_output_len: Dict[int, int] = {}
+        self.output_len: Dict[int, int] = {}
         
+    def sample_once(self, req_ids: List[int]) -> Tuple[List[int], List[int]]:
+        continue_ids = []
+        finish_req_ids = []
+        for i, req in enumerate(req_ids):
+            if req not in self.output_len:
+                self.create_request(req)
+            self.output_len[req] += 1
+            if self.check_end(req):
+                self.clean_request(req)
+                finish_req_ids.append(req)
+            else:
+                continue_ids.append(i)
+        return continue_ids, finish_req_ids
+    
+    def create_request(self, req_id: int):
+        self.req_max_output_len[req_id] = random.randint(self.min_output_len, self.max_output_len)
+        self.output_len[req_id] = 0
+
+    def clean_request(self, req_id: int):
+        if req_id in self.req_max_output_len:
+            del self.req_max_output_len[req_id]
+        if req_id in self.output_len:
+            del self.output_len[req_id]
+                    
+    def check_end(self, req_id) -> bool:
+        return self.output_len[req_id] >= self.req_max_output_len[req_id]
+                    
 class SamplerEngine(Engine):
     
     def __init__(self):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
-        self.max_output_len = -1
         
     def init_core(self, core_args: InitCoreArgs):
         self.sampler = init_sampler(
             self.device_id,
-            self.min_output_len,
-            self.max_output_len,
-            self.model_config.top_k,
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
@@ -1043,10 +1112,6 @@ class SamplerEngine(Engine):
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
-    def set_sampling_params(self, min_output_len: int, max_output_len: int):
-        self.min_output_len = min_output_len
-        self.max_output_len = max_output_len
-        
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
         result = self.sampler.wait_slo_stats(n_request)
         while len(result) == 0:

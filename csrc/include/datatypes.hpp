@@ -152,7 +152,7 @@ struct Metadata {
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
     std::vector<int> attn_dp_ranks;
-    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
+    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens, 0 for finished requests
     std::vector<float> topk_weights;
  
     inline size_t num_element() const {
@@ -248,6 +248,25 @@ struct Metadata {
         };
     }
 
+    void set_finish_signal(const std::vector<int> &continue_ids) {
+        for (auto &x: init_prefill_lens) {
+            x = 0;
+        }
+        for (auto &x: continue_ids) {
+            init_prefill_lens[x] = -1;
+        }
+    }
+
+    std::vector<int> get_finished_indices() {
+        std::vector<int> finish_indices{};
+        for (size_t i = 0; i < init_prefill_lens.size(); i ++) {
+            if (init_prefill_lens[i] == 0) {
+                finish_indices.emplace_back(i);
+            }
+        }
+        return finish_indices;
+    }
+
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
@@ -274,6 +293,10 @@ struct Metadata {
         return Metadata{
             shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
         };
+    }
+
+    metadata_t select_indices(const std::vector<int> &indices) {
+        return std::make_shared<Metadata>(this->at(indices));
     }
 
     template<class Archive>

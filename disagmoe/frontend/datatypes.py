@@ -69,6 +69,12 @@ class Metadata:
     
     def shrink_topk(self, topk: int) -> None:
         ...
+    
+    def select_indices(self, indices: List[int]) -> "Metadata":
+        ...
+        
+    def set_finish_signal(self, continue_ids: List[int]) -> None:
+        ...
         
     @staticmethod
     def from_c(meta_c: "Metadata_C") -> "Metadata":
