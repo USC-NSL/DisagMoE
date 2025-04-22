@@ -462,7 +462,6 @@ void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int nu
 }
 
 int GroupLayerScheduler::schedule() {
-
     std::vector<float> scores(n_layers * n_groups);
     for (int i = 0; i < n_layers; i++) {
         float lookahead_score = 0;
@@ -470,14 +469,16 @@ int GroupLayerScheduler::schedule() {
         for (int k = 1; k < lookahead_steps; k++) {
             int cur_layer = (i + k) % n_layers;
             int num_tokens_cur_layer = 0;
+            float history_score = .0f;
             for (int j = 0; j < n_groups; j++) {
                 int layer_group_id = get_layer_group_id(cur_layer, j);
                 num_tokens_cur_layer += num_tokens_in_layer[layer_group_id];
-                if (lookback_steps > 0) {
-                    num_tokens_cur_layer += sum_history_tokens_in_layer[layer_group_id];
+                if (lookback_steps > 0 && sum_history_tokens_in_layer[layer_group_id] > 0) {
+                    history_score += sum_history_tokens_in_layer[layer_group_id] / history_tokens_in_layer[layer_group_id].size();
                 }
             }
             lookahead_score += num_tokens_cur_layer * decay / n_groups;
+            lookahead_score += history_score * decay / n_groups;
             decay *= weight_decay;
         }
 
