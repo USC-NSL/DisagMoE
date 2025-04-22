@@ -102,7 +102,6 @@ struct TokenTopKInfo {
     int seq_id;
     int init_prefill_len; // -1 for decoding
     int attn_dp_rank; 
-    std::vector<float> topk_weights;
     std::vector<torch::Tensor> topk_tensors;
 
     TokenTopKInfo() {}
@@ -110,32 +109,22 @@ struct TokenTopKInfo {
     TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank):
         seq_id(seq_id), init_prefill_len(init_prefill_len), attn_dp_rank(attn_dp_rank) {}
 
-    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, float weight, torch::Tensor tensor):
+    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, torch::Tensor tensor):
         seq_id(seq_id), init_prefill_len(init_prefill_len), 
         attn_dp_rank(attn_dp_rank),
-        topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
     int count() const {
-        ASSERT (topk_weights.size() == 0 || topk_weights.size() == topk_tensors.size());
         return topk_tensors.size();
     }
 
-    void append_tensor(float weight, torch::Tensor tensor) {
-        topk_weights.emplace_back(weight);
+    void append_tensor(torch::Tensor tensor) {
         topk_tensors.emplace_back(tensor);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenTopKInfo& token) {
         out << "TokenTopKInfo{seq_id=" << token.seq_id << ", "
-            << "init_prefill_len=" << token.init_prefill_len << ", "
-            << "topk_weights={";
-        if (token.topk_weights.size() > 0) {
-            out << token.topk_weights[0];
-            for (size_t i = 1; i < token.topk_weights.size(); i ++)
-                out << ", " << token.topk_weights[i];
-        }
-        out << "}";
+            << "init_prefill_len=" << token.init_prefill_len << "}";
         return out;
     }
 };
@@ -152,7 +141,7 @@ struct Metadata {
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
     std::vector<int> attn_dp_ranks;
-    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
+    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens, 0 for finished requests
     std::vector<float> topk_weights;
  
     inline size_t num_element() const {
@@ -248,6 +237,25 @@ struct Metadata {
         };
     }
 
+    void set_finish_signal(const std::vector<int> &continue_ids) {
+        for (auto &x: init_prefill_lens) {
+            x = 0;
+        }
+        for (auto &x: continue_ids) {
+            init_prefill_lens[x] = -1;
+        }
+    }
+
+    std::vector<int> get_finished_indices() {
+        std::vector<int> finish_indices{};
+        for (size_t i = 0; i < init_prefill_lens.size(); i ++) {
+            if (init_prefill_lens[i] == 0) {
+                finish_indices.emplace_back(i);
+            }
+        }
+        return finish_indices;
+    }
+
     inline Metadata at(const std::vector<int>& ids) const {
         auto shape = this->shape;
         shape[0] = ids.size();
@@ -274,6 +282,10 @@ struct Metadata {
         return Metadata{
             shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
         };
+    }
+
+    metadata_t select_indices(const std::vector<int> &indices) {
+        return std::make_shared<Metadata>(this->at(indices));
     }
 
     template<class Archive>
@@ -524,7 +536,6 @@ struct Metadata {
         int n = tokens.size();
 
         std::vector<int> req_ids, exp_ids, attn_dp_ranks, init_prefill_lens;
-        std::vector<float> topk_weights(n * topk);
         std::vector<size_t> shape = {n * topk, tokens[0].topk_tensors[0].size(0)};
         std::string dtype = "bf16";
 
@@ -534,19 +545,14 @@ struct Metadata {
             exp_ids.push_back(token.init_prefill_len);
             attn_dp_ranks.push_back(token.attn_dp_rank);
             init_prefill_lens.push_back(token.init_prefill_len);
-            for (int k = 0; k < topk; k ++) {
-                topk_weights[k * n + i] = token.topk_weights[k];
-            }
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
+            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, {}
         });
     }
 
     std::vector<TokenTopKInfo> unpack_tokens() {
-        ASSERT (topk_weights.size() == 0);
-        int topk = topk_weights.size() / req_ids.size();
         std::vector<TokenTopKInfo> tokens;
         tokens.reserve(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++) {

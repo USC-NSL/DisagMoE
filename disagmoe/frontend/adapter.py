@@ -34,6 +34,14 @@ class MuDispatcher:
         
     def put(self, batch: TensorBatch, rank: int):
         ...
+        
+    def send_to_sampler(self, batch: TensorBatch):
+        ...
+
+class MuPool:
+    
+    def put_batch(self, batch: TensorBatch) -> None:
+        ...
 
 class Tokenizer:
     

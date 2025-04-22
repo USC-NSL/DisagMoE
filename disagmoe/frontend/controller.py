@@ -242,13 +242,15 @@ class Controller:
                 )
         ])
         
-        ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
+        # ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
         
         # init core
         tasks = [
             worker.init_core.remote(
                 InitCoreArgs(
                     layer_ids=model_place.layer_ids_at(device_id),
+                    max_output_len=self.max_output_len,
+                    min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
                     out_channel_infos=[
@@ -307,9 +309,7 @@ class Controller:
         return req_id
     
     async def process_finished_results(self, results: List[SloStat]):
-        # release request resources
         finished_req_ids = [r.req_id for r in results]
-        self.release_kv_cache(finished_req_ids)
         for req_id in finished_req_ids:
             self.in_flight_reqs.remove(req_id)
             self.dp_scheduler.del_seq(req_id)

@@ -76,6 +76,8 @@ public:
                  const std::vector<bool> &is_group_channels={});
 
     void put(TensorBatch batch, int rank = 0);
+
+    virtual void send_to_sampler(TensorBatch batch) { ASSERT (false); }
 };
 
 
@@ -84,6 +86,7 @@ class MuAttnDispatcher: public MuDispatcher {
 protected:
     std::vector<int> exp_channels;
     int max_exp_id;
+    int sampler_channel_id;
 
     std::vector<std::vector<int>> _inner_expert_ranks;
 
@@ -99,13 +102,14 @@ public:
                      ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
+    
+    void send_to_sampler(TensorBatch batch) override;
 };
 
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<std::vector<int>> attn_channel;
-    int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
@@ -227,6 +231,8 @@ public:
 
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
+
+    void put_batch(TensorBatch batch);
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;
