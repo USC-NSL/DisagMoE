@@ -39,11 +39,18 @@ time_bins = [
     df['time_stamp'].iloc[0] + i * gap_t
         for i in range(seg + 1)
 ]
+
 # print(df['time_stamp'])
 # print(time_bins)
 time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].sum()
 time_sums /= gap_t
-print(f"peak throughput: {time_sums.max()} tokens/s")
+
+num_bins = len(time_sums)
+peak_throughput_time_range = 60 # seconds
+step = peak_throughput_time_range // 2 // args.gap_t
+peak_throughput_range = time_sums[num_bins // 2 - step : num_bins // 2 + step]
+
+print(f"peak throughput: {sum(peak_throughput_range) / len(peak_throughput_range)} tokens/s")
 plt.figure(figsize=(10, 5))
 plt.plot(time_bins[:-1], time_sums, '-')
 plt.axvline(x=120, color='green', linestyle='dotted')

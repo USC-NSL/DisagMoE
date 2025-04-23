@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 import matplotlib.pyplot as plt
 import pickle
 import os
+import numpy as np
 
 parser = ArgumentParser()
 parser = add_args(parser)
@@ -24,9 +25,12 @@ def put_to_bin(size):
 
 def calculate_bin(data):
     # enumerate queue_length as dict
-    queue_length, step_executed_layer, _ = data
+    queue_length, step_executed_layer, step_start_time_ms = data
+    
+    step_start_time_ms_sampled = np.array(step_start_time_ms)
+    step_start_time_ms = step_start_time_ms_sampled - step_start_time_ms_sampled[0]
     for i, l in enumerate(step_executed_layer):
-        if l >= 0:
+        if l >= 0 and step_start_time_ms[i] > 60 * 1000:
             put_to_bin(queue_length[l][i])
     
 def draw_histogram(bin, worker_type):
