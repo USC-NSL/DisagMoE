@@ -116,6 +116,16 @@ def cuda_graph_preprocess_kernel(
             mask=token_mask[:, None] & block_mask[None, :]
         )
 
+def get_module_param_memory(module, unit='GB'):
+    unit_scale = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
+    scale = unit_scale[unit.upper()]
+    
+    param_mem = sum(p.numel() * p.element_size() for p in module.parameters())
+    buffer_mem = sum(b.numel() * b.element_size() for b in module.buffers())
+    
+    total_mem = (param_mem + buffer_mem) / scale
+    return total_mem
+
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -128,6 +138,7 @@ class Executor:
         self.layer_mappings = [0 for _ in range(max(model_config.layer_ids) + 1)]
         for i, id in enumerate(model_config.layer_ids):
             self.layer_mappings[id] = i
+        self.operators: List[torch.nn.Module] = None
     
     def execute(self, x: Tensor) -> Tensor:
         raise NotImplementedError()
@@ -138,7 +149,12 @@ class Executor:
     def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
     
-
+    def print_model_memory_usage(self) -> None:
+        # sum up all memory used by the operators
+        total_memory_gb = 0
+        for operator in self.operators:
+            total_memory_gb += get_module_param_memory(operator, unit='GB')
+        print(f"Model weights total memory usage: {total_memory_gb:.1f} GB")
 
 class AttnExecutor(Executor):
 
@@ -164,6 +180,7 @@ class AttnExecutor(Executor):
             ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        self.print_model_memory_usage()
         
     @override
     def initialize_cache(self, num_blocks):
@@ -277,7 +294,6 @@ class CUDAGraphAttnExecutor:
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         batch_info_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-
 
         # batch_info_len = batch_info_cuda.shape[0]
 
@@ -481,6 +497,7 @@ class ExpertsExecutor(Executor):
                 max_batch_size=self.model_config.max_batch_size_expert
             ) for _ in range(self.num_layers)
         ]
+        self.print_model_memory_usage()
 
     @override
     @nvtx_range("ExpertsExecutor.execute")

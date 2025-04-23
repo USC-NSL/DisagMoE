@@ -181,7 +181,6 @@ class Engine:
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
             self._log_memory_usage("After build CUDA graphs")
-            
         self._logger.info("Executors built")
         
     def init_core(self, core_args: InitCoreArgs):

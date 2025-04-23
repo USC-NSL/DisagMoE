@@ -105,6 +105,7 @@ def launch(args):
     model_config.graph_stride = args.graph_stride
     model_config.top_k = args.topk
     model_config.enable_trace = args.trace
+    model_config.num_kv_heads = args.num_kv_heads
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -251,14 +252,16 @@ def generate_step_trace(args,
         metrics[pid] = asdict(metric)
         
     from benchmark.plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
+    
+    trace_dir = os.path.dirname(args.file)
 
-    with gzip.open(get_trace_name(args), "w") as f:
+    with gzip.open(get_trace_name(args, trace_dir), "w") as f:
         f.write(json.dumps(events).encode("utf-8"))
 
-    with open(get_trace_metrics_name(args), "w") as f:
+    with open(get_trace_metrics_name(args, trace_dir), "w") as f:
         json.dump(metrics, f)
         
-    with open(get_queue_length_name(args), "wb") as f:
+    with open(get_queue_length_name(args, trace_dir), "wb") as f:
         pickle.dump(queue_length_per_step, f)
 
 def analyze_throughput(args, 
@@ -271,19 +274,19 @@ def analyze_throughput(args,
                        slo_stats: List[SloStat]):
     from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
                                         get_ttft_name, get_req_finish_time_name, get_req_submit_time_name
-    
+    trace_dir = os.path.dirname(args.file)
     # request submit timestamp
-    req_submit_fn = get_req_submit_time_name(args)
+    req_submit_fn = get_req_submit_time_name(args, trace_dir)
     req_submit_df = pd.DataFrame(req_submit_timestamps)
     req_submit_df.to_csv(req_submit_fn, index=False)
     
     # request finish timestamp
-    req_finish_fn = get_req_finish_time_name(args)
+    req_finish_fn = get_req_finish_time_name(args, trace_dir)
     req_finish_df = pd.DataFrame(req_finish_timestamps)
     req_finish_df.to_csv(req_finish_fn, index=False)
     
     # sampler throughput
-    sampler_fn = get_sampler_step_name(args)
+    sampler_fn = get_sampler_step_name(args, trace_dir)
     sampler_df = pd.DataFrame([asdict(info) for info in sampler_step_infos])
     sampler_df.to_csv(sampler_fn, index=False)
     
@@ -293,19 +296,24 @@ def analyze_throughput(args,
         time_bins = [sampler_df['time_stamp'].iloc[0] + i * time_bin for i in range(seg + 1)]
         time_sums = sampler_df.groupby(pd.cut(sampler_df['time_stamp'], bins=time_bins))['num_tokens'].sum()
         time_sums /= time_bin
-        return time_sums.max()
+        
+        num_bins = len(time_sums)
+        peak_throughput_time_range = 60 # seconds
+        step = peak_throughput_time_range // 2 // time_bin
+        peak_throughput_range = time_sums[num_bins // 2 - step : num_bins // 2 + step]
+        return sum(peak_throughput_range) / len(peak_throughput_range)
     
     # queueing delay
-    attn_fn = get_worker_queueing_delay_name(args, "attn")
+    attn_fn = get_worker_queueing_delay_name(args, "attn", trace_dir)
     attn_df = pd.DataFrame(attn_queueing_delays)
     attn_df.to_csv(attn_fn, index=False)
     
-    exp_fn = get_worker_queueing_delay_name(args, "exp")
+    exp_fn = get_worker_queueing_delay_name(args, "exp", trace_dir)
     exp_df = pd.DataFrame(exp_queueing_delays)
     exp_df.to_csv(exp_fn, index=False)
     
     # TTFT
-    ttft_fn = get_ttft_name(args)
+    ttft_fn = get_ttft_name(args, trace_dir)
     ttft_df = pd.DataFrame([
         stat.t_prefill_std - t_submitted[stat.req_id]
             for stat in slo_stats

@@ -176,7 +176,7 @@ std::tuple<mu_pool_t, attn_scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t,
         if (expert_wise_schedule) {
             policy = LayerSchedulePolicy::GROUP;
             num_groups = cfg.n_exp_per_rank;
-            DMOE_LOG(INFO) << local_id << " expert wise schedule, #experts per EP rank: " << num_groups << LEND;
+            // DMOE_LOG(INFO) << local_id << " expert wise schedule, #experts per EP rank: " << num_groups << LEND;
         }
         expert_pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, num_groups);
         expert_scheduler = Scheduler::build(expert_pool, layer_ids, "mbfs");

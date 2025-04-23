@@ -31,6 +31,7 @@ def get_parser_base():
     parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
     parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
     parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
+    parser.add_argument("--num-kv-heads", type=int, default=8, help="number of kv heads")
     parser.add_argument("--num-blocks", type=int, default=None, help="number of blocks in cache; deprycated due to auto-num-blocks")
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE, help="block size in cache")
     parser.add_argument("--graph-stride", type=int, default=8, help="CUDA graph batch size stride")
