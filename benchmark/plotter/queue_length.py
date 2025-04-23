@@ -66,6 +66,8 @@ def draw_heatmap(worker_id, data):
     nrows = len(layer_ids)
     nlayers = args.layers
     ngroups = nrows // nlayers
+    if nrows % nlayers != 0:
+        nlayers += 1
     
     step_ids = np.array(sample(list(range(nsteps)), args.steps))
     step_start_time_ms_sampled = np.array(sample(step_start_time_ms, args.steps))
