@@ -143,6 +143,7 @@ struct Metadata {
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens, 0 for finished requests
     std::vector<float> topk_weights;
+    std::vector<int> max_output_lens; // NOTE: only used by first layer attention to initialize sampler, can be ignored after that
  
     inline size_t num_element() const {
         size_t res = 1;
@@ -211,7 +212,7 @@ struct Metadata {
                     split_req_ids[i], split_exp_ids[i],
                     split_attn_dp_ranks[i],
                     split_init_prefill_lens[i],
-                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i]
+                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i],
                 }
             ));
         }
@@ -290,7 +291,7 @@ struct Metadata {
 
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights, max_output_lens);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -567,6 +568,7 @@ struct TensorBatch {
     metadata_t metadata;
 
     static std::vector<TensorBatch> split_by_expert_id(torch::Tensor tensor, metadata_t meta) {
+        // !!! This is only used in experts
         auto seg_indices = meta->get_expert_seg_indices();
         int n = seg_indices.size() - 1;
         if (n == 1) {
@@ -689,6 +691,8 @@ struct AttentionBatchMetadata {
 
     std::vector<uint8_t> attn_dp_ranks; // per token, length of (num_prefill_seqs + num_decode_tokens)
 
+    std::vector<int> max_output_lens; // NOTE: this is only used when a request first enter attention layer, should be ignored later
+
     constexpr int get_datatype_size() const {
         return 2; // bf16
     }
@@ -803,6 +807,7 @@ struct AttentionBatchMetadata {
         std::vector<int> new_seq_ids{};
         std::vector<uint8_t> new_attn_dp_ranks{};
         std::vector<int> new_init_prefill_lens{};
+        std::vector<int> new_max_output_lens{};
 
         for (auto &batch: batches) {
             new_prefills_seqs += batch->num_prefill_seqs;
@@ -813,6 +818,8 @@ struct AttentionBatchMetadata {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
                 new_attn_dp_ranks.emplace_back(batch->attn_dp_ranks[i]);
                 new_init_prefill_lens.emplace_back(batch->init_prefill_lens[i]);
+                if (batch->layer_id == 0)
+                    new_max_output_lens.emplace_back(batch->max_output_lens[i]);
             }
         }
 
@@ -839,6 +846,7 @@ struct AttentionBatchMetadata {
                 {}, // expert_ids
                 {}, // topk_weights
                 new_attn_dp_ranks,
+                new_max_output_lens,
             }
         );
     }

@@ -69,7 +69,7 @@ public:
               std::vector<Channel_t> channels, 
               std::vector<ChannelInfo> out_channel_infos);
 
-    void put_request(int req_id, int init_prefill_len, torch::Tensor tensor, int dp_rank);
+    void put_request(int req_id, int init_prefill_len, int max_output_len, torch::Tensor tensor, int dp_rank);
 
     void start();
 

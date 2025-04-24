@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from disagmoe.utils.constants import CPS
 import torch
 
@@ -128,6 +128,7 @@ class AttentionBatchMetadata:
 
     topk_weights: List[float]
     attn_dp_ranks: List[int]
+    max_output_lens: Optional[List[int]]
     
     def to_metadata(self) -> Metadata:
         ...
@@ -161,7 +162,8 @@ class AttentionBatchMetadata:
             meta_c.init_prefill_lens,
             meta_c.expert_ids,
             meta_c.topk_weights,
-            meta_c.attn_dp_ranks
+            meta_c.attn_dp_ranks,
+            meta_c.max_output_lens,
         )
 
     def shrink_topk(self, topk: int) -> None:

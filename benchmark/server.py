@@ -42,7 +42,7 @@ def run_once_endpoint():
     new_args.rate = rate
     new_args.generator_type = distribution
     generator_type = get_generator(distribution)
-    generator = generator_type(rate, 0, 0, 0)
+    generator = generator_type(rate, 0, 0, 0, 0, 0)
     new_args.num_requests = generator.get_num_requests(duration)
     print(f"put {new_args.num_requests} requests")
     

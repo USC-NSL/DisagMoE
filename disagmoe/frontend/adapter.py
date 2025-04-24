@@ -45,7 +45,7 @@ class MuPool:
 
 class Tokenizer:
     
-    def put_request(self, req_id: int, init_prefill_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
+    def put_request(self, req_id: int, init_prefill_len: int, max_output_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
         ...
         
     def start(self):

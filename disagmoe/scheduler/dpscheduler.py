@@ -13,6 +13,7 @@ class RequestItem:
     req_id: int
     seq_len: int
     prefill_len: int
+    output_len: int
 
 class DPScheduler:
     
@@ -54,8 +55,8 @@ class DPScheduler:
             self._logger.info(f"Global DP scheduler: #running requests: {len(self.seq_ranks)}, #waiting requests: {self.waiting_queue.qsize()}")
             await asyncio.sleep(10)
         
-    def put_request(self, func: Callable, req_id: int, seq_len: int, prefill_len: int = 0):
-        self.waiting_queue.put_nowait(RequestItem(func, req_id, seq_len, prefill_len))
+    def put_request(self, func: Callable, req_id: int, seq_len: int, prefill_len: int, output_len: int):
+        self.waiting_queue.put_nowait(RequestItem(func, req_id, seq_len, prefill_len, output_len))
         
     def required_blocks(self, seq_len: int) -> int:
         return (seq_len + self.block_size - 1) // self.block_size
@@ -89,7 +90,7 @@ class DPScheduler:
             # self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
             # submit the request
-            request_item.func(request_item.req_id, request_item.prefill_len, rank)
+            request_item.func(request_item.req_id, request_item.prefill_len, request_item.output_len, rank)
     
     def init_kv_cache_stats(self, stats: Dict[int, int]):
         for rank, num_blocks in stats.items():
