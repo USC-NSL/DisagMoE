@@ -1,7 +1,7 @@
-MIN_INPUT_LEN=100
-MAX_INPUT_LEN=300
-MIN_OUTPUT_LEN=100
-MAX_OUTPUT_LEN=500
+MIN_INPUT_LEN=10
+MAX_INPUT_LEN=11
+MIN_OUTPUT_LEN=50
+MAX_OUTPUT_LEN=51
 N_NODE=1
 N_GPU_PER_NODE=8
 NUM_LAYERS=32
@@ -31,7 +31,9 @@ python benchmark/server.py \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
-    -u 0.8 \
+    -u 0.75 \
+    -ca \
+    --num-kv-heads 1 \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
@@ -41,7 +43,7 @@ python benchmark/server.py \
     --step-exp $step_exp \
     --dp-size $dp_size \
     --ep-size $ep_size \
-    -ca \
     --file $REPORT_TABLE \
+    --expert-wise-schedule \
     --analyze-throughput \
     --trace

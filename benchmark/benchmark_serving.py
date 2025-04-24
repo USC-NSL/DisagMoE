@@ -365,10 +365,11 @@ async def benchmark_warmup(master: Controller, args):
     logger.info("Now running warmup ...")
     _num_warmup_requests = 10
     _num_warmup_rate = 5
+    warmup_input = 100
+    warmup_output = 50
     await run_benchmark(
         master, args, args.generator_type, _num_warmup_requests, 
-        args.min_input_len, args.max_input_len,
-        args.min_output_len, args.max_output_len, 
+        warmup_input, warmup_input + 1, warmup_output, warmup_output + 1,
         _num_warmup_rate, warmup=True
     )
     master.reset()

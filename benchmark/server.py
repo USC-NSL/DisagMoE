@@ -27,6 +27,10 @@ def run_once_endpoint():
     rate = data.get('rate', 10)
     duration = data.get('time', 10)
     distribution = data.get('distribution', 'poisson')
+    min_input_len = data.get('min_input_len', 30)
+    max_input_len = data.get('max_input_len', 70)
+    min_output_len = data.get('min_output_len', 80)
+    max_output_len = data.get('max_output_len', 120)
     
     if rate is None or duration is None or distribution is None:
         return "Missing required parameters", 400
@@ -44,6 +48,10 @@ def run_once_endpoint():
     generator_type = get_generator(distribution)
     generator = generator_type(rate, 0, 0, 0, 0, 0)
     new_args.num_requests = generator.get_num_requests(duration)
+    new_args.min_input_len = min_input_len
+    new_args.max_input_len = max_input_len
+    new_args.min_output_len = min_output_len
+    new_args.max_output_len = max_output_len
     print(f"put {new_args.num_requests} requests")
     
     async def _runner():

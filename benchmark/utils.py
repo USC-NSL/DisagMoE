@@ -6,10 +6,10 @@ def get_parser_base():
     
     # benchmark config
     parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
-    parser.add_argument("--min-input-len", type=int, default=100, help="minimum prefill length for each seqeunce")
-    parser.add_argument("-i", "--max-input-len", type=int, default=300, help="initial prefill length for each seqeunce")
-    parser.add_argument("--min-output-len", type=int, default=100, help="maximum prefill length for each seqeunce")
-    parser.add_argument("-o", "--max-output-len", type=int, default=500, help="length of output sequence")
+    parser.add_argument("--min-input-len", type=int, default=30, help="minimum prefill length for each seqeunce")
+    parser.add_argument("--max-input-len", type=int, default=70, help="initial prefill length for each seqeunce")
+    parser.add_argument("--min-output-len", type=int, default=80, help="maximum prefill length for each seqeunce")
+    parser.add_argument("--max-output-len", type=int, default=120, help="length of output sequence")
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-p", "--profile-dir", type=str, default=None, help="directory to store torch profiler output")
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")

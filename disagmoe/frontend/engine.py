@@ -1064,7 +1064,7 @@ class DummySampler:
             assert req in self.output_len, f"req {req} not found in output_len"
             self.output_len[req] += 1
             if self.check_end(req):
-                print(f"req {req} finished with length {self.output_len[req]}")
+                # print(f"req {req} finished with length {self.output_len[req]}")
                 self.clean_request(req)
                 finish_req_ids.append(req)
             else:
