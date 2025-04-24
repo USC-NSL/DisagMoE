@@ -13,9 +13,9 @@ step_attn=1
 dp_size=4
 step_exp=1
 ep_size=4
-top_k=1
+top_k=2
 
-REPORT_DIR=./mqa_top$top_k
+REPORT_DIR=./gqa_top$top_k
 
 if [ ! -d $REPORT_DIR ]; then
     mkdir -p $REPORT_DIR
@@ -33,7 +33,6 @@ python benchmark/server.py \
     -K $top_k \
     -u 0.75 \
     -ca \
-    --num-kv-heads 1 \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \

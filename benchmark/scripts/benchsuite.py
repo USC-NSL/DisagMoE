@@ -7,12 +7,12 @@ test_cases = {
     "reasonable": {
         "input": [100, 300],
         "output": [100, 500],
-        "rate": list(range(280, 400, 40)),
+        "rate": list(range(40, 400+1, 40)),
     },
     "short": {
         "input": [30, 70],
         "output": [70, 130],
-        "rate": list(range(100, 400+1, 100)),
+        "rate": list(range(100, 700+1, 100)),
     },
     "reasonable_v2": {
         "input": [50, 150],
