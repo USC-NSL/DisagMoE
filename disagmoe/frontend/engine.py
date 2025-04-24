@@ -626,13 +626,15 @@ class Engine:
     def process_batch_attn(self, 
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-
-        
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
         meta_py = AttentionBatchMetadata.from_c(meta_c)
         assert len(meta_py.seq_ids) > 0, f"Scheduled batch is empty, {input_tensor.shape}, {meta_py.seq_ids}"
 
         num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+        
+        if meta_py.layer_id == 0:
+            for i in range(meta_py.num_prefill_tokens):
+                self.record_max_output_lens(meta_py.seq_ids[i], meta_py.max_output_lens[i])
 
         if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
             assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
@@ -717,7 +719,6 @@ class Engine:
         num_tokens = meta_c.num_tokens()
         
         if self.model_config.enable_grouped_gemm:
-            
             if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
                 meta_c.get_expert_batch_sizes_cuda(
                     self.model_config.num_experts, self.inner_exp_rank,
@@ -1031,6 +1032,10 @@ class Engine:
         self._queueing_delays.clear()
         self.release_seqs(list(self.decode_seq_lens.keys()))
         
+    def record_max_output_lens(self, req_id: int, max_output_len: int):
+        assert self.has_attn
+        self.dummy_sampler.create_request(req_id, max_output_len)
+        
     def set_schedule_policy(self, policy: str):
         if self.has_attn:
             self.attn_scheduler.set_schedule_policy(policy)
@@ -1057,18 +1062,20 @@ class DummySampler:
         continue_ids = []
         finish_req_ids = []
         for i, req in enumerate(req_ids):
-            if req not in self.output_len:
-                self.create_request(req)
+            assert req in self.output_len, f"req {req} not found in output_len"
             self.output_len[req] += 1
             if self.check_end(req):
+                print(f"req {req} finished with length {self.output_len[req]}")
                 self.clean_request(req)
                 finish_req_ids.append(req)
             else:
                 continue_ids.append(i)
         return continue_ids, finish_req_ids
     
-    def create_request(self, req_id: int):
-        self.req_max_output_len[req_id] = random.randint(self.min_output_len, self.max_output_len)
+    def create_request(self, req_id: int, max_output_len: int = -1):
+        if max_output_len == -1:
+            max_output_len = random.randint(self.min_output_len, self.max_output_len)
+        self.req_max_output_len[req_id] = max_output_len
         self.output_len[req_id] = 0
 
     def clean_request(self, req_id: int):
@@ -1132,22 +1139,22 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         
-    def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
+    def process_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.randn(tensor_shape).type(self.model_config.dtype)
+        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
         # self._logger.info(f"tokenizer put request {req_id}")
-        self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
+        self.tokenizer.put_request(req_id, init_prefill_len, max_output_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
-    def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
-        self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_single_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
+        self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
-        for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
-            self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], max_output_lens: List[int], dp_ranks: List[int]):
+        for req_id, init_prefill_len, max_output_len, dp_rank in zip(req_ids, init_prefill_lens, max_output_lens, dp_ranks):
+            self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
     def fetch_submitted_time(self):
         return self.t_submitted

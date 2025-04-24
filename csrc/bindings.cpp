@@ -121,6 +121,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
         .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
         .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
+        .def_readwrite("max_output_lens", &AttentionBatchMetadata::max_output_lens)
         .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 

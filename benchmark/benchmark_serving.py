@@ -321,7 +321,7 @@ async def run_benchmark(master: Controller, args,
                         min_output_len, max_output_len, 
                         rate, warmup=False):
     GeneratorType = get_generator(generator_type)
-    generator = GeneratorType(rate, 1, min_input_len, max_input_len)
+    generator = GeneratorType(rate, 1, min_input_len, max_input_len, min_output_len, max_output_len)
     workload = generator.generate_num(num_requests)
     pbar = tqdm.tqdm(total=num_requests)
     t_start = time.perf_counter()
@@ -331,11 +331,11 @@ async def run_benchmark(master: Controller, args,
     logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
     for i in range(num_requests):
         t_elapsed = time.perf_counter() - t_start
-        arrival, input_len = workload[i]
+        arrival, input_len, output_len = workload[i]
         if t_elapsed < arrival:
             await asyncio.sleep(arrival - t_elapsed)
         req_submit_timestamps.append(time.perf_counter() - t_start)
-        resp = master.put_single_request(input_len)
+        resp = master.put_single_request(input_len, output_len)
         tasks.append(asyncio.create_task(process_response(resp, req_finish_timestamps, pbar)))
     
     results: List[SloStat] = await asyncio.gather(*tasks)

@@ -247,16 +247,17 @@ private:
     std::thread pool_thread;
     std::vector<std::thread> group_threads;
 
-    std::vector<std::vector<AttentionBatch>> attn_data_queue;
-
-    AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
-
     void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
 protected:
 
     std::vector<int> device_group_ids;
     std::shared_ptr<NcclGroupChannel> group_comm;
+    std::vector<std::vector<AttentionBatch>> attn_data_queue;
+
+    AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
+
+    void put_batch_to_attn_queue(int layer_id, const AttentionBatch &batch);
 
 public:
 

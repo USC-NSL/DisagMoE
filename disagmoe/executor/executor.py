@@ -137,8 +137,6 @@ class Executor:
     
     def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
-    
-
 
 class AttnExecutor(Executor):
 

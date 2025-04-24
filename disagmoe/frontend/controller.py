@@ -348,18 +348,20 @@ class Controller:
         self.is_polling = True
         asyncio.create_task(self.poll_finished_results())
             
-    def put_single_request(self, input_len: List[int]) -> AsyncResult:
+    def put_single_request(self, input_len: int, output_len: int) -> AsyncResult:
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
         self.dp_scheduler.put_request(
-            self.tokenizer_worker.put_single_request.remote, req_id, input_len + self.max_output_len, input_len)
+            self.tokenizer_worker.put_single_request.remote,
+            req_id, input_len + output_len, input_len, output_len
+        )
         return res
         
     def fetch_submitted_time(self) -> Dict[int, int]:
         return ray.get(self.tokenizer_worker.fetch_submitted_time.remote())
         
-    def put_requests(self, input_lens: int) -> List[AsyncResult]:
+    def put_requests(self, input_lens: List[int]) -> List[AsyncResult]:
         raise NotImplementedError("DP Scheduler not implemented here")
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         results = [AsyncResult(req_id) for req_id in req_ids]
