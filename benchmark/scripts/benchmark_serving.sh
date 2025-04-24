@@ -1,7 +1,5 @@
 #!/bin/bash
 
-
-
 MIN_INPUT_LEN=1
 MAX_INPUT_LEN=10
 MIN_OUTPUT_LEN=50
