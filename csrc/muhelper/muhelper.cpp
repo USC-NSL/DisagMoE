@@ -239,7 +239,8 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
         this->_send_batch(
             this->exp_channels[cid],
             buf,
-            sliced_meta
+            sliced_meta,
+            batch.data
         );
         // if (c_buffers.size() == 4) {
         //     for (auto c: c_buffers) {
@@ -325,7 +326,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             this->_send_batch(
                 channel_id,
                 (uintptr_t) batch.data.data_ptr(),
-                *meta
+                *meta,
+                batch.data
             );
         } else {
             auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), *batch.metadata, i);
