@@ -515,7 +515,8 @@ class CoordinatePlacement(ColocatePlacement):
     
     def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, gpu_attn: int=-1):
         super().__init__(model_config, cluster_config)
-        self.gpu_attn = gpu_attn if gpu_attn != -1 else cluster_config.n_gpu // 2
+        # self.gpu_attn = gpu_attn if gpu_attn != -1 else cluster_config.n_gpu // 2
+        self.gpu_attn = cluster_config.n_gpu - model_config.ep_size // cluster_config.n_node
         
     @override
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
