@@ -88,20 +88,11 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    static std::vector<Channel_t> c_buffers;
-
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
         this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
         this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
         this->channels[cid]->send(buf, meta);
-        c_buffers.push_back(this->channels[cid]);
-        if (c_buffers.size() == 8) {
-            for (auto &c: c_buffers) {
-                c->sync();
-            }
-            c_buffers.clear();
-        }
     } else {
         this->group_channels[cid]->send_metadata(meta);
         this->group_channels[cid]->send(buf, meta);
