@@ -50,7 +50,7 @@ void NcclChannel::instantiate() {
 
 void NcclChannel::delay_release(torch::Tensor tensor) {
     struct TensorWarp {
-        Tensor tensor;
+        torch::Tensor tensor;
     };
     TensorWarp* warp = new TensorWarp{std::move(tensor)};
     CUDACHECK(cudaStreamAddCallback(this->stream, [](cudaStream_t stream, cudaError_t status, void* data) {
