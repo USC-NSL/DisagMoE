@@ -88,7 +88,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    static vector<Channel_t> c_buffers;
+    static std::vector<Channel_t> c_buffers;
 
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
@@ -317,8 +317,6 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch: " << *meta << ", n_ele=" << batch.data.numel()  << LEND;
     ASSERT(batch.data.sizes()[0] == meta->shape[0]);
     ASSERT(batch.data.sizes()[1] == meta->shape[1]);
-
-    vector<Channel_t> c_buffers;
 
     auto &channels = this->attn_channel[layer_id];
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
