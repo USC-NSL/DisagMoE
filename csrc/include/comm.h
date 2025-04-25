@@ -43,6 +43,8 @@ public:
     }
 
     virtual void sync() {}
+
+    virtual void delay_release(torch::Tensor tensor) {};
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -71,6 +73,8 @@ public:
     void recv(uintptr_t data, const Metadata& metadata) override;
 
     void sync() override;
+
+    void delay_release(torch::Tensor tensor) override;
 };
 
 class TensorLocalChannel: public Channel {

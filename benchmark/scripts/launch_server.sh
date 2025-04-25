@@ -32,7 +32,7 @@ python benchmark/server.py \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
-    -u 0.55 \
+    -u 0.4 \
     --num-kv-heads $num_kv_heads \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \

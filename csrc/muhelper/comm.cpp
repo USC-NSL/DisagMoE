@@ -48,6 +48,17 @@ void NcclChannel::instantiate() {
     ));
 }
 
+void NcclChannel::delay_release(torch::Tensor tensor) {
+    struct TensorWarp {
+        Tensor tensor;
+    };
+    TensorWarp* warp = new TensorWarp{std::move(tensor)};
+    CUDACHECK(cudaStreamAddCallback(this->stream, [](cudaStream_t stream, cudaError_t status, void* data) {
+        TensorWarp* warp = (TensorWarp*) data;
+        delete warp;
+    }, (void*) warp, 0));
+}
+
 void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};

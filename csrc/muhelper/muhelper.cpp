@@ -84,7 +84,7 @@ bool MuDispatcher::_is_group_channel(int cid) const {
     return is_group_channels[cid];
 }
 
-void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
+void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta, torch::Tensor tensor) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
@@ -93,6 +93,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
         this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
         this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
         this->channels[cid]->send(buf, meta);
+        this->channels[cid]->delay_release(tensor);
     } else {
         this->group_channels[cid]->send_metadata(meta);
         this->group_channels[cid]->send(buf, meta);
@@ -199,7 +200,8 @@ void MuAttnDispatcher::send_to_sampler(TensorBatch batch) {
     this->_send_batch(
         this->sampler_channel_id,
         (uintptr_t) batch.data.data_ptr(),
-        *batch.metadata
+        *batch.metadata,
+        batch.data
     );
 }
 
@@ -225,7 +227,8 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             this->_send_batch(
                 this->exp_channels[cid],
                 (uintptr_t)batch.data.data_ptr(),
-                *batch.metadata
+                *batch.metadata,
+                batch.data
             );
             break;
         }
@@ -329,7 +332,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
             this->_send_batch(
                 channel_id,
                 buf,
-                batch.metadata->slice(i, j)
+                batch.metadata->slice(i, j),
+                batch.data
             );
         }
     }

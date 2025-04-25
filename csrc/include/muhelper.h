@@ -62,7 +62,7 @@ protected:
 
     virtual void _send_once(TensorBatch batch) = 0;
 
-    void _send_batch(int cid, uintptr_t buf, const Metadata& meta);
+    void _send_batch(int cid, uintptr_t buf, const Metadata& meta, torch::Tensor tensor);
 
     void run() override;
 
