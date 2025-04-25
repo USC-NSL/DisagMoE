@@ -4,20 +4,20 @@ import json
 import sys
 
 test_cases = {
-    "reasonable": {
-        "input": [100, 300],
-        "output": [100, 500],
-        "rate": list(range(40, 400+1, 40)),
-    },
     "short": {
         "input": [30, 70],
         "output": [70, 130],
-        "rate": list(range(100, 700+1, 100)),
+        "rate": list(range(100, 500+1, 100)),
     },
-    "reasonable_v2": {
+    "medium": {
         "input": [50, 150],
         "output": [50, 250],
-        "rate": list(range(50, 400+1, 50)),
+        "rate": list(range(50, 250+1, 50)),
+    },
+    "reasonable": {
+        "input": [100, 300],
+        "output": [100, 500],
+        "rate": list(range(25, 100+1, 25)),
     },
     "long": {
         "input": [800, 1200],
@@ -66,7 +66,7 @@ def run_one_suite(duration, suite):
     
 def main():
     suite = sys.argv[1]
-    run_one_suite(120, suite)
+    run_one_suite(80, suite)
     
 if __name__ == "__main__":
     main()

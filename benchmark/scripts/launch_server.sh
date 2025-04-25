@@ -31,7 +31,7 @@ python benchmark/server.py \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
-    -u 0.75 \
+    -u 0.6 \
     -ca \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
@@ -44,5 +44,4 @@ python benchmark/server.py \
     --ep-size $ep_size \
     --file $REPORT_TABLE \
     --expert-wise-schedule \
-    --analyze-throughput \
-    --trace
+    --analyze-throughput
