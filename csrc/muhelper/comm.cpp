@@ -86,6 +86,7 @@ void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
         this->comm,
         this->stream
     ));
+    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 void NcclChannel::sync() {

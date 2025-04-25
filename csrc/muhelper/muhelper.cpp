@@ -528,7 +528,7 @@ void MuPool::run() {
         // this->start_queueing_timer(meta->req_ids);
 
         this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
-        this->peer_channels[peer_id]->sync();
+        // this->peer_channels[peer_id]->sync();
     }
 }
 
