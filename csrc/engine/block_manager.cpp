@@ -175,6 +175,7 @@ torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &
     int num_seqs = num_tokens;
 
     std::vector<int> batch_infos(num_seqs + num_seqs + (num_seqs + 1), 0);
+    ASSERT(decode_seq_lens.size() == num_seqs);
 
     std::copy(decode_seq_lens.begin(), decode_seq_lens.end(), batch_infos.begin());
     std::vector<int> seq_lens(batch_infos.begin(), batch_infos.begin() + num_seqs);

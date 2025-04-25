@@ -49,6 +49,7 @@ class DPScheduler:
         self.end_flag = True
         self.end_event.set()
         await self._loop_task
+        await self._log_task
         
     async def log_status(self):
         while not self.end_flag:

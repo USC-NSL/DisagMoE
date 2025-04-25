@@ -179,3 +179,5 @@ steps_trace*
 *.gz
 metrics*.json
 tmp*
+mqa_top1
+gqa_top1

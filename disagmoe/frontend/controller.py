@@ -346,7 +346,7 @@ class Controller:
     
     def start_polling_results(self):
         self.is_polling = True
-        asyncio.create_task(self.poll_finished_results())
+        self.polling_results_task = asyncio.create_task(self.poll_finished_results())
             
     def put_single_request(self, input_len: int, output_len: int) -> AsyncResult:
         req_id = self.get_new_req_id()
@@ -418,9 +418,13 @@ class Controller:
                 rank = self.model_place.attn_dp_rank_at(device_id)
                 stats[rank] = min(stats[rank], ray.get(worker.get_configured_kv_cache_blocks.remote()))
         self.dp_scheduler.start(stats)
+        self.end_flag = False
     
     async def stop_scheduler(self):
+        self.end_flag = True
         await self.dp_scheduler.terminate()
+        if self.polling_results_task is not None:
+            await self.polling_results_task
 
     def reset(self):
         self.in_flight_reqs.clear()

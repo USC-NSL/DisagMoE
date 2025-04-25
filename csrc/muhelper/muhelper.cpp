@@ -88,11 +88,20 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
+    static vector<Channel_t> c_buffers;
+
     if (!_is_group_channel(cid)) {
         auto data = cerealize(std::make_shared<Metadata>(meta));
         this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
         this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
         this->channels[cid]->send(buf, meta);
+        c_buffers.push_back(this->channels[cid]);
+        if (c_buffers.size() == 8) {
+            for (auto &c: c_buffers) {
+                c->sync();
+            }
+            c_buffers.clear();
+        }
     } else {
         this->group_channels[cid]->send_metadata(meta);
         this->group_channels[cid]->send(buf, meta);
@@ -211,6 +220,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
 
     int n = batch.metadata->shape[0];
     int lid = batch.metadata->layer_id;
+    // std::vector<Channel_t> c_buffers;
     for (int i = 0; i < n;) {
         int j = i + 1;
         int ep_rank = _get_rank(lid, batch.metadata->exp_ids[i]);
@@ -218,6 +228,7 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             j ++;
         ASSERT(ep_rank >= 0);
         int cid = _encode(lid, batch.metadata->exp_ids[i]);
+        // c_buffers.push_back(this->channels[this->exp_channels[cid]]);
         if (i == 0 && j == n) {
             // a faster path
             this->_send_batch(
@@ -236,10 +247,19 @@ void MuAttnDispatcher::_send_once(TensorBatch batch) {
             buf,
             sliced_meta
         );
+        // if (c_buffers.size() == 4) {
+        //     for (auto c: c_buffers) {
+        //         this->channels[c]->sync();
+        //     }
+        //     c_buffers.clear();
+        // }
         i = j;
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
     // DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
+    // for (auto c: c_buffers) {
+    //     this->channels[c]->sync();
+    // }
 }
 
 /*
@@ -297,6 +317,8 @@ void MuExpertDispatcher::_send_once(TensorBatch batch) {
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sending a batch: " << *meta << ", n_ele=" << batch.data.numel()  << LEND;
     ASSERT(batch.data.sizes()[0] == meta->shape[0]);
     ASSERT(batch.data.sizes()[1] == meta->shape[1]);
+
+    vector<Channel_t> c_buffers;
 
     auto &channels = this->attn_channel[layer_id];
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
