@@ -174,7 +174,7 @@ class MoEAttention(nn.Module):
             df = pd.read_csv(routing_trace_file_path)
             df = df[df['category'] == category]
             df = df[df['layer_id'] == layer_id]
-            df = df.iloc[:, list(range(-8, 0))]
+            df = df.iloc[:, list(range(-num_experts, 0))]
             
             data = torch.tensor(df.values, dtype=torch.int32).sum(dim=0)
             self.weighted_router = data / data.sum(dim=-1, keepdim=True)
