@@ -811,9 +811,10 @@ std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_l
     }
 
     int id = this->schedule_layer_id();
-    
+
     ASSERT (this->tokens_per_layer_[id] > 0);
-    ASSERT (this->data_queue[id].size() > 0);
+    ASSERT (this->attn_data_queue[id].size() > 0);
+    ASSERT (this->num_batches_per_layer_[id] > 0);
 
     this->tokens_per_layer_[id] = 0;
     this->num_batches_per_layer_[id] = 0;
