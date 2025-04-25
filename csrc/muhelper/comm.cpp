@@ -49,6 +49,8 @@ void NcclChannel::instantiate() {
 }
 
 void NcclChannel::delay_release(torch::Tensor tensor) {
+    // do nothing
+    return;
     struct TensorWarp {
         torch::Tensor tensor;
     };
