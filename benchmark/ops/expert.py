@@ -10,6 +10,7 @@ torch.set_default_device(device)
 torch.set_default_dtype(torch.bfloat16)
 
 plt.figure(figsize=(10, 6))
+plt.rcParams.update({'font.size': 16})
 
 @torch.inference_mode()
 def benchmark_hidden_size(hidden_size, intermediate_size, label):
@@ -57,7 +58,8 @@ def benchmark_hidden_size(hidden_size, intermediate_size, label):
             torch.cuda.synchronize()
             total_time = start.elapsed_time(end)
             avg_time = total_time / num_runs
-            batch_size_results.append(avg_time)
+            tput = rows / avg_time * 1000
+            batch_size_results.append(tput)
         results.append(np.mean(batch_size_results))
 
     torch.cuda.empty_cache()
@@ -65,19 +67,23 @@ def benchmark_hidden_size(hidden_size, intermediate_size, label):
     # Plot
     plt.plot(row_sizes, results, marker="o", label=label)
     
-hidden_sizes_k = np.array([6, 4, 5, 7])
+hidden_sizes_k = np.array([6, 4, 5])
 hidden_sizes = hidden_sizes_k * 1024
-intermediate_sizes_k = np.array([16, 12, 8, 2])
+intermediate_sizes_k = np.array([16, 12, 8])
 intermediate_sizes = intermediate_sizes_k * 1024
-models = ["Mixtral 8x22B", "Mixtral 8x7B", "Llama4", "Deepseek V3"]
+models = ["Mixtral 8x22B", "Mixtral 8x7B", "Llama4"]
 labels = [f"{model}: hidden={h}k, intermediate={i}k" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes_k)]
 
 for hidden_size, intermediate_size, label in zip(hidden_sizes, intermediate_sizes, labels):
     benchmark_hidden_size(hidden_size, intermediate_size, label)
 
-plt.title("Time Cost vs. Batch Size")
+plt.title("Expert Throughput vs. Batch Size")
 plt.xlabel("batch size")
-plt.ylabel("Avg Execution Time (ms)")
+plt.ylabel("throughput tokens/s")
+
+yticks_idx = np.arange(0, 1000000, 200000)
+yticks_k = [ f"{int(i / 1000)}k" for i in yticks_idx]
+plt.yticks(yticks_idx, yticks_k)
 plt.legend()
 plt.grid(True)
 plt.tight_layout()

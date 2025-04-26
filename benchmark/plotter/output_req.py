@@ -31,13 +31,16 @@ time_bins_submit, reqs_submit = process_requests(df_submit)
 df_finish = pd.read_csv(fn_finish)
 time_bins_finish, reqs_finish = process_requests(df_finish)
 
+#set font size
+plt.rcParams.update({'font.size': 16})
+
 # Create a single plot with both request types
 plt.figure(figsize=(10, 6))
-plt.plot(time_bins_submit, reqs_submit, '-b', label='Input Requests')
-plt.plot(time_bins_finish, reqs_finish, '-r', label='Output Requests')
+plt.plot(time_bins_submit, reqs_submit, '-b', label='Input Rate')
+plt.plot(time_bins_finish, reqs_finish, '-r', label='Output Rate')
 plt.xlabel('time (s)')
-plt.ylabel('requests per second')
-plt.title('Input and Output Requests per Second')
+plt.ylabel('rate (req/s)')
+plt.title('Requests Input and Output Rate')
 plt.grid(True)
 plt.legend()
 

@@ -22,11 +22,14 @@ gap_i = args.gap_i
 index_bins = range(0, len(df.index), gap_i)
 index_sums = df.groupby(pd.cut(df.index, bins=index_bins))['num_tokens'].sum()
 
+# set font size
+plt.rcParams.update({'font.size': 16})
+
 plt.figure(figsize=(10, 5))
 plt.plot(index_bins[:-1], index_sums, '-')
 plt.xlabel('Steps')
 plt.ylabel(f'Number of Tokens per {gap_i} steps')
-plt.title('Sampler\'s Average Output Tokens)')
+plt.title('Token Output Throughput')
 plt.savefig(f'{get_plot_dir(args.path)}/output_tokens_over_index.png')
 plt.close()
 
@@ -46,7 +49,7 @@ time_sums = df.groupby(pd.cut(df['time_stamp'], bins=time_bins))['num_tokens'].s
 time_sums /= gap_t
 
 num_bins = len(time_sums)
-peak_throughput_time_range = 60 # seconds
+peak_throughput_time_range = 30 # seconds
 step = peak_throughput_time_range // 2 // args.gap_t
 peak_throughput_range = time_sums[num_bins // 2 - step : num_bins // 2 + step]
 
@@ -54,8 +57,8 @@ print(f"peak throughput: {sum(peak_throughput_range) / len(peak_throughput_range
 plt.figure(figsize=(10, 5))
 plt.plot(time_bins[:-1], time_sums, '-')
 plt.axvline(x=120, color='green', linestyle='dotted')
-plt.xlabel('Time (in seconds)')
-plt.ylabel('Number of Tokens per second')
-plt.title('Sampler\'s Average Output Tokens)')
+plt.xlabel('time (s)')
+plt.ylabel('throughput tokens/s')
+plt.title('Output Token Throughput')
 plt.savefig(f'{get_plot_dir(args.path)}/output_tokens_over_time.png')
 plt.close()

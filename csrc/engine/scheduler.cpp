@@ -462,6 +462,28 @@ void GroupLayerScheduler::add_tokens_to_layer(int layer_id, int group_id, int nu
     add_tokens_to_layer(layer_group_id, num_tokens);
 }
 
+// int GroupLayerScheduler::schedule() {
+//     int n = n_layers * n_groups;
+//     int layer_group_id = -1;
+//     for (int i = 0; i < n; i++) {
+//         if (num_tokens_in_layer[i] > 0) {
+//             layer_group_id = i;
+//             break;
+//         }
+//     }
+//     step_end();
+//     clean_layer_status(layer_group_id);
+//     return layer_group_id;
+// }
+
+// int GroupLayerScheduler::schedule() {
+//     auto max_iter = std::max_element(num_tokens_in_layer.begin(), num_tokens_in_layer.end());
+//     int layer_group_id = std::distance(num_tokens_in_layer.begin(), max_iter);
+//     step_end();
+//     clean_layer_status(layer_group_id);
+//     return layer_group_id;
+// }
+
 int GroupLayerScheduler::schedule() {
     std::vector<float> scores(n_layers * n_groups);
     for (int i = 0; i < n_layers; i++) {
