@@ -45,7 +45,7 @@ class AsyncResult:
 
 class Controller:
     
-    def __init__(self, n_node: int, n_gpu_per_node: int, enable_nsys=False):
+    def __init__(self, n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
         # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
@@ -63,6 +63,7 @@ class Controller:
         self.request_results: Dict[int, AsyncResult] = dict()
         self.is_polling = False
         self.enable_nsys = enable_nsys
+        self.expert_wise_schedule = expert_wise_schedule
         
         self.dp_scheduler: DPScheduler = None
         
@@ -241,13 +242,15 @@ class Controller:
                 )
         ])
         
-        ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
+        # ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
         
         # init core
         tasks = [
             worker.init_core.remote(
                 InitCoreArgs(
                     layer_ids=model_place.layer_ids_at(device_id),
+                    max_output_len=self.max_output_len,
+                    min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
                     out_channel_infos=[
@@ -271,6 +274,7 @@ class Controller:
                         tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                     expert_ranks=model_place.out_expert_ranks_at(device_id),
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
+                    expert_wise_schedule=self.expert_wise_schedule,
                 )
             ) for worker, device_id in zip(
                 self.workers + [self.sampler_worker, self.tokenizer_worker], 
@@ -305,9 +309,7 @@ class Controller:
         return req_id
     
     async def process_finished_results(self, results: List[SloStat]):
-        # release request resources
         finished_req_ids = [r.req_id for r in results]
-        self.release_kv_cache(finished_req_ids)
         for req_id in finished_req_ids:
             self.in_flight_reqs.remove(req_id)
             self.dp_scheduler.del_seq(req_id)
@@ -340,24 +342,26 @@ class Controller:
             results = ray.get(self.sampler_worker.fetch_finished_results.remote())
             if len(results) != 0:
                 asyncio.create_task(self.process_finished_results(results))
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.1)
     
     def start_polling_results(self):
         self.is_polling = True
         asyncio.create_task(self.poll_finished_results())
             
-    def put_single_request(self, input_len: List[int]) -> AsyncResult:
+    def put_single_request(self, input_len: int, output_len: int) -> AsyncResult:
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
         self.dp_scheduler.put_request(
-            self.tokenizer_worker.put_single_request.remote, req_id, input_len)
+            self.tokenizer_worker.put_single_request.remote,
+            req_id, input_len + output_len, input_len, output_len
+        )
         return res
         
     def fetch_submitted_time(self) -> Dict[int, int]:
         return ray.get(self.tokenizer_worker.fetch_submitted_time.remote())
         
-    def put_requests(self, input_lens: int) -> List[AsyncResult]:
+    def put_requests(self, input_lens: List[int]) -> List[AsyncResult]:
         raise NotImplementedError("DP Scheduler not implemented here")
         req_ids = [self.get_new_req_id() for _ in range(len(input_lens))]
         results = [AsyncResult(req_id) for req_id in req_ids]
@@ -386,7 +390,7 @@ class Controller:
     #     ])
     
     def reset_workers(self):
-        tasks = [worker.reset.remote() for worker in self.workers]
+        tasks = [worker.reset.remote() for worker in self.workers + [self.sampler_worker]]
         ray.get(tasks)
     
     def stop_workers(self):
@@ -403,6 +407,7 @@ class Controller:
     def stop_profile(self):
         if not self._profile_enabled:
             return
+        self._profile_enabled = False
         tasks = [worker.stop_profile.remote() for worker in self.workers]
         ray.get(tasks)
         
@@ -426,7 +431,8 @@ class Controller:
 controller: Controller
 
 
-def init_controller(n_node: int, n_gpu_per_node: int, enable_nsys=False):
+def init_controller(n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
     global controller
-    controller = Controller(n_node, n_gpu_per_node, enable_nsys)
+    controller = Controller(n_node, n_gpu_per_node,
+                            expert_wise_schedule=expert_wise_schedule, enable_nsys=enable_nsys)
     return controller

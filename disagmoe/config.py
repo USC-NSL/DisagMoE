@@ -24,7 +24,7 @@ class ModelConfig:
     tp_enable_inter_group: bool = True
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
-    enable_grouped_gemm: bool = True
+    enable_grouped_gemm: bool = False
     
     graph_stride: int = 8
     max_batch_size_attn: int = 160

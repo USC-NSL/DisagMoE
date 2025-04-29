@@ -1,10 +1,8 @@
 import torch
-import torch.distributed as dist
 
 from torch import Tensor
 
 from typing import override, Tuple, List, Union, Dict
-from time import sleep
 from enum import Enum
 
 from vllm.attention import AttentionMetadata
@@ -19,6 +17,115 @@ from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos
+
+import triton.language as tl
+import triton
+
+@triton.jit
+def cuda_graph_preprocess_kernel(
+    # Destination pointers
+    static_input_ptr, static_positions_ptr, static_slot_mapping_ptr,
+    static_block_table_ptr, static_seq_lens_ptr, static_context_lens_ptr,
+    static_seq_start_loc_ptr,
+    # Source pointers
+    hidden_states_ptr, positions_ptr, slot_mapping_ptr,
+    block_tables_ptr, seq_lens_tensor_ptr, context_lens_tensor_ptr,
+    seq_start_loc_ptr,
+    # Dimensions
+    num_tokens, hidden_dim, max_num_blocks,
+    # Strides
+    static_input_stride, hidden_states_stride,
+    static_block_table_stride_0, static_block_table_stride_1,
+    block_tables_stride_0, block_tables_stride_1,
+    TOKEN_BLOCK_SIZE: tl.constexpr,
+    HIDDEN_BLOCK_SIZE: tl.constexpr,
+):
+    # For hidden_states (2D tensor)
+    pid_token = tl.program_id(0)
+    pid_hidden = tl.program_id(1)
+    
+    # Calculate offsets for hidden states (this is more complex)
+    token_offset = pid_token * TOKEN_BLOCK_SIZE
+    hidden_offset = pid_hidden * HIDDEN_BLOCK_SIZE
+    
+    # Block for hidden_states copy
+    if pid_hidden < (hidden_dim + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE:
+        # Get token indices
+        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
+        hidden_indices = hidden_offset + tl.arange(0, HIDDEN_BLOCK_SIZE)
+        
+        # Create masks for boundary checking
+        token_mask = token_indices < num_tokens
+        hidden_mask = hidden_indices < hidden_dim
+        
+        # Load from hidden_states
+        # The offset calculation is different for 2D tensors
+        offsets_hidden = (token_indices[:, None] * hidden_states_stride + hidden_indices[None, :])
+        hidden_vals = tl.load(hidden_states_ptr + offsets_hidden, mask=token_mask[:, None] & hidden_mask[None, :])
+        
+        # Store to static_input
+        offsets_static = (token_indices[:, None] * static_input_stride + hidden_indices[None, :])
+        tl.store(static_input_ptr + offsets_static, hidden_vals, mask=token_mask[:, None] & hidden_mask[None, :])
+    
+    # For 1D tensors (positions, slot_mapping, seq_lens, context_lens)
+    if pid_hidden == 0:  # Only need one block in the hidden dimension
+        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
+        mask = token_indices < num_tokens
+        
+        # Copy positions
+        positions_vals = tl.load(positions_ptr + token_indices, mask=mask)
+        tl.store(static_positions_ptr + token_indices, positions_vals, mask=mask)
+        
+        # Copy slot_mapping
+        slot_mapping_vals = tl.load(slot_mapping_ptr + token_indices, mask=mask)
+        tl.store(static_slot_mapping_ptr + token_indices, slot_mapping_vals, mask=mask)
+        
+        # Copy seq_lens
+        seq_lens_vals = tl.load(seq_lens_tensor_ptr + token_indices, mask=mask)
+        tl.store(static_seq_lens_ptr + token_indices, seq_lens_vals, mask=mask)
+        
+        # Copy context_lens
+        context_lens_vals = tl.load(context_lens_tensor_ptr + token_indices, mask=mask)
+        tl.store(static_context_lens_ptr + token_indices, context_lens_vals, mask=mask)
+    
+    # Special handling for seq_start_loc (size is num_tokens + 1)
+    if pid_hidden == 0:
+        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
+        mask = token_indices < (num_tokens + 1)  # +1 for seq_start_loc
+        
+        seq_start_vals = tl.load(seq_start_loc_ptr + token_indices, mask=mask)
+        tl.store(static_seq_start_loc_ptr + token_indices, seq_start_vals, mask=mask)
+    
+    # For block_tables (2D tensor)
+    if pid_hidden < (max_num_blocks + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE:
+        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
+        block_indices = pid_hidden * HIDDEN_BLOCK_SIZE + tl.arange(0, HIDDEN_BLOCK_SIZE)
+        token_mask = token_indices < num_tokens
+        block_mask = block_indices < max_num_blocks
+        
+        # Load from block_tables
+        block_vals = tl.load(
+            block_tables_ptr + token_indices[:, None] * block_tables_stride_0 + block_indices[None, :] * block_tables_stride_1, 
+            mask=token_mask[:, None] & block_mask[None, :]
+        )
+        
+        # Store to static_block_table
+        tl.store(
+            static_block_table_ptr + token_indices[:, None] * static_block_table_stride_0 + block_indices[None, :] * static_block_table_stride_1,
+            block_vals, 
+            mask=token_mask[:, None] & block_mask[None, :]
+        )
+
+def get_module_param_memory(module, unit='GB'):
+    unit_scale = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
+    scale = unit_scale[unit.upper()]
+    
+    param_mem = sum(p.numel() * p.element_size() for p in module.parameters())
+    buffer_mem = sum(b.numel() * b.element_size() for b in module.buffers())
+    
+    total_mem = (param_mem + buffer_mem) / scale
+    return total_mem
+
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -31,6 +138,7 @@ class Executor:
         self.layer_mappings = [0 for _ in range(max(model_config.layer_ids) + 1)]
         for i, id in enumerate(model_config.layer_ids):
             self.layer_mappings[id] = i
+        self.operators: List[torch.nn.Module] = None
     
     def execute(self, x: Tensor) -> Tensor:
         raise NotImplementedError()
@@ -41,7 +149,12 @@ class Executor:
     def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
     
-
+    def print_model_memory_usage(self) -> None:
+        # sum up all memory used by the operators
+        total_memory_gb = 0
+        for operator in self.operators:
+            total_memory_gb += get_module_param_memory(operator, unit='GB')
+        print(f"Model weights total memory usage: {total_memory_gb:.1f} GB")
 
 class AttnExecutor(Executor):
 
@@ -67,6 +180,7 @@ class AttnExecutor(Executor):
             ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        self.print_model_memory_usage()
         
     @override
     def initialize_cache(self, num_blocks):
@@ -180,7 +294,6 @@ class CUDAGraphAttnExecutor:
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         batch_info_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-
 
         # batch_info_len = batch_info_cuda.shape[0]
 
@@ -317,28 +430,52 @@ class CUDAGraphAttnExecutor:
             if size >= batch_size:
                 return i, size
         assert False, f"No available graph for batch size={batch_size}"
+        
+    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, positions: torch.Tensor, meta: FlashAttentionMetadata):
+        num_tokens = hidden_states.shape[0]
+        hidden_dim = hidden_states.shape[1]
+        max_num_blocks = meta.block_tables.shape[1]
+        
+        # Compute grid for kernel launch
+        TOKEN_BLOCK_SIZE = 64
+        HIDDEN_BLOCK_SIZE = 256
+        grid_token = (num_tokens + TOKEN_BLOCK_SIZE - 1) // TOKEN_BLOCK_SIZE
+        grid_hidden = (hidden_dim + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
+        grid_blocks = (max_num_blocks + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
+        
+        # Launch kernel
+        cuda_graph_preprocess_kernel[(grid_token, max(grid_hidden, grid_blocks))](
+            # Destination pointers
+            self.static_input, self.static_positions, self.static_slot_mapping,
+            self.static_block_table, self.static_seq_lens, self.static_context_lens,
+            self.static_seq_start_loc,
+            # Source pointers
+            hidden_states, positions, meta.slot_mapping,
+            meta.block_tables, meta.seq_lens_tensor, meta.context_lens_tensor,
+            meta.seq_start_loc,
+            # Dimensions
+            num_tokens, hidden_dim, max_num_blocks,
+            # Strides (adapt based on your tensors' memory layout)
+            self.static_input.stride(0), hidden_states.stride(0),
+            self.static_block_table.stride(0), self.static_block_table.stride(1),
+            meta.block_tables.stride(0), meta.block_tables.stride(1),
+            TOKEN_BLOCK_SIZE=TOKEN_BLOCK_SIZE, HIDDEN_BLOCK_SIZE=HIDDEN_BLOCK_SIZE,
+        )
 
     def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         num_tokens = hidden_states.shape[0]
         graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
-        self.static_input[ : num_tokens].copy_(hidden_states)
-        self.static_positions[ : num_tokens].copy_(positions)
-        self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
-
-        max_num_blocks = meta.block_tables.shape[1]
-        self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
-
-        # static_batch_info = self.static_batch_infos[batch_size]
-
-        # seq_lens_cuda  = static_batch_info[ : batch_size]
-        # context_lens_cuda = static_batch_info[batch_size : batch_size + batch_size]
-        # seq_start_loc_cuda = static_batch_info[batch_size + batch_size : ]
-        # seq_lens_cuda[ : num_tokens].copy_(meta.seq_lens_tensor)
-        # context_lens_cuda[ : num_tokens].copy_(meta.context_lens_tensor)
-        # seq_start_loc_cuda[ : num_tokens + 1].copy_(meta.seq_start_loc)
-        self.static_seq_lens[ : num_tokens].copy_(meta.seq_lens_tensor)
-        self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
-        self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
+        
+        self.cuda_graph_preprocess(hidden_states, positions, meta)
+        
+        # self.static_input[ : num_tokens].copy_(hidden_states)
+        # self.static_positions[ : num_tokens].copy_(positions)
+        # self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
+        # max_num_blocks = meta.block_tables.shape[1]
+        # self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
+        # self.static_seq_lens[ : num_tokens].copy_(meta.seq_lens_tensor)
+        # self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
+        # self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
 
         self.graphs[layer_id][graph_id].replay()
 
@@ -360,6 +497,7 @@ class ExpertsExecutor(Executor):
                 max_batch_size=self.model_config.max_batch_size_expert
             ) for _ in range(self.num_layers)
         ]
+        self.print_model_memory_usage()
 
     @override
     @nvtx_range("ExpertsExecutor.execute")

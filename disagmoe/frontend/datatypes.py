@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from disagmoe.utils.constants import CPS
 import torch
 
@@ -37,6 +37,12 @@ class Metadata:
     attn_dp_ranks: List[int]
     init_prefill_lens: List[int]
     topk_weights: List[float]
+    
+    def get_dp_rank(self) -> int:
+        ...
+        
+    def get_expert_id(self) -> int:
+        ...
 
     def num_tokens(self) -> int:
         ...
@@ -62,6 +68,12 @@ class Metadata:
         ...
     
     def shrink_topk(self, topk: int) -> None:
+        ...
+    
+    def select_indices(self, indices: List[int]) -> "Metadata":
+        ...
+        
+    def set_finish_signal(self, continue_ids: List[int]) -> None:
         ...
         
     @staticmethod
@@ -99,7 +111,6 @@ class TensorBatch:
             batch_c.data,
             batch_c.metadata
         )
-
 @dataclass
 class AttentionBatchMetadata:
     layer_id: int
@@ -117,6 +128,7 @@ class AttentionBatchMetadata:
 
     topk_weights: List[float]
     attn_dp_ranks: List[int]
+    max_output_lens: Optional[List[int]]
     
     def to_metadata(self) -> Metadata:
         ...
@@ -150,7 +162,8 @@ class AttentionBatchMetadata:
             meta_c.init_prefill_lens,
             meta_c.expert_ids,
             meta_c.topk_weights,
-            meta_c.attn_dp_ranks
+            meta_c.attn_dp_ranks,
+            meta_c.max_output_lens,
         )
 
     def shrink_topk(self, topk: int) -> None:
@@ -168,12 +181,13 @@ class SloStat:
     
     @staticmethod
     def from_c(stat_c: "SloStat_C") -> "SloStat":
+        ms_to_s = 1e-3
         return SloStat(
             stat_c.req_id,
-            stat_c.t_prefill / CPS,
-            stat_c.t_prefill_std / 1e3, # ms -> s
-            (stat_c.t_decode - stat_c.t_prefill) / CPS,
-            [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
+            stat_c.t_prefill * ms_to_s,
+            stat_c.t_prefill_std * ms_to_s,
+            (stat_c.t_decode - stat_c.t_prefill) * ms_to_s,
+            [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )
         
 @dataclass
@@ -195,7 +209,7 @@ class TraceContext:
 @dataclass
 class SamplerStepInfo:
     num_tokens: int
-    time_stamp: float
+    time_stamp: int
     
     @staticmethod
     def from_c(step_c: "SamplerStepInfo_C") -> "SamplerStepInfo":

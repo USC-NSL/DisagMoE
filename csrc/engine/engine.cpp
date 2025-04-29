@@ -110,11 +110,12 @@ void init_all_channels(
     // DMOE_LOG(DEBUG) << local_id << " " << "out channel initialized" << LEND;
 }
 
-std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init_engine(
+std::tuple<mu_pool_t, attn_scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     int top_k,
     bool has_attn,
     bool has_expert,
+    bool expert_wise_schedule,
     ParallelConfig cfg,
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
@@ -123,7 +124,8 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids,
     const std::vector<int> &device_group_ids,
-    int local_attn_dp_rank) {
+    int local_attn_dp_rank
+) {
 
     ASSERT (has_attn ^ has_expert == true);
 
@@ -157,22 +159,31 @@ std::tuple<attn_scheduler_t, mu_dispatcher_t, scheduler_t, mu_dispatcher_t> init
     // DMOE_LOG(DEBUG) << local_id << "init scheduler" << LEND;
     scheduler_t expert_scheduler;
     attn_scheduler_t attn_scheduler;
+    mu_attn_pool_t attn_pool;
+    mu_pool_t expert_pool;
 
     if (has_attn) {
-        mu_attn_pool_t pool;
         if (top_k == 1) {
-            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::BASE);
+            attn_pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::ADVANCED);
         } else {
-            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::BASE);
+            attn_pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::ADVANCED);
         }
-        attn_scheduler = AttentionScheduler::build(pool, layer_ids, "mbfs");
+        attn_scheduler = AttentionScheduler::build(attn_pool, layer_ids, "mbfs");
     } 
     if (has_expert) {
-        mu_pool_t pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, 1);
-        expert_scheduler = Scheduler::build(pool, layer_ids, "mbfs");
+        LayerSchedulePolicy policy = LayerSchedulePolicy::GROUP;
+        int num_groups = 1;
+        if (expert_wise_schedule) {
+            policy = LayerSchedulePolicy::GROUP;
+            num_groups = cfg.n_exp_per_rank;
+            // DMOE_LOG(INFO) << local_id << " expert wise schedule, #experts per EP rank: " << num_groups << LEND;
+        }
+        expert_pool = std::make_shared<MuPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, num_groups);
+        expert_scheduler = Scheduler::build(expert_pool, layer_ids, "mbfs");
     }
 
-    return std::make_tuple(attn_scheduler, attn_dispatcher, expert_scheduler, expert_dispatcher);
+    mu_pool_t casted_attn_pool = std::static_pointer_cast<MuPool>(attn_pool);
+    return std::make_tuple(casted_attn_pool, attn_scheduler, attn_dispatcher, expert_pool, expert_scheduler, expert_dispatcher);
 }
 
 
@@ -271,9 +282,6 @@ void start_engine(attn_scheduler_t attn_scheduler, mu_dispatcher_t attn_dispatch
 
 Sampler_t init_sampler(
     int local,
-    int min_output_len,
-    int max_output_len,
-    int top_k,
     ParallelConfig cfg,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
@@ -285,7 +293,7 @@ Sampler_t init_sampler(
 
     for (int i: in_device_ids)
         in_channels.push_back(std::make_shared<ZmqChannel>(local, i, false));
-    
+
     ASSERT(out_device_ids.size() == out_channel_infos.size());
     for (int id = 0; id < out_device_ids.size(); id ++) {
         int i = out_device_ids[id];
@@ -299,15 +307,10 @@ Sampler_t init_sampler(
         t.join();
 
     Sampler_t sampler;
-    if (top_k == 1) {
-        sampler = std::make_shared<Sampler>(
-            local, min_output_len, max_output_len, cfg, in_channels, out_channels, out_channel_infos
-        );
-    } else {
-        sampler = std::make_shared<TopKSampler>(
-            local, min_output_len, max_output_len, top_k, cfg, in_channels, out_channels, out_channel_infos
-        );
-    }
+    sampler = std::make_shared<Sampler>(
+        local, cfg, in_channels, out_channels, out_channel_infos
+    );
+
     return sampler;
 }
 

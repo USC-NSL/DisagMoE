@@ -34,10 +34,18 @@ class MuDispatcher:
         
     def put(self, batch: TensorBatch, rank: int):
         ...
+        
+    def send_to_sampler(self, batch: TensorBatch):
+        ...
+
+class MuPool:
+    
+    def put_batch(self, batch: TensorBatch) -> None:
+        ...
 
 class Tokenizer:
     
-    def put_request(self, req_id: int, init_prefill_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
+    def put_request(self, req_id: int, init_prefill_len: int, max_output_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
         ...
         
     def start(self):

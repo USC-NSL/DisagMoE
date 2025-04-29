@@ -31,7 +31,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
     //     .def("start", &MuAttnDispatcher::start)
     //     .def("terminate", &MuAttnDispatcher::terminate)
     //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
-
+    py::class_<MuPool, std::shared_ptr<MuPool>>(m, "MuPool")
+        .def("put_batch", &MuPool::put_batch);
+        
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("schedule", &Scheduler::schedule)
@@ -52,7 +54,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         // .def("set_schedule_block", &AttentionScheduler::set_schedule_block);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
-        .def("put", &MuDispatcher::put);
+        .def("put", &MuDispatcher::put)
+        .def("send_to_sampler", &MuDispatcher::send_to_sampler);
 
     py::class_<Tokenizer, std::shared_ptr<Tokenizer>>(m, "Tokenizer")
         .def("put_request", &Tokenizer::put_request)
@@ -64,13 +67,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats)
         .def("fetch_step_infos", &Sampler::fetch_step_infos)
         .def("reset", &Sampler::reset);
-
-    py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
-        .def("start", &TopKSampler::start)
-        .def("wait_slo_stats", &TopKSampler::wait_slo_stats)
-        .def("fetch_step_infos", &Sampler::fetch_step_infos)
-        .def("reset", &Sampler::reset)
-        .def("fetch_finished_slo_stats", &TopKSampler::fetch_finished_slo_stats);
 
     REGISTER_STRUCT(TensorBatch)
         .def_readwrite("data", &TensorBatch::data)
@@ -125,6 +121,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
         .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
         .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
+        .def_readwrite("max_output_lens", &AttentionBatchMetadata::max_output_lens)
         .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
@@ -139,12 +136,15 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("init_prefill_lens", &Metadata::init_prefill_lens)
         .def_readwrite("topk_weights", &Metadata::topk_weights)
         .def("num_tokens", &Metadata::num_tokens)
+        .def("get_expert_id", &Metadata::get_expert_id)
         .def("step_layer", &Metadata::step_layer)
         .def("update_exp_ids", &Metadata::update_exp_ids)
         .def("permute_token_infos", &Metadata::permute_token_infos)
         .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
         .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
         .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
+        .def("set_finish_signal", &Metadata::set_finish_signal)
+        .def("select_indices", &Metadata::select_indices)
         .def("duplicate_topk", &Metadata::duplicate_topk)
         .def("shrink_topk", &Metadata::shrink_topk);
 

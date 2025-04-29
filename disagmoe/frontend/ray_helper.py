@@ -24,6 +24,8 @@ def get_global_placement_group():
 @dataclass
 class InitCoreArgs:
     layer_ids: List[int]
+    min_output_len: int
+    max_output_len: int
     
     # P2P Channels
     in_device_ids: List[int]
@@ -37,9 +39,13 @@ class InitCoreArgs:
     out_nccl_ids_ext: Dict[int, int]
     
     expert_ranks: List[Tuple[int, int, int]]
+    expert_wise_schedule: bool = False
     
     # Group Channels
     out_device_group_ids: Dict[int, List[int]] = None
     device_group_ids: List[int] = None
     group_nccl_ids: Tuple[str, str, str] = ("", "", "")
     local_attn_dp_rank: int = 0
+    
+
+    
