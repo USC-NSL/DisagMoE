@@ -2,18 +2,19 @@ MIN_INPUT_LEN=100
 MAX_INPUT_LEN=300
 MIN_OUTPUT_LEN=100
 MAX_OUTPUT_LEN=500
-N_NODE=1
+N_NODE=2
 N_GPU_PER_NODE=4
 NUM_LAYERS=32
-NUM_EXPERTS=4
+NUM_EXPERTS=8
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=2
+dp_size=4
 step_exp=1
-ep_size=2
+ep_size=4
 top_k=1
+placement=pipeline
 
 REPORT_DIR=./reports
 
@@ -41,7 +42,7 @@ python benchmark/server.py \
     --step-exp $step_exp \
     --dp-size $dp_size \
     --ep-size $ep_size \
-    # -ca \
     --file $REPORT_TABLE \
     --analyze-throughput \
+    --placement $placement \
     --trace
