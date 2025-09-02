@@ -1,9 +1,6 @@
 pybind11
-torch==2.4.0
-torchvision==0.19.0
-torchaudio==2.4.0
-ray==2.31.0
-vllm==0.6.2
 pandas
 openpyxl
 matplotlib
+flask
+vllm==0.8.2

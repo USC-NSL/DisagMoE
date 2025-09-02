@@ -18,10 +18,6 @@ CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "i
 CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
 CUDA_LIB64_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib64"))
 
-NCCL_HOME = os.environ.get("NCCL_HOME", "/usr/local/nccl2")
-NCCL_INCLUDE_DIR = os.environ.get("NCCL_INCLUDE_DIR", os.path.join(NCCL_HOME, "include"))
-NCCL_LIB_DIR = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(NCCL_HOME, "lib"))
-
 TORCH_HOME = torch.__path__[0]
 TORCH_LIB_DIR = f"{TORCH_HOME}/lib"
 TORCH_INCLUDES = [f"{TORCH_HOME}/include/torch/csrc/api/include", f"{TORCH_HOME}/include"]
@@ -48,15 +44,13 @@ ext_modules = [
             f"{THIRD_PARTY_DIR}/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
             f"{THIRD_PARTY_DIR}/cereal/include",
             f"{THIRD_PARTY_DIR}/NVTX/c/include",
-            f"{NCCL_HOME}/include",
-            NCCL_INCLUDE_DIR,
             # *TORCH_INCLUDES,
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
-            NCCL_LIB_DIR,
             TORCH_LIB_DIR,
+            "/usr/local/lib"
         ], 
         libraries=["cudart", "nccl", "zmq", "torch", "c10", "torch_cpu"],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
@@ -70,7 +64,7 @@ ext_modules = [
 
 setup(
     name='disagmoe',
-    version='0.2',
+    version='0.3.1',
     cmdclass={"build_ext": cpp_extension.BuildExtension},
     ext_modules=ext_modules,
     packages=find_packages(".")

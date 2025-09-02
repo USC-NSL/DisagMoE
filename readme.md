@@ -23,8 +23,6 @@ TORCH_CUDA_ARCH_LIST=8.0 GROUPED_GEMM_CUTLASS=1 pip install .
 ### Build Disag-MoE
 
 ```bash
-conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 pytorch-cuda=12.1 -c pytorch -c nvidia
-conda install nccl conda-forge::cuda-cudart-dev nvidia/label/cuda-12.4.0::cuda-runtime
 sudo apt-get install libzmq3-dev libcereal-dev
 git submodule update --init
 pip install -r requirements.txt
