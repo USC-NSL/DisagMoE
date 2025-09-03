@@ -84,7 +84,7 @@ class AttnExecutor(Executor):
     
     def profile_execute(self, batch_size: int):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
-        kv_cache = None
+        kv_cache = torch.tensor([])
         for layer_id in range(self.num_layers):
             positions = torch.ones(batch_size, dtype=torch.long, device="cuda")
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)

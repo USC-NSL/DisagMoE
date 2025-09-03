@@ -477,11 +477,14 @@ class Engine:
             max_query_len=0,
             max_prefill_seq_len=0,
             max_decode_seq_len=max_decode_seq_len,
-            query_start_loc=None,
+            max_decode_query_len=1,
+            query_start_loc=torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda"),
             seq_start_loc=seq_start_loc_cuda,
             context_lens_tensor=context_lens_cuda,
             block_tables=block_table_cuda,
             use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+            multi_modal_placeholder_index_maps=None,
+            enable_kv_scales_calculation=True,
         )
     
     @nvtx_range("engine.attn_driver_preprocess")

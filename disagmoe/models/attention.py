@@ -152,7 +152,8 @@ class MoEAttention(nn.Module):
                               self.scaling,
                               num_kv_heads=self.num_kv_heads,
                               cache_config=cache_config,
-                              quant_config=quant_config)
+                              quant_config=quant_config,
+                              use_direct_call=True)
         
         # Gate always runs at half / full precision for now.
 
@@ -216,7 +217,7 @@ class MoEAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        attn_output = self.attn(q, k, v, kv_cache=kv_cache, attn_metadata=attn_metadata)
         output, _ = self.o_proj(attn_output)
         output, residual = self.post_attention_layernorm(output, residual)
         router_logits, _ = self.gate(output)

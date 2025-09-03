@@ -82,7 +82,9 @@ def unpack_flash_attn_meta(buffer_meta: torch.Tensor,
         seq_start_loc,
         context_lens_tensor,
         None, # block_table
-        use_cuda_graph=False
+        use_cuda_graph=False,
+        multi_modal_placeholder_index_maps=None,
+        enable_kv_scales_calculation=True,
     )
     
 
@@ -144,6 +146,8 @@ def make_prefill_meta(num_prefills: int, block_size: int) -> FlashAttentionMetad
         context_lens_tensor=context_lens_tensor,
         block_tables=torch.tensor([]),
         use_cuda_graph=False,
+        multi_modal_placeholder_index_maps=None,
+        enable_kv_scales_calculation=True,
     )
     return meta
 

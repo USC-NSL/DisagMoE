@@ -50,7 +50,8 @@ ext_modules = [
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
             TORCH_LIB_DIR,
-            "/usr/local/lib"
+            "/usr/local/lib",
+            "/usr/lib",
         ], 
         libraries=["cudart", "nccl", "zmq", "torch", "c10", "torch_cpu"],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],

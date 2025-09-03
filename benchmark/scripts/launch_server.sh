@@ -41,7 +41,6 @@ python benchmark/server.py \
     --step-exp $step_exp \
     --dp-size $dp_size \
     --ep-size $ep_size \
-    # -ca \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace
