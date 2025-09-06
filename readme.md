@@ -13,7 +13,7 @@ See `.gitmodules`.
 
 ```bash
 sudo apt-get install libzmq3-dev libcereal-dev
-git submodule update --init
+git submodule update --init --recursive
 pip install -r requirements.txt
 ```
 
@@ -23,7 +23,7 @@ We hack and adopt the attention implementation of vLLM. A patch should be applie
 
 ```
 
-cd path/to/vllm
+cd path/to/python-version/site-packages
 
 git apply DisagMoE/patches/vllm_0.8.2.patch
 

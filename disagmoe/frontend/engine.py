@@ -5,7 +5,7 @@ import os
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import ExpertScheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
@@ -24,7 +24,7 @@ from disagmoe.env import ENV_VARS
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
-from typing import Optional, List, Dict, Callable, Tuple
+from typing import Optional, List, Dict, Callable, Tuple, Union
 from threading import Thread
 
 from torch import Tensor
@@ -34,6 +34,7 @@ import torch.distributed as dist
 from disagmoe_c import (init_engine, init_engine_colocate, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
+                        AttentionScheduler,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
 
@@ -47,7 +48,7 @@ class EngineType(enum.Enum):
 class Engine:
 
     def __init__(self, 
-                 scheduler: Optional[Scheduler] = None, 
+                 scheduler: Optional[ExpertScheduler] = None, 
                  executor: Optional[Executor] = None, 
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
@@ -57,11 +58,11 @@ class Engine:
         assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
         
         self.device_id = device_id
-        self.scheduler: Scheduler = None
+        self.scheduler: Union[ExpertScheduler, AttentionScheduler] = None
         self.executor: Executor = None
         self.dispatcher: MuDispatcher = None
-        self.attn_scheduler: Scheduler = None
-        self.expert_scheduler: Scheduler = None
+        self.attn_scheduler: AttentionScheduler = None
+        self.expert_scheduler: ExpertScheduler = None
         self.attn_executor: AttnExecutor = None
         self.expert_executor: ExpertsExecutor = None
         self.attn_dispatcher: MuDispatcher = None
@@ -189,9 +190,18 @@ class Engine:
         
         self.model_config.layer_ids = core_args.layer_ids
             
-        self._logger.info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
-                          core_args.out_device_ids, core_args.out_channel_infos, \
-                          core_args.device_group_ids, core_args.expert_ranks, core_args.local_attn_dp_rank}")
+        self._logger.info(
+            "launching core: %s",
+            (
+                core_args.layer_ids,
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                core_args.out_channel_infos,
+                core_args.device_group_ids,
+                core_args.expert_ranks,
+                core_args.local_attn_dp_rank,
+            ),
+        )
         
         # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         

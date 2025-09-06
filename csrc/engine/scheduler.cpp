@@ -9,10 +9,6 @@
 #include <string>
 #include <set>
 
-SchedulerBase::SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
-    
-}
 
 // void SchedulerBase::set_schedule_policy(std::string policy) {
 //     this->policy = policy;
@@ -23,22 +19,22 @@ SchedulerBase::SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::st
 //     this->pool->set_scheduler_block(step);
 // }
 
-scheduler_t Scheduler::build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy) {
-    return std::make_shared<Scheduler>(pool, layer_ids, policy);
+scheduler_t ExpertScheduler::build(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy) {
+    return std::make_shared<ExpertScheduler>(pool, layer_ids, policy);
 }
 
-Scheduler::Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    SchedulerBase(pool, layer_ids, policy) {
+ExpertScheduler::ExpertScheduler(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy): 
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
 
 }
 
-std::vector<TensorBatch> Scheduler::_schedule() {
+std::vector<TensorBatch> ExpertScheduler::_schedule() {
     this->pool_snapshot_ = pool->get_pool_snapshot();
     return pool->fetch_largest_batch();
 }
 
-TensorBatch Scheduler::schedule() {
-    tx_range _{"Scheduler::schedule"};
+TensorBatch ExpertScheduler::schedule() {
+    tx_range _{"ExpertScheduler::schedule"};
 
     auto batches = std::move(this->_schedule());
     auto batch = TensorBatch::merge(batches);
@@ -60,7 +56,7 @@ attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int>
 
 
 AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    SchedulerBase(pool, layer_ids, policy), pool(pool) {
+    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
     
 }
 

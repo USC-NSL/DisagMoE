@@ -13,14 +13,18 @@
 #include "cuda_utils.h"
 #include "utils.hpp"
 
-class Scheduler;
+/*
+    ExpertScheduler and AttentionScheduler are thin wrappers around the pools.
+    Layer-wise schedulers are implemented with actual scheduling logics.
+*/
 
-typedef std::shared_ptr<Scheduler> scheduler_t;
+class ExpertScheduler;
 
-class SchedulerBase {
+typedef std::shared_ptr<ExpertScheduler> scheduler_t;
+
+class ExpertScheduler {
 protected:
-    mu_pool_t pool;
-
+    mu_expert_pool_t pool;
     std::vector<int> layer_ids;
 
     std::string policy;
@@ -31,8 +35,12 @@ protected:
 
     std::vector<int> pool_snapshot_{};
 
+    std::vector<TensorBatch> _schedule();
+
 public:
-    SchedulerBase(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+    ExpertScheduler(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+
+    static scheduler_t build(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
     void start() {
         this->pool->start();
@@ -55,21 +63,11 @@ public:
         return cur_queueing_delay;
     }
 
+    TensorBatch schedule();
+
     // void set_schedule_policy(std::string policy);
 
     // void set_schedule_block(int step);
-};
-
-class Scheduler: public SchedulerBase {
-protected:
-    std::vector<TensorBatch> _schedule();
-
-public:
-    Scheduler(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
-
-    static scheduler_t build(mu_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
-
-    TensorBatch schedule();
 };
 
 
@@ -77,9 +75,14 @@ class AttentionScheduler;
 
 typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
 
-class AttentionScheduler: public SchedulerBase {
+class AttentionScheduler {
 protected:
     mu_attn_pool_t pool;
+    std::vector<int> layer_ids;
+    std::string policy;
+    float cur_queueing_delay;
+    int max_batch_size;
+    std::vector<int> pool_snapshot_{};
 
     virtual std::vector<AttentionBatch> _schedule();
 
@@ -87,6 +90,27 @@ public:
     AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
     static attn_scheduler_t build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+
+    void start() {
+        this->pool->start();
+    }
+
+    void wait_for_new_requests() {
+        this->pool->wait_for_new_requests();
+    }
+
+    void set_max_batch_size(int max_batch_size) {
+        this->max_batch_size = max_batch_size;
+        this->pool->set_max_batch_size(max_batch_size);
+    }
+
+    std::vector<int> get_pool_snapshot() {
+        return pool_snapshot_;
+    };
+
+    float get_cur_queueing_delay() const {
+        return cur_queueing_delay;
+    }
 
     virtual AttentionBatch schedule();
 
