@@ -626,8 +626,8 @@ class Engine:
 
         if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
             assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-            input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
+            input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
+            input_tensor = torch.sum(input_topk_tensor, dim=1)
             meta_c.shrink_topk(self.model_config.top_k)
 
         # TODO(hogura|20241014): fill the real positions
