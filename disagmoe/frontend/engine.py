@@ -170,9 +170,7 @@ class Engine:
                 
         self._warmup()
         if self.has_attn and self.model_config.enable_cuda_graph_attn:
-            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
-            self.cuda_graph_executor.create_cuda_graph_buffers()
-            self.cuda_graph_executor.capture()
+            self.attn_executor.build_cuda_graph_executor()
             self._log_memory_usage("After build CUDA graphs")
             
         self._logger.info("Executors built")
@@ -346,19 +344,15 @@ class Engine:
              peak_memory) // cache_block_size)
         
         return num_gpu_blocks
-            
+        
     def _warmup(self):
         if self.has_attn:
             self._warmup_attn()
         
         if self.has_expert:
             self._warmup_experts()
-            
+
     def _warmup_attn(self):
-        # a hacking to cuda graph, since `_pack_flash_attn_metadata` may have different behaviors.
-        _enable_cuda_graph_attn = self.model_config.enable_cuda_graph_attn
-        self.model_config.enable_cuda_graph_attn = False
-        
         input = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
         positions = torch.zeros(self.attn_max_batch_size, dtype=torch.long, device="cuda")
         meta_py = make_dummy_meta(0, self.attn_max_batch_size)
@@ -366,9 +360,6 @@ class Engine:
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
                 self.attn_executor.execute(layer_id, positions, input, meta)
-        
-        # restore the original setting
-        self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
 
     def _warmup_experts(self):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
@@ -381,7 +372,7 @@ class Engine:
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
                 _ = self.expert_executor.execute(layer_id, self.expert_max_batch_size, input, batch_sizes)
-            
+
     def _create_broadcast_buffers(self):
         self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
         self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
@@ -389,7 +380,7 @@ class Engine:
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
         shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
-        
+    
     def _wait_async_handles(self):
         for h in self.handles:
             h.wait()
@@ -397,7 +388,7 @@ class Engine:
     
     def _add_async_handle(self, handle):
         self.handles.append(handle)
-        
+    
     @nvtx_range("engine._update_block_table")
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
         init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
@@ -409,11 +400,10 @@ class Engine:
             
             for i, seq_id in enumerate(init_seq_ids):
                 self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-                
+            
             decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
 
             # self._logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
-
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
             for i, seq_id in enumerate(decode_seq_ids):
@@ -463,10 +453,6 @@ class Engine:
             
         max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
         
-        max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
-        assert mocking or self.model_config.enable_cuda_graph_attn or \
-               max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
-        
         return FlashAttentionMetadata(
             0,
             0,
@@ -482,7 +468,7 @@ class Engine:
             seq_start_loc=seq_start_loc_cuda,
             context_lens_tensor=context_lens_cuda,
             block_tables=block_table_cuda,
-            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+            use_cuda_graph=False,
             multi_modal_placeholder_index_maps=None,
             enable_kv_scales_calculation=True,
         )
@@ -637,13 +623,7 @@ class Engine:
         self._timer.stop("preprocess")
         self._timer.start("execute")
         
-        if not self.model_config.enable_cuda_graph_attn or num_tokens > self.attn_max_batch_size:
-            # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
-        else:
-            range_push("engine.graph_replay")
-            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
-            range_pop()
+        hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
             
         self._timer.stop("execute")
         self._timer.start("postprocess")

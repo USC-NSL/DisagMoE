@@ -7,7 +7,7 @@ from typing import override, Tuple, List, Union, Dict
 from time import sleep
 from enum import Enum
 
-from vllm.attention import AttentionMetadata
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.config import CacheConfig as VllmCacheConfig
 
 from disagmoe.models.attention import MoEAttention
@@ -68,6 +68,15 @@ class AttnExecutor(Executor):
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         
+        self.enable_cuda_graph = self.model_config.enable_cuda_graph_attn
+        self.cuda_graph_executor = None
+    
+    def build_cuda_graph_executor(self):
+        if self.enable_cuda_graph:
+            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self)
+            self.cuda_graph_executor.create_cuda_graph_buffers()
+            self.cuda_graph_executor.capture()
+        
     @override
     def initialize_cache(self, num_blocks):
         self._make_kv_cache(
@@ -93,11 +102,11 @@ class AttnExecutor(Executor):
 
     @override
     @nvtx_range("AttnExecutor.execute")
-    def execute(self,
+    def execute_eager(self,
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: AttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+                attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         operator = self.operators[vid]
         outputs, topk_weights, topk_ids = operator.forward(
@@ -107,6 +116,17 @@ class AttnExecutor(Executor):
             attn_metadata
         )
         return outputs, topk_weights, topk_ids
+    
+    def execute(self, layer_id: int,
+                positions: torch.Tensor,
+                hidden_states: torch.Tensor,
+                attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+        if not self.enable_cuda_graph or attn_metadata.num_decode_tokens > self.attn_max_batch_size:
+            # topk_weights and expert_ids: [batch_size, top_k]
+            hiddens, expert_weights, expert_ids = self.execute_eager(layer_id, positions, hidden_states, attn_metadata)
+        else:
+            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
+        return hiddens, expert_weights, expert_ids
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
@@ -319,6 +339,8 @@ class CUDAGraphAttnExecutor:
         assert False, f"No available graph for batch size={batch_size}"
 
     def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+        meta.use_cuda_graph = True
+        
         num_tokens = hidden_states.shape[0]
         graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
         self.static_input[ : num_tokens].copy_(hidden_states)
