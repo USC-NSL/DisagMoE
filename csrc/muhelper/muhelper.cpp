@@ -29,6 +29,8 @@ MuHelper::MuHelper(std::vector<int> layer_ids, int device_id, std::vector<Channe
         DMOE_LOG(INFO) << "init muhelper@" << device_id << LEND;
     }
 
+MuHelper::~MuHelper() {}
+
 void MuHelper::start() {
     DMOE_LOG(INFO) << "muhelper@" << device_id << " start" << LEND;
     this->thread = std::thread(
@@ -332,14 +334,13 @@ MuPool::MuPool(
     std::vector<Channel_t> channels,
     LayerSchedulePolicy policy,
     int num_groups,
-    bool is_attn): 
+    int local_zmq_port_offset): 
     MuHelper(layer_ids, device_id, channels),
     num_groups(num_groups), 
-    is_attn(is_attn),
     ctx(channels.size()),
     mq(ctx, zmq::socket_type::pull),
-    max_batch_size(MAX_BATCH_SIZE) {
-    this->local_zmq_port_offset = 0;
+    max_batch_size(MAX_BATCH_SIZE),
+    local_zmq_port_offset(local_zmq_port_offset) {
     int num_layers = layer_ids.size();
     int max_layer_id = 0;
     for (auto id: layer_ids)
@@ -348,7 +349,6 @@ MuPool::MuPool(
     this->layer_id_P2V = std::vector<int>(max_layer_id + 1);
     this->layer_id_V2P = std::vector<int>(num_layers);
 
-    this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers * num_groups);
     for (size_t i = 0; i < num_layers; i ++) {
         this->layer_id_P2V[layer_ids[i]] = i;
         this->layer_id_V2P[i] = layer_ids[i];
@@ -385,6 +385,8 @@ MuPool::MuPool(
     }
 }
 
+MuPool::~MuPool() {}
+
 void MuPool::recv_metadata(int &peer_id, metadata_t &meta) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
         
@@ -409,45 +411,7 @@ void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta) {
     this->peer_channels[peer_id]->recv(tensor_buf, *meta);
 }
 
-void MuPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    // TODO(hogura|20241014): sync prefill sequences
-    /*
-    TODO(shaoyuw|20241011): separate sequences into waiting queue and running queue
-    completed_sequences = fill(batch)
-    flash_attn_metadata = concat(completed_sequences, decode_tokens from batch)
-
-
-    1. split batch to prefill and decode tokens
-    2. use prefill tokens to compose prefill sequence (sync for prefill sequences) (memcpy, custom kernel)
-    3. if a prefill sequence is complete, check if this sequence exists in block table
-    4. if not, add them to waiting queue; else add to corresponding running queue with decoding tokens (memcpy)
-
-    waiting_queue, each element is a sequence
-
-    running_queue[layers]
-
-    */
-    int lid = this->layer_id_P2V[meta->layer_id];
-    int num_tokens = meta->num_tokens();
-
-    if (this->num_groups > 1) {
-        lid = get_layer_group_id(lid, meta->get_dp_rank() % this->num_groups);
-    }
-    
-    {
-        std::lock_guard<std::mutex> lock(this->batch_mutex);
-        this->data_queue[lid].push_back((TensorBatch) {tensor, meta});
-        this->layer_scheduler->add_tokens_to_layer(lid, num_tokens);
-        this->num_batches_per_layer_[lid] += 1;
-        int &tokens_cur_layer = this->tokens_per_layer_[lid];
-        tokens_cur_layer += num_tokens;
-        if (tokens_cur_layer > this->largest_batch_size_) {
-            this->largest_batch_size_ = tokens_cur_layer;
-            this->largest_batch_layer_id_ = lid;
-        }
-
-    }
-}
+// Base MuPool process_batch is pure virtual - implemented in derived classes
 
 void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
     if (req_ids.empty())
@@ -497,14 +461,14 @@ void MuPool::run() {
         int peer_id;
         metadata_t meta;
 
-        MuPool::recv_metadata(peer_id, meta);
+        recv_metadata(peer_id, meta);
 
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
 
-        MuPool::recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
+        recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
 
         // NOTE(hogura|20250305): after receiving batch, start the queueing timer for each request
         // this->start_queueing_timer(meta->req_ids);
@@ -562,7 +526,41 @@ std::vector<int> MuPool::get_pool_snapshot() {
     return snapshot;
 }
 
-std::vector<TensorBatch> MuPool::fetch_largest_batch() {
+MuExpertPool::MuExpertPool(
+    std::vector<int> layer_ids,
+    int device_id,
+    std::vector<Channel_t> channels,
+    LayerSchedulePolicy policy,
+    int num_groups):
+    MuPool(layer_ids, device_id, channels, policy, num_groups, 0) {
+    int num_layers = layer_ids.size();
+    this->data_queue = std::vector<std::vector<TensorBatch>>(num_layers * num_groups);
+}
+
+void MuExpertPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
+    int lid = this->layer_id_P2V[meta->layer_id];
+    int num_tokens = meta->num_tokens();
+
+    if (this->num_groups > 1) {
+        lid = get_layer_group_id(lid, meta->get_dp_rank() % this->num_groups);
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(this->batch_mutex);
+        this->data_queue[lid].push_back((TensorBatch) {tensor, meta});
+        this->layer_scheduler->add_tokens_to_layer(lid, num_tokens);
+        this->num_batches_per_layer_[lid] += 1;
+        int &tokens_cur_layer = this->tokens_per_layer_[lid];
+        tokens_cur_layer += num_tokens;
+        if (tokens_cur_layer > this->largest_batch_size_) {
+            this->largest_batch_size_ = tokens_cur_layer;
+            this->largest_batch_layer_id_ = lid;
+        }
+
+    }
+}
+
+std::vector<TensorBatch> MuExpertPool::fetch_largest_batch() {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
@@ -606,10 +604,9 @@ MuAttentionPool::MuAttentionPool(
     std::vector<int> device_group_ids,
     Channel_t group_comm,
     LayerSchedulePolicy policy
-): MuPool(layer_ids, device_id, channels, policy, /* num_groups */ 1, true), 
+): MuPool(layer_ids, device_id, channels, policy, /* num_groups */ 1, /* local_zmq_port_offset */ 1), 
     device_group_ids(device_group_ids),
     group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
-    this->local_zmq_port_offset = 1;
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
 }

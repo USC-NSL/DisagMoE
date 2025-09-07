@@ -28,6 +28,8 @@ protected:
 public:
     MuHelper(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels);
 
+    virtual ~MuHelper();
+
     void start();
 
     void init_cuda_device();
@@ -172,7 +174,7 @@ protected:
 
     void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
 
-    virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true);
+    virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) = 0;
 
     void start_queueing_timer(const std::vector<int> &req_ids);
 
@@ -187,8 +189,10 @@ public:
         std::vector<Channel_t> channels,
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
         int num_groups = 1,
-        bool is_attn = false
+        int local_zmq_port_offset = 0
     );
+
+    virtual ~MuPool();
 
     void run() override;
 
@@ -229,7 +233,26 @@ public:
     float remove_queueing_timer(const std::vector<int> &req_ids);
 };
 
-typedef std::shared_ptr<MuPool> mu_pool_t;
+class MuExpertPool: public MuPool {
+protected:
+    std::vector<std::vector<TensorBatch>> data_queue;
+
+    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+public:
+    MuExpertPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
+        int num_groups = 1
+    );
+
+    std::vector<TensorBatch> fetch_largest_batch();
+};
+
+typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
+typedef std::shared_ptr<MuExpertPool> mu_pool_t;  // For backward compatibility
 typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
 
 class MuAttentionPool: public MuPool {

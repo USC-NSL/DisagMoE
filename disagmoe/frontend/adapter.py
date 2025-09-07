@@ -4,7 +4,7 @@ from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata, Slo
 
 from typing import Tuple, List, Dict, Optional
 
-class Scheduler:
+class ExpertScheduler:
 
     def wait_for_new_requests(self) -> None:
         ...

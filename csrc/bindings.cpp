@@ -32,12 +32,12 @@ PYBIND11_MODULE(disagmoe_c, m) {
     //     .def("terminate", &MuAttnDispatcher::terminate)
     //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
 
-    py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
-        .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
-        .def("schedule", &Scheduler::schedule)
-        .def("set_max_batch_size", &Scheduler::set_max_batch_size)
-        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
-        .def("get_cur_queueing_delay", &Scheduler::get_cur_queueing_delay);
+    py::class_<ExpertScheduler, std::shared_ptr<ExpertScheduler>>(m, "ExpertScheduler")
+        .def("wait_for_new_requests", &ExpertScheduler::wait_for_new_requests)
+        .def("schedule", &ExpertScheduler::schedule)
+        .def("set_max_batch_size", &ExpertScheduler::set_max_batch_size)
+        .def("get_pool_snapshot", &ExpertScheduler::get_pool_snapshot)
+        .def("get_cur_queueing_delay", &ExpertScheduler::get_cur_queueing_delay);
         // .def("set_schedule_policy", &Scheduler::set_schedule_policy)
         // .def("set_schedule_block", &Scheduler::set_schedule_block);
 
