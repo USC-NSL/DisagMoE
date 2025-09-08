@@ -10,6 +10,7 @@ from torch import Tensor
 from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
 from dataclasses import dataclass
+from contextlib import contextmanager
 
 try:
     from disagmoe_c import range_push, range_pop
@@ -183,10 +184,19 @@ class Timer:
         self.timers[name] = time.time_ns()
         
     def stop(self, name):
-        assert name in self.timers
         start = self.timers[name]
-        self.timers[name] = (time.time_ns() - start) / 1e6
-        return self.timers[name]
+        cost_ms = (time.time_ns() - start) / 1e6
+        self.timers[name] = cost_ms
+        return cost_ms
     
     def get(self, name):
         return self.timers.get(name)
+    
+    def reset(self):
+        self.timers.clear()
+    
+    @contextmanager
+    def range(self, name):
+        self.start(name)
+        yield
+        self.stop(name)
