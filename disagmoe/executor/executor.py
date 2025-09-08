@@ -13,7 +13,8 @@ from vllm.config import CacheConfig as VllmCacheConfig
 from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
-from disagmoe.utils.utils import nvtx_range
+from disagmoe.utils.utils import nvtx_range, _log_memory_usage
+from disagmoe.utils.logger import _logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -41,8 +42,6 @@ class Executor:
     def initialize_cache(self, num_blocks: int) -> None:
         raise NotImplementedError()
     
-
-
 class AttnExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
@@ -52,9 +51,19 @@ class AttnExecutor(Executor):
         self.vllm_cache_config = VllmCacheConfig(
             cache_dtype="auto",
             block_size=cache_config.block_size,
-            gpu_memory_utilization=0, # useless in our case
-            swap_space=0, #useless in our case
+            gpu_memory_utilization=0,
+            swap_space=0,
         )
+        self.enable_cuda_graph = self.model_config.enable_cuda_graph_attn
+        self.cuda_graph_executor = None
+        
+        self.init_model_and_cache()
+        
+    def init_model_and_cache(self):
+        _log_memory_usage("Setup device")
+        free_memory, _ = torch.cuda.mem_get_info()
+        self.init_gpu_memory = free_memory
+        
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -66,22 +75,25 @@ class AttnExecutor(Executor):
                 cache_config=self.vllm_cache_config,
             ) for layer_id in range(self.num_layers)
         ]
-        assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        _log_memory_usage("After allocate parameters")
         
-        self.enable_cuda_graph = self.model_config.enable_cuda_graph_attn
-        self.cuda_graph_executor = None
+        assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
+        if self.cache_config.num_gpu_blocks is None:
+            self.num_cache_blocks = self.determine_kv_cache_blocks()
+            _logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
+        else:
+            self.num_cache_blocks = self.cache_config.num_gpu_blocks
+        self.initialize_cache(self.num_cache_blocks)
+        _log_memory_usage("After initialize cache")
+        
+    def get_num_cache_blocks(self):
+        return self.num_cache_blocks
     
-    def build_cuda_graph_executor(self):
-        if self.enable_cuda_graph:
-            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self)
-            self.cuda_graph_executor.create_cuda_graph_buffers()
-            self.cuda_graph_executor.capture()
-        
     @override
-    def initialize_cache(self, num_blocks):
+    def initialize_cache(self):
         self._make_kv_cache(
             self.num_layers,
-            num_blocks,
+            self.num_cache_blocks,
             self.cache_config.block_size, 
             self.model_config.num_kv_heads, 
             self.model_config.hidden_size // self.model_config.num_heads,
@@ -99,6 +111,32 @@ class AttnExecutor(Executor):
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
             operator.forward(positions, hidden_states, kv_cache, attn_metadata)
+            
+    def determine_kv_cache_blocks(self) -> int:
+        torch.cuda.empty_cache()
+                
+        self.profile_execute(self.model_config.max_batch_size_attn)      
+        torch.cuda.synchronize()
+        
+        _log_memory_usage("After profile run")
+        
+        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        peak_memory = self.init_gpu_memory - free_gpu_memory
+        cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
+                            * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
+        
+        num_gpu_blocks = int(
+            (total_gpu_memory * self.cache_config.gpu_memory_utilization - peak_memory) 
+            // cache_block_size // len(self.model_config.layer_ids)
+        )
+        
+        return num_gpu_blocks
+    
+    def build_cuda_graph_executor(self):
+        if self.enable_cuda_graph:
+            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self)
+            self.cuda_graph_executor.create_cuda_graph_buffers()
+            self.cuda_graph_executor.capture()
 
     @override
     @nvtx_range("AttnExecutor.execute")

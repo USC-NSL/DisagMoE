@@ -19,9 +19,15 @@ _formatter = SimFormatter(f"[%(levelname)s] [%(filename)s:%(lineno)d] <%(name)s>
 _handler = StreamHandler()
 _handler.setFormatter(_formatter)
 
+_logger: logging.Logger = None
 
 def get_logger(name, level=logging.INFO):
     logger = getLogger(name)
     logger.setLevel(level)
     logger.addHandler(_handler)
     return logger
+    
+def initialize_logger(name: str):
+    global _logger
+    _logger = get_logger(name)
+    

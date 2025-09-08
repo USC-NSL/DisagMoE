@@ -4,7 +4,7 @@ import torch
 import ctypes
 import socket
 
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import get_logger, _logger
 
 from torch import Tensor
 from typing import List, Tuple, Dict, Union
@@ -200,3 +200,8 @@ class Timer:
         self.start(name)
         yield
         self.stop(name)
+        
+def _log_memory_usage(self, prefix: str = ""):
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    _logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
+                        f"Total memory: {total_memory / (1024 ** 3):.2f} GB")

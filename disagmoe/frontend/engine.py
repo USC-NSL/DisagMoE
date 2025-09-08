@@ -11,10 +11,10 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import initialize_logger, _logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
-                                  nvtx_range, range_push, range_pop, CudaRangeEvent)
+                                  nvtx_range, range_push, range_pop, CudaRangeEvent, _log_memory_usage)
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
@@ -73,7 +73,7 @@ class Engine:
         self.cache_config: CacheConfig = None
         
         if device_id is not None:
-            self._logger = get_logger(f"engine{device_id}")
+            initialize_logger(f"engine{device_id}")
             
         self.loop_thread = None
         
@@ -140,11 +140,6 @@ class Engine:
         else:
             assert False, "No engine type is set"
             
-    def _log_memory_usage(self, prefix: str = ""):
-        free_memory, total_memory = torch.cuda.mem_get_info()
-        self._logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
-                            f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
-    
     def _build_executor(self):
         if self.has_expert:
             self.expert_executor = ExpertsExecutor(self.model_config)
@@ -154,11 +149,7 @@ class Engine:
                 self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
         if self.has_attn:
             self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
-            if self.cache_config.num_gpu_blocks is None:
-                self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
-                self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
-            self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
-            self._log_memory_usage("After initialize cache")
+            self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
             self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
             self.block_mgr = BlockManager_C(
                 self.cache_config.block_size, 
@@ -171,9 +162,9 @@ class Engine:
         self._warmup()
         if self.has_attn and self.model_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
-            self._log_memory_usage("After build CUDA graphs")
+            _log_memory_usage("After build CUDA graphs")
             
-        self._logger.info("Executors built")
+        _logger.info("Executors built")
         
     def init_core(self, core_args: InitCoreArgs):
         """
@@ -187,11 +178,11 @@ class Engine:
         
         self.model_config.layer_ids = core_args.layer_ids
             
-        self._logger.info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
+        _logger.info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
                           core_args.out_device_ids, core_args.out_channel_infos, \
                           core_args.device_group_ids, core_args.expert_ranks, core_args.local_attn_dp_rank}")
         
-        # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
+        # _logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
         if self.engine_type == EngineType.HYBRID:
             self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine_colocate(
@@ -264,7 +255,7 @@ class Engine:
         
         self._delegate_modules()
         
-        self._logger.info("core launched")
+        _logger.info("core launched")
     
     def start(self):
         # attention TP is deprecated
@@ -281,8 +272,7 @@ class Engine:
 
     def set_device_id(self, device_id: int):
         self.device_id = device_id
-        self._logger = get_logger(f"engine{device_id}")
-
+        
     def set_hosts(self, device_2_host: Dict[int, str]):
         device_2_host[self.device_id] = "0.0.0.0"
         set_hosts(os.getpid(), device_2_host)
@@ -298,15 +288,12 @@ class Engine:
             torch.set_default_device("cuda:0")
             stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
-            self._logger.info(f"set stream {stream}")
+            _logger.info(f"set stream {stream}")
             self.stream = stream
             self.h2d_stream = torch.cuda.Stream(priority=-1)
             self.d2h_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
             set_tensor_model_parallel_config(model_config)
-            self._log_memory_usage("Setup device")
-            free_memory, _ = torch.cuda.mem_get_info()
-            self.init_gpu_memory = free_memory
             
         self.engine_type = engine_type
         self.model_config = model_config
@@ -318,32 +305,10 @@ class Engine:
         if self.has_expert:
             self.expert_max_batch_size = model_config.max_batch_size_expert
         
-        self._logger.info(f"engine setup. {self.engine_type, model_config}")
+        _logger.info(f"engine setup. {self.engine_type, model_config}")
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks
-    
-    def determine_kv_cache_blocks(self) -> int:
-        assert isinstance(self.attn_executor, AttnExecutor)
-        torch.cuda.empty_cache()
-        
-        self._log_memory_usage("After allocate parameters")
-        
-        self.attn_executor.profile_execute(self.attn_max_batch_size)      
-        torch.cuda.synchronize()  
-        
-        self._log_memory_usage("After profile run")
-        
-        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
-        peak_memory = self.init_gpu_memory - free_gpu_memory
-        cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
-                            * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
-        
-        num_gpu_blocks = int(
-            (total_gpu_memory * self.cache_config.gpu_memory_utilization -
-             peak_memory) // cache_block_size)
-        
-        return num_gpu_blocks
         
     def _warmup(self):
         if self.has_attn:
@@ -403,7 +368,7 @@ class Engine:
             
             decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
 
-            # self._logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
+            # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
             self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
             for i, seq_id in enumerate(decode_seq_ids):
@@ -412,7 +377,7 @@ class Engine:
         else:
             decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-        # self._logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
+        # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
 
         return decode_seq_lens
     
@@ -515,7 +480,7 @@ class Engine:
             else:
                 bc_attn_meta[ : num_tokens].copy_(
                     attn_meta.slot_mapping[ : num_tokens].to(torch.int32))
-                self._logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
+                _logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
                 bc_attn_meta[num_tokens : ].copy_(
                     attn_meta.block_tables[ : num_tokens, : max_num_blocks].view(-1))
             
@@ -684,7 +649,7 @@ class Engine:
             range_pop()
         
         with self._timer.range("execute"):
-            # self._logger.info(f"executing expert {meta_c.req_ids}")
+            # _logger.info(f"executing expert {meta_c.req_ids}")
             output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
         
         # 2. permute tokens back to <prefill><decode> order
@@ -714,7 +679,7 @@ class Engine:
             meta_c.update_exp_ids([], [])
             meta_c.step_layer()
 
-        # self._logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
+        # _logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
         return output, meta_c
 
     @nvtx_range("Engine.post_process")
@@ -734,7 +699,7 @@ class Engine:
     @torch.inference_mode()
     def attn_worker_loop(self):
         assert False, "TP in attention is now deprecated"
-        self._logger.info("starting engine (attn TP worker) loop")
+        _logger.info("starting engine (attn TP worker) loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -742,11 +707,11 @@ class Engine:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
             if layer_id == -1:
                 # terminated
-                self._logger.warning("TP worker received termination signal, now exit")
+                _logger.warning("TP worker received termination signal, now exit")
                 break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
-            self._logger.info(f"executing attn {meta}")
+            _logger.info(f"executing attn {meta}")
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
     def stats_pre_process(self, batch: TensorBatch):
@@ -809,7 +774,7 @@ class Engine:
 
     @torch.inference_mode()
     def single_module_loop(self):
-        self._logger.info("starting single_module_loop")
+        _logger.info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -848,7 +813,7 @@ class Engine:
             self.stats_post_process(batch)
     
     def dual_module_loop(self):
-        self._logger.info("starting dual_module_loop")
+        _logger.info("starting dual_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -904,7 +869,7 @@ class Engine:
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        # self._logger.info(f"releasing seqs {seq_ids}")
+        # _logger.info(f"releasing seqs {seq_ids}")
         for i in seq_ids:
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
             self.decode_seq_lens.pop(i)
@@ -914,7 +879,7 @@ class Engine:
         self.end_flag = True
         if self._intra_group_tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
-            self._logger.info("TP driver sending termination signal to TP workers")
+            _logger.info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1
             torch.cuda.synchronize()
             dist.broadcast(self.buffer_meta, 0)
@@ -926,10 +891,10 @@ class Engine:
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
         
         if profile_dir is None:
-            self._logger.info("profiling directory not specified, using default")
+            _logger.info("profiling directory not specified, using default")
             profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
-        self._logger.info(f"enable profiler, results stored at {profile_dir}")
+        _logger.info(f"enable profiler, results stored at {profile_dir}")
     
         self.profiler = torch.profiler.profile(
                 activities=[
@@ -988,7 +953,7 @@ class SamplerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        self._logger.info("inited sampler")
+        _logger.info("inited sampler")
         self._t_start = time.time()
         
     def start(self):
@@ -998,7 +963,7 @@ class SamplerEngine(Engine):
         # convert c++ vector to python list
         results = self.sampler.fetch_finished_slo_stats()
         # if len(results) > 0:
-        #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        #     _logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
     
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
@@ -1034,7 +999,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        self._logger.info(f"tokenizer put request {req_id}")
+        _logger.info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
@@ -1057,7 +1022,7 @@ class TokenizerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        self._logger.info("inited tokenizer")
+        _logger.info("inited tokenizer")
     
     def start(self):
         self.tokenizer.start()
