@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 
 from torch import Tensor
+import numpy as np
 
 from typing import override, Tuple, List, Union, Dict
 from time import sleep
@@ -17,6 +18,7 @@ from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import _logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
+from disagmoe.executor.block_manager import MHATokenToKVPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos
@@ -39,9 +41,6 @@ class Executor:
     def forward(self, x: Tensor) -> Tensor:
         raise NotImplementedError()
     
-    def initialize_cache(self, num_blocks: int) -> None:
-        raise NotImplementedError()
-    
 class AttnExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
@@ -56,6 +55,7 @@ class AttnExecutor(Executor):
         )
         self.enable_cuda_graph = self.model_config.enable_cuda_graph_attn
         self.cuda_graph_executor = None
+        self.device = "cuda"
         
         self.init_model_and_cache()
         
@@ -83,25 +83,40 @@ class AttnExecutor(Executor):
             _logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
         else:
             self.num_cache_blocks = self.cache_config.num_gpu_blocks
-        self.initialize_cache(self.num_cache_blocks)
+            
+        self.kv_cache = MHATokenToKVPool(
+            self.num_cache_blocks,
+            self.cache_config.block_size,
+            self.model_config.dtype,
+            self.model_config.num_heads,
+            self.model_config.hidden_size // self.model_config.num_heads,
+            self.num_layers,
+            self.device,
+        )
+        
+        if self.cache_config.block_size == 1:
+            self.token_allocator = TokenToKVPoolAllocator(
+                self.num_cache_blocks,
+                self.model_config.dtype,
+                self.device,
+                self.kv_cache,
+                need_sort=False,
+            )
+        else:
+            assert False, "Paged allocator is not supported yet"
+            self.token_allocator = PagedTokenToKVPoolAllocator(
+                self.num_cache_blocks,
+                self.cache_config.block_size,
+                self.model_config.dtype,
+                self.device,
+                self.kv_cache,
+                need_sort=False,
+            )
+        
         _log_memory_usage("After initialize cache")
         
     def get_num_cache_blocks(self):
         return self.num_cache_blocks
-    
-    @override
-    def initialize_cache(self):
-        self._make_kv_cache(
-            self.num_layers,
-            self.num_cache_blocks,
-            self.cache_config.block_size, 
-            self.model_config.num_kv_heads, 
-            self.model_config.hidden_size // self.model_config.num_heads,
-        )
-    
-    def _make_kv_cache(self, num_layers, num_blocks, block_size, num_heads, head_size):
-        data_type = self.model_config.dtype
-        self.cache = torch.randn((num_layers, 2, num_blocks, block_size, num_heads, head_size), dtype=data_type)
     
     def profile_execute(self, batch_size: int):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
@@ -137,33 +152,32 @@ class AttnExecutor(Executor):
             self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self)
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
-
-    @override
-    @nvtx_range("AttnExecutor.execute")
+            _log_memory_usage("After build CUDA graphs")
+    
     def execute_eager(self,
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
                 attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
-        operator = self.operators[vid]
-        outputs, topk_weights, topk_ids = operator.forward(
+        outputs, topk_weights, topk_ids = self.operators[vid].forward(
             positions, 
             hidden_states, 
-            self.cache[vid], 
+            self.kv_cache.get_kv_buffer(vid), 
             attn_metadata
         )
         return outputs, topk_weights, topk_ids
     
+    @override
+    @nvtx_range("AttnExecutor.execute")
     def execute(self, layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
                 attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
-        if not self.enable_cuda_graph or attn_metadata.num_decode_tokens > self.attn_max_batch_size:
-            # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.execute_eager(layer_id, positions, hidden_states, attn_metadata)
+        if self.enable_cuda_graph and attn_metadata.use_cuda_graph and attn_metadata.num_decode_tokens <= self.attn_max_batch_size:
+            return self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
         else:
-            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
+            return self.execute_eager(layer_id, positions, hidden_states, attn_metadata)
         return hiddens, expert_weights, expert_ids
     
     @staticmethod
@@ -172,7 +186,6 @@ class AttnExecutor(Executor):
             return ParallelAttnExecutor(model_config, cache_config)
         else:
             return AttnExecutor(model_config, cache_config)
-
 class CUDAGraphAttnExecutor:
     
     def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig, attn_executor: AttnExecutor):
@@ -239,7 +252,6 @@ class CUDAGraphAttnExecutor:
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         batch_info_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
 
-
         # batch_info_len = batch_info_cuda.shape[0]
 
         # batch_size = num_tokens
@@ -273,20 +285,19 @@ class CUDAGraphAttnExecutor:
             seq_start_loc=seq_start_loc_cuda,
             context_lens_tensor=context_lens_cuda,
             block_tables=block_table_cuda,
-            use_cuda_graph=True,
+            use_cuda_graph=False,
         )
 
     def capture(self):
-        assert self.model_config.enable_cuda_graph_attn, "Attention CUDA Graph is not enabled."
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
                 meta_py = make_dummy_meta(0, graph_batch_size)
-                meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size)
+                attn_meta = self._prepare_dummy_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * graph_batch_size)
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
                     return self.attn_executor.execute(
                         layer_id, self.static_positions[ : graph_batch_size], 
-                        self.static_input[ : graph_batch_size], meta
+                        self.static_input[ : graph_batch_size], attn_meta
                     )
 
                 for _ in range(2):

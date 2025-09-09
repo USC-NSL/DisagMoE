@@ -3,7 +3,7 @@ import time
 import enum
 import os
 
-from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
+from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
@@ -14,7 +14,7 @@ from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappi
 from disagmoe.utils.logger import initialize_logger, _logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
-                                  nvtx_range, range_push, range_pop, CudaRangeEvent, _log_memory_usage)
+                                  nvtx_range, range_push, range_pop, CudaRangeEvent)
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
@@ -162,7 +162,6 @@ class Engine:
         self._warmup()
         if self.has_attn and self.model_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
-            _log_memory_usage("After build CUDA graphs")
             
         _logger.info("Executors built")
         
@@ -277,11 +276,13 @@ class Engine:
         device_2_host[self.device_id] = "0.0.0.0"
         set_hosts(os.getpid(), device_2_host)
 
-    def setup_engine(self, 
-                     engine_type: EngineType,
-                     model_config: ModelConfig,
-                     cache_config: CacheConfig = None,
-                     rank: int = 0):
+    def setup_engine(
+            self, 
+            engine_type: EngineType,
+            model_config: ModelConfig,
+            cache_config: CacheConfig = None,
+            rank: int = 0
+        ):
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
@@ -358,8 +359,8 @@ class Engine:
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
         init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
         decode_seq_ids = meta_py.seq_ids
+        
         # if the first layer in this attention worker, update block table and decode_seq_lens
-
         if meta_py.layer_id == self.model_config.layer_ids[0]:
             # allocate kv blocks for init seqs, update for all decoding seqs
             

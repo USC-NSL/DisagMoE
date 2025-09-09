@@ -205,3 +205,6 @@ def _log_memory_usage(self, prefix: str = ""):
     free_memory, total_memory = torch.cuda.mem_get_info()
     _logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
                         f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
+    
+def next_power_of_2(n: int):
+    return 1 << (n - 1).bit_length() if n > 0 else 1
