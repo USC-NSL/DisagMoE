@@ -12,7 +12,7 @@ class ExpertScheduler:
     def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TensorBatch:
         ...
         
-    def get_channel(self) -> "NcclGroupChannel":
+    def get_attention_channel(self) -> "NcclGroupChannel":
         ...
         
     def set_max_batch_size(self, max_batch_size: int) -> None:

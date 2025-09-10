@@ -209,7 +209,6 @@ public:
     2. later layers pick largest running batch, use token number
 
     */
-    std::vector<TensorBatch> fetch_largest_batch();
 
     void maintain_largest_batch();
 
@@ -223,7 +222,7 @@ public:
 
     virtual int num_batches_in_layer(int lid);
 
-    int schedule_layer_id();
+    // Pools do not schedule; the external Scheduler selects layer ids.
 
     // void set_layer_schedule_type(std::string type);
 
@@ -231,6 +230,10 @@ public:
 
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
+
+    // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
+    void set_layer_scheduler(std::shared_ptr<LayerScheduler> scheduler) { this->layer_scheduler = scheduler; }
+    std::shared_ptr<LayerScheduler> get_layer_scheduler() { return this->layer_scheduler; }
 };
 
 class MuExpertPool: public MuPool {
@@ -248,7 +251,7 @@ public:
         int num_groups = 1
     );
 
-    std::vector<TensorBatch> fetch_largest_batch();
+    std::vector<TensorBatch> get_batch_from_layer(int layer_id);
 };
 
 typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
@@ -286,7 +289,7 @@ public:
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );
 
-    virtual std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr);
+    virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
 
     std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
 
@@ -354,6 +357,6 @@ public:
 
     int tokens_in_layer(int lid) override;
 
-    std::vector<AttentionBatch> fetch_largest_batch(int *layer_id = nullptr) override;
+    std::vector<AttentionBatch> get_batch_from_layer(int layer_id) override;
 
 };
