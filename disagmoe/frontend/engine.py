@@ -142,6 +142,32 @@ class AttentionEngineMixin:
     #         enable_kv_scales_calculation=True,
     #     )
     
+    def build_attn_executor(self):
+        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+        self.attn_token_allocator = self.attn_executor.get_token_allocator()
+        self.attn_req_to_token_pool = self.attn_executor.get_req_to_token_pool()
+        self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
+        self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
+        self.decode_seq_lens = {}
+        
+        self.use_cpu_block_mgr = False
+        if self.use_cpu_block_mgr:
+            self.block_mgr = BlockManager_C(
+                self.cache_config.block_size, 
+                self.cache_config.num_gpu_blocks, 
+                self.cache_config.num_reserved_blocks
+            )
+        else:
+            self.req_to_indice = {}
+            self.req_seq_lens = torch.empty(self.attn_req_to_token_pool.size, dtype=torch.int32, device=self.device)
+        if self._intra_group_tp_enabled:
+            self._create_attn_broadcast_buffers()
+            
+        self.attn_executor.warmup(self.attn_max_batch_size)
+            
+        if self.model_config.enable_cuda_graph_attn:
+            self.attn_executor.build_cuda_graph_executor()
+    
     @nvtx_range("attn_engine._update_block_table")
     def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata):
         init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
@@ -247,6 +273,66 @@ class AttentionEngineMixin:
         shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
     
+    @nvtx_range("attn_engine.process_batch_attn")
+    def process_batch_attn(self, 
+                           meta_c: AttentionBatchMetadata, 
+                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        with self._timer.range("preprocess"):
+            meta_py = AttentionBatchMetadata.from_c(meta_c)
+            assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+
+            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+
+            if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
+                    f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+                input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
+                input_tensor = torch.sum(input_topk_tensor, dim=1)
+                meta_c.shrink_topk(self.model_config.top_k)
+
+            positions = meta_py.seq_lens_tensor
+            attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
+
+        with self._timer.range("execute"):
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            
+        with self._timer.range("postprocess"):
+            # Deprecated optimization:
+                # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+                # hiddens = permute_tokens(hiddens, reorder_ids)
+                # d2h_event = torch.cuda.Event()
+                # with torch.cuda.stream(self.d2h_stream):
+                #     new_meta_c = meta_c.to_metadata()
+                #     if self.model_config.top_k > 1:
+                #         new_meta_c.duplicate_topk(self.model_config.top_k)
+                #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+                #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+                #     if self.model_config.top_k > 1:
+                #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+                #     d2h_event.record(self.d2h_stream)
+                # d2h_event.synchronize()
+                # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+                # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+            new_meta_c = meta_c.to_metadata()
+            if self.model_config.top_k > 1:
+                new_meta_c.duplicate_topk(self.model_config.top_k)
+                
+            if self.model_config.top_k == 1:
+                expert_ids = expert_ids.view(-1).tolist()
+            else:
+                assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+                expert_ids = expert_ids.view(-1).tolist()
+                expert_weights = expert_weights.view(-1).tolist()
+                new_meta_c.topk_weights = expert_weights
+                
+            exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+            hiddens = permute_tokens(hiddens, exp_mappings)
+            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
+
+            assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
+        return hiddens, new_meta_c
+    
     @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
         assert False, "TP in attention is now deprecated"
@@ -342,7 +428,79 @@ class AttentionEngineMixin:
             _logger.info(f"executing attn {meta}")
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
-class Engine(AttentionEngineMixin):
+class ExpertEngineMixin:
+    
+    expert_executor: ExpertsExecutor
+    model_config: ModelConfig
+    cache_config: CacheConfig
+    device: str
+    
+    def build_expert_executor(self):
+        self.expert_executor = ExpertsExecutor(self.model_config)
+        # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+        self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+        for i in range(self.model_config.num_experts_per_rank):
+            self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+        self.expert_executor.warmup(self.expert_max_batch_size)
+        
+    @nvtx_range("expert_engine.process_batch_expert")
+    def process_batch_expert(self, 
+                             meta_c: Metadata, 
+                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        with self._timer.range("preprocess"):
+            range_push("engine.copy_batch_sizes")
+            # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
+            num_tokens = meta_c.num_tokens()
+            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                meta_c.get_expert_batch_sizes_cuda(
+                    self.model_config.num_experts, self.inner_exp_rank,
+                    self._static_bs_cuda, self.stream.cuda_stream
+                )
+                batch_sizes = self._static_bs_cuda
+            else:
+                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                batch_sizes = torch.tensor(
+                    [batch_sizes[i] for i in self.inner_exp_rank],
+                    dtype=torch.int64, device="cuda"
+                )
+            range_pop()
+        
+        with self._timer.range("execute"):
+            # _logger.info(f"executing expert {meta_c.req_ids}")
+            output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
+        
+        # 2. permute tokens back to <prefill><decode> order
+        with self._timer.range("postprocess"):
+            h2d_event = torch.cuda.Event()
+            
+            new_mappings = list(meta_c.sort_by_prefill_order())
+            
+            with torch.cuda.stream(self.h2d_stream):
+                new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
+                
+                if num_tokens > self.expert_max_batch_size:
+                    new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
+                else:
+                    new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                    new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+                if self.model_config.top_k > 1:
+                    topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
+                h2d_event.record(self.h2d_stream)
+
+            h2d_event.wait(self.h2d_stream)
+
+            if self.model_config.top_k > 1:
+                output = output * topk_weights
+            
+            output = permute_tokens(output, new_mappings_gpu)
+            meta_c.update_exp_ids([], [])
+            meta_c.step_layer()
+
+        # _logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
+        return output, meta_c
+    
+class Engine(AttentionEngineMixin, ExpertEngineMixin):
 
     def __init__(self, 
                  scheduler: Optional[Scheduler] = None, 
@@ -438,37 +596,11 @@ class Engine(AttentionEngineMixin):
         else:
             assert False, "No engine type is set"
             
-    def _build_executor(self):
+    def build_executor(self):
         if self.has_expert:
-            self.expert_executor = ExpertsExecutor(self.model_config)
-            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
-            for i in range(self.model_config.num_experts_per_rank):
-                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+            self.build_expert_executor()
         if self.has_attn:
-            self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
-            self.attn_token_allocator = self.attn_executor.get_token_allocator()
-            self.attn_req_to_token_pool = self.attn_executor.get_req_to_token_pool()
-            self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
-            self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-            self.decode_seq_lens = {}
-            
-            self.use_cpu_block_mgr = False
-            if self.use_cpu_block_mgr:
-                self.block_mgr = BlockManager_C(
-                    self.cache_config.block_size, 
-                    self.cache_config.num_gpu_blocks, 
-                    self.cache_config.num_reserved_blocks
-                )
-            else:
-                self.req_to_indice = {}
-                self.req_seq_lens = torch.empty(self.attn_req_to_token_pool.size, dtype=torch.int32, device=self.device)
-            if self._intra_group_tp_enabled:
-                self._create_attn_broadcast_buffers()
-                
-        self._warmup()
-        if self.has_attn and self.model_config.enable_cuda_graph_attn:
-            self.attn_executor.build_cuda_graph_executor()
+            self.build_attn_executor()
             
         _logger.info("Executors built")
         
@@ -557,7 +689,7 @@ class Engine(AttentionEngineMixin):
             self.expert_scheduler.set_max_batch_size(self.expert_max_batch_size)
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
             
-        self._build_executor()
+        self.build_executor()
         
         self._delegate_modules()
         
@@ -618,36 +750,7 @@ class Engine(AttentionEngineMixin):
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks
-        
-    def _warmup(self):
-        if self.has_attn:
-            self._warmup_attn()
-        
-        if self.has_expert:
-            self._warmup_experts()
-
-    def _warmup_attn(self):
-        input = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
-        positions = torch.zeros(self.attn_max_batch_size, dtype=torch.long, device="cuda")
-        meta_py = make_dummy_meta(0, self.attn_max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.attn_max_batch_size, dummy_cache=True)
-        for layer_id in self.model_config.layer_ids:
-            for _ in range(2):
-                self.attn_executor.execute(layer_id, positions, input, meta)
-
-    def _warmup_experts(self):
-        self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
-        
-        input = torch.zeros((self.expert_max_batch_size, self.model_config.hidden_size), device="cuda")
-        batch_sizes = torch.tensor([self.expert_max_batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
-            dtype=torch.int64,
-            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
-            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
-        for layer_id in self.model_config.layer_ids:
-            for _ in range(2):
-                _ = self.expert_executor.execute(layer_id, self.expert_max_batch_size, input, batch_sizes)
-
-
+    
     def _wait_async_handles(self):
         for h in self.handles:
             h.wait()
@@ -655,123 +758,6 @@ class Engine(AttentionEngineMixin):
     
     def _add_async_handle(self, handle):
         self.handles.append(handle)
-    
-    @nvtx_range("engine.process_batch_attn")
-    def process_batch_attn(self, 
-                           meta_c: AttentionBatchMetadata, 
-                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        with self._timer.range("preprocess"):
-            meta_py = AttentionBatchMetadata.from_c(meta_c)
-            assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
-
-            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
-
-            if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
-                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
-                    f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-                input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
-                input_tensor = torch.sum(input_topk_tensor, dim=1)
-                meta_c.shrink_topk(self.model_config.top_k)
-
-            positions = meta_py.seq_lens_tensor
-            attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
-
-        with self._timer.range("execute"):
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
-            
-        with self._timer.range("postprocess"):
-            # Deprecated optimization:
-                # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-                # hiddens = permute_tokens(hiddens, reorder_ids)
-                # d2h_event = torch.cuda.Event()
-                # with torch.cuda.stream(self.d2h_stream):
-                #     new_meta_c = meta_c.to_metadata()
-                #     if self.model_config.top_k > 1:
-                #         new_meta_c.duplicate_topk(self.model_config.top_k)
-                #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
-                #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
-                #     if self.model_config.top_k > 1:
-                #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-                #     d2h_event.record(self.d2h_stream)
-                # d2h_event.synchronize()
-                # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-                # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-            new_meta_c = meta_c.to_metadata()
-            if self.model_config.top_k > 1:
-                new_meta_c.duplicate_topk(self.model_config.top_k)
-                
-            if self.model_config.top_k == 1:
-                expert_ids = expert_ids.view(-1).tolist()
-            else:
-                assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-                expert_ids = expert_ids.view(-1).tolist()
-                expert_weights = expert_weights.view(-1).tolist()
-                new_meta_c.topk_weights = expert_weights
-                
-            exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-            hiddens = permute_tokens(hiddens, exp_mappings)
-            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
-
-            assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
-        return hiddens, new_meta_c
-    
-    @nvtx_range("engine.process_batch_expert")
-    def process_batch_expert(self, 
-                             meta_c: Metadata, 
-                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        with self._timer.range("preprocess"):
-            range_push("engine.copy_batch_sizes")
-            # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
-            num_tokens = meta_c.num_tokens()
-            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-                meta_c.get_expert_batch_sizes_cuda(
-                    self.model_config.num_experts, self.inner_exp_rank,
-                    self._static_bs_cuda, self.stream.cuda_stream
-                )
-                batch_sizes = self._static_bs_cuda
-            else:
-                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-                batch_sizes = torch.tensor(
-                    [batch_sizes[i] for i in self.inner_exp_rank],
-                    dtype=torch.int64, device="cuda"
-                )
-            range_pop()
-        
-        with self._timer.range("execute"):
-            # _logger.info(f"executing expert {meta_c.req_ids}")
-            output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-        
-        # 2. permute tokens back to <prefill><decode> order
-        with self._timer.range("postprocess"):
-            h2d_event = torch.cuda.Event()
-            
-            new_mappings = list(meta_c.sort_by_prefill_order())
-            
-            with torch.cuda.stream(self.h2d_stream):
-                new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
-                
-                if num_tokens > self.expert_max_batch_size:
-                    new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
-                else:
-                    new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
-                    new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
-                if self.model_config.top_k > 1:
-                    topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
-                h2d_event.record(self.h2d_stream)
-
-            h2d_event.wait(self.h2d_stream)
-
-            if self.model_config.top_k > 1:
-                output = output * topk_weights
-            
-            output = permute_tokens(output, new_mappings_gpu)
-            meta_c.update_exp_ids([], [])
-            meta_c.step_layer()
-
-        # _logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
-        return output, meta_c
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:

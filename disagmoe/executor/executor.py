@@ -11,6 +11,7 @@ from enum import Enum
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.config import CacheConfig as VllmCacheConfig
 
+from disagmoe.env import ENV_VARS
 from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
@@ -22,6 +23,7 @@ from disagmoe.executor.block_manager import MHATokenToKVPool, TokenToKVPoolAlloc
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos
+
 class ExecutorType(Enum):
     ATTENTION_EXEC = 1
     EXPERTS_EXEC = 2
@@ -137,7 +139,8 @@ class AttnExecutor(Executor):
     def get_req_to_token_pool(self):
         return self.req_to_token_pool
 
-    def profile_execute(self, batch_size: int):
+    def memory_profile(self, batch_size: int):
+        # use prefill to simulate a batch decoding to get memory profile
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
         kv_cache = torch.tensor([])
         for layer_id in range(self.num_layers):
@@ -149,7 +152,7 @@ class AttnExecutor(Executor):
     def determine_kv_cache_blocks(self) -> int:
         torch.cuda.empty_cache()
                 
-        self.profile_execute(self.model_config.max_batch_size_attn)      
+        self.memory_profile(self.model_config.max_batch_size_attn)      
         torch.cuda.synchronize()
         
         _log_memory_usage("After profile run")
@@ -172,6 +175,15 @@ class AttnExecutor(Executor):
             self.cuda_graph_executor.create_cuda_graph_buffers()
             self.cuda_graph_executor.capture()
             _log_memory_usage("After build CUDA graphs")
+            
+    def warmup(self, batch_size: int):
+        input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
+        positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
+        meta_py = make_dummy_meta(0, batch_size, self.model_config.max_seq_len)
+        meta = self.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
+        for layer_id in self.model_config.layer_ids:
+            for _ in range(2):
+                self.execute_eager(layer_id, positions, input, meta)
     
     def execute_eager(self,
                 layer_id: int,
@@ -187,43 +199,6 @@ class AttnExecutor(Executor):
         )
         return outputs, topk_weights, topk_ids
     
-    # @nvtx_range("attn_executor._update_block_table")
-    # def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
-    #     init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
-    #     decode_seq_ids = meta_py.seq_ids
-    #     num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-    #     req_ids = decode_seq_ids.to(self.device)
-        
-    #     # if the first layer in this attention worker, update block table and decode_seq_lens
-    #     if meta_py.layer_id == self.model_config.layer_ids[0]:
-    #         # allocate kv blocks for init seqs, update for all decoding seqs
-            
-    #         for i, seq_id in enumerate(init_seq_ids):
-    #             self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-            
-    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-    #         seq_lens = decode_seq_lens.to(self.device)
-            
-    #         for i, seq_id in enumerate(decode_seq_ids):
-    #             decode_seq_lens[i] += 1
-    #             self.decode_seq_lens[seq_id] += 1
-
-    #         # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
-    #         # self.block_mgr.update_block_table(meta_c, decode_seq_lens)
-            
-    #         for i, seq_id in enumerate(init_seq_ids):
-    #             context_locs = self.token_allocator.alloc(seq_id, meta_py.init_prefill_lens[i])
-    #             self.req_to_token_pool.write((seq_id, slice(0, meta_py.init_prefill_lens[i])), context_locs)
-                
-    #         increment_locs = self.token_allocator.alloc(num_tokens)
-    #         self.req_to_token_pool.write_loc(req_ids, seq_lens, increment_locs)
-                
-    #     else:
-    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
-    #     # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
-    #     return decode_seq_lens
-    
     @nvtx_range("attn_executor.pack_flash_attn_metadata")
     def pack_flash_attn_metadata(
             self,
@@ -234,8 +209,6 @@ class AttnExecutor(Executor):
         
         num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
         num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
-        
-        req_indices = meta_py.req_indices_tensor
 
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         # batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
@@ -257,6 +230,7 @@ class AttnExecutor(Executor):
             )
             slot_mapping_cuda = block_table_cuda[ : num_tokens].to(torch.int64)
         else:
+            req_indices = meta_py.req_indices_tensor
             block_table_cuda = self.token_allocator.get_block_table(req_indices, max_decode_seq_len)
             slot_mapping_cuda = self.token_allocator.get_latest_loc(req_indices, seq_lens_cuda)
 
@@ -543,6 +517,19 @@ class ExpertsExecutor(Executor):
                 max_batch_size=self.model_config.max_batch_size_expert
             ) for _ in range(self.num_layers)
         ]
+        
+    
+    def warmup(self, batch_size: int):
+        self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
+        
+        input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
+        batch_sizes = torch.tensor([batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
+            dtype=torch.int64,
+            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
+            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
+        for layer_id in self.model_config.layer_ids:
+            for _ in range(2):
+                _ = self.expert_executor.execute(layer_id, batch_size, input, batch_sizes)
 
     @override
     @nvtx_range("ExpertsExecutor.execute")
