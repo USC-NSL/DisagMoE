@@ -20,6 +20,9 @@
 
 class LayerScheduler; // forward declaration
 
+// Note: this Scheduler is not meant to be inherited, and the only
+// reason we still have something "virtual" is that we haven't cleanup
+// the TP-related classes.
 class Scheduler {
 protected:
     mu_attn_pool_t attn_pool;
@@ -53,7 +56,6 @@ public:
     TensorBatch schedule_expert();
     AttentionBatch schedule_attention();
 
-    // Explicit attention channel accessor
     virtual std::shared_ptr<NcclGroupChannel> get_attention_channel() { return nullptr; }
 
     bool has_attention() const { return attn_pool.get() != nullptr; }
