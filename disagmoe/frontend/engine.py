@@ -5,7 +5,7 @@ import os
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import ExpertScheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
@@ -47,7 +47,7 @@ class EngineType(enum.Enum):
 class Engine:
 
     def __init__(self, 
-                 scheduler: Optional[ExpertScheduler] = None, 
+                 scheduler: Optional[Scheduler] = None, 
                  executor: Optional[Executor] = None, 
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
@@ -57,15 +57,11 @@ class Engine:
         assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
         
         self.device_id = device_id
-        self.scheduler: Any = None
+        self.scheduler: Optional[Scheduler] = None
         self.executor: Executor = None
         self.dispatcher: MuDispatcher = None
-        self.attn_scheduler: Any = None
-        self.expert_scheduler: Any = None
         self.attn_executor: AttnExecutor = None
         self.expert_executor: ExpertsExecutor = None
-        self.attn_dispatcher: MuDispatcher = None
-        self.expert_dispatcher: MuDispatcher = None
         
         self.end_flag = False
         self.engine_type: EngineType = None
@@ -884,38 +880,38 @@ class Engine:
             self.post_process(output, meta, self.dispatcher)
             self.stats_post_process(batch)
     
-    def dual_module_loop(self):
-        self._logger.info("starting dual_module_loop")
-        torch.set_default_dtype(torch.bfloat16)
-        torch.set_default_device("cuda:0")
-        torch.cuda.set_stream(self.stream)
-        disagmoe_recorder_create()
+    # def dual_module_loop(self):
+    #     self._logger.info("starting dual_module_loop")
+    #     torch.set_default_dtype(torch.bfloat16)
+    #     torch.set_default_device("cuda:0")
+    #     torch.cuda.set_stream(self.stream)
+    #     disagmoe_recorder_create()
         
-        def step(scheduler, processor, dispatcher):
-            # self._timer.start("schedule")
-            batch_info = scheduler.schedule()
-            if batch_info.data is None:
-                return
-            self._metric.step()
+    #     def step(scheduler, processor, dispatcher):
+    #         # self._timer.start("schedule")
+    #         batch_info = scheduler.schedule()
+    #         if batch_info.data is None:
+    #             return
+    #         self._metric.step()
         
-            range_push("Engine.schedule_stream_sync")
-            self.stream.synchronize()
-            range_pop()
+    #         range_push("Engine.schedule_stream_sync")
+    #         self.stream.synchronize()
+    #         range_pop()
             
-            # self._timer.stop("schedule")
-            self._timer.start("preprocess")
+    #         # self._timer.stop("schedule")
+    #         self._timer.start("preprocess")
             
-            batch = TensorBatch.from_c(batch_info)
-            meta: Metadata = batch.metadata
+    #         batch = TensorBatch.from_c(batch_info)
+    #         meta: Metadata = batch.metadata
             
-            # self.stats_pre_process(batch)
-            output, meta = processor(meta, batch.data)
-            self.post_process(output, meta, dispatcher)
-            # self.stats_post_process(batch)
+    #         # self.stats_pre_process(batch)
+    #         output, meta = processor(meta, batch.data)
+    #         self.post_process(output, meta, dispatcher)
+    #         # self.stats_post_process(batch)
             
-        while not self.end_flag:
-            step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
-            step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
+    #     while not self.end_flag:
+    #         step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
+    #         step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
             
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
         """
