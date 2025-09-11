@@ -18,7 +18,7 @@ from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import _logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
-from disagmoe.executor.block_manager import MHATokenToKVPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
+from disagmoe.executor.block_manager import MHATokenToKVPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator, ReqToTokenPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos
@@ -94,6 +94,17 @@ class AttnExecutor(Executor):
             self.device,
         )
         
+        assert self.cache_config.block_size == 1, "Paged allocator is not supported yet"
+        
+        # TODO: fix this magic number
+        self.max_running_reqs = (self.num_cache_blocks - 1) // 100 + 1
+        
+        self.req_to_token_pool = ReqToTokenPool(
+            self.max_running_reqs,
+            self.model_config.max_seq_len,
+            self.device,
+        )
+        
         if self.cache_config.block_size == 1:
             self.token_allocator = TokenToKVPoolAllocator(
                 self.num_cache_blocks,
@@ -113,11 +124,19 @@ class AttnExecutor(Executor):
                 need_sort=False,
             )
         
+        self.decode_seq_lens = {}
+        
         _log_memory_usage("After initialize cache")
         
     def get_num_cache_blocks(self):
         return self.num_cache_blocks
     
+    def get_token_allocator(self):
+        return self.token_allocator
+    
+    def get_req_to_token_pool(self):
+        return self.req_to_token_pool
+
     def profile_execute(self, batch_size: int):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
         kv_cache = torch.tensor([])
@@ -167,6 +186,99 @@ class AttnExecutor(Executor):
             attn_metadata
         )
         return outputs, topk_weights, topk_ids
+    
+    # @nvtx_range("attn_executor._update_block_table")
+    # def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
+    #     init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
+    #     decode_seq_ids = meta_py.seq_ids
+    #     num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+    #     req_ids = decode_seq_ids.to(self.device)
+        
+    #     # if the first layer in this attention worker, update block table and decode_seq_lens
+    #     if meta_py.layer_id == self.model_config.layer_ids[0]:
+    #         # allocate kv blocks for init seqs, update for all decoding seqs
+            
+    #         for i, seq_id in enumerate(init_seq_ids):
+    #             self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+            
+    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+    #         seq_lens = decode_seq_lens.to(self.device)
+            
+    #         for i, seq_id in enumerate(decode_seq_ids):
+    #             decode_seq_lens[i] += 1
+    #             self.decode_seq_lens[seq_id] += 1
+
+    #         # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
+    #         # self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+            
+    #         for i, seq_id in enumerate(init_seq_ids):
+    #             context_locs = self.token_allocator.alloc(seq_id, meta_py.init_prefill_lens[i])
+    #             self.req_to_token_pool.write((seq_id, slice(0, meta_py.init_prefill_lens[i])), context_locs)
+                
+    #         increment_locs = self.token_allocator.alloc(num_tokens)
+    #         self.req_to_token_pool.write_loc(req_ids, seq_lens, increment_locs)
+                
+    #     else:
+    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+        
+    #     # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
+    #     return decode_seq_lens
+    
+    @nvtx_range("attn_executor.pack_flash_attn_metadata")
+    def pack_flash_attn_metadata(
+            self,
+            meta_c: AttentionBatchMetadata,
+            meta_py: AttentionBatchMetadata,
+            dummy_cache: bool = False,
+        ) -> FlashAttentionMetadata:
+        
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+        
+        req_indices = meta_py.req_indices_tensor
+
+        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
+        # batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+        # seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
+        #     torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
+        # TODO: futher optimize these small kernels
+        seq_lens_cuda = meta_py.seq_lens_tensor
+        context_lens_cuda = seq_lens_cuda - 1
+        seq_start_loc_cuda = torch.cat([torch.zeros(1, dtype=torch.int32, device=self.device), torch.cumsum(seq_lens_cuda, dim=0)])
+        query_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device=self.device)
+        
+        seq_lens = meta_py.seq_lens
+        max_decode_seq_len = max(seq_lens) if len(seq_lens) > 0 else 0
+        
+        if dummy_cache:
+            block_table_cuda = torch.zeros(
+                (num_tokens + num_seqs * max_decode_seq_len // self.cache_config.block_size, ), 
+                dtype=torch.int32, device=self.device
+            )
+            slot_mapping_cuda = block_table_cuda[ : num_tokens].to(torch.int64)
+        else:
+            block_table_cuda = self.token_allocator.get_block_table(req_indices, max_decode_seq_len)
+            slot_mapping_cuda = self.token_allocator.get_latest_loc(req_indices, seq_lens_cuda)
+
+        return FlashAttentionMetadata(
+            0,
+            0,
+            num_tokens,
+            slot_mapping_cuda,
+            seq_lens=seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            max_decode_query_len=1,
+            query_start_loc=query_start_loc,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
+            block_tables=block_table_cuda,
+            use_cuda_graph=False,
+            multi_modal_placeholder_index_maps=None,
+            enable_kv_scales_calculation=True,
+        )
     
     @override
     @nvtx_range("AttnExecutor.execute")

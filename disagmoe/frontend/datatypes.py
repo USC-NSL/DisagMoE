@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from disagmoe.utils.constants import CPS
 import torch
 
@@ -110,13 +110,19 @@ class AttentionBatchMetadata:
     num_prefill_tokens: int
     num_decode_tokens: int
     seq_ids: List[int]
-    
+
     init_prefill_lens: List[int]
     
     expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
 
     topk_weights: List[float]
     attn_dp_ranks: List[int]
+
+    # used in engine and executor
+    req_indices: Optional[List[int]]
+    req_indices_tensor: Optional[torch.Tensor]
+    seq_lens: Optional[List[int]]
+    seq_lens_tensor: Optional[torch.Tensor]
     
     def to_metadata(self) -> Metadata:
         ...
@@ -203,3 +209,7 @@ class SamplerStepInfo:
             step_c.num_tokens,
             step_c.time_stamp
         )
+        
+class ForwardBatch:
+    
+    pass

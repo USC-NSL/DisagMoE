@@ -3,6 +3,7 @@ import time
 import enum
 import os
 
+from disagmoe.executor.block_manager import TokenToKVPoolAllocator, ReqToTokenPool
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
@@ -21,7 +22,6 @@ from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
-
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Callable, Tuple
@@ -46,96 +46,155 @@ class EngineType(enum.Enum):
     
 class AttentionEngineMixin:
     
-    @nvtx_range("attn_engine._update_block_table")
-    def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
-        init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
-        decode_seq_ids = meta_py.seq_ids
-        
-        # if the first layer in this attention worker, update block table and decode_seq_lens
-        if meta_py.layer_id == self.model_config.layer_ids[0]:
-            # allocate kv blocks for init seqs, update for all decoding seqs
-            
-            for i, seq_id in enumerate(init_seq_ids):
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-            
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-
-            # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
-            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
-            
-            for i, seq_id in enumerate(decode_seq_ids):
-                decode_seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
-        else:
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
-        # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
-
-        return decode_seq_lens
+    attn_executor: AttnExecutor
+    model_config: ModelConfig
+    cache_config: CacheConfig
+    device: str
+    req_to_indice: Dict[int, int]
+    req_seq_lens: Tensor
+    decode_seq_lens: Dict[int, int]
+    token_allocator: TokenToKVPoolAllocator
+    req_to_token_pool: ReqToTokenPool
+    attn_req_to_token_pool: ReqToTokenPool
     
-    @nvtx_range("attn_engine.pack_flash_attn_metadata")
-    def _pack_flash_attn_metadata(
-            self,
-            meta_c: AttentionBatchMetadata,
-            meta_py: AttentionBatchMetadata,
-            decode_seq_lens: List[int],
-            mocking: bool = False,
-        ) -> FlashAttentionMetadata:
+    # @nvtx_range("attn_engine._update_block_table")
+    # def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
+    #     init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
+    #     decode_seq_ids = meta_py.seq_ids
         
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
-
-        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
-        
-        # 1. prepare block table
-        if not mocking:
-            block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-        else:
-            # mocking=True when _warmup_attn
-            block_table_1d = torch.zeros(
-                (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
-                dtype=torch.int32, device="cuda")
-
-        slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
-        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
-
-        # 2. prepare seqlens and start_locs
-        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-
-        seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
-            torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
-
-        seq_lens = decode_seq_lens
+    #     # if the first layer in this attention worker, update block table and decode_seq_lens
+    #     if meta_py.layer_id == self.model_config.layer_ids[0]:
+    #         # allocate kv blocks for init seqs, update for all decoding seqs
             
-        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+    #         for i, seq_id in enumerate(init_seq_ids):
+    #             self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+            
+    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+
+    #         # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
+    #         self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+            
+    #         for i, seq_id in enumerate(decode_seq_ids):
+    #             decode_seq_lens[i] += 1
+    #             self.decode_seq_lens[seq_id] += 1
+    #     else:
+    #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-        return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
-            seq_lens=seq_lens,
-            seq_lens_tensor=seq_lens_cuda,
-            max_query_len=0,
-            max_prefill_seq_len=0,
-            max_decode_seq_len=max_decode_seq_len,
-            max_decode_query_len=1,
-            query_start_loc=torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda"),
-            seq_start_loc=seq_start_loc_cuda,
-            context_lens_tensor=context_lens_cuda,
-            block_tables=block_table_cuda,
-            use_cuda_graph=False,
-            multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=True,
-        )
+    #     # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
+
+    #     return decode_seq_lens
+    
+    
+    # @nvtx_range("attn_engine.pack_flash_attn_metadata")
+    # def _pack_flash_attn_metadata(
+    #         self,
+    #         meta_c: AttentionBatchMetadata,
+    #         meta_py: AttentionBatchMetadata,
+    #         decode_seq_lens: List[int],
+    #         dummy_cache: bool = False,
+    #     ) -> FlashAttentionMetadata:
+        
+    #     num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+    #     num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+    #     # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
+        
+    #     # 1. prepare block table
+    #     if dummy_cache:
+    #         # dummy_cache is True when _warmup_attn
+    #         block_table_1d = torch.zeros(
+    #             (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
+    #             dtype=torch.int32, device="cuda")
+    #     else:
+    #         block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
+
+    #     slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
+    #     block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
+
+    #     # 2. prepare seqlens and start_locs
+    #     # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
+    #     batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+
+    #     seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
+    #         torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
+    #     query_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device=self.device)
+            
+    #     seq_lens = decode_seq_lens
+    #     max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+        
+    #     return FlashAttentionMetadata(
+    #         0,
+    #         0,
+    #         num_tokens,
+    #         slot_mapping_cuda,
+    #         seq_lens=seq_lens,
+    #         seq_lens_tensor=seq_lens_cuda,
+    #         max_query_len=0,
+    #         max_prefill_seq_len=0,
+    #         max_decode_seq_len=max_decode_seq_len,
+    #         max_decode_query_len=1,
+    #         query_start_loc=query_start_loc,
+    #         seq_start_loc=seq_start_loc_cuda,
+    #         context_lens_tensor=context_lens_cuda,
+    #         block_tables=block_table_cuda,
+    #         use_cuda_graph=False,
+    #         multi_modal_placeholder_index_maps=None,
+    #         enable_kv_scales_calculation=True,
+    #     )
+    
+    @nvtx_range("attn_engine._update_block_table")
+    def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata):
+        init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
+        running_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs : ]
+        seq_ids = meta_py.seq_ids
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        
+        if meta_py.layer_id == self.model_config.layer_ids[0]:
+            # if the first layer in this attention worker, update block table and decode_seq_lens
+            # 1. allocate prefill token slots for init seqs
+            # 2. add 1 token slot  for all decoding seqs
+            new_req_indices = self.attn_req_to_token_pool.alloc(meta_py.num_prefill_seqs)
+            for i, seq_id in enumerate(init_seq_ids):
+                self.req_to_indice[seq_id] = new_req_indices[i]
+                prefill_kv_locs = self.token_allocator.alloc(meta_py.init_prefill_lens[i])
+                self.req_to_token_pool.write((seq_id, slice(0, meta_py.init_prefill_lens[i])), prefill_kv_locs)
+                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+                
+            running_req_indices = [self.req_to_indice.get(seq_id) for seq_id in running_seq_ids]
+            batch_req_indices = running_req_indices + new_req_indices
+            batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
+            
+            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
+            seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32, device=self.device)
+            
+            for i, seq_id in enumerate(seq_ids):
+                seq_lens[i] += 1
+                self.decode_seq_lens[seq_id] += 1
+                
+            increment_locs = self.token_allocator.alloc(num_tokens)
+            self.req_to_token_pool.write_loc(batch_req_indices_tensor, seq_lens_tensor, increment_locs)
+            seq_lens_tensor = seq_lens_tensor + 1
+            self.req_seq_lens[batch_req_indices_tensor] = seq_lens_tensor
+        else:
+            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
+            batch_req_indices = [self.req_to_indice.get(seq_id) for seq_id in seq_ids]
+            batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
+            seq_lens_tensor = self.req_seq_lens[batch_req_indices_tensor]
+            
+        meta_py.seq_lens = seq_lens
+        meta_py.seq_lens_tensor = seq_lens_tensor
+        meta_py.req_indices = batch_req_indices 
+        meta_py.req_indices_tensor = batch_req_indices_tensor
+        
+        # _logger.info(f"block table updated {meta_py.seq_ids}, {seq_lens}")
     
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(self, 
                                 meta_c: AttentionBatchMetadata, 
                                 meta_py: AttentionBatchMetadata, 
                                 input_tensor: Tensor) -> FlashAttentionMetadata:
-        decode_seq_lens = self._update_block_table(meta_c, meta_py)
+        self._update_block_table(meta_c, meta_py)
+        seq_lens = meta_py.seq_lens
         
         if self._intra_group_tp_enabled:
             # 1. broadcast necessary metadata
@@ -144,7 +203,7 @@ class AttentionEngineMixin:
                 0, # 1
                 0, # 2
                 meta_py.num_decode_tokens, # 3
-                *decode_seq_lens, # 4
+                *seq_lens, # 4
             ]
             
             self.buffer_meta[ : len(bc_meta)].copy_(torch.tensor(bc_meta, dtype=torch.int32, device="cpu"))
@@ -153,7 +212,7 @@ class AttentionEngineMixin:
             # 2. broadcast input tensor asynchronously
             self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
             
-        attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+        attn_meta = self.attn_executor.pack_flash_attn_metadata(meta_c, meta_py)
 
         if self._intra_group_tp_enabled:
             self._wait_async_handles()
@@ -179,6 +238,14 @@ class AttentionEngineMixin:
             dist.broadcast(bc_attn_meta, 0)
         
         return attn_meta
+    
+    def _create_attn_broadcast_buffers(self):
+        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
+        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
+        
+        # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
+        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
+        self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
     
     @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
@@ -380,15 +447,24 @@ class Engine(AttentionEngineMixin):
                 self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
         if self.has_attn:
             self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+            self.attn_token_allocator = self.attn_executor.get_token_allocator()
+            self.attn_req_to_token_pool = self.attn_executor.get_req_to_token_pool()
             self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
             self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-            self.block_mgr = BlockManager_C(
-                self.cache_config.block_size, 
-                self.cache_config.num_gpu_blocks, 
-                self.cache_config.num_reserved_blocks
-            )
+            self.decode_seq_lens = {}
+            
+            self.use_cpu_block_mgr = False
+            if self.use_cpu_block_mgr:
+                self.block_mgr = BlockManager_C(
+                    self.cache_config.block_size, 
+                    self.cache_config.num_gpu_blocks, 
+                    self.cache_config.num_reserved_blocks
+                )
+            else:
+                self.req_to_indice = {}
+                self.req_seq_lens = torch.empty(self.attn_req_to_token_pool.size, dtype=torch.int32, device=self.device)
             if self._intra_group_tp_enabled:
-                self._create_broadcast_buffers()
+                self._create_attn_broadcast_buffers()
                 
         self._warmup()
         if self.has_attn and self.model_config.enable_cuda_graph_attn:
@@ -517,7 +593,8 @@ class Engine(AttentionEngineMixin):
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
-            torch.set_default_device("cuda:0")
+            self.device = "cuda:0" # only one visible devices for one worker
+            torch.set_default_device(self.device)
             stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
             _logger.info(f"set stream {stream}")
@@ -553,7 +630,7 @@ class Engine(AttentionEngineMixin):
         input = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
         positions = torch.zeros(self.attn_max_batch_size, dtype=torch.long, device="cuda")
         meta_py = make_dummy_meta(0, self.attn_max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.attn_max_batch_size, mocking=True)
+        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.attn_max_batch_size, dummy_cache=True)
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
                 self.attn_executor.execute(layer_id, positions, input, meta)
@@ -570,14 +647,7 @@ class Engine(AttentionEngineMixin):
             for _ in range(2):
                 _ = self.expert_executor.execute(layer_id, self.expert_max_batch_size, input, batch_sizes)
 
-    def _create_broadcast_buffers(self):
-        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
-        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
-        
-        # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
-        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
-        self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
-    
+
     def _wait_async_handles(self):
         for h in self.handles:
             h.wait()
@@ -591,7 +661,6 @@ class Engine(AttentionEngineMixin):
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        
         with self._timer.range("preprocess"):
             meta_py = AttentionBatchMetadata.from_c(meta_c)
             assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
@@ -599,14 +668,14 @@ class Engine(AttentionEngineMixin):
             num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
 
             if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
-                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
+                    f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
                 input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
                 input_tensor = torch.sum(input_topk_tensor, dim=1)
                 meta_c.shrink_topk(self.model_config.top_k)
 
-            # TODO(hogura|20241014): fill the real positions
+            positions = meta_py.seq_lens_tensor
             attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
-            positions = attn_meta.seq_lens_tensor
 
         with self._timer.range("execute"):
             hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)

@@ -16,7 +16,6 @@ class ReqToTokenPool:
         size: int,
         max_context_len: int,
         device: str,
-        enable_memory_saver: bool,
     ):
         self.size = size
         self.max_context_len = max_context_len
