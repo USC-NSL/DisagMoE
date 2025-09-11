@@ -97,14 +97,14 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     recver.wait_for_new_requests();
 //     puts("first fetch");
-//     auto res = recver.fetch_largest_batch();
+//     auto res = recver.get_next_batch();
 //     printf("fetched size: %u\n", res.size());
 //     ASSERT(res.size() == 1);
 //     std::cout << *res[0].metadata << std::endl;
 
 //     recver.wait_for_new_requests();
 //     puts("second fetch");
-//     res = recver.fetch_largest_batch();
+//     res = recver.get_next_batch();
 //     printf("fetched size: %u\n", res.size());
 //     ASSERT(res.size() == 1);
 //     std::cout << *res[0].metadata << std::endl;
@@ -168,7 +168,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     recver.wait_for_new_requests();
 //     puts("first fetch");
-//     auto res = recver.fetch_largest_batch();
+//     auto res = recver.get_next_batch();
 //     printf("fetched size: %u\n", res.size());
 //     // if (res.size() == 2) {
 //     //     for (int i = 0; i < 2; i ++)
@@ -180,7 +180,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     recver.wait_for_new_requests();
 //     puts("second fetch");
-//     res = recver.fetch_largest_batch();
+//     res = recver.get_next_batch();
 //     printf("fetched size: %u\n", res.size());
 //     std::cout << *res[0].metadata << std::endl;
 
@@ -338,7 +338,7 @@ std::pair<Channel_t, Channel_t> _init_channel(int s = 0, int r = 1) {
 
 //     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-//     auto res = recver.fetch_largest_batch();
+//     auto res = recver.get_next_batch();
 
 //     DMOE_LOG(INFO) << "fetched " << res.size() << " batch" << LEND;
 
@@ -420,11 +420,11 @@ void test_parallel_attn_scheduler(int rank, std::vector<int> ranks, std::string 
     if (rank == 0) {
         // driver scheduler
         AttentionDriverScheduler scheduler(pool, layer_ids, c_raw, c_raw);
-        result = scheduler.schedule();
+        result = scheduler.schedule_attention();
     } else {
         // worker scheduler
         AttentionWorkerScheduler scheduler(pool, layer_ids, c_raw, c_raw);
-        result = scheduler.schedule();
+        result = scheduler.schedule_attention();
     }
 
     ASSERT(result.metadata.get() != nullptr);

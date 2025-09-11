@@ -5,7 +5,7 @@ import os
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import ExpertScheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
@@ -24,17 +24,16 @@ from disagmoe.env import ENV_VARS
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
-from typing import Optional, List, Dict, Callable, Tuple, Union
+from typing import Optional, List, Dict, Callable, Tuple, Any
 from threading import Thread
 
 from torch import Tensor
 
 import torch.distributed as dist
 
-from disagmoe_c import (init_engine, init_engine_colocate, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
+from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
                         TensorBatch as TensorBatch_C,
                         BlockManager as BlockManager_C,
-                        AttentionScheduler,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
 
@@ -48,7 +47,7 @@ class EngineType(enum.Enum):
 class Engine:
 
     def __init__(self, 
-                 scheduler: Optional[ExpertScheduler] = None, 
+                 scheduler: Optional[Scheduler] = None, 
                  executor: Optional[Executor] = None, 
                  dispatcher: Optional[MuDispatcher] = None, 
                  device_id: Optional[int] = None):
@@ -58,15 +57,11 @@ class Engine:
         assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
         
         self.device_id = device_id
-        self.scheduler: Union[ExpertScheduler, AttentionScheduler] = None
+        self.scheduler: Optional[Scheduler] = None
         self.executor: Executor = None
         self.dispatcher: MuDispatcher = None
-        self.attn_scheduler: AttentionScheduler = None
-        self.expert_scheduler: ExpertScheduler = None
         self.attn_executor: AttnExecutor = None
         self.expert_executor: ExpertsExecutor = None
-        self.attn_dispatcher: MuDispatcher = None
-        self.expert_dispatcher: MuDispatcher = None
         
         self.end_flag = False
         self.engine_type: EngineType = None
@@ -127,16 +122,11 @@ class Engine:
     def _delegate_modules(self):
         if self.has_attn and self.has_expert:
             return
-        
         if self.has_attn:
-            self.scheduler = self.attn_scheduler
             self.executor = self.attn_executor
-            self.dispatcher = self.attn_dispatcher
             self._process_batch = self.process_batch_attn
         elif self.has_expert:
-            self.scheduler = self.expert_scheduler
             self.executor = self.expert_executor
-            self.dispatcher = self.expert_dispatcher
             self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
@@ -206,7 +196,7 @@ class Engine:
         # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
         if self.engine_type == EngineType.HYBRID:
-            self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine_colocate(
+            self.scheduler, self.dispatcher = init_engine(
                 self.device_id,
                 self.model_config.top_k,
                 self.has_attn,
@@ -232,7 +222,7 @@ class Engine:
                 core_args.local_attn_dp_rank,
             )
         else:
-            self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine(
+            self.scheduler, self.dispatcher = init_engine(
                 self.device_id,
                 self.model_config.top_k,
                 self.has_attn,
@@ -252,12 +242,15 @@ class Engine:
                 # Group Channels
                 core_args.in_nccl_ids,
                 core_args.out_nccl_ids,
+                # Extra channels for future colocated mode
+                core_args.in_nccl_ids_ext,
+                core_args.out_nccl_ids_ext,
                 core_args.device_group_ids,
                 core_args.local_attn_dp_rank,
             )
             
         if self.model_config.tp_enable_inter_group:
-            set_tensor_model_parallel_channel(self.attn_scheduler.get_channel() if self.attn_scheduler is not None else None)
+            set_tensor_model_parallel_channel(self.scheduler.get_attention_channel() if self.has_attn else None)
         else:
             if self.has_attn and self._intra_group_tp_enabled:
                 dist.init_process_group(backend="nccl", 
@@ -266,10 +259,10 @@ class Engine:
                                         init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
-            self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
+            self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
         
         if self.has_expert:
-            self.expert_scheduler.set_max_batch_size(self.expert_max_batch_size)
+            self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
             
         self._build_executor()
@@ -282,12 +275,9 @@ class Engine:
         # attention TP is deprecated
         # if self.is_attn_worker:
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
-        start_engine(self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher)
+        start_engine(self.scheduler, self.dispatcher)
         
-        if self.engine_type == EngineType.HYBRID:
-            self.loop_thread = Thread(target=self.dual_module_loop)
-        else:
-            self.loop_thread = Thread(target=self.single_module_loop)
+        self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
 
@@ -785,7 +775,14 @@ class Engine:
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
     def stats_pre_process(self, batch: TensorBatch):
-        self._pool_snapshot = self.scheduler.get_pool_snapshot()
+        # Explicitly select which pool's snapshot to fetch.
+        if self.has_attn and not self.has_expert:
+            self._pool_snapshot = self.scheduler.get_pool_snapshot()  # attention pool
+        elif self.has_expert and not self.has_attn:
+            self._pool_snapshot = self.scheduler.get_pool_snapshot()  # expert pool
+        else:
+            # This branch is for future colocated mode's implementation
+            pass
         self._step_start_timestamp_ms = time_ms()
         
     def record_empty_step(self):
@@ -883,38 +880,38 @@ class Engine:
             self.post_process(output, meta, self.dispatcher)
             self.stats_post_process(batch)
     
-    def dual_module_loop(self):
-        self._logger.info("starting dual_module_loop")
-        torch.set_default_dtype(torch.bfloat16)
-        torch.set_default_device("cuda:0")
-        torch.cuda.set_stream(self.stream)
-        disagmoe_recorder_create()
+    # def dual_module_loop(self):
+    #     self._logger.info("starting dual_module_loop")
+    #     torch.set_default_dtype(torch.bfloat16)
+    #     torch.set_default_device("cuda:0")
+    #     torch.cuda.set_stream(self.stream)
+    #     disagmoe_recorder_create()
         
-        def step(scheduler, processor, dispatcher):
-            # self._timer.start("schedule")
-            batch_info = scheduler.schedule()
-            if batch_info.data is None:
-                return
-            self._metric.step()
+    #     def step(scheduler, processor, dispatcher):
+    #         # self._timer.start("schedule")
+    #         batch_info = scheduler.schedule()
+    #         if batch_info.data is None:
+    #             return
+    #         self._metric.step()
         
-            range_push("Engine.schedule_stream_sync")
-            self.stream.synchronize()
-            range_pop()
+    #         range_push("Engine.schedule_stream_sync")
+    #         self.stream.synchronize()
+    #         range_pop()
             
-            # self._timer.stop("schedule")
-            self._timer.start("preprocess")
+    #         # self._timer.stop("schedule")
+    #         self._timer.start("preprocess")
             
-            batch = TensorBatch.from_c(batch_info)
-            meta: Metadata = batch.metadata
+    #         batch = TensorBatch.from_c(batch_info)
+    #         meta: Metadata = batch.metadata
             
-            # self.stats_pre_process(batch)
-            output, meta = processor(meta, batch.data)
-            self.post_process(output, meta, dispatcher)
-            # self.stats_post_process(batch)
+    #         # self.stats_pre_process(batch)
+    #         output, meta = processor(meta, batch.data)
+    #         self.post_process(output, meta, dispatcher)
+    #         # self.stats_post_process(batch)
             
-        while not self.end_flag:
-            step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
-            step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
+    #     while not self.end_flag:
+    #         step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
+    #         step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
             
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
         """
@@ -994,16 +991,16 @@ class Engine:
         self.release_seqs(list(self.decode_seq_lens.keys()))
         
     def set_schedule_policy(self, policy: str):
-        if self.has_attn:
-            self.attn_scheduler.set_schedule_policy(policy)
-        if self.has_expert:
-            self.expert_scheduler.set_schedule_policy(policy)
+        if self.scheduler is not None:
+            self.scheduler.set_schedule_policy(policy)
+        else:
+            raise ValueError("Scheduler is not initialized")
     
-    # def set_schedule_block(self, step: int):
-    #     if self.has_attn:
-    #         self.attn_scheduler.set_schedule_block(step)
-    #     if self.has_expert:
-    #         self.expert_scheduler.set_schedule_block(step)
+    def set_schedule_block(self, step: int):
+        if self.scheduler is not None:
+            self.scheduler.set_schedule_block(step)
+        else:
+            raise ValueError("Scheduler is not initialized")
         
 class SamplerEngine(Engine):
     

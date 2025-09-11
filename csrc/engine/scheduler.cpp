@@ -19,82 +19,107 @@
 //     this->pool->set_scheduler_block(step);
 // }
 
-scheduler_t ExpertScheduler::build(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy) {
-    return std::make_shared<ExpertScheduler>(pool, layer_ids, policy);
-}
+// Unified Scheduler implementation
 
-ExpertScheduler::ExpertScheduler(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
-
-}
-
-std::vector<TensorBatch> ExpertScheduler::_schedule() {
-    this->pool_snapshot_ = pool->get_pool_snapshot();
-    return pool->fetch_largest_batch();
-}
-
-TensorBatch ExpertScheduler::schedule() {
-    tx_range _{"ExpertScheduler::schedule"};
-
-    auto batches = std::move(this->_schedule());
-    auto batch = TensorBatch::merge(batches);
-    // if (batch.metadata) {
-    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->req_ids);
-    // } else {
-    //     this->cur_queueing_delay = 0;
-    // }
-    return batch;
-}
-
-attn_scheduler_t AttentionScheduler::build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy) {
-    if (policy == "mbfs") {
-        return std::make_shared<AttentionScheduler>(pool, layer_ids);
+Scheduler::Scheduler(mu_attn_pool_t attn_pool, mu_expert_pool_t expert_pool, std::vector<int> layer_ids, std::string policy):
+    attn_pool(attn_pool), expert_pool(expert_pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
+    if (this->attn_pool && !this->expert_pool) {
+        // Hardcode policy to MBFLFS for attention
+        this->layer_scheduler = std::make_shared<LayerScheduler>((int)layer_ids.size(), LayerScheduler::LayerScheduleType::MBFLFS);
+        this->attn_pool->set_layer_scheduler(this->layer_scheduler);
+    } else if (!this->attn_pool && this->expert_pool) {
+        // Hardcode policy to GROUP for experts for now (num_groups=1)
+        this->layer_scheduler = std::make_shared<GroupLayerScheduler>((int)layer_ids.size(), /*num_groups=*/1);
+        this->expert_pool->set_layer_scheduler(this->layer_scheduler);
+    } else if (this->attn_pool && this->expert_pool) {
+        // Future: colocated pools goes to this path
+        this->layer_scheduler = std::make_shared<LayerScheduler>((int)layer_ids.size(), LayerScheduler::LayerScheduleType::MBFLFS);
+        this->attn_pool->set_layer_scheduler(this->layer_scheduler);
+        this->expert_pool->set_layer_scheduler(this->layer_scheduler);
     } else {
-        throw std::runtime_error(policy + " schedule not implemented.");
+        throw std::runtime_error("Scheduler must be constructed with at least one valid pool");
     }
 }
 
-
-AttentionScheduler::AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy): 
-    pool(pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
-    
+void Scheduler::start() {
+    if (this->attn_pool) this->attn_pool->start();
+    if (this->expert_pool) this->expert_pool->start();
 }
 
-std::vector<AttentionBatch> AttentionScheduler::_schedule() {
-    this->pool_snapshot_ = pool->get_pool_snapshot();
-    return pool->fetch_largest_batch();
+void Scheduler::wait_for_new_requests() {
+    if (this->attn_pool) this->attn_pool->wait_for_new_requests();
+    if (this->expert_pool) this->expert_pool->wait_for_new_requests();
 }
 
-AttentionBatch AttentionScheduler::schedule() {
-    tx_range _{"AttentionScheduler::schedule"};
-    
-    auto batches = std::move(this->_schedule());
-    // maybe moving merge to mu_pool results in less memory copy
+void Scheduler::set_max_batch_size(int max_batch_size) {
+    this->max_batch_size = max_batch_size;
+    if (this->attn_pool) this->attn_pool->set_max_batch_size(max_batch_size);
+    if (this->expert_pool) this->expert_pool->set_max_batch_size(max_batch_size);
+}
+
+void Scheduler::set_attn_max_batch_size(int max_batch_size) {
+    if (this->attn_pool) this->attn_pool->set_max_batch_size(max_batch_size);
+}
+
+void Scheduler::set_expert_max_batch_size(int max_batch_size) {
+    if (this->expert_pool) this->expert_pool->set_max_batch_size(max_batch_size);
+}
+
+std::vector<int> Scheduler::get_pool_snapshot() {
+    // Strict parity with old behavior: only return the cached snapshot
+    // captured during the last schedule call.
+    return this->pool_snapshot_;
+}
+
+void Scheduler::set_schedule_policy(std::string type) {
+    if (!this->layer_scheduler) {
+        throw std::runtime_error("Layer scheduler is not initialized");
+    }
+    this->layer_scheduler->set_schedule_type(type);
+}
+
+void Scheduler::set_schedule_block(int step) {
+    if (!this->layer_scheduler) {
+        throw std::runtime_error("Layer scheduler is not initialized");
+    }
+    this->layer_scheduler->set_block_size(step);
+}
+
+TensorBatch Scheduler::schedule_expert() {
+    tx_range _{"Scheduler::schedule_expert"};
+    if (!this->expert_pool) return TensorBatch{};
+    std::lock_guard lock(this->mutex);
+    this->pool_snapshot_ = expert_pool->get_pool_snapshot();
+    int id = this->layer_scheduler->schedule();
+    auto batches = expert_pool->get_batch_from_layer(id);
+    auto batch = TensorBatch::merge(batches);
+    return batch;
+}
+
+AttentionBatch Scheduler::schedule_attention() {
+    tx_range _{"Scheduler::schedule_attention"};
+    if (!this->attn_pool) return AttentionBatch{};
+    std::lock_guard lock(this->mutex);
+    this->pool_snapshot_ = attn_pool->get_pool_snapshot();
+    int id = this->layer_scheduler->schedule();
+    auto batches = attn_pool->get_batch_from_layer(id);
     auto batch = AttentionBatch::merge(batches);
-    // if (batch.metadata) {
-    //     this->cur_queueing_delay = this->pool->remove_queueing_timer(batch.metadata->seq_ids);
-    // } else {
-    //     this->cur_queueing_delay = 0;
-    // }
     return batch;
 }
 
 AttentionDriverScheduler::AttentionDriverScheduler(
     mu_attn_pool_t pool, std::vector<int> layer_ids, 
     Channel_t chan, Channel_t chan_dist, std::string policy): 
-    AttentionScheduler(pool, layer_ids, policy) {
+    Scheduler(pool, nullptr, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
     this->chan_dist = std::dynamic_pointer_cast<NcclGroupChannel>(chan_dist);
 }
 
-AttentionBatch AttentionDriverScheduler::schedule() {
-    tx_range _{"AttentionDriverScheduler::schedule"};
-    int layer_id;
-    this->pool_snapshot_ = pool->get_pool_snapshot();
-    std::vector<AttentionBatch> batches = pool->fetch_largest_batch(&layer_id);
-    if (layer_id == -1) {
-        return AttentionBatch{};
-    }
+AttentionBatch AttentionDriverScheduler::schedule_attention() {
+    tx_range _{"AttentionDriverScheduler::schedule_attention"};
+    this->pool_snapshot_ = attn_pool->get_pool_snapshot();
+    int layer_id = this->layer_scheduler->schedule();
+    std::vector<AttentionBatch> batches = attn_pool->get_batch_from_layer(layer_id);
     // DMOE_LOG(DEBUG) << "Driver scheduling" << LEND;
 
     // TODO(hogura|20241119): here only send seq_ids as schedule result; need to send prefill_len
@@ -119,14 +144,15 @@ AttentionBatch AttentionDriverScheduler::schedule() {
     return batch;
 }
 
-std::shared_ptr<NcclGroupChannel> AttentionDriverScheduler::get_channel() {
+std::shared_ptr<NcclGroupChannel> AttentionDriverScheduler::get_attention_channel() {
     return chan_dist;
 }
+
 
 AttentionWorkerScheduler::AttentionWorkerScheduler(
     mu_attn_pool_t pool, std::vector<int> layer_ids, 
     Channel_t chan, Channel_t chan_dist, std::string policy): 
-    AttentionScheduler(pool, layer_ids, policy) {
+    Scheduler(pool, nullptr, layer_ids, policy) {
     this->chan = std::dynamic_pointer_cast<NcclGroupChannel>(chan);
     this->chan_dist = std::dynamic_pointer_cast<NcclGroupChannel>(chan_dist);
     end_flag = 0;
@@ -159,7 +185,7 @@ void AttentionWorkerScheduler::async_schedule() {
         //     std::cerr << schedule_result[i] << " ";
         // std::cerr << LEND;
 
-        std::vector<AttentionBatch> batches = pool->fetch_batch_from(layer_id, seq_ids);
+        std::vector<AttentionBatch> batches = attn_pool->fetch_batch_from(layer_id, seq_ids);
 
         auto batch = AttentionBatch::merge(batches);
         // DMOE_LOG(WARNING) << "Worker got batch size: " << batch.metadata->seq_ids.size() << LEND;
@@ -169,8 +195,8 @@ void AttentionWorkerScheduler::async_schedule() {
     }
 }
 
-AttentionBatch AttentionWorkerScheduler::schedule() {
-    tx_range _{"AttentionWorkerScheduler::schedule"};
+AttentionBatch AttentionWorkerScheduler::schedule_attention() {
+    tx_range _{"AttentionWorkerScheduler::schedule_attention"};
     std::lock_guard lock(this->mutex);
     if (this->_schedule_result.empty())
         return AttentionBatch {};
@@ -179,10 +205,10 @@ AttentionBatch AttentionWorkerScheduler::schedule() {
     return result;
 }
 
-std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_channel() {
+std::shared_ptr<NcclGroupChannel> AttentionWorkerScheduler::get_attention_channel() {
     return chan_dist;
-
 }
+
 
 /*
 

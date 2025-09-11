@@ -13,8 +13,6 @@ engine = Engine()
 engine.set_device_id(0)
 engine.setup_engine(True)
 engine.init_core([0], [], [], [], {})
-engine.scheduler = engine.attn_scheduler
-
 engine.start_profile()
  
 meta: AttentionBatchMetadata = AttentionBatchMetadata_C()

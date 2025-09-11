@@ -4,7 +4,7 @@ from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata, Slo
 
 from typing import Tuple, List, Dict, Optional
 
-class ExpertScheduler:
+class Scheduler:
 
     def wait_for_new_requests(self) -> None:
         ...
@@ -12,10 +12,13 @@ class ExpertScheduler:
     def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TensorBatch:
         ...
         
-    def get_channel(self) -> "NcclGroupChannel":
+    def get_attention_channel(self) -> "NcclGroupChannel":
         ...
         
-    def set_max_batch_size(self, max_batch_size: int) -> None:
+    def set_attn_max_batch_size(self, max_batch_size: int) -> None:
+        ...
+    
+    def set_expert_max_batch_size(self, max_batch_size: int) -> None:
         ...
         
     def get_pool_snapshot(self) -> List[int]:
@@ -27,8 +30,8 @@ class ExpertScheduler:
     def set_schedule_policy(self, policy: str) -> None:
         ...
         
-    # def set_schedule_block(self, step: int) -> None:
-    #     ...
+    def set_schedule_block(self, step: int) -> None:
+        ...
 
 class MuDispatcher:
         

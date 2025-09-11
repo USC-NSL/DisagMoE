@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <queue>
 #include <memory>
@@ -14,112 +14,58 @@
 #include "utils.hpp"
 
 /*
-    ExpertScheduler and AttentionScheduler are thin wrappers around the pools.
-    Layer-wise schedulers are implemented with actual scheduling logics.
+    Unified Scheduler holds optional attention and expert pools and a LayerScheduler.
+    Single type for both attention and expert scheduling.
 */
 
-class ExpertScheduler;
+class LayerScheduler; // forward declaration
 
-typedef std::shared_ptr<ExpertScheduler> scheduler_t;
-
-class ExpertScheduler {
+// Note: this Scheduler is not meant to be inherited, and the only
+// reason we still have something "virtual" is that we haven't cleanup
+// the TP-related classes.
+class Scheduler {
 protected:
-    mu_expert_pool_t pool;
-    std::vector<int> layer_ids;
-
-    std::string policy;
-
-    float cur_queueing_delay;
-
-    int max_batch_size;
-
-    std::vector<int> pool_snapshot_{};
-
-    std::vector<TensorBatch> _schedule();
-
-public:
-    ExpertScheduler(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
-
-    static scheduler_t build(mu_expert_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
-
-    void start() {
-        this->pool->start();
-    }
-
-    void wait_for_new_requests() {
-        this->pool->wait_for_new_requests();
-    }
-
-    void set_max_batch_size(int max_batch_size) {
-        this->max_batch_size = max_batch_size;
-        this->pool->set_max_batch_size(max_batch_size);
-    }
-
-    std::vector<int> get_pool_snapshot() {
-        return pool_snapshot_;
-    };
-
-    float get_cur_queueing_delay() const {
-        return cur_queueing_delay;
-    }
-
-    TensorBatch schedule();
-
-    // void set_schedule_policy(std::string policy);
-
-    // void set_schedule_block(int step);
-};
-
-
-class AttentionScheduler;
-
-typedef std::shared_ptr<AttentionScheduler> attn_scheduler_t;
-
-class AttentionScheduler {
-protected:
-    mu_attn_pool_t pool;
+    mu_attn_pool_t attn_pool;
+    mu_expert_pool_t expert_pool;
     std::vector<int> layer_ids;
     std::string policy;
-    float cur_queueing_delay;
-    int max_batch_size;
+    float cur_queueing_delay{0};
+    int max_batch_size{0};
     std::vector<int> pool_snapshot_{};
-
-    virtual std::vector<AttentionBatch> _schedule();
+    std::shared_ptr<LayerScheduler> layer_scheduler;
 
 public:
-    AttentionScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+    // shared lock for accessing scheduling states from pools and scheduling logic.
+    std::mutex mutex;
 
-    static attn_scheduler_t build(mu_attn_pool_t pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+    // unified constructor: one or both pools can be null
+    Scheduler(mu_attn_pool_t attn_pool, mu_expert_pool_t expert_pool, std::vector<int> layer_ids, std::string policy = "mbfs");
 
-    void start() {
-        this->pool->start();
-    }
+    void start();
+    void wait_for_new_requests();
 
-    void wait_for_new_requests() {
-        this->pool->wait_for_new_requests();
-    }
+    void set_max_batch_size(int max_batch_size);
+    void set_attn_max_batch_size(int max_batch_size);
+    void set_expert_max_batch_size(int max_batch_size);
+    // General snapshot of current pool state
+    std::vector<int> get_pool_snapshot();
+    float get_cur_queueing_delay() const { return cur_queueing_delay; }
+    void set_schedule_policy(std::string type);
+    void set_schedule_block(int step);
 
-    void set_max_batch_size(int max_batch_size) {
-        this->max_batch_size = max_batch_size;
-        this->pool->set_max_batch_size(max_batch_size);
-    }
+    TensorBatch schedule_expert();
+    AttentionBatch schedule_attention();
 
-    std::vector<int> get_pool_snapshot() {
-        return pool_snapshot_;
-    };
+    virtual std::shared_ptr<NcclGroupChannel> get_attention_channel() { return nullptr; }
 
-    float get_cur_queueing_delay() const {
-        return cur_queueing_delay;
-    }
-
-    virtual AttentionBatch schedule();
-
-    virtual std::shared_ptr<NcclGroupChannel> get_channel() {
-        return nullptr;
-    };
+    bool has_attention() const { return attn_pool.get() != nullptr; }
+    bool has_expert() const { return expert_pool.get() != nullptr; }
 };
 
-class AttentionDriverScheduler : public AttentionScheduler {
+typedef std::shared_ptr<Scheduler> attn_scheduler_t; // for backward compatibility
+typedef std::shared_ptr<Scheduler> scheduler_t;
+
+class AttentionDriverScheduler : public Scheduler {
 protected:
     // chan is used for intra-group communication in scheduler
     // chan_dist is used for TP group's allreduce
@@ -128,12 +74,12 @@ protected:
 public:
     AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
 
-    AttentionBatch schedule() override;
+    AttentionBatch schedule_attention();
 
-    std::shared_ptr<NcclGroupChannel> get_channel() override;
+    std::shared_ptr<NcclGroupChannel> get_attention_channel() override;
 };
 
-class AttentionWorkerScheduler : public AttentionScheduler {
+class AttentionWorkerScheduler : public Scheduler {
 protected:
     std::shared_ptr<NcclGroupChannel> chan, chan_dist;
     
@@ -149,9 +95,9 @@ public:
     AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
     ~AttentionWorkerScheduler();
 
-    AttentionBatch schedule() override;
+    AttentionBatch schedule_attention();
 
-    std::shared_ptr<NcclGroupChannel> get_channel() override;
+    std::shared_ptr<NcclGroupChannel> get_attention_channel() override;
 };
 
 

@@ -32,24 +32,25 @@ PYBIND11_MODULE(disagmoe_c, m) {
     //     .def("terminate", &MuAttnDispatcher::terminate)
     //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
 
-    py::class_<ExpertScheduler, std::shared_ptr<ExpertScheduler>>(m, "ExpertScheduler")
-        .def("wait_for_new_requests", &ExpertScheduler::wait_for_new_requests)
-        .def("schedule", &ExpertScheduler::schedule)
-        .def("set_max_batch_size", &ExpertScheduler::set_max_batch_size)
-        .def("get_pool_snapshot", &ExpertScheduler::get_pool_snapshot)
-        .def("get_cur_queueing_delay", &ExpertScheduler::get_cur_queueing_delay);
-        // .def("set_schedule_policy", &Scheduler::set_schedule_policy)
-        // .def("set_schedule_block", &Scheduler::set_schedule_block);
-
-    py::class_<AttentionScheduler, attn_scheduler_t>(m, "AttentionScheduler")
-        .def("wait_for_new_requests", &AttentionScheduler::wait_for_new_requests)
-        .def("schedule", &AttentionScheduler::schedule)
-        .def("get_channel", &AttentionScheduler::get_channel)
-        .def("set_max_batch_size", &AttentionScheduler::set_max_batch_size)
-        .def("get_pool_snapshot", &AttentionScheduler::get_pool_snapshot)
-        .def("get_cur_queueing_delay", &AttentionScheduler::get_cur_queueing_delay);
-        // .def("set_schedule_policy", &AttentionScheduler::set_schedule_policy)
-        // .def("set_schedule_block", &AttentionScheduler::set_schedule_block);
+    py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
+        .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
+        .def("set_max_batch_size", &Scheduler::set_max_batch_size)
+        .def("set_attn_max_batch_size", &Scheduler::set_attn_max_batch_size)
+        .def("set_expert_max_batch_size", &Scheduler::set_expert_max_batch_size)
+        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
+        .def("get_attention_channel", &Scheduler::get_attention_channel)
+        .def("get_cur_queueing_delay", &Scheduler::get_cur_queueing_delay)
+        .def("set_schedule_policy", &Scheduler::set_schedule_policy)
+        .def("set_schedule_block", &Scheduler::set_schedule_block)
+        .def("schedule", [](Scheduler &s) -> py::object {
+            if (s.has_attention()) {
+                auto batch = s.schedule_attention();
+                return py::cast(batch);
+            } else {
+                auto batch = s.schedule_expert();
+                return py::cast(batch);
+            }
+        });
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put);
@@ -197,7 +198,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("get_nccl_unique_id", &get_nccl_unique_id);
     m.def("instantiate_channels", &instantiate_channels);
     m.def("init_engine", &init_engine);
-    m.def("init_engine_colocate", &init_engine_colocate);
     m.def("start_engine", &start_engine);
     m.def("init_sampler", &init_sampler);
     m.def("init_tokenizer", &init_tokenizer);

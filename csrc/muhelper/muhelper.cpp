@@ -560,24 +560,28 @@ void MuExpertPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool se
     }
 }
 
-std::vector<TensorBatch> MuExpertPool::fetch_largest_batch() {
+std::vector<TensorBatch> MuExpertPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
         return {};
     }
 
-    int id = schedule_layer_id();
+    if (layer_id < 0 || layer_id >= (int)this->data_queue.size()) {
+        return {};
+    }
 
-    ASSERT (this->tokens_per_layer_[id] > 0);
-    ASSERT (this->data_queue[id].size() > 0);
-    this->tokens_per_layer_[id] = 0;
-    this->num_batches_per_layer_[id] = 0;
+    if (this->tokens_per_layer_[layer_id] == 0 || this->data_queue[layer_id].empty()) {
+        return {};
+    }
+
+    this->tokens_per_layer_[layer_id] = 0;
+    this->num_batches_per_layer_[layer_id] = 0;
 
     maintain_largest_batch();
 
-    auto results(std::move(this->data_queue[id]));
-    this->data_queue[id].clear();
+    auto results(std::move(this->data_queue[layer_id]));
+    this->data_queue[layer_id].clear();
     return results;
 }
 
@@ -585,9 +589,6 @@ void MuPool::set_max_batch_size(int max_batch_size) {
     this->max_batch_size = max_batch_size;
 }
 
-int MuPool::schedule_layer_id() {
-    return this->layer_scheduler->schedule();
-}
 
 // void MuPool::set_scheduler_block(int step) {
 //     this->layer_scheduler->set_block_step(step);
@@ -778,28 +779,24 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool
     }
 }
 
-std::vector<AttentionBatch> MuAttentionPool::fetch_largest_batch(int *selected_layer_id) {
+std::vector<AttentionBatch> MuAttentionPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
-        if (selected_layer_id)
-            *selected_layer_id = -1;
         return {};
     }
 
-    int id = this->schedule_layer_id();
+    if (layer_id < 0 || layer_id >= (int)this->attn_data_queue.size()) {
+        return {};
+    }
 
-    this->tokens_per_layer_[id] = 0;
-    this->num_batches_per_layer_[id] = 0;
+    this->tokens_per_layer_[layer_id] = 0;
+    this->num_batches_per_layer_[layer_id] = 0;
 
     maintain_largest_batch();
 
-    // DMOE_LOG(DEBUG) << "Fetched " << id << " layer with #tokens=" << num_tokens << LEND;
-
-    if (selected_layer_id)
-        *selected_layer_id = id;
-    auto results(std::move(this->attn_data_queue[id]));
-    this->attn_data_queue[id].clear();
+    auto results(std::move(this->attn_data_queue[layer_id]));
+    this->attn_data_queue[layer_id].clear();
     return results;
 }
 
@@ -959,25 +956,24 @@ int MuAttentionTopKPool::tokens_in_layer(int lid) {
     return this->attn_token_queues[lid].size();
 }
 
-std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
+std::vector<AttentionBatch> MuAttentionTopKPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
-        if (selected_layer_id)
-            *selected_layer_id = -1;
         return {};
     }
-    int id = this->layer_scheduler->schedule();
 
-    this->tokens_per_layer_[id] = 0;
-    this->num_batches_per_layer_[id] = 0;
+    if (layer_id < 0 || layer_id >= (int)this->attn_token_queues.size()) {
+        return {};
+    }
+
+    this->tokens_per_layer_[layer_id] = 0;
+    this->num_batches_per_layer_[layer_id] = 0;
 
     maintain_largest_batch();
 
-    if (selected_layer_id)
-        *selected_layer_id = id;
-    auto batch = AttentionBatch::pack_tokens(this->layer_id_V2P[id], this->attn_token_queues[id]);
-    this->attn_token_queues[id].clear();
+    auto batch = AttentionBatch::pack_tokens(this->layer_id_V2P[layer_id], this->attn_token_queues[layer_id]);
+    this->attn_token_queues[layer_id].clear();
     return {batch};
 }
 
