@@ -201,7 +201,7 @@ class Timer:
         yield
         self.stop(name)
         
-def _log_memory_usage(self, prefix: str = ""):
+def _log_memory_usage(prefix: str = ""):
     free_memory, total_memory = torch.cuda.mem_get_info()
     _logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
                         f"Total memory: {total_memory / (1024 ** 3):.2f} GB")

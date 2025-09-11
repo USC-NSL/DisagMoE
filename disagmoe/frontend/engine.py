@@ -55,7 +55,6 @@ class AttentionEngineMixin:
     decode_seq_lens: Dict[int, int]
     token_allocator: TokenToKVPoolAllocator
     req_to_token_pool: ReqToTokenPool
-    attn_req_to_token_pool: ReqToTokenPool
     
     # @nvtx_range("attn_engine._update_block_table")
     # def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
@@ -144,8 +143,8 @@ class AttentionEngineMixin:
     
     def build_attn_executor(self):
         self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
-        self.attn_token_allocator = self.attn_executor.get_token_allocator()
-        self.attn_req_to_token_pool = self.attn_executor.get_req_to_token_pool()
+        self.token_allocator = self.attn_executor.get_token_allocator()
+        self.req_to_token_pool = self.attn_executor.get_req_to_token_pool()
         self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
         self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
         self.decode_seq_lens = {} # indexing by seq_id
@@ -159,7 +158,7 @@ class AttentionEngineMixin:
             )
         else:
             self.req_to_indice = {}
-            self.req_seq_lens = torch.empty(self.attn_req_to_token_pool.size, dtype=torch.int32, device=self.device)
+            self.req_seq_lens = torch.empty(self.req_to_token_pool.size, dtype=torch.int32, device=self.device)
         if self._intra_group_tp_enabled:
             self._create_attn_broadcast_buffers()
             
@@ -179,11 +178,12 @@ class AttentionEngineMixin:
             # if the first layer in this attention worker, update block table and decode_seq_lens
             # 1. allocate prefill token slots for init seqs
             # 2. add 1 token slot  for all decoding seqs
-            new_req_indices = self.attn_req_to_token_pool.alloc(meta_py.num_prefill_seqs)
+            new_req_indices = self.req_to_token_pool.alloc(meta_py.num_prefill_seqs)
             for i, seq_id in enumerate(init_seq_ids):
-                self.req_to_indice[seq_id] = new_req_indices[i]
+                req_indice = new_req_indices[i]
+                self.req_to_indice[seq_id] = req_indice
                 prefill_kv_locs = self.token_allocator.alloc(meta_py.init_prefill_lens[i])
-                self.req_to_token_pool.write((seq_id, slice(0, meta_py.init_prefill_lens[i])), prefill_kv_locs)
+                self.req_to_token_pool.write((req_indice, slice(0, meta_py.init_prefill_lens[i])), prefill_kv_locs)
                 self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
                 
             running_req_indices = [self.req_to_indice.get(seq_id) for seq_id in running_seq_ids]
@@ -332,6 +332,32 @@ class AttentionEngineMixin:
 
             assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
         return hiddens, new_meta_c
+    
+    def release_seqs(self, seq_ids: List[int]):
+        # TODO(optimize): master should only send release request to the driver
+        if not self.has_attn:
+            return
+        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
+            # is a worker and enabled intra-group communication, no kv cache to be released.
+            return
+        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
+        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        req_indices = [self.req_to_indice.get(i) for i in seq_ids]
+        req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
+        self.req_to_token_pool.free(req_indices)
+        # _logger.info(f"releasing seqs {seq_ids}")
+
+        self.token_allocator.free_group_begin()
+        for seq_id, req_indice in zip(seq_ids, req_indices):
+            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
+            seq_len = self.decode_seq_lens[seq_id]
+            kv_indices = self.req_to_token_pool.req_to_token[req_indice, : seq_len]
+            self.token_allocator.free(kv_indices)
+            self.decode_seq_lens.pop(seq_id)
+        self.token_allocator.free_group_end()
+        
+        if self.use_cpu_block_mgr:
+            self.block_mgr.batch_release(seq_ids)
     
     @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
@@ -918,33 +944,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     def fetch_queueing_delays(self) -> List[float]:
         return self._queueing_delays
-    
-    def release_seqs(self, seq_ids: List[int]):
-        # TODO(optimize): master should only send release request to the driver
-        if not self.has_attn:
-            return
-        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
-            # is a worker and enabled intra-group communication, no kv cache to be released.
-            return
-        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
-        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        req_indices = [self.req_to_indice.get(i) for i in seq_ids]
-        req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
-        seq_lens_tensor = self.req_seq_lens[req_indices_tensor]
-        self.req_to_token_pool.free(req_indices)
-        # _logger.info(f"releasing seqs {seq_ids}")
-
-        self.attn_token_allocator.free_group_begin()
-        for seq_id, req_indice in zip(seq_ids, req_indices):
-            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            seq_len = self.decode_seq_lens[seq_id]
-            kv_indices = self.attn_req_to_token_pool.req_to_token[req_indice, : seq_len]
-            self.attn_token_allocator.free(kv_indices)
-            self.decode_seq_lens.pop(seq_id)
-        self.attn_token_allocator.free_group_end()
-        
-        if self.use_cpu_block_mgr:
-            self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
         self.end_flag = True

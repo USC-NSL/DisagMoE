@@ -264,7 +264,6 @@ class AttnExecutor(Executor):
             return self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
         else:
             return self.execute_eager(layer_id, positions, hidden_states, attn_metadata)
-        return hiddens, expert_weights, expert_ids
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
