@@ -148,7 +148,7 @@ class AttentionEngineMixin:
         self.attn_req_to_token_pool = self.attn_executor.get_req_to_token_pool()
         self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
         self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-        self.decode_seq_lens = {}
+        self.decode_seq_lens = {} # indexing by seq_id
         
         self.use_cpu_block_mgr = False
         if self.use_cpu_block_mgr:
@@ -928,11 +928,23 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        req_indices = [self.req_to_indice.get(i) for i in seq_ids]
+        req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
+        seq_lens_tensor = self.req_seq_lens[req_indices_tensor]
+        self.req_to_token_pool.free(req_indices)
         # _logger.info(f"releasing seqs {seq_ids}")
-        for i in seq_ids:
+
+        self.attn_token_allocator.free_group_begin()
+        for seq_id, req_indice in zip(seq_ids, req_indices):
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            self.decode_seq_lens.pop(i)
-        self.block_mgr.batch_release(seq_ids)
+            seq_len = self.decode_seq_lens[seq_id]
+            kv_indices = self.attn_req_to_token_pool.req_to_token[req_indice, : seq_len]
+            self.attn_token_allocator.free(kv_indices)
+            self.decode_seq_lens.pop(seq_id)
+        self.attn_token_allocator.free_group_end()
+        
+        if self.use_cpu_block_mgr:
+            self.block_mgr.batch_release(seq_ids)
     
     def terminate(self):
         self.end_flag = True
