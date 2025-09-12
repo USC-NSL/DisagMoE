@@ -12,7 +12,7 @@ from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, Samp
 from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import new_logger
 from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
 from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
@@ -53,7 +53,7 @@ class Controller:
         self.workers = []
         self.attn_workers = []
         self.device_ids = []
-        self._logger = get_logger("controller")
+        self._logger = new_logger("controller")
         self.sampler_worker = None
         self.tokenizer_worker = None
         self._profile_enabled = False

@@ -7,7 +7,7 @@ from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingCo
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from benchmark.utils import get_parser_base
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import new_logger
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
@@ -26,8 +26,7 @@ tokenizer = TOKENIZER_DEV_ID
 sampler = SAMPLER_DEV_ID
 
 master: Controller = None
-logger = get_logger("Serving")
-
+logger = new_logger("Serving")
 
 @dataclass
 class BenchmarkMetrics:

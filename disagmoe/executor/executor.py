@@ -16,7 +16,7 @@ from disagmoe.models.attention import MoEAttention
 from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range, _log_memory_usage
-from disagmoe.utils.logger import _logger
+from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from disagmoe.executor.block_manager import MHATokenToKVPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator, ReqToTokenPool
@@ -82,7 +82,7 @@ class AttnExecutor(Executor):
         assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         if self.cache_config.num_gpu_blocks is None:
             self.num_cache_blocks = self.determine_kv_cache_blocks()
-            _logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
+            get_logger().info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
         else:
             self.num_cache_blocks = self.cache_config.num_gpu_blocks
             
@@ -90,7 +90,7 @@ class AttnExecutor(Executor):
             self.num_cache_blocks,
             self.cache_config.block_size,
             self.model_config.dtype,
-            self.model_config.num_heads,
+            self.model_config.num_kv_heads,
             self.model_config.hidden_size // self.model_config.num_heads,
             self.num_layers,
             self.device,
@@ -144,7 +144,7 @@ class AttnExecutor(Executor):
         attn_metadata = make_prefill_meta(batch_size, self.cache_config.block_size)
         kv_cache = torch.tensor([])
         for layer_id in range(self.num_layers):
-            positions = torch.ones(batch_size, dtype=torch.long, device="cuda")
+            positions = torch.ones(batch_size, dtype=torch.long, device=self.device)
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
             operator.forward(positions, hidden_states, kv_cache, attn_metadata)
@@ -177,13 +177,18 @@ class AttnExecutor(Executor):
             _log_memory_usage("After build CUDA graphs")
             
     def warmup(self, batch_size: int):
+        get_logger().info("Attention warmup start")
         input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
-        meta_py = make_dummy_meta(0, batch_size, self.model_config.max_seq_len)
+        meta_py = make_dummy_meta(0, batch_size, 256)
         meta = self.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
         for layer_id in self.model_config.layer_ids:
+            get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
                 self.execute_eager(layer_id, positions, input, meta)
+            get_logger().info(f"Attention warmup layer {layer_id} done")
+                
+        get_logger().info("Attention warmup done")
     
     def execute_eager(self,
                 layer_id: int,
@@ -224,24 +229,24 @@ class AttnExecutor(Executor):
         max_decode_seq_len = max(seq_lens) if len(seq_lens) > 0 else 0
         
         if dummy_cache:
-            block_table_cuda = torch.zeros(
-                (num_tokens + num_seqs * max_decode_seq_len // self.cache_config.block_size, ), 
+            block_table_cuda = torch.arange(
+                num_seqs * max_decode_seq_len // self.cache_config.block_size, 
                 dtype=torch.int32, device=self.device
-            )
-            slot_mapping_cuda = block_table_cuda[ : num_tokens].to(torch.int64)
+            ).view(num_seqs, -1)
+            slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
         else:
             req_indices = meta_py.req_indices_tensor
-            block_table_cuda = self.token_allocator.get_block_table(req_indices, max_decode_seq_len)
-            slot_mapping_cuda = self.token_allocator.get_latest_loc(req_indices, seq_lens_cuda)
+            block_table_cuda = self.req_to_token_pool.get_block_table(req_indices, max_decode_seq_len)
+            slot_mapping_cuda = self.req_to_token_pool.get_latest_loc(req_indices, seq_lens_cuda)
 
         return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decode_tokens=num_tokens,
+            slot_mapping=slot_mapping_cuda,
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_cuda,
-            max_query_len=0,
+            max_query_len=1,
             max_prefill_seq_len=0,
             max_decode_seq_len=max_decode_seq_len,
             max_decode_query_len=1,
@@ -251,7 +256,7 @@ class AttnExecutor(Executor):
             block_tables=block_table_cuda,
             use_cuda_graph=False,
             multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=True,
+            enable_kv_scales_calculation=False,
         )
     
     @override
@@ -522,13 +527,13 @@ class ExpertsExecutor(Executor):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
         
         input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
-        batch_sizes = torch.tensor([batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
+        batch_sizes = torch.tensor([batch_size // self.model_config.num_experts_per_rank] * self.model_config.num_experts_per_rank,
             dtype=torch.int64,
             # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
             device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
         for layer_id in self.model_config.layer_ids:
             for _ in range(2):
-                _ = self.expert_executor.execute(layer_id, batch_size, input, batch_sizes)
+                _ = self.execute(layer_id, batch_size, input, batch_sizes)
 
     @override
     @nvtx_range("ExpertsExecutor.execute")

@@ -119,12 +119,12 @@ class AttentionBatchMetadata:
     attn_dp_ranks: List[int]
 
     # used in engine and executor
-    req_indices: Optional[List[int]]
-    req_indices_tensor: Optional[torch.Tensor]
-    seq_lens: Optional[List[int]]
-    seq_lens_tensor: Optional[torch.Tensor]
+    req_indices: Optional[List[int]] = None
+    req_indices_tensor: Optional[torch.Tensor] = None
+    seq_lens: Optional[List[int]] = None
+    seq_lens_tensor: Optional[torch.Tensor] = None
     
-    def to_metadata(self) -> Metadata:
+    def to_metadata(self) -> Metadata:  
         ...
         
     def to_c(self) -> "AttentionBatchMetadata_C":

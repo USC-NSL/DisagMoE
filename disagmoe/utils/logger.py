@@ -21,7 +21,7 @@ _handler.setFormatter(_formatter)
 
 _logger: logging.Logger = None
 
-def get_logger(name, level=logging.INFO):
+def new_logger(name, level=logging.INFO):
     logger = getLogger(name)
     logger.setLevel(level)
     logger.addHandler(_handler)
@@ -29,5 +29,8 @@ def get_logger(name, level=logging.INFO):
     
 def initialize_logger(name: str):
     global _logger
-    _logger = get_logger(name)
-    
+    _logger = new_logger(name)
+
+def get_logger():
+    global _logger
+    return _logger

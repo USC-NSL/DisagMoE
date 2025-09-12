@@ -12,7 +12,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
-from disagmoe.utils.logger import initialize_logger, _logger
+from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
@@ -70,7 +70,7 @@ class AttentionEngineMixin:
             
     #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
 
-    #         # _logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
+    #         # get_logger().info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
     #         self.block_mgr.update_block_table(meta_c, decode_seq_lens)
             
     #         for i, seq_id in enumerate(decode_seq_ids):
@@ -79,7 +79,7 @@ class AttentionEngineMixin:
     #     else:
     #         decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
         
-    #     # _logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
+    #     # get_logger().info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
 
     #     return decode_seq_lens
     
@@ -198,7 +198,7 @@ class AttentionEngineMixin:
                 self.decode_seq_lens[seq_id] += 1
                 
             increment_locs = self.token_allocator.alloc(num_tokens)
-            self.req_to_token_pool.write_loc(batch_req_indices_tensor, seq_lens_tensor, increment_locs)
+            self.req_to_token_pool.write_loc(batch_req_indices_tensor, seq_lens_tensor, increment_locs.to(torch.int32))
             seq_lens_tensor = seq_lens_tensor + 1
             self.req_seq_lens[batch_req_indices_tensor] = seq_lens_tensor
         else:
@@ -212,7 +212,7 @@ class AttentionEngineMixin:
         meta_py.req_indices = batch_req_indices 
         meta_py.req_indices_tensor = batch_req_indices_tensor
         
-        # _logger.info(f"block table updated {meta_py.seq_ids}, {seq_lens}")
+        # get_logger().info(f"block table updated {meta_py.seq_ids}, {seq_lens}")
     
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(self, 
@@ -257,7 +257,7 @@ class AttentionEngineMixin:
             else:
                 bc_attn_meta[ : num_tokens].copy_(
                     attn_meta.slot_mapping[ : num_tokens].to(torch.int32))
-                _logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
+                get_logger().info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
                 bc_attn_meta[num_tokens : ].copy_(
                     attn_meta.block_tables[ : num_tokens, : max_num_blocks].view(-1))
             
@@ -345,7 +345,7 @@ class AttentionEngineMixin:
         req_indices = [self.req_to_indice.get(i) for i in seq_ids]
         req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
         self.req_to_token_pool.free(req_indices)
-        # _logger.info(f"releasing seqs {seq_ids}")
+        # get_logger().info(f"releasing seqs {seq_ids}")
 
         self.token_allocator.free_group_begin()
         for seq_id, req_indice in zip(seq_ids, req_indices):
@@ -439,7 +439,7 @@ class AttentionEngineMixin:
     @torch.inference_mode()
     def attn_worker_loop(self):
         assert False, "TP in attention is now deprecated"
-        _logger.info("starting engine (attn TP worker) loop")
+        get_logger().info("starting engine (attn TP worker) loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -447,11 +447,11 @@ class AttentionEngineMixin:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
             if layer_id == -1:
                 # terminated
-                _logger.warning("TP worker received termination signal, now exit")
+                get_logger().warning("TP worker received termination signal, now exit")
                 break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
-            _logger.info(f"executing attn {meta}")
+            get_logger().info(f"executing attn {meta}")
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
 class ExpertEngineMixin:
@@ -493,7 +493,7 @@ class ExpertEngineMixin:
             range_pop()
         
         with self._timer.range("execute"):
-            # _logger.info(f"executing expert {meta_c.req_ids}")
+            # get_logger().info(f"executing expert {meta_c.req_ids}")
             output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
         
         # 2. permute tokens back to <prefill><decode> order
@@ -523,7 +523,7 @@ class ExpertEngineMixin:
             meta_c.update_exp_ids([], [])
             meta_c.step_layer()
 
-        # _logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
+        # get_logger().info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
         return output, meta_c
     
 class Engine(AttentionEngineMixin, ExpertEngineMixin):
@@ -552,11 +552,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.end_flag = False
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
-        self.cache_config: CacheConfig = None
-        
-        if device_id is not None:
-            initialize_logger(f"engine{device_id}")
-            
+        self.cache_config: CacheConfig = None    
         self.loop_thread = None
         
         self._process_batch: Callable = None
@@ -628,7 +624,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         if self.has_attn:
             self.build_attn_executor()
             
-        _logger.info("Executors built")
+        get_logger().info("Executors built")
         
     def init_core(self, core_args: InitCoreArgs):
         """
@@ -642,11 +638,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.model_config.layer_ids = core_args.layer_ids
             
-        _logger.info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
+        get_logger().info(f"launching core: {core_args.layer_ids, core_args.in_device_ids, \
                           core_args.out_device_ids, core_args.out_channel_infos, \
                           core_args.device_group_ids, core_args.expert_ranks, core_args.local_attn_dp_rank}")
         
-        # _logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
+        # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
         if self.engine_type == EngineType.HYBRID:
             self.attn_scheduler, self.attn_dispatcher, self.expert_scheduler, self.expert_dispatcher = init_engine_colocate(
@@ -719,7 +715,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self._delegate_modules()
         
-        _logger.info("core launched")
+        get_logger().info("core launched")
     
     def start(self):
         # attention TP is deprecated
@@ -748,6 +744,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             cache_config: CacheConfig = None,
             rank: int = 0
         ):
+        if self.device_id is not None:
+            initialize_logger(f"engine{self.device_id}")
+        else:
+            initialize_logger("engine")
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
@@ -755,7 +755,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             torch.set_default_device(self.device)
             stream = torch.cuda.Stream(priority=-1)
             torch.cuda.set_stream(stream)
-            _logger.info(f"set stream {stream}")
+            get_logger().info(f"set stream {stream}")
             self.stream = stream
             self.h2d_stream = torch.cuda.Stream(priority=-1)
             self.d2h_stream = torch.cuda.Stream(priority=-1)
@@ -772,7 +772,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         if self.has_expert:
             self.expert_max_batch_size = model_config.max_batch_size_expert
         
-        _logger.info(f"engine setup. {self.engine_type, model_config}")
+        get_logger().info(f"engine setup. {self.engine_type, model_config}")
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks
@@ -859,7 +859,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
 
     @torch.inference_mode()
     def single_module_loop(self):
-        _logger.info("starting single_module_loop")
+        get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -898,7 +898,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.stats_post_process(batch)
     
     def dual_module_loop(self):
-        _logger.info("starting dual_module_loop")
+        get_logger().info("starting dual_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -949,7 +949,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.end_flag = True
         if self._intra_group_tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
-            _logger.info("TP driver sending termination signal to TP workers")
+            get_logger().info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1
             torch.cuda.synchronize()
             dist.broadcast(self.buffer_meta, 0)
@@ -961,10 +961,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
         
         if profile_dir is None:
-            _logger.info("profiling directory not specified, using default")
+            get_logger().info("profiling directory not specified, using default")
             profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
-        _logger.info(f"enable profiler, results stored at {profile_dir}")
+        get_logger().info(f"enable profiler, results stored at {profile_dir}")
     
         self.profiler = torch.profiler.profile(
                 activities=[
@@ -1023,7 +1023,7 @@ class SamplerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        _logger.info("inited sampler")
+        get_logger().info("inited sampler")
         self._t_start = time.time()
         
     def start(self):
@@ -1033,7 +1033,7 @@ class SamplerEngine(Engine):
         # convert c++ vector to python list
         results = self.sampler.fetch_finished_slo_stats()
         # if len(results) > 0:
-        #     _logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        #     get_logger().info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
     
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
@@ -1069,7 +1069,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        _logger.info(f"tokenizer put request {req_id}")
+        get_logger().info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
@@ -1092,7 +1092,7 @@ class TokenizerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        _logger.info("inited tokenizer")
+        get_logger().info("inited tokenizer")
     
     def start(self):
         self.tokenizer.start()

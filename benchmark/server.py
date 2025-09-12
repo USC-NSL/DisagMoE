@@ -8,11 +8,11 @@ from copy import copy
 from benchmark.benchmark_serving import benchmark_serving, launch, benchmark_warmup
 from benchmark.utils import get_parser_base
 
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import new_logger
 from disagmoe.frontend.controller import Controller
 
 
-logger = get_logger("BenchmarkServer")
+logger = new_logger("BenchmarkServer")
 
 app = Flask(__name__)
 master: Controller = None

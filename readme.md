@@ -67,5 +67,7 @@ NOTE: The library built with cmake is under development and testing.
 ```
 ray start --head
 
+export VLLM_FLASH_ATTN_VERSION=3
+
 ./benchmark/scripts/launch_server.sh
 ```

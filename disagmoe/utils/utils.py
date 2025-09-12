@@ -4,7 +4,7 @@ import torch
 import ctypes
 import socket
 
-from disagmoe.utils.logger import get_logger, _logger
+from disagmoe.utils.logger import get_logger, new_logger
 
 from torch import Tensor
 from typing import List, Tuple, Dict, Union
@@ -72,7 +72,7 @@ def get_ip():
     except Exception:
         pass
 
-    get_logger("utils").warning(
+    new_logger("utils").warning(
         "Failed to get the IP address, using 0.0.0.0 by default."
         " The value can be set by the environment variable",
         " `HOST_IP`.",
@@ -203,7 +203,7 @@ class Timer:
         
 def _log_memory_usage(prefix: str = ""):
     free_memory, total_memory = torch.cuda.mem_get_info()
-    _logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
+    get_logger().info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
                         f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
     
 def next_power_of_2(n: int):
