@@ -237,7 +237,7 @@ class AttnExecutor(Executor):
         else:
             req_indices = meta_py.req_indices_tensor
             block_table_cuda = self.req_to_token_pool.get_block_table(req_indices, max_decode_seq_len)
-            slot_mapping_cuda = self.req_to_token_pool.get_latest_loc(req_indices, seq_lens_cuda)
+            slot_mapping_cuda = self.req_to_token_pool.get_latest_loc(req_indices, seq_lens_cuda).to(torch.int64)
 
         return FlashAttentionMetadata(
             num_prefills=0,

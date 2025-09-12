@@ -291,10 +291,11 @@ class AttentionEngineMixin:
                 input_tensor = torch.sum(input_topk_tensor, dim=1)
                 meta_c.shrink_topk(self.model_config.top_k)
 
-            positions = meta_py.seq_lens_tensor
             attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
+            positions = meta_py.seq_lens_tensor.to(torch.int64)
 
         with self._timer.range("execute"):
+            assert input_tensor.shape[0] == positions.shape[0], f"input_tensor.shape[0] != positions.shape[0]: {input_tensor.shape[0]} != {positions.shape[0]}"
             hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
             
         with self._timer.range("postprocess"):
