@@ -6,7 +6,9 @@ from disagmoe.frontend.datatypes import ChannelInfo
 _placement_group: PlacementGroup = None
 
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
-    ray.init("auto")
+    if not ray.is_initialized():
+        ray.init()
+        
     pg = placement_group([
         {"GPU": n_gpu_per_worker, "CPU": 0} for i in range(n_worker)
     ] + [{"GPU": 0, "CPU": 1}] * 2, strategy="PACK")

@@ -68,7 +68,7 @@ class Controller:
         
         init_cluster(self.n_worker, self.n_gpu_per_worker)
         self._create_engines()
-        
+            
     def _create_engines(self):
         pg = get_global_placement_group()
         device_count = {}

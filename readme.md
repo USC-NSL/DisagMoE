@@ -4,8 +4,9 @@
 See `.gitmodules`.
 
 * cereal
-* cppzmq/libzmq
+* libzmq
 * nvtx
+* grouped_gemm
 
 ## Install dependencies
 
@@ -37,14 +38,19 @@ cd third_party/grouped_gemm
 TORCH_CUDA_ARCH_LIST=8.0 GROUPED_GEMM_CUTLASS=1 pip install .
 ```
 
-
 ## Build C++ libraries
 
-DisagMoE requires a c++ lib built from `csrc`. There are 2 ways to build it
-- cmake
-- setup.py
+### Environments
 
-### With setup.py
+To prepare for the compilation, make sure that these environment variables are properly set
+
+- CUDA_HOME
+- NCCL_HOME
+- ZMQ_HOME (if libzmq is installed at user-level)
+
+### Build
+
+DisagMoE requires a c++ library built from `csrc` with setup.py following the command
 
 ```bash
 make pip
@@ -52,21 +58,9 @@ make pip
 
 It will leverage setup.py to build the shared library. The equivalent command is `pip install .`.
 
-### With cmake
-
-```bash
-make cmake
-```
-
-This will build a shared library with cmake and install the library in the root directory of DisagMoE.
-
-NOTE: The library built with cmake is under development and testing.
-
 ## Quick Start
 
 ```
-ray start --head
-
 export VLLM_FLASH_ATTN_VERSION=3
 
 ./benchmark/scripts/launch_server.sh
