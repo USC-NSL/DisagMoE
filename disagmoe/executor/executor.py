@@ -4,7 +4,7 @@ import torch.distributed as dist
 from torch import Tensor
 import numpy as np
 
-from typing import override, Tuple, List, Union, Dict
+from typing import Tuple, List, Union, Dict
 from time import sleep
 from enum import Enum
 
@@ -259,7 +259,6 @@ class AttnExecutor(Executor):
             enable_kv_scales_calculation=False,
         )
     
-    @override
     @nvtx_range("AttnExecutor.execute")
     def execute(self, layer_id: int,
                 positions: torch.Tensor,
@@ -535,7 +534,6 @@ class ExpertsExecutor(Executor):
             for _ in range(2):
                 _ = self.execute(layer_id, batch_size, input, batch_sizes)
 
-    @override
     @nvtx_range("ExpertsExecutor.execute")
     def execute(self, layer_id: int, num_tokens: int, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
         vid = self.layer_mappings[layer_id]

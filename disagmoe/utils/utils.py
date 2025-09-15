@@ -26,7 +26,7 @@ def get_nccl_url_from_uid(uid):
     for i in uid:
         h = (h * 256 + i) % 10007
     print("hash result:", h)
-    return f"{os.getenv("MASTER_ADDR")}:{int(os.getenv("MASTER_PORT")) + h}"
+    return f"{os.getenv('MASTER_ADDR')}:{int(os.getenv('MASTER_PORT')) + h}"
 
 class Counter:
 
