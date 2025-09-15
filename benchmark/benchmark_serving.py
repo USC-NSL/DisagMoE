@@ -115,8 +115,7 @@ def launch(args):
     master = init_controller(cluster_config.n_node, cluster_config.n_gpu, args.nsys)
 
     cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
-                               num_gpu_blocks=args.num_blocks + RESERVED_BLOCKS if args.num_blocks else None, # default should be None
-                               num_reserved_blocks=RESERVED_BLOCKS)
+                               num_gpu_blocks=args.num_blocks if args.num_blocks else None)
 
     sampling_config = SamplingConfig(min_output_len=args.min_output_len, max_output_len=args.max_output_len)
     

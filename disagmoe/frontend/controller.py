@@ -180,8 +180,7 @@ class Controller:
                                         dtype=torch.bfloat16)
         if not cache_config:
             cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
-                                       num_gpu_blocks=NUM_BLOCKS, 
-                                       num_reserved_blocks=RESERVED_BLOCKS)
+                                       num_gpu_blocks=NUM_BLOCKS)
             
         if not sampling_config:
             self.min_output_len = 100

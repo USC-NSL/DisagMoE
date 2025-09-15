@@ -13,199 +13,11 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
 from disagmoe.executor.executor import AttnExecutor
-from disagmoe.executor.block_manager import TokenToKVPoolAllocator, ReqToTokenPool
+from disagmoe.executor.block_manager import TokenToKVPoolAllocator, ReqToTokenPool, CPUBlockManager, GPUBlockManager
 from disagmoe.models.utils import make_dummy_meta
 from disagmoe_c import BlockManager as BlockManager_C, AttentionBatchMetadata as AttentionBatchMetadata_C
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
-class CPUBlockManager:
-    """CPU-based block manager for comparison - follows original implementation"""
-    def __init__(self, block_size: int, num_gpu_blocks: int, num_reserved_blocks: int, model_config, device: str = "cuda"):
-        self.block_size = block_size
-        self.num_gpu_blocks = num_gpu_blocks
-        self.num_reserved_blocks = num_reserved_blocks
-        self.model_config = model_config
-        self.device = device
-        self.block_mgr = BlockManager_C(block_size, num_gpu_blocks, num_reserved_blocks)
-        self.decode_seq_lens = {}  # Track sequence lengths for each request
-    
-    def reset_state(self):
-        """Reset all state for clean benchmarking"""
-        self.decode_seq_lens = {}
-        # Note: C++ block manager state is reset by creating new instance
-        # This is handled in the benchmark functions
-    
-    def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
-        """Update block table using CPU block manager - follows original implementation"""
-        init_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
-        decode_seq_ids = meta_py.seq_ids
-        
-        # If the first layer in this attention worker, update block table and decode_seq_lens
-        if meta_py.layer_id == self.model_config.layer_ids[0]:
-            # Allocate kv blocks for init seqs, update for all decoding seqs
-            for i, seq_id in enumerate(init_seq_ids):
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-            
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-            
-            # Update block table
-            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
-            
-            # Increment sequence lengths for all sequences
-            for i, seq_id in enumerate(decode_seq_ids):
-                decode_seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
-        else:
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
-        return decode_seq_lens
-    
-    def prepare_block_table(self, meta_c: AttentionBatchMetadata_C, decode_seq_lens: List[int]):
-        """Prepare block table using CPU block manager"""
-        return self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-    
-    def pack_flash_attn_metadata(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata, 
-                                decode_seq_lens: List[int], dummy_cache: bool = False):
-        """Pack FlashAttention metadata using CPU approach - follows original implementation"""
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
-        
-        # 1. prepare block table
-        if dummy_cache:
-            # dummy_cache is True when _warmup_attn
-            block_table_1d = torch.zeros(
-                (num_tokens + num_seqs * self.model_config.max_seq_len // self.block_size, ), 
-                dtype=torch.int32, device=self.device)
-        else:
-            block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-
-        slot_mapping_cuda = block_table_1d[-num_tokens:].to(torch.int64)
-        block_table_cuda = block_table_1d[:-num_tokens].view(num_tokens, -1)
-
-        # 2. prepare seqlens and start_locs
-        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        from disagmoe_c import prepare_batch_infos
-        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-
-        seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
-            torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
-        query_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device=self.device)
-            
-        seq_lens = decode_seq_lens
-        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
-        
-        return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
-            seq_lens=seq_lens,
-            seq_lens_tensor=seq_lens_cuda,
-            max_query_len=0,
-            max_prefill_seq_len=0,
-            max_decode_seq_len=max_decode_seq_len,
-            max_decode_query_len=1,
-            query_start_loc=query_start_loc,
-            seq_start_loc=seq_start_loc_cuda,
-            context_lens_tensor=context_lens_cuda,
-            block_tables=block_table_cuda,
-            use_cuda_graph=False,
-            multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=True,
-        )
-
-class GPUBlockManager:
-    """GPU-based block manager for comparison"""
-    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig, device: str = "cuda"):
-        self.model_config = model_config
-        self.cache_config = cache_config
-        self.device = device
-        
-        # Initialize GPU-based components
-        self.req_to_indice = {}
-        self.req_seq_lens = torch.empty(1000, dtype=torch.int32, device=device)  # Large enough buffer
-        self.decode_seq_lens = {}
-        
-        # Initialize token allocator and req pool
-        self.max_running_reqs = (cache_config.num_gpu_blocks - 1) // 100 + 1
-        self.req_to_token_pool = ReqToTokenPool(
-            self.max_running_reqs,
-            model_config.max_seq_len,
-            device,
-        )
-        
-        # Initialize token allocator (simplified version)
-        from disagmoe.executor.block_manager import MHATokenToKVPool
-        self.kv_cache = MHATokenToKVPool(
-            cache_config.num_gpu_blocks,
-            cache_config.block_size,
-            model_config.dtype,
-            model_config.num_kv_heads,
-            model_config.hidden_size // model_config.num_heads,
-            1,  # num_layers
-            device,
-        )
-        
-        self.token_allocator = TokenToKVPoolAllocator(
-            cache_config.num_gpu_blocks,
-            model_config.dtype,
-            device,
-            self.kv_cache,
-            need_sort=False,
-        )
-    
-    def reset_state(self):
-        """Reset all state for clean benchmarking"""
-        self.decode_seq_lens = {}
-        self.req_to_indice = {}
-        self.req_seq_lens.zero_()  # Reset tensor to zeros
-        self.req_to_token_pool.clear()  # Reset the token pool
-        self.token_allocator.clear()  # Reset the token allocator
-    
-    def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
-        """Update block table using GPU-based approach"""
-        init_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
-        running_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs:]
-        seq_ids = meta_py.seq_ids
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        
-        if meta_py.layer_id == 0:  # First layer
-            # Allocate prefill token slots for init seqs
-            new_req_indices = self.req_to_token_pool.alloc(meta_py.num_prefill_seqs)
-            for i, seq_id in enumerate(init_seq_ids):
-                req_indice = new_req_indices[i]
-                self.req_to_indice[seq_id] = req_indice
-                prefill_kv_locs = self.token_allocator.alloc(meta_py.init_prefill_lens[i])
-                self.req_to_token_pool.write((req_indice, slice(0, meta_py.init_prefill_lens[i])), prefill_kv_locs)
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-                
-            running_req_indices = [self.req_to_indice.get(seq_id) for seq_id in running_seq_ids]
-            batch_req_indices = running_req_indices + new_req_indices
-            batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
-            
-            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
-            seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32, device=self.device)
-            
-            for i, seq_id in enumerate(seq_ids):
-                seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
-                
-            increment_locs = self.token_allocator.alloc(num_tokens)
-            self.req_to_token_pool.write_loc(batch_req_indices_tensor, seq_lens_tensor, increment_locs.to(torch.int32))
-            seq_lens_tensor = seq_lens_tensor + 1
-            self.req_seq_lens[batch_req_indices_tensor] = seq_lens_tensor
-        else:
-            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
-            batch_req_indices = [self.req_to_indice.get(seq_id) for seq_id in seq_ids]
-            batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
-            seq_lens_tensor = self.req_seq_lens[batch_req_indices_tensor]
-            
-        meta_py.seq_lens = seq_lens
-        meta_py.seq_lens_tensor = seq_lens_tensor
-        meta_py.req_indices = batch_req_indices
-        meta_py.req_indices_tensor = batch_req_indices_tensor
-        
-        return seq_lens
 
 def prefill_cpu_update_block_table_iter(cpu_mgr: CPUBlockManager, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata) -> float:
     torch.cuda.synchronize()
@@ -243,51 +55,21 @@ def decode_cpu_pack_flash_attn_iter(cpu_mgr: CPUBlockManager, meta_c: AttentionB
     torch.cuda.synchronize()
     with torch_profiler.record_function("CPU/pack_flash_attn_metadata/decode_iter"):
         t0 = time.time()
-        _ = cpu_mgr.pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+        _ = cpu_mgr.pack_flash_attn_metadata(meta_c, meta_py)
         torch.cuda.synchronize()
     return time.time() - t0
 
-def decode_gpu_pack_flash_attn_iter(gpu_mgr: GPUBlockManager, meta_py: AttentionBatchMetadata) -> float:
+def decode_gpu_pack_flash_attn_iter(gpu_mgr: GPUBlockManager, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata) -> float:
+    torch.cuda.synchronize()
     with torch_profiler.record_function("GPU/pack_flash_attn_metadata/decode_iter"):
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        seq_lens_cuda = meta_py.seq_lens_tensor
-        context_lens_cuda = seq_lens_cuda - 1
-        seq_start_loc_cuda = torch.cat([torch.zeros(1, dtype=torch.int32, device="cuda"), 
-                                       torch.cumsum(seq_lens_cuda, dim=0)])
-        query_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda")
-        seq_lens = meta_py.seq_lens
-        max_decode_seq_len = max(seq_lens) if len(seq_lens) > 0 else 0
-        req_indices = meta_py.req_indices_tensor
-        block_table_cuda = gpu_mgr.req_to_token_pool.get_block_table(req_indices, max_decode_seq_len)
-        slot_mapping_cuda = gpu_mgr.req_to_token_pool.get_latest_loc(req_indices, seq_lens_cuda).to(torch.int64)
-        torch.cuda.synchronize()
         t0 = time.time()
-        _ = FlashAttentionMetadata(
-            num_prefills=0,
-            num_prefill_tokens=0,
-            num_decode_tokens=num_tokens,
-            slot_mapping=slot_mapping_cuda,
-            seq_lens=seq_lens,
-            seq_lens_tensor=seq_lens_cuda,
-            max_query_len=1,
-            max_prefill_seq_len=0,
-            max_decode_seq_len=max_decode_seq_len,
-            max_decode_query_len=1,
-            query_start_loc=query_start_loc,
-            seq_start_loc=seq_start_loc_cuda,
-            context_lens_tensor=context_lens_cuda,
-            block_tables=block_table_cuda,
-            use_cuda_graph=False,
-            multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=False,
-        )
+        _ = gpu_mgr.pack_flash_attn_metadata(meta_c, meta_py)
         torch.cuda.synchronize()
     return time.time() - t0
 
 def prefill_cpu_setup_iter(cpu_mgr: CPUBlockManager):
     with torch_profiler.record_function("setup/prefill/cpu_reset_iter"):
         cpu_mgr.reset_state()
-        cpu_mgr.block_mgr = BlockManager_C(cpu_mgr.block_size, cpu_mgr.num_gpu_blocks, cpu_mgr.num_reserved_blocks)
 
 def prefill_gpu_setup_iter(gpu_mgr: GPUBlockManager):
     with torch_profiler.record_function("setup/prefill/gpu_reset_iter"):
@@ -296,11 +78,10 @@ def prefill_gpu_setup_iter(gpu_mgr: GPUBlockManager):
 def decode_cpu_setup_layer1_iter(cpu_mgr: CPUBlockManager, batch_size: int, seq_len: int):
     with torch_profiler.record_function("setup/decode_layer1/cpu_reset_and_alloc_iter"):
         cpu_mgr.reset_state()
-        cpu_mgr.block_mgr = BlockManager_C(cpu_mgr.block_size, cpu_mgr.num_gpu_blocks, cpu_mgr.num_reserved_blocks)
         for i in range(batch_size):
             cpu_mgr.decode_seq_lens[i] = seq_len
         for i in range(batch_size):
-            cpu_mgr.block_mgr.allocate(i, seq_len)
+            cpu_mgr._block_mgr.allocate(i, seq_len)
 
 def decode_gpu_setup_layer1_iter(gpu_mgr: GPUBlockManager, batch_size: int, seq_len: int):
     with torch_profiler.record_function("setup/decode_layer1/gpu_reset_and_alloc_iter"):
@@ -320,11 +101,10 @@ def decode_gpu_setup_layer1_iter(gpu_mgr: GPUBlockManager, batch_size: int, seq_
 def pack_cpu_setup_iter(cpu_mgr: CPUBlockManager, batch_size: int, seq_len: int) -> List[int]:
     with torch_profiler.record_function("setup/pack_metadata/cpu_reset_and_alloc_iter"):
         cpu_mgr.reset_state()
-        cpu_mgr.block_mgr = BlockManager_C(cpu_mgr.block_size, cpu_mgr.num_gpu_blocks, cpu_mgr.num_reserved_blocks)
         decode_seq_lens: List[int] = []
         for i in range(batch_size):
             cpu_mgr.decode_seq_lens[i] = seq_len
-            cpu_mgr.block_mgr.allocate(i, seq_len)
+            cpu_mgr._block_mgr.allocate(i, seq_len)
             decode_seq_lens.append(seq_len)
     return decode_seq_lens
 
@@ -364,6 +144,7 @@ def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, l
         expert_ids=[0] * batch_size,
         topk_weights=[1.0] * batch_size,
         attn_dp_ranks=[0] * batch_size,
+        seq_lens=[seq_len] * batch_size,  # Initialize seq_lens properly
     )
     
     # Create C++ metadata
@@ -538,21 +319,18 @@ def benchmark_decode_only_pack_flash_attn_metadata(cpu_mgr: CPUBlockManager, gpu
         for _ in range(warmup_iters):
             decode_seq_lens = pack_cpu_setup_iter(cpu_mgr, batch_size, seq_len)
             torch.cuda.synchronize()
-            _ = cpu_mgr.pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+            _ = cpu_mgr.pack_flash_attn_metadata(meta_c, meta_py)
         for _ in range(num_iterations):
             # Reset state and allocate (not timed)
             with torch_profiler.record_function("setup/pack_metadata/cpu_reset_and_alloc"):
                 cpu_mgr.reset_state()
-                cpu_mgr.block_mgr = BlockManager_C(cpu_mgr.block_size, cpu_mgr.num_gpu_blocks, cpu_mgr.num_reserved_blocks)
                 # Pre-populate decode_seq_lens and allocate block tables (not timed)
-                decode_seq_lens = []
                 for i in range(batch_size):
                     cpu_mgr.decode_seq_lens[i] = seq_len
-                    cpu_mgr.block_mgr.allocate(i, seq_len)
-                    decode_seq_lens.append(seq_len)
+                    cpu_mgr._block_mgr.allocate(i, seq_len)
             
             # Pack flash attention metadata (timed)
-            cpu_total_time += decode_cpu_pack_flash_attn_iter(cpu_mgr, meta_c, meta_py, decode_seq_lens)
+            cpu_total_time += decode_cpu_pack_flash_attn_iter(cpu_mgr, meta_c, meta_py, [])
         cpu_time = cpu_total_time / num_iterations * 1000
         
         # GPU version - setup once, then benchmark only metadata packing
@@ -561,35 +339,7 @@ def benchmark_decode_only_pack_flash_attn_metadata(cpu_mgr: CPUBlockManager, gpu
         # Warmup (not timed)
         warmup_iters = 2
         for _ in range(warmup_iters):
-            num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-            seq_lens_cuda = meta_py.seq_lens_tensor
-            context_lens_cuda = seq_lens_cuda - 1
-            seq_start_loc_cuda = torch.cat([torch.zeros(1, dtype=torch.int32, device="cuda"), 
-                                           torch.cumsum(seq_lens_cuda, dim=0)])
-            query_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda")
-            req_indices = meta_py.req_indices_tensor
-            max_decode_seq_len = max(meta_py.seq_lens) if len(meta_py.seq_lens) > 0 else 0
-            block_table_cuda = gpu_mgr.req_to_token_pool.get_block_table(req_indices, max_decode_seq_len)
-            slot_mapping_cuda = gpu_mgr.req_to_token_pool.get_latest_loc(req_indices, seq_lens_cuda).to(torch.int64)
-            _ = FlashAttentionMetadata(
-                num_prefills=0,
-                num_prefill_tokens=0,
-                num_decode_tokens=num_tokens,
-                slot_mapping=slot_mapping_cuda,
-                seq_lens=meta_py.seq_lens,
-                seq_lens_tensor=seq_lens_cuda,
-                max_query_len=1,
-                max_prefill_seq_len=0,
-                max_decode_seq_len=max_decode_seq_len,
-                max_decode_query_len=1,
-                query_start_loc=query_start_loc,
-                seq_start_loc=seq_start_loc_cuda,
-                context_lens_tensor=context_lens_cuda,
-                block_tables=block_table_cuda,
-                use_cuda_graph=False,
-                multi_modal_placeholder_index_maps=None,
-                enable_kv_scales_calculation=False,
-            )
+            _ = gpu_mgr.pack_flash_attn_metadata(meta_c, meta_py)
         
         # Now benchmark only the metadata packing
         torch.cuda.synchronize()
@@ -597,7 +347,7 @@ def benchmark_decode_only_pack_flash_attn_metadata(cpu_mgr: CPUBlockManager, gpu
         
         for _ in range(num_iterations):
             # Pack flash attention metadata using GPU approach (timed)
-            _ = decode_gpu_pack_flash_attn_iter(gpu_mgr, meta_py)
+            _ = decode_gpu_pack_flash_attn_iter(gpu_mgr, meta_c, meta_py)
         
         torch.cuda.synchronize()
         gpu_time = (time.time() - start_time) / num_iterations * 1000
@@ -632,18 +382,26 @@ def run_benchmark(batch_sizes: List[int], seq_len: int, num_iterations: int = 10
         max_batch_size_attn=512,
     )
     
-    cache_config = CacheConfig(
+    cpu_manager_cache_config = CacheConfig(
+        block_size=16,
+        gpu_memory_utilization=0.8,
+        swap_space=0,
+        cache_dtype="auto",
+        num_gpu_blocks=10000,
+    )
+    
+    
+    # Initialize managers
+    cpu_mgr = CPUBlockManager(model_config, cpu_manager_cache_config, 10000)
+    
+    gpu_manager_cache_config = CacheConfig(
         block_size=1,
         gpu_memory_utilization=0.8,
         swap_space=0,
         cache_dtype="auto",
-        num_gpu_blocks=80000,
-        num_reserved_blocks=1024,
+        num_gpu_blocks=160000,
     )
-    
-    # Initialize managers
-    cpu_mgr = CPUBlockManager(cache_config.block_size, cache_config.num_gpu_blocks, cache_config.num_reserved_blocks, model_config)
-    gpu_mgr = GPUBlockManager(model_config, cache_config)
+    gpu_mgr = GPUBlockManager(model_config, gpu_manager_cache_config, 10000)
     
     print("=" * 80)
     print("KV Cache Management Benchmark: CPU vs GPU")
