@@ -19,7 +19,7 @@ from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
-from disagmoe.executor.block_manager import MHATokenToKVPool, GPUBlockManager, CPUBlockManager, BaseBlockManager
+from disagmoe.block_manager.block_manager import MHATokenToKVPool, GPUBlockManager, CPUBlockManager, BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos

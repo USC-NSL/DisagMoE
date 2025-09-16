@@ -3,7 +3,6 @@ import time
 import enum
 import os
 
-from disagmoe.executor.block_manager import TokenToKVPoolAllocator, ReqToTokenPool
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
@@ -22,7 +21,7 @@ from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
-from disagmoe.executor.block_manager import BaseBlockManager
+from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Callable, Tuple
