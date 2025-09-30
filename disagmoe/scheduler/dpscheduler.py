@@ -40,7 +40,7 @@ class DPScheduler:
         self.reset()
         
         self._loop_task = asyncio.create_task(self.waiting_loop())
-        self._logger.warning("Created waiting loop")
+        self._logger.info("Created waiting loop")
         
     async def terminate(self):
         self.end_flag = True
@@ -49,10 +49,10 @@ class DPScheduler:
     
     def put_request(self, func: Callable, req_id: int, *args):
         self.waiting_queue.put_nowait(RequestItem(func, req_id, args))
-        self._logger.warning(f"Waiting queue put a request {req_id}, currently waiting list size {self.waiting_queue.qsize()}")
+        self._logger.info(f"Waiting queue put a request {req_id}, currently waiting list size {self.waiting_queue.qsize()}")
     
     async def waiting_loop(self):
-        self._logger.warning("Waiting loop started")
+        self._logger.info("Waiting loop started")
         while not self.end_flag:
             done, pending = await asyncio.wait(
                 [
@@ -63,7 +63,7 @@ class DPScheduler:
             )
             
             if self.end_event.is_set():
-                self._logger.warning("Waiting loop terminated")
+                self._logger.info("Waiting loop terminated")
                 break
             
             for f in pending:
@@ -78,7 +78,7 @@ class DPScheduler:
                 rank = self.schedule([request_item.req_id])[0]
                 assert rank >= 0
             
-            self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
+            self._logger.info(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
             # submit the request
             request_item.func(request_item.req_id, *request_item.args, rank)

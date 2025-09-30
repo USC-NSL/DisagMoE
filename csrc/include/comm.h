@@ -121,46 +121,6 @@ public:
     void recv(uintptr_t data, const Metadata &metadata) override;
 };
 
-class NcclGroupChannel: public NcclChannel {
-protected:
-    zmq::context_t ctx;
-    zmq::socket_t mq;
-    int root_device_id;
-    int zmq_comm_id;
-    
-    int local_rank;
-    int size;
-
-    torch::Tensor buffer_gpu;
-    int* barrier;
-
-    bool is_root() const;
-
-    int root() const;
-
-    void broadcast(void* send_buf, void* recv_buf, size_t count, ncclDataType_t type, cudaStream_t stream=nullptr);
-
-public:
-    NcclGroupChannel(int party_local, const std::vector<int> &party_all, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
-
-    void instantiate() override;
-
-    void send(uintptr_t data, const Metadata& metadata) override;
-
-    void recv(uintptr_t data, const Metadata& metadata) override;
-
-    void synchronize();
-
-    void send_recv(uintptr_t data, const Metadata& metadata);
-
-    void bcast_obj(void* &buf, size_t &size);
-
-    void send_metadata(const Metadata& metadata);
-
-    void recv_metadata(Metadata& metadata);
-
-    void all_reduce(uintptr_t data, const std::vector<int> &shape);
-};
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
 
@@ -168,9 +128,7 @@ Channel_t create_local_channel(int device_id);
 
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 
-Channel_t create_nccl_group_channel(int party_local, const std::vector<int> &party_all, void *nccl_id_raw);
 
-std::vector<Channel_t> create_nccl_group_channels(int root, const std::vector<int> &party_all, void *nccl_id_raw);
 
 void* get_nccl_unique_id();
 

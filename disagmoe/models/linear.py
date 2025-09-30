@@ -16,10 +16,18 @@ from vllm.model_executor.parameter import (BasevLLMParameter,
                                            RowvLLMParameter)
 from vllm.model_executor.utils import set_weight_attrs
 
-from disagmoe.models.distributed import (get_tensor_model_parallel_rank,
-                                         get_tensor_model_parallel_world_size,
-                                         tensor_model_parallel_all_gather,
-                                         tensor_model_parallel_all_reduce)
+# We don't support TP, but keep these dummy functions for compatability with vllm.
+def get_tensor_model_parallel_rank() -> int:
+    return 0
+
+def get_tensor_model_parallel_world_size() -> int:
+    return 1
+
+def tensor_model_parallel_all_gather(tensor: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    return tensor
+
+def tensor_model_parallel_all_reduce(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor
 
 logger = init_logger(__name__)
 
