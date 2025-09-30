@@ -19,6 +19,7 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import make_dummy_meta
+from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -79,7 +80,9 @@ class Engine:
         self.decode_seq_lens = {}
         self.profiler = None
         self.inner_exp_rank = []
+        self.device_group_ids = []
         self.handles = []
+        self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
         
         # for stats usage
         self._step_stats = []
@@ -95,6 +98,26 @@ class Engine:
     @property
     def has_expert(self):
         return self.engine_type == EngineType.EXPERT or self.engine_type == EngineType.HYBRID
+    
+    @property
+    def is_attn_driver(self):
+        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+    
+    @property
+    def is_attn_worker(self):
+        return self._intra_group_tp_enabled and self.rank_in_group > 0
+    
+    @property
+    def _tp_enabled(self):
+        return self.has_attn and self.model_config.tp_size > 1
+    
+    @property
+    def _inter_group_tp_enabled(self):
+        return self._tp_enabled and self.model_config.tp_enable_inter_group
+    
+    @property
+    def _intra_group_tp_enabled(self):
+        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
     
     def _delegate_modules(self):
         if self.has_attn and self.has_expert:
@@ -117,9 +140,11 @@ class Engine:
         if self.has_expert:
             self.expert_executor = ExpertsExecutor(self.model_config)
             # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-            self.inner_exp_rank = [i for i in range(self.model_config.num_experts_per_rank)]
+            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+            for i in range(self.model_config.num_experts_per_rank):
+                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
         if self.has_attn:
-            self.attn_executor = AttnExecutor(self.model_config, self.cache_config)
+            self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
             if self.cache_config.num_gpu_blocks is None:
                 self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
                 self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
@@ -131,7 +156,8 @@ class Engine:
                 self.cache_config.num_gpu_blocks, 
                 self.cache_config.num_reserved_blocks
             )
-            
+            if self._intra_group_tp_enabled:
+                self._create_broadcast_buffers()
                 
         self._warmup()
         if self.has_attn and self.model_config.enable_cuda_graph_attn:
@@ -148,7 +174,9 @@ class Engine:
         """
         disagmoe_recorder_create()
         
+        self.device_group_ids = core_args.device_group_ids
         
+        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
         
         self.model_config.layer_ids = core_args.layer_ids
             
@@ -159,6 +187,7 @@ class Engine:
                 core_args.in_device_ids,
                 core_args.out_device_ids,
                 core_args.out_channel_infos,
+                core_args.device_group_ids,
                 core_args.expert_ranks,
                 core_args.local_attn_dp_rank,
             ),
@@ -172,7 +201,13 @@ class Engine:
                 self.model_config.top_k,
                 self.has_attn,
                 self.has_expert,
-                ParallelConfig.from_c(1, self.model_config.ep_size, self.model_config.dp_size, self.model_config.num_experts_per_rank, core_args.expert_ranks),
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ),
                 core_args.layer_ids,
                 # P2P Channels
                 core_args.in_device_ids,
@@ -191,7 +226,13 @@ class Engine:
                 self.model_config.top_k,
                 self.has_attn,
                 self.has_expert,
-                ParallelConfig.from_c(1, self.model_config.ep_size, self.model_config.dp_size, self.model_config.num_experts_per_rank, core_args.expert_ranks),
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ),
                 core_args.layer_ids,
                 # P2P Channels
                 core_args.in_device_ids,
@@ -204,7 +245,6 @@ class Engine:
                 core_args.local_attn_dp_rank,
             )
             
-        
         
         if self.has_attn:
             self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
@@ -242,6 +282,7 @@ class Engine:
                      model_config: ModelConfig,
                      cache_config: CacheConfig = None,
                      rank: int = 0):
+        self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
             torch.set_default_device("cuda:0")
@@ -252,6 +293,7 @@ class Engine:
             self.h2d_stream = torch.cuda.Stream(priority=-1)
             self.d2h_stream = torch.cuda.Stream(priority=-1)
             self.stream_schedule = torch.cuda.Stream(priority=-1)
+            set_tensor_model_parallel_config(model_config)
             self._log_memory_usage("Setup device")
             free_memory, _ = torch.cuda.mem_get_info()
             self.init_gpu_memory = free_memory
@@ -440,7 +482,7 @@ class Engine:
                                 input_tensor: Tensor) -> FlashAttentionMetadata:
         decode_seq_lens = self._update_block_table(meta_c, meta_py)
         
-        if False: # _intra_group_tp_enabled:
+        if self._intra_group_tp_enabled:
             # 1. broadcast necessary metadata
             bc_meta = [
                 meta_py.layer_id, # 0
@@ -458,7 +500,7 @@ class Engine:
             
         attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
 
-        if False: # _intra_group_tp_enabled:
+        if self._intra_group_tp_enabled:
             self._wait_async_handles()
             
             # 3. broadcast attn_meta
@@ -689,7 +731,7 @@ class Engine:
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
-        assert not False, "TP in attention is now deprecated"
+        assert not self.is_attn_worker
         batch: TensorBatch = TensorBatch_C()
         batch.data = output
         batch.metadata = meta
@@ -879,7 +921,7 @@ class Engine:
         # TODO(optimize): master should only send release request to the driver
         if not self.has_attn:
             return
-        if (not self.has_attn) and (not self.model_config.tp_enable_inter_group):
+        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
             # is a worker and enabled intra-group communication, no kv cache to be released.
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
@@ -892,7 +934,7 @@ class Engine:
     
     def terminate(self):
         self.end_flag = True
-        if False: # TP removed
+        if self._intra_group_tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
             self._logger.info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1

@@ -151,7 +151,18 @@ class Controller:
                 uid = get_nccl_unique_id()
                 in_nccl_ids[j][i] = uid
                 out_nccl_ids[i][j] = uid
-        return in_nccl_ids, out_nccl_ids, {}
+        group_nccl_ids = {
+            # NOTE(hogura|20241118): the first is for the channel in Pool, the second is for the channel in Scheduler
+            # the third is for the allreduce in TP Group
+            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id(), get_nccl_unique_id())
+                for group in model_place.device_groups.values()
+        }
+        # inter-group nccl ids, [expert -> TP group]
+        for j, group in model_place.device_groups.items():
+            if len(group) > 1 and j != group[0]: # is a worker
+                root = group[0]
+                in_nccl_ids[j] = in_nccl_ids[root]
+        return in_nccl_ids, out_nccl_ids, group_nccl_ids
     
     def init_engine(self, 
                     model_place: ModelPlacement, 
@@ -180,8 +191,8 @@ class Controller:
             self.min_output_len = sampling_config.min_output_len
             self.max_output_len = sampling_config.max_output_len
             
-        in_nccl_ids, out_nccl_ids, _ = self._get_nccl_ids(model_place)
-        in_nccl_ids_ext, out_nccl_ids_ext, _ = self._get_nccl_ids(model_place)
+        in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
+        in_nccl_ids_ext, out_nccl_ids_ext, group_nccl_ids_ext = self._get_nccl_ids(model_place)
         
         
         # collect attention workers for kv-cache management
@@ -237,7 +248,7 @@ class Controller:
             worker.init_core.remote(
                 InitCoreArgs(
                     layer_ids=model_place.layer_ids_at(device_id),
-                    in_device_ids=model_place.in_device_ids.get(device_id, []),
+                    in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
                     out_channel_infos=[
                         ChannelInfo(
@@ -251,6 +262,13 @@ class Controller:
                     out_nccl_ids=out_nccl_ids.get(device_id, {}),
                     in_nccl_ids_ext=in_nccl_ids_ext.get(device_id, {}),
                     out_nccl_ids_ext=out_nccl_ids_ext.get(device_id, {}),
+                    out_device_group_ids={
+                        j: [device_id] + model_place.device_groups.get(j, [])
+                            for j in model_place.out_device_ids.get(device_id, [])
+                    },
+                    device_group_ids=model_place.device_groups.get(device_id, []),
+                    group_nccl_ids=group_nccl_ids.get(
+                        tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                     expert_ranks=model_place.out_expert_ranks_at(device_id),
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                 )
