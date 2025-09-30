@@ -112,6 +112,8 @@ class CPUBlockManager(BaseBlockManager):
         query_start_loc = self.query_start_loc[ : num_tokens + 1]
         max_decode_seq_len = max(meta_py.seq_lens) if len(meta_py.seq_lens) > 0 else 0
         
+        meta_py.seq_lens_tensor = seq_lens_cuda
+        
         return FlashAttentionMetadata(
             0,
             0,

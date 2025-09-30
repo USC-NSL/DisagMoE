@@ -53,8 +53,6 @@ class AttentionEngineMixin:
     req_to_indice: Dict[int, int]
     req_seq_lens: Tensor
     decode_seq_lens: Dict[int, int]
-    token_allocator: TokenToKVPoolAllocator
-    req_to_token_pool: ReqToTokenPool
     block_mgr: BaseBlockManager
     
     def build_attn_executor(self):

@@ -12,12 +12,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
-from disagmoe.executor.executor import AttnExecutor
-from disagmoe.block_manager.block_manager import TokenToKVPoolAllocator, ReqToTokenPool, CPUBlockManager, GPUBlockManager
-from disagmoe.models.utils import make_dummy_meta
+from disagmoe.block_manager.block_manager import CPUBlockManager, GPUBlockManager
 from disagmoe_c import BlockManager as BlockManager_C, AttentionBatchMetadata as AttentionBatchMetadata_C
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-
 
 def prefill_cpu_update_block_table_iter(cpu_mgr: CPUBlockManager, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata) -> float:
     torch.cuda.synchronize()

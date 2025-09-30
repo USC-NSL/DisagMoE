@@ -19,7 +19,8 @@ from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
-from disagmoe.block_manager.block_manager import MHATokenToKVPool, GPUBlockManager, CPUBlockManager, BaseBlockManager
+from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
+from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from disagmoe_c import prepare_batch_infos
@@ -62,7 +63,7 @@ class AttnExecutor(Executor):
         
         self.init_model_and_cache()
         
-    def init_model_and_cache(self, use_gpu_block_mgr: bool = True):
+    def init_model_and_cache(self, use_gpu_block_mgr: bool = False):
         _log_memory_usage("Setup device")
         free_memory, _ = torch.cuda.mem_get_info()
         self.init_gpu_memory = free_memory

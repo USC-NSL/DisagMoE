@@ -7,7 +7,11 @@ _placement_group: PlacementGroup = None
 
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
     if not ray.is_initialized():
-        ray.init()
+        try:
+            ray.init(address="auto")
+        except ConnectionError:
+            print("ray not initialized, now initializing a default ray cluster")
+            ray.init()
         
     pg = placement_group([
         {"GPU": n_gpu_per_worker, "CPU": 0} for i in range(n_worker)
