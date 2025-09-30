@@ -1,3 +1,4 @@
+import os
 import ray
 from ray.util.placement_group import placement_group, PlacementGroup
 from dataclasses import dataclass
@@ -6,7 +7,8 @@ from disagmoe.frontend.datatypes import ChannelInfo
 _placement_group: PlacementGroup = None
 
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
-    ray.init("auto")
+    tmpdir_path = os.environ.get("RAY_TMPDIR", "/tmp/ray")
+    ray.init(address="auto", _temp_dir=tmpdir_path)
     pg = placement_group([
         {"GPU": n_gpu_per_worker, "CPU": 0} for i in range(n_worker)
     ] + [{"GPU": 0, "CPU": 1}] * 2, strategy="PACK")
