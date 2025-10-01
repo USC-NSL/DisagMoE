@@ -153,7 +153,7 @@ class MoEAttention(nn.Module):
                               num_kv_heads=self.num_kv_heads,
                               cache_config=cache_config,
                               quant_config=quant_config,
-                              use_direct_call=True)
+                              use_direct_call=True,)
         
         # Gate always runs at half / full precision for now.
 

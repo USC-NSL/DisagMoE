@@ -151,7 +151,7 @@ def make_prefill_meta(num_prefills: int, block_size: int) -> FlashAttentionMetad
     )
     return meta
 
-def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int) -> AttentionBatchMetadata:
+def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int, seq_len: int) -> AttentionBatchMetadata:
     bs = num_prefill_tokens + num_decode_tokens
     meta = AttentionBatchMetadata(
         0,
@@ -165,6 +165,10 @@ def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int) -> Attentio
         [0] * bs,
         [],
         [0] * bs,
+        req_indices=list(range(bs)),
+        req_indices_tensor=torch.arange(bs, dtype=torch.int32),
+        seq_lens=[seq_len] * bs,
+        seq_lens_tensor=torch.full([bs], seq_len, dtype=torch.int32),
     )
     return meta
 

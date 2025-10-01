@@ -1,4 +1,4 @@
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import new_logger
 
 from dataclasses import dataclass
 from typing import List, Dict, override, Callable, Tuple
@@ -23,7 +23,7 @@ class DPScheduler:
         self.delta = (seq_len + block_size - 1) // block_size
         self.seq_ranks = {}
         
-        self._logger = get_logger("DPScheduler")
+        self._logger = new_logger("DPScheduler")
         self._loop_task: asyncio.Task = None
         
         self.reset()

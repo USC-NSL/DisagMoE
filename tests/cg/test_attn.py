@@ -28,7 +28,6 @@ cache_config = CacheConfig(
     swap_space=0,
     cache_dtype="auto",
     num_gpu_blocks=4096,
-    num_reserved_blocks=1024,
 )
 
 mp = get_model_placement(model_config, cluster_config, strategy="interleave")

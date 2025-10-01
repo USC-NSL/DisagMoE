@@ -1,5 +1,5 @@
 diff --git a/vllm/attention/layer.py b/vllm/attention/layer.py
-index dbf4723ee..9821cc32d 100644
+index dbf4723ee..621302bb7 100644
 --- a/vllm/attention/layer.py
 +++ b/vllm/attention/layer.py
 @@ -43,6 +43,7 @@ class Attention(nn.Module):
@@ -79,3 +79,19 @@ index f0fd20c70..eab87672b 100644
  
      # Disable aiter ops unless specifically enabled.
      # Acts as a parent switch to enable the rest of the other operations.
+diff --git a/vllm/platforms/cuda.py b/vllm/platforms/cuda.py
+index bb7731809..639f86d38 100644
+--- a/vllm/platforms/cuda.py
++++ b/vllm/platforms/cuda.py
+@@ -245,11 +245,6 @@ class CudaPlatformBase(Platform):
+                 "Cannot use FlashAttention-2 backend for dtype other than "
+                 "torch.float16 or torch.bfloat16.")
+             target_backend = _Backend.XFORMERS
+-        elif block_size % 16 != 0:
+-            logger.info(
+-                "Cannot use FlashAttention-2 backend for block size not "
+-                "divisible by 16.")
+-            target_backend = _Backend.XFORMERS
+ 
+         # FlashAttn is valid for the model, checking if the package is
+         # installed.

@@ -14,6 +14,7 @@ _env_vars = {
     "LD_LIBRARY_PATH": "",
     "ENABLE_NVTX": "0",
     "DMOE_WEIGHTED_ROUTER_FILE": "",
+    "VLLM_FLASH_ATTN_VERSION": "3",
 }
 
 ENV_VARS = {

@@ -18,9 +18,22 @@ CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "i
 CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
 CUDA_LIB64_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib64"))
 
+NCCL_HOME = os.environ.get("NCCL_HOME", "/usr/local/nccl2")
+NCCL_INCLUDE_DIR = os.environ.get("NCCL_INCLUDE_DIR", os.path.join(NCCL_HOME, "include"))
+NCCL_LIBRARY_DIR = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(NCCL_HOME, "lib"))
+
 TORCH_HOME = torch.__path__[0]
 TORCH_LIB_DIR = f"{TORCH_HOME}/lib"
 TORCH_INCLUDES = [f"{TORCH_HOME}/include/torch/csrc/api/include", f"{TORCH_HOME}/include"]
+
+C_INCLUDE_PATH = os.environ.get("C_INCLUDE_PATH", "")
+CPP_INCLUDE_PATH = os.environ.get("CPP_INCLUDE_PATH", "")
+LD_LIBRARY_PATH = os.environ.get("LD_LIBRARY_PATH", "")
+
+ZMQ_HOME = os.environ.get("ZMQ_HOME", "")
+ZMQ_INCLUDE_PATH = os.path.join(ZMQ_HOME, "include")
+ZMQ_LIBRARY_PATH = os.path.join(ZMQ_HOME, "lib")
+
 
 def find_all_c_targets(path):
     res = []
@@ -33,6 +46,12 @@ def find_all_c_targets(path):
     print(res)
     return res
 
+THIRD_PARTY_INCLUDES = [
+    f"{THIRD_PARTY_DIR}/cereal/include",
+    f"{THIRD_PARTY_DIR}/NVTX/c/include",
+    f"{THIRD_PARTY_DIR}/pybind11/include",
+]
+
 ext_modules = [
     cpp_extension.CppExtension(
         'disagmoe_c',
@@ -41,15 +60,20 @@ ext_modules = [
             pybind11.get_include(),
             os.path.join(CSRC_DIR, "include"),
             CUDA_INCLUDE_DIR,
-            f"{THIRD_PARTY_DIR}/zmq/include",  # NOTE(hogura|20240927): if already installed in apt, this could be skipped
-            f"{THIRD_PARTY_DIR}/cereal/include",
-            f"{THIRD_PARTY_DIR}/NVTX/c/include",
-            # *TORCH_INCLUDES,
+            NCCL_INCLUDE_DIR,
+            ZMQ_INCLUDE_PATH,
+            *THIRD_PARTY_INCLUDES,
+            *TORCH_INCLUDES,
+            C_INCLUDE_PATH,
+            CPP_INCLUDE_PATH,
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
             TORCH_LIB_DIR,
+            NCCL_LIBRARY_DIR,
+            ZMQ_LIBRARY_PATH,
+            LD_LIBRARY_PATH,
             "/usr/local/lib",
             "/usr/lib",
         ], 

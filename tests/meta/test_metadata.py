@@ -17,7 +17,6 @@ cache_config = CacheConfig(
     swap_space=0,
     cache_dtype="auto",
     num_gpu_blocks=4096,
-    num_reserved_blocks=1024,
 )
 bs = 256
 
@@ -30,8 +29,7 @@ engine._logger = logging.getLogger("engine")
 
 engine.block_mgr = BlockManager_C(
     cache_config.block_size, 
-    cache_config.num_gpu_blocks, 
-    cache_config.num_reserved_blocks)
+    cache_config.num_gpu_blocks)
 
 shape = (bs, model_config.hidden_size)
 tensor = torch.zeros(shape, dtype=torch.bfloat16).cuda()

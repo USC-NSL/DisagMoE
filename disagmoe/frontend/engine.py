@@ -3,7 +3,7 @@ import time
 import enum
 import os
 
-from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor, CUDAGraphAttnExecutor
+from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
@@ -11,7 +11,7 @@ from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
@@ -21,7 +21,7 @@ from disagmoe.utils.placement import ParallelConfig
 from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
-
+from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Callable, Tuple, Any
@@ -43,444 +43,39 @@ class EngineType(enum.Enum):
     HYBRID = enum.auto()
     TOKENIZER = enum.auto()
     SAMPLER = enum.auto()
-
-class Engine:
-
-    def __init__(self, 
-                 scheduler: Optional[Scheduler] = None, 
-                 executor: Optional[Executor] = None, 
-                 dispatcher: Optional[MuDispatcher] = None, 
-                 device_id: Optional[int] = None):
-        
-        assert executor is None, "Executor is initialization should be done in setup_engine"
-        assert scheduler is None, "Scheduler is initialization should be done in setup_engine"
-        assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
-        
-        self.device_id = device_id
-        self.scheduler: Optional[Scheduler] = None
-        self.executor: Executor = None
-        self.dispatcher: MuDispatcher = None
-        self.attn_executor: AttnExecutor = None
-        self.expert_executor: ExpertsExecutor = None
-        
-        self.end_flag = False
-        self.engine_type: EngineType = None
-        self.model_config: ModelConfig = None
-        self.cache_config: CacheConfig = None
-        
-        if device_id is not None:
-            self._logger = get_logger(f"engine{device_id}")
-            
-        self.loop_thread = None
-        
-        self._process_batch: Callable = None
-        
-        self.block_mgr: BlockManager = None
-        
-        self.decode_seq_lens = {}
-        self.profiler = None
-        self.inner_exp_rank = []
-        self.device_group_ids = []
-        self.handles = []
-        self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
-        
-        # for stats usage
-        self._step_stats = []
-        self._metric = Metric()
-        self._timer = Timer()
-        self._queueing_timer = {} # placeholder, not used at the moment
-        self._queueing_delays = []
-
-    @property
-    def has_attn(self):
-        return self.engine_type == EngineType.ATTENTION or self.engine_type == EngineType.HYBRID
     
-    @property
-    def has_expert(self):
-        return self.engine_type == EngineType.EXPERT or self.engine_type == EngineType.HYBRID
+class AttentionEngineMixin:
     
-    @property
-    def is_attn_driver(self):
-        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+    attn_executor: AttnExecutor
+    model_config: ModelConfig
+    cache_config: CacheConfig
+    device: str
+    req_to_indice: Dict[int, int]
+    req_seq_lens: Tensor
+    decode_seq_lens: Dict[int, int]
+    block_mgr: BaseBlockManager
     
-    @property
-    def is_attn_worker(self):
-        return self._intra_group_tp_enabled and self.rank_in_group > 0
+    def build_attn_executor(self):
+        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+        self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
+        self.decode_seq_lens = {} # indexing by seq_id
+        
+        self.block_mgr = self.attn_executor.get_block_mgr()
+        if self._intra_group_tp_enabled:
+            self._create_attn_broadcast_buffers()
+            
+        self.attn_executor.warmup(self.attn_max_batch_size)
+            
+        if self.model_config.enable_cuda_graph_attn:
+            self.attn_executor.build_cuda_graph_executor()
     
-    @property
-    def _tp_enabled(self):
-        return self.has_attn and self.model_config.tp_size > 1
-    
-    @property
-    def _inter_group_tp_enabled(self):
-        return self._tp_enabled and self.model_config.tp_enable_inter_group
-    
-    @property
-    def _intra_group_tp_enabled(self):
-        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
-    
-    def _delegate_modules(self):
-        if self.has_attn and self.has_expert:
-            return
-        if self.has_attn:
-            self.executor = self.attn_executor
-            self._process_batch = self.process_batch_attn
-        elif self.has_expert:
-            self.executor = self.expert_executor
-            self._process_batch = self.process_batch_expert
-        else:
-            assert False, "No engine type is set"
-            
-    def _log_memory_usage(self, prefix: str = ""):
-        free_memory, total_memory = torch.cuda.mem_get_info()
-        self._logger.info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
-                            f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
-    
-    def _build_executor(self):
-        if self.has_expert:
-            self.expert_executor = ExpertsExecutor(self.model_config)
-            # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-            self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
-            for i in range(self.model_config.num_experts_per_rank):
-                self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
-        if self.has_attn:
-            self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
-            if self.cache_config.num_gpu_blocks is None:
-                self.cache_config.num_gpu_blocks = self.determine_kv_cache_blocks() // len(self.model_config.layer_ids)
-                self._logger.info(f"kv cache num_gpu_blocks: {self.cache_config.num_gpu_blocks}")
-            self.attn_executor.initialize_cache(self.cache_config.num_gpu_blocks)
-            self._log_memory_usage("After initialize cache")
-            self.cache_config.num_gpu_blocks -= self.cache_config.num_reserved_blocks
-            self.block_mgr = BlockManager_C(
-                self.cache_config.block_size, 
-                self.cache_config.num_gpu_blocks, 
-                self.cache_config.num_reserved_blocks
-            )
-            if self._intra_group_tp_enabled:
-                self._create_broadcast_buffers()
-                
-        self._warmup()
-        if self.has_attn and self.model_config.enable_cuda_graph_attn:
-            self.cuda_graph_executor = CUDAGraphAttnExecutor(self.model_config, self.cache_config, self.attn_executor)
-            self.cuda_graph_executor.create_cuda_graph_buffers()
-            self.cuda_graph_executor.capture()
-            self._log_memory_usage("After build CUDA graphs")
-            
-        self._logger.info("Executors built")
-        
-    def init_core(self, core_args: InitCoreArgs):
-        """
-        NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
-        """
-        disagmoe_recorder_create()
-        
-        self.device_group_ids = core_args.device_group_ids
-        
-        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
-        
-        self.model_config.layer_ids = core_args.layer_ids
-            
-        self._logger.info(
-            "launching core: %s",
-            (
-                core_args.layer_ids,
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                core_args.out_channel_infos,
-                core_args.device_group_ids,
-                core_args.expert_ranks,
-                core_args.local_attn_dp_rank,
-            ),
-        )
-        
-        # self._logger.info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
-        
-        if self.engine_type == EngineType.HYBRID:
-            self.scheduler, self.dispatcher = init_engine(
-                self.device_id,
-                self.model_config.top_k,
-                self.has_attn,
-                self.has_expert,
-                ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
-                    self.model_config.ep_size,
-                    self.model_config.dp_size,
-                    self.model_config.num_experts_per_rank,
-                    core_args.expert_ranks,
-                ),
-                core_args.layer_ids,
-                # P2P Channels
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                [info.to_c() for info in core_args.out_channel_infos],
-                # Group Channels
-                core_args.in_nccl_ids,
-                core_args.out_nccl_ids,
-                core_args.in_nccl_ids_ext,
-                core_args.out_nccl_ids_ext,
-                core_args.local_attn_dp_rank,
-            )
-        else:
-            self.scheduler, self.dispatcher = init_engine(
-                self.device_id,
-                self.model_config.top_k,
-                self.has_attn,
-                self.has_expert,
-                ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
-                    self.model_config.ep_size,
-                    self.model_config.dp_size,
-                    self.model_config.num_experts_per_rank,
-                    core_args.expert_ranks,
-                ),
-                core_args.layer_ids,
-                # P2P Channels
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                [info.to_c() for info in core_args.out_channel_infos],
-                core_args.in_nccl_ids,
-                core_args.out_nccl_ids,
-                core_args.in_nccl_ids_ext,
-                core_args.out_nccl_ids_ext,
-                core_args.local_attn_dp_rank,
-            )
-            
-        
-        if self.has_attn:
-            self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
-        
-        if self.has_expert:
-            self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
-            self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
-            
-        self._build_executor()
-        
-        self._delegate_modules()
-        
-        self._logger.info("core launched")
-    
-    def start(self):
-        # attention TP is deprecated
-        # if self.is_attn_worker:
-        #     self.loop_thread = Thread(target=self.attn_worker_loop)
-        start_engine(self.scheduler, self.dispatcher)
-        
-        self.loop_thread = Thread(target=self.single_module_loop)
-            
-        self.loop_thread.start()
-
-    def set_device_id(self, device_id: int):
-        self.device_id = device_id
-        self._logger = get_logger(f"engine{device_id}")
-
-    def set_hosts(self, device_2_host: Dict[int, str]):
-        device_2_host[self.device_id] = "0.0.0.0"
-        set_hosts(os.getpid(), device_2_host)
-
-    def setup_engine(self, 
-                     engine_type: EngineType,
-                     model_config: ModelConfig,
-                     cache_config: CacheConfig = None,
-                     rank: int = 0):
-        self.rank_in_group = rank
-        torch.set_default_dtype(torch.bfloat16)
-        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
-            torch.set_default_device("cuda:0")
-            stream = torch.cuda.Stream(priority=-1)
-            torch.cuda.set_stream(stream)
-            self._logger.info(f"set stream {stream}")
-            self.stream = stream
-            self.h2d_stream = torch.cuda.Stream(priority=-1)
-            self.d2h_stream = torch.cuda.Stream(priority=-1)
-            self.stream_schedule = torch.cuda.Stream(priority=-1)
-            set_tensor_model_parallel_config(model_config)
-            self._log_memory_usage("Setup device")
-            free_memory, _ = torch.cuda.mem_get_info()
-            self.init_gpu_memory = free_memory
-            
-        self.engine_type = engine_type
-        self.model_config = model_config
-        self.cache_config = cache_config
-        
-        if self.has_attn:
-            self.attn_max_batch_size = model_config.max_batch_size_attn 
-            
-        if self.has_expert:
-            self.expert_max_batch_size = model_config.max_batch_size_expert
-        
-        self._logger.info(f"engine setup. {self.engine_type, model_config}")
-    
-    def get_configured_kv_cache_blocks(self) -> int:
-        return self.cache_config.num_gpu_blocks
-    
-    def determine_kv_cache_blocks(self) -> int:
-        assert isinstance(self.attn_executor, AttnExecutor)
-        torch.cuda.empty_cache()
-        
-        self._log_memory_usage("After allocate parameters")
-        
-        self.attn_executor.profile_execute(self.attn_max_batch_size)      
-        torch.cuda.synchronize()  
-        
-        self._log_memory_usage("After profile run")
-        
-        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
-        peak_memory = self.init_gpu_memory - free_gpu_memory
-        cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
-                            * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
-        
-        num_gpu_blocks = int(
-            (total_gpu_memory * self.cache_config.gpu_memory_utilization -
-             peak_memory) // cache_block_size)
-        
-        return num_gpu_blocks
-            
-    def _warmup(self):
-        if self.has_attn:
-            self._warmup_attn()
-        
-        if self.has_expert:
-            self._warmup_experts()
-            
-    def _warmup_attn(self):
-        # a hacking to cuda graph, since `_pack_flash_attn_metadata` may have different behaviors.
-        _enable_cuda_graph_attn = self.model_config.enable_cuda_graph_attn
-        self.model_config.enable_cuda_graph_attn = False
-        
-        input = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
-        positions = torch.zeros(self.attn_max_batch_size, dtype=torch.long, device="cuda")
-        meta_py = make_dummy_meta(0, self.attn_max_batch_size)
-        meta = self._pack_flash_attn_metadata(meta_py.to_c(), meta_py, [self.model_config.max_seq_len] * self.attn_max_batch_size, mocking=True)
-        for layer_id in self.model_config.layer_ids:
-            for _ in range(2):
-                self.attn_executor.execute(layer_id, positions, input, meta)
-        
-        # restore the original setting
-        self.model_config.enable_cuda_graph_attn = _enable_cuda_graph_attn
-
-    def _warmup_experts(self):
-        self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
-        
-        input = torch.zeros((self.expert_max_batch_size, self.model_config.hidden_size), device="cuda")
-        batch_sizes = torch.tensor([self.expert_max_batch_size // len(self.inner_exp_rank)] * len(self.inner_exp_rank),
-            dtype=torch.int64,
-            # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
-            device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
-        for layer_id in self.model_config.layer_ids:
-            for _ in range(2):
-                _ = self.expert_executor.execute(layer_id, self.expert_max_batch_size, input, batch_sizes)
-            
-    def _create_broadcast_buffers(self):
-        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
-        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
-        
-        # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
-        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
-        self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
-        
-    def _wait_async_handles(self):
-        for h in self.handles:
-            h.wait()
-        self.handles = []
-    
-    def _add_async_handle(self, handle):
-        self.handles.append(handle)
-        
-    @nvtx_range("engine._update_block_table")
-    def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
-        init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
-        decode_seq_ids = meta_py.seq_ids
-        # if the first layer in this attention worker, update block table and decode_seq_lens
-
-        if meta_py.layer_id == self.model_config.layer_ids[0]:
-            # allocate kv blocks for init seqs, update for all decoding seqs
-            
-            for i, seq_id in enumerate(init_seq_ids):
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
-                
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-
-            # self._logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
-
-            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
-            
-            for i, seq_id in enumerate(decode_seq_ids):
-                decode_seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
-        else:
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
-        
-        # self._logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
-
-        return decode_seq_lens
-    
-    @nvtx_range("engine.pack_flash_attn_metadata")
-    def _pack_flash_attn_metadata(
-            self,
-            meta_c: AttentionBatchMetadata,
-            meta_py: AttentionBatchMetadata,
-            decode_seq_lens: List[int],
-            mocking: bool = False,
-        ) -> FlashAttentionMetadata:
-        
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
-
-        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
-        
-        # 1. prepare block table
-        if not mocking:
-            block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
-        else:
-            # mocking=True when _warmup_attn
-            block_table_1d = torch.zeros(
-                (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
-                dtype=torch.int32, device="cuda")
-
-        slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
-        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
-
-        # 2. prepare seqlens and start_locs
-        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
-
-        seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
-            torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
-
-        seq_lens = decode_seq_lens
-            
-        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
-        
-        max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
-        assert mocking or self.model_config.enable_cuda_graph_attn or \
-               max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
-        
-        return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
-            seq_lens=seq_lens,
-            seq_lens_tensor=seq_lens_cuda,
-            max_query_len=0,
-            max_prefill_seq_len=0,
-            max_decode_seq_len=max_decode_seq_len,
-            max_decode_query_len=1,
-            query_start_loc=torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda"),
-            seq_start_loc=seq_start_loc_cuda,
-            context_lens_tensor=context_lens_cuda,
-            block_tables=block_table_cuda,
-            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
-            multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=True,
-        )
-    
-    @nvtx_range("engine.attn_driver_preprocess")
+    @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(self, 
                                 meta_c: AttentionBatchMetadata, 
                                 meta_py: AttentionBatchMetadata, 
                                 input_tensor: Tensor) -> FlashAttentionMetadata:
-        decode_seq_lens = self._update_block_table(meta_c, meta_py)
+        self.block_mgr.update_block_table(meta_c, meta_py)
+        seq_lens = meta_py.seq_lens
         
         if self._intra_group_tp_enabled:
             # 1. broadcast necessary metadata
@@ -489,7 +84,7 @@ class Engine:
                 0, # 1
                 0, # 2
                 meta_py.num_decode_tokens, # 3
-                *decode_seq_lens, # 4
+                *seq_lens, # 4
             ]
             
             self.buffer_meta[ : len(bc_meta)].copy_(torch.tensor(bc_meta, dtype=torch.int32, device="cpu"))
@@ -498,7 +93,7 @@ class Engine:
             # 2. broadcast input tensor asynchronously
             self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
             
-        attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+        attn_meta = self.block_mgr.pack_flash_attn_metadata(meta_c, meta_py)
 
         if self._intra_group_tp_enabled:
             self._wait_async_handles()
@@ -517,7 +112,7 @@ class Engine:
             else:
                 bc_attn_meta[ : num_tokens].copy_(
                     attn_meta.slot_mapping[ : num_tokens].to(torch.int32))
-                self._logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
+                get_logger().info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
                 bc_attn_meta[num_tokens : ].copy_(
                     attn_meta.block_tables[ : num_tokens, : max_num_blocks].view(-1))
             
@@ -525,7 +120,91 @@ class Engine:
         
         return attn_meta
     
-    @nvtx_range("engine.attn_worker_preprocess")
+
+    @nvtx_range("attn_engine.process_batch_attn")
+    def process_batch_attn(self, 
+                           meta_c: AttentionBatchMetadata, 
+                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        with self._timer.range("preprocess"):
+            meta_py = AttentionBatchMetadata.from_c(meta_c)
+            assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+
+            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+
+            if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
+                    f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+                input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
+                input_tensor = torch.sum(input_topk_tensor, dim=1)
+                meta_c.shrink_topk(self.model_config.top_k)
+
+            attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
+            positions = meta_py.seq_lens_tensor.to(torch.int64)
+
+        with self._timer.range("execute"):
+            assert input_tensor.shape[0] == positions.shape[0], f"input_tensor.shape[0] != positions.shape[0]: {input_tensor.shape[0]} != {positions.shape[0]}"
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            
+        with self._timer.range("postprocess"):
+            # Deprecated optimization:
+                # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+                # hiddens = permute_tokens(hiddens, reorder_ids)
+                # d2h_event = torch.cuda.Event()
+                # with torch.cuda.stream(self.d2h_stream):
+                #     new_meta_c = meta_c.to_metadata()
+                #     if self.model_config.top_k > 1:
+                #         new_meta_c.duplicate_topk(self.model_config.top_k)
+                #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+                #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+                #     if self.model_config.top_k > 1:
+                #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+                #     d2h_event.record(self.d2h_stream)
+                # d2h_event.synchronize()
+                # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+                # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+            new_meta_c = meta_c.to_metadata()
+            if self.model_config.top_k > 1:
+                new_meta_c.duplicate_topk(self.model_config.top_k)
+                
+            if self.model_config.top_k == 1:
+                expert_ids = expert_ids.view(-1).tolist()
+            else:
+                assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+                expert_ids = expert_ids.view(-1).tolist()
+                expert_weights = expert_weights.view(-1).tolist()
+                new_meta_c.topk_weights = expert_weights
+                
+            exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+            hiddens = permute_tokens(hiddens, exp_mappings)
+            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
+
+            assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
+        return hiddens, new_meta_c
+    
+    def release_seqs(self, seq_ids: List[int]):
+        # TODO(optimize): master should only send release request to the driver
+        if not self.has_attn:
+            return
+        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
+            # is a worker and enabled intra-group communication, no kv cache to be released.
+            return
+        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
+        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        
+        self.block_mgr.release_seqs(seq_ids)
+        
+    def _create_attn_broadcast_buffers(self):
+        assert False, "TP in attention is now deprecated"
+        self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
+        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
+        
+        # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
+        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
+        self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
+    
+    
+    @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
         assert False, "TP in attention is now deprecated"
         dist.broadcast(self.buffer_meta, 0)
@@ -601,153 +280,11 @@ class Engine:
             block_tables=block_table_cuda,
             use_cuda_graph=self.model_config.enable_cuda_graph_attn,
         )
-    
-    @nvtx_range("engine.process_batch_attn")
-    def process_batch_attn(self, 
-                           meta_c: AttentionBatchMetadata, 
-                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        meta_py = AttentionBatchMetadata.from_c(meta_c)
-        assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
-
-        num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
-
-        if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
-            assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-            input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
-            input_tensor = torch.sum(input_topk_tensor, dim=1)
-            meta_c.shrink_topk(self.model_config.top_k)
-
-        # TODO(hogura|20241014): fill the real positions
-        positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
-        attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
-
-        self._timer.stop("preprocess")
-        self._timer.start("execute")
-        
-        if not self.model_config.enable_cuda_graph_attn or num_tokens > self.attn_max_batch_size:
-            # topk_weights and expert_ids: [batch_size, top_k]
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
-        else:
-            range_push("engine.graph_replay")
-            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
-            range_pop()
-            
-        self._timer.stop("execute")
-        self._timer.start("postprocess")
-        # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-        # hiddens = permute_tokens(hiddens, reorder_ids)
-        # d2h_event = torch.cuda.Event()
-        # with torch.cuda.stream(self.d2h_stream):
-        #     new_meta_c = meta_c.to_metadata()
-        #     if self.model_config.top_k > 1:
-        #         new_meta_c.duplicate_topk(self.model_config.top_k)
-        #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
-        #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
-        #     if self.model_config.top_k > 1:
-        #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-        #     d2h_event.record(self.d2h_stream)
-        # d2h_event.synchronize()
-        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-        # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-        
-        new_meta_c = meta_c.to_metadata()
-        if self.model_config.top_k > 1:
-            new_meta_c.duplicate_topk(self.model_config.top_k)
-            
-        if self.model_config.top_k == 1:
-            expert_ids = expert_ids.view(-1).tolist()
-        else:
-            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
-            expert_ids = expert_ids.view(-1).tolist()
-            expert_weights = expert_weights.view(-1).tolist()
-            new_meta_c.topk_weights = expert_weights
-            
-        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-        hiddens = permute_tokens(hiddens, exp_mappings)
-        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
-
-        assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
-        return hiddens, new_meta_c
-    
-    @nvtx_range("engine.process_batch_expert")
-    def process_batch_expert(self, 
-                             meta_c: Metadata, 
-                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
-        # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        range_push("engine.copy_batch_sizes")
-        # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
-        num_tokens = meta_c.num_tokens()
-        if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-            meta_c.get_expert_batch_sizes_cuda(
-                self.model_config.num_experts, self.inner_exp_rank,
-                self._static_bs_cuda, self.stream.cuda_stream
-            )
-            batch_sizes = self._static_bs_cuda
-        else:
-            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            batch_sizes = torch.tensor(
-                [batch_sizes[i] for i in self.inner_exp_rank],
-                dtype=torch.int64, device="cuda"
-            )
-        range_pop()
-        self._timer.stop("preprocess")
-        self._timer.start("execute")
-        
-        # self._logger.info(f"executing expert {meta_c.req_ids}")
-        output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
-        
-        self._timer.stop("execute")
-        self._timer.start("postprocess")
-        
-        # 2. permute tokens back to <prefill><decode> order
-        h2d_event = torch.cuda.Event()
-        
-        new_mappings = list(meta_c.sort_by_prefill_order())
-        
-        with torch.cuda.stream(self.h2d_stream):
-            new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
-            
-            if num_tokens > self.expert_max_batch_size:
-                new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
-            else:
-                new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
-                new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
-            if self.model_config.top_k > 1:
-                topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
-            h2d_event.record(self.h2d_stream)
-
-        h2d_event.wait(self.h2d_stream)
-
-        if self.model_config.top_k > 1:
-            output = output * topk_weights
-        
-        output = permute_tokens(output, new_mappings_gpu)
-        meta_c.update_exp_ids([], [])
-        meta_c.step_layer()
-
-        # self._logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
-        return output, meta_c
-
-    @nvtx_range("Engine.post_process")
-    def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
-        assert not self.is_attn_worker
-        batch: TensorBatch = TensorBatch_C()
-        batch.data = output
-        batch.metadata = meta
-        self._timer.stop("postprocess")
-        
-        range_push("Engine.stream_sync")
-        self._timer.start("stream_sync")
-        self.stream.synchronize()
-        self._timer.stop("stream_sync")
-        range_pop()
-        dispatcher.put(batch, 0)
 
     @torch.inference_mode()
     def attn_worker_loop(self):
         assert False, "TP in attention is now deprecated"
-        self._logger.info("starting engine (attn TP worker) loop")
+        get_logger().info("starting engine (attn TP worker) loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -755,12 +292,345 @@ class Engine:
             layer_id, input_tensor, meta = self._attn_worker_preprocess()
             if layer_id == -1:
                 # terminated
-                self._logger.warning("TP worker received termination signal, now exit")
+                get_logger().warning("TP worker received termination signal, now exit")
                 break
             num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
             positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
-            self._logger.info(f"executing attn {meta}")
+            get_logger().info(f"executing attn {meta}")
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
+
+class ExpertEngineMixin:
+    
+    expert_executor: ExpertsExecutor
+    model_config: ModelConfig
+    cache_config: CacheConfig
+    device: str
+    
+    def build_expert_executor(self):
+        self.expert_executor = ExpertsExecutor(self.model_config)
+        # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+        self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+        for i in range(self.model_config.num_experts_per_rank):
+            self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+        self.expert_executor.warmup(self.expert_max_batch_size)
+        
+    @nvtx_range("expert_engine.process_batch_expert")
+    def process_batch_expert(self, 
+                             meta_c: Metadata, 
+                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        with self._timer.range("preprocess"):
+            range_push("engine.copy_batch_sizes")
+            # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
+            num_tokens = meta_c.num_tokens()
+            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                meta_c.get_expert_batch_sizes_cuda(
+                    self.model_config.num_experts, self.inner_exp_rank,
+                    self._static_bs_cuda, self.stream.cuda_stream
+                )
+                batch_sizes = self._static_bs_cuda
+            else:
+                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                batch_sizes = torch.tensor(
+                    [batch_sizes[i] for i in self.inner_exp_rank],
+                    dtype=torch.int64, device="cuda"
+                )
+            range_pop()
+        
+        with self._timer.range("execute"):
+            # get_logger().info(f"executing expert {meta_c.req_ids}")
+            output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
+        
+        # 2. permute tokens back to <prefill><decode> order
+        with self._timer.range("postprocess"):
+            h2d_event = torch.cuda.Event()
+            
+            new_mappings = list(meta_c.sort_by_prefill_order())
+            
+            with torch.cuda.stream(self.h2d_stream):
+                new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
+                
+                if num_tokens > self.expert_max_batch_size:
+                    new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
+                else:
+                    new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                    new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+                if self.model_config.top_k > 1:
+                    topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
+                h2d_event.record(self.h2d_stream)
+
+            h2d_event.wait(self.h2d_stream)
+
+            if self.model_config.top_k > 1:
+                output = output * topk_weights
+            
+            output = permute_tokens(output, new_mappings_gpu)
+            meta_c.update_exp_ids([], [])
+            meta_c.step_layer()
+
+        # get_logger().info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
+        return output, meta_c
+    
+class Engine(AttentionEngineMixin, ExpertEngineMixin):
+
+    def __init__(self, 
+                 scheduler: Optional[Scheduler] = None, 
+                 executor: Optional[Executor] = None, 
+                 dispatcher: Optional[MuDispatcher] = None, 
+                 device_id: Optional[int] = None):
+        
+        assert executor is None, "Executor is initialization should be done in setup_engine"
+        assert scheduler is None, "Scheduler is initialization should be done in setup_engine"
+        assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
+        
+        self.device_id = device_id
+        self.scheduler: Optional[Scheduler] = None
+        self.executor: Executor = None
+        self.dispatcher: MuDispatcher = None
+        self.attn_executor: AttnExecutor = None
+        self.expert_executor: ExpertsExecutor = None
+        
+        self.end_flag = False
+        self.engine_type: EngineType = None
+        self.model_config: ModelConfig = None
+        self.cache_config: CacheConfig = None    
+        self.loop_thread = None
+        
+        self._process_batch: Callable = None
+        
+        self.block_mgr: BlockManager = None
+        
+        self.decode_seq_lens = {}
+        self.profiler = None
+        self.inner_exp_rank = []
+        self.device_group_ids = []
+        self.handles = []
+        self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker
+        
+        # for stats usage
+        self._step_stats = []
+        self._metric = Metric()
+        self._timer = Timer()
+        self._queueing_timer = {} # placeholder, not used at the moment
+        self._queueing_delays = []
+
+    @property
+    def has_attn(self):
+        return self.engine_type == EngineType.ATTENTION or self.engine_type == EngineType.HYBRID
+    
+    @property
+    def has_expert(self):
+        return self.engine_type == EngineType.EXPERT or self.engine_type == EngineType.HYBRID
+    
+    @property
+    def is_attn_driver(self):
+        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+    
+    @property
+    def is_attn_worker(self):
+        return self._intra_group_tp_enabled and self.rank_in_group > 0
+    
+    @property
+    def _tp_enabled(self):
+        return self.has_attn and self.model_config.tp_size > 1
+    
+    @property
+    def _inter_group_tp_enabled(self):
+        return self._tp_enabled and self.model_config.tp_enable_inter_group
+    
+    @property
+    def _intra_group_tp_enabled(self):
+        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
+    
+    def _delegate_modules(self):
+        if self.has_attn and self.has_expert:
+            return
+        if self.has_attn:
+            self.executor = self.attn_executor
+            self._process_batch = self.process_batch_attn
+        elif self.has_expert:
+            self.executor = self.expert_executor
+            self._process_batch = self.process_batch_expert
+        else:
+            assert False, "No engine type is set"
+            
+    def build_executor(self):
+        if self.has_expert:
+            self.build_expert_executor()
+        if self.has_attn:
+            self.build_attn_executor()
+            
+        get_logger().info("Executors built")
+        
+    def init_core(self, core_args: InitCoreArgs):
+        """
+        NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
+        """
+        disagmoe_recorder_create()
+        
+        self.device_group_ids = core_args.device_group_ids
+        
+        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
+        
+        self.model_config.layer_ids = core_args.layer_ids
+            
+        get_logger().info(
+            "launching core: %s",
+            (
+                core_args.layer_ids,
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                core_args.out_channel_infos,
+                core_args.device_group_ids,
+                core_args.expert_ranks,
+                core_args.local_attn_dp_rank,
+            ),
+        )
+        
+        # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
+        
+        if self.engine_type == EngineType.HYBRID:
+            self.scheduler, self.dispatcher = init_engine(
+                self.device_id,
+                self.model_config.top_k,
+                self.has_attn,
+                self.has_expert,
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ),
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+                # Group Channels
+                core_args.in_nccl_ids,
+                core_args.out_nccl_ids,
+                core_args.in_nccl_ids_ext,
+                core_args.out_nccl_ids_ext,
+                core_args.local_attn_dp_rank,
+            )
+        else:
+            self.scheduler, self.dispatcher = init_engine(
+                self.device_id,
+                self.model_config.top_k,
+                self.has_attn,
+                self.has_expert,
+                ParallelConfig.from_c(
+                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1,
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ),
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+                core_args.in_nccl_ids,
+                core_args.out_nccl_ids,
+                core_args.in_nccl_ids_ext,
+                core_args.out_nccl_ids_ext,
+                core_args.local_attn_dp_rank,
+            )
+            
+        
+        if self.has_attn:
+            self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
+        
+        if self.has_expert:
+            self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
+            self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
+            
+        self.build_executor()
+        
+        self._delegate_modules()
+        
+        get_logger().info("core launched")
+    
+    def start(self):
+        # attention TP is deprecated
+        # if self.is_attn_worker:
+        #     self.loop_thread = Thread(target=self.attn_worker_loop)
+        start_engine(self.scheduler, self.dispatcher)
+        
+        self.loop_thread = Thread(target=self.single_module_loop)
+            
+        self.loop_thread.start()
+
+    def set_device_id(self, device_id: int):
+        self.device_id = device_id
+        
+    def set_hosts(self, device_2_host: Dict[int, str]):
+        device_2_host[self.device_id] = "0.0.0.0"
+        set_hosts(os.getpid(), device_2_host)
+
+    def setup_engine(
+            self, 
+            engine_type: EngineType,
+            model_config: ModelConfig,
+            cache_config: CacheConfig = None,
+            rank: int = 0
+        ):
+        if self.device_id is not None:
+            initialize_logger(f"engine{self.device_id}")
+        else:
+            initialize_logger("engine")
+        self.rank_in_group = rank
+        torch.set_default_dtype(torch.bfloat16)
+        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
+            self.device = "cuda:0" # only one visible devices for one worker
+            torch.set_default_device(self.device)
+            stream = torch.cuda.Stream(priority=-1)
+            torch.cuda.set_stream(stream)
+            get_logger().info(f"set stream {stream}")
+            self.stream = stream
+            self.h2d_stream = torch.cuda.Stream(priority=-1)
+            self.d2h_stream = torch.cuda.Stream(priority=-1)
+            self.stream_schedule = torch.cuda.Stream(priority=-1)
+            set_tensor_model_parallel_config(model_config)
+            
+        self.engine_type = engine_type
+        self.model_config = model_config
+        self.cache_config = cache_config
+        
+        if self.has_attn:
+            self.attn_max_batch_size = model_config.max_batch_size_attn 
+            
+        if self.has_expert:
+            self.expert_max_batch_size = model_config.max_batch_size_expert
+        
+        get_logger().info(f"engine setup. {self.engine_type, model_config}")
+    
+    def get_configured_kv_cache_blocks(self) -> int:
+        return self.cache_config.num_gpu_blocks
+    
+    def _wait_async_handles(self):
+        for h in self.handles:
+            h.wait()
+        self.handles = []
+    
+    def _add_async_handle(self, handle):
+        self.handles.append(handle)
+
+    @nvtx_range("Engine.post_process")
+    def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
+        assert not self.is_attn_worker
+        batch: TensorBatch = TensorBatch_C()
+        batch.data = output
+        batch.metadata = meta
+        
+        range_push("Engine.stream_sync")
+        
+        with self._timer.range("stream_sync"):
+            self.stream.synchronize()
+        range_pop()
+        dispatcher.put(batch, 0)
 
     def stats_pre_process(self, batch: TensorBatch):
         # Explicitly select which pool's snapshot to fetch.
@@ -829,7 +699,7 @@ class Engine:
 
     @torch.inference_mode()
     def single_module_loop(self):
-        self._logger.info("starting single_module_loop")
+        get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
@@ -858,7 +728,6 @@ class Engine:
             range_pop()
             
             self._timer.stop("schedule")
-            self._timer.start("preprocess")
             
             batch = TensorBatch.from_c(batch_info)
             meta: Metadata = batch.metadata
@@ -869,7 +738,7 @@ class Engine:
             self.stats_post_process(batch)
     
     # def dual_module_loop(self):
-    #     self._logger.info("starting dual_module_loop")
+    #     get_logger().info("starting dual_module_loop")
     #     torch.set_default_dtype(torch.bfloat16)
     #     torch.set_default_device("cuda:0")
     #     torch.cuda.set_stream(self.stream)
@@ -917,26 +786,11 @@ class Engine:
     def fetch_queueing_delays(self) -> List[float]:
         return self._queueing_delays
     
-    def release_seqs(self, seq_ids: List[int]):
-        # TODO(optimize): master should only send release request to the driver
-        if not self.has_attn:
-            return
-        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
-            # is a worker and enabled intra-group communication, no kv cache to be released.
-            return
-        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
-        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        # self._logger.info(f"releasing seqs {seq_ids}")
-        for i in seq_ids:
-            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            self.decode_seq_lens.pop(i)
-        self.block_mgr.batch_release(seq_ids)
-    
     def terminate(self):
         self.end_flag = True
         if self._intra_group_tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
-            self._logger.info("TP driver sending termination signal to TP workers")
+            get_logger().info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1
             torch.cuda.synchronize()
             dist.broadcast(self.buffer_meta, 0)
@@ -948,10 +802,10 @@ class Engine:
         assert self.device_id is not None, "Engine should be assigned with a device before profiling"
         
         if profile_dir is None:
-            self._logger.info("profiling directory not specified, using default")
+            get_logger().info("profiling directory not specified, using default")
             profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
-        self._logger.info(f"enable profiler, results stored at {profile_dir}")
+        get_logger().info(f"enable profiler, results stored at {profile_dir}")
     
         self.profiler = torch.profiler.profile(
                 activities=[
@@ -972,7 +826,7 @@ class Engine:
     def reset(self):
         # for stats usage
         self._metric = Metric()
-        self._timer = Timer()
+        self._timer.reset()
         self._step_stats.clear()
         self._queueing_timer.clear()
         self._queueing_delays.clear()
@@ -1010,7 +864,7 @@ class SamplerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        self._logger.info("inited sampler")
+        get_logger().info("inited sampler")
         self._t_start = time.time()
         
     def start(self):
@@ -1020,7 +874,7 @@ class SamplerEngine(Engine):
         # convert c++ vector to python list
         results = self.sampler.fetch_finished_slo_stats()
         # if len(results) > 0:
-        #     self._logger.info(f"Python sampler: fetch_finished_results: {len(results)}")
+        #     get_logger().info(f"Python sampler: fetch_finished_results: {len(results)}")
         return [SloStat.from_c(r) for r in results]
     
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
@@ -1056,7 +910,7 @@ class TokenizerEngine(Engine):
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
         x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        self._logger.info(f"tokenizer put request {req_id}")
+        get_logger().info(f"tokenizer put request {req_id}")
         self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
@@ -1079,7 +933,7 @@ class TokenizerEngine(Engine):
             core_args.out_device_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
-        self._logger.info("inited tokenizer")
+        get_logger().info("inited tokenizer")
     
     def start(self):
         self.tokenizer.start()
