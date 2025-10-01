@@ -24,8 +24,7 @@ print(mp)
 master = init_controller(cluster_config.n_node, cluster_config.n_gpu)
 
 cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
-                            num_gpu_blocks=NUM_BLOCKS, 
-                            num_reserved_blocks=RESERVED_BLOCKS)
+                            num_gpu_blocks=NUM_BLOCKS)
 
 master.init_engine(mp, model_config, cache_config)
 

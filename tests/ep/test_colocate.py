@@ -39,8 +39,7 @@ for edge in edges:
 model_config = duo_expert_mixtral
 model_config.ep_size = 1
 cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
-                            num_gpu_blocks=NUM_BLOCKS, 
-                            num_reserved_blocks=RESERVED_BLOCKS)
+                            num_gpu_blocks=NUM_BLOCKS)
 
 master.init_engine(mp, model_config, cache_config)
 

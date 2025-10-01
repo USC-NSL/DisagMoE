@@ -190,7 +190,6 @@ def test_main(bs):
         swap_space=0,
         cache_dtype="auto",
         num_gpu_blocks=4096,
-        num_reserved_blocks=1024,
     )
     worker = Worker.remote(0, bs, model_config, cache_config)
     worker.setup.remote()

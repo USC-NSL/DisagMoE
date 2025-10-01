@@ -4,12 +4,13 @@ import torch
 import ctypes
 import socket
 
-from disagmoe.utils.logger import get_logger
+from disagmoe.utils.logger import get_logger, new_logger
 
 from torch import Tensor
 from typing import List, Tuple, Dict, Union
 from contextlib import contextmanager
 from dataclasses import dataclass
+from contextlib import contextmanager
 
 try:
     from disagmoe_c import range_push, range_pop
@@ -25,7 +26,7 @@ def get_nccl_url_from_uid(uid):
     for i in uid:
         h = (h * 256 + i) % 10007
     print("hash result:", h)
-    return f"{os.getenv("MASTER_ADDR")}:{int(os.getenv("MASTER_PORT")) + h}"
+    return f"{os.getenv('MASTER_ADDR')}:{int(os.getenv('MASTER_PORT')) + h}"
 
 class Counter:
 
@@ -71,7 +72,7 @@ def get_ip():
     except Exception:
         pass
 
-    get_logger("utils").warning(
+    new_logger("utils").warning(
         "Failed to get the IP address, using 0.0.0.0 by default."
         " The value can be set by the environment variable",
         " `HOST_IP`.",
@@ -183,10 +184,27 @@ class Timer:
         self.timers[name] = time.time_ns()
         
     def stop(self, name):
-        assert name in self.timers
         start = self.timers[name]
-        self.timers[name] = (time.time_ns() - start) / 1e6
-        return self.timers[name]
+        cost_ms = (time.time_ns() - start) / 1e6
+        self.timers[name] = cost_ms
+        return cost_ms
     
     def get(self, name):
         return self.timers.get(name)
+    
+    def reset(self):
+        self.timers.clear()
+    
+    @contextmanager
+    def range(self, name):
+        self.start(name)
+        yield
+        self.stop(name)
+        
+def _log_memory_usage(prefix: str = ""):
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    get_logger().info(f"{prefix} CUDA free memory: {free_memory / (1024 ** 3):.2f} GB, "\
+                        f"Total memory: {total_memory / (1024 ** 3):.2f} GB")
+    
+def next_power_of_2(n: int):
+    return 1 << (n - 1).bit_length() if n > 0 else 1
