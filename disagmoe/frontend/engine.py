@@ -474,7 +474,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.model_config.layer_ids = core_args.layer_ids
             
-        self._logger.info(
+        get_logger().info(
             "launching core: %s",
             (
                 core_args.layer_ids,
@@ -750,7 +750,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.stats_post_process(batch)
     
     # def dual_module_loop(self):
-    #     self._logger.info("starting dual_module_loop")
+    #     get_logger().info("starting dual_module_loop")
     #     torch.set_default_dtype(torch.bfloat16)
     #     torch.set_default_device("cuda:0")
     #     torch.cuda.set_stream(self.stream)
