@@ -28,7 +28,6 @@ std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
     // Optional extra channels used in colocated mode
     const std::map<int, std::string> &in_nccl_ids_ext,
     const std::map<int, std::string> &out_nccl_ids_ext,
-    const std::vector<int> &device_group_ids,
     int local_attn_dp_rank // DP rank
 );
 

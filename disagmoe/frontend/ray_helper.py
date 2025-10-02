@@ -1,3 +1,4 @@
+import os
 import ray
 from ray.util.placement_group import placement_group, PlacementGroup
 from dataclasses import dataclass
@@ -6,9 +7,10 @@ from disagmoe.frontend.datatypes import ChannelInfo
 _placement_group: PlacementGroup = None
 
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
+    tmpdir_path = os.environ.get("RAY_TMPDIR", "/tmp/ray")
     if not ray.is_initialized():
         try:
-            ray.init(address="auto")
+            ray.init(address="auto", _temp_dir=tmpdir_path)
         except ConnectionError:
             print("ray not initialized, now initializing a default ray cluster")
             ray.init()

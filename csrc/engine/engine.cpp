@@ -25,19 +25,6 @@ void init_all_channels(
     std::vector<std::thread>& threads,
     bool skip_embedding = false
 ) {
-    /*
-        We have multiple types of channels to be inited.
-
-        TP_SIZE = device_group_ids.size()
-
-        * Normal P2P channel (TP_SIZE = 1)
-
-        * Inter Group P2P channel (TP_SIZE > 1)
-            * Both for in_device_ids and out_device_ids
-        * Intra Group P2P channel (TP_SIZE > 1)
-            * Only for device_group_ids
-            
-    */
     auto n_in = in_device_ids.size();
     auto n_out = out_device_ids.size();
 
@@ -123,14 +110,11 @@ static std::tuple<scheduler_t, mu_dispatcher_t> _init_engine_split(
     const std::vector<ChannelInfo> &out_channel_infos,
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids,
-    const std::vector<int> &device_group_ids,
     int local_attn_dp_rank) {
 
     ASSERT (has_attn ^ has_expert == true);
 
     std::vector<Channel_t> in_channels, out_channels;
-    std::vector<bool> is_group_channels;
-    Channel_t intra_group_channel_1 = nullptr;
 
     std::vector<std::thread> threads;
 
@@ -152,13 +136,13 @@ static std::tuple<scheduler_t, mu_dispatcher_t> _init_engine_split(
         dispatcher = std::make_shared<MuAttnDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
         mu_attn_pool_t pool;
         if (top_k == 1) {
-            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, LayerSchedulePolicy::BASE);
+            pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::BASE);
         } else {
-            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, device_group_ids, intra_group_channel_1, top_k, LayerSchedulePolicy::BASE);
+            pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, top_k, LayerSchedulePolicy::BASE);
         }
         scheduler = std::make_shared<Scheduler>(pool, mu_expert_pool_t{}, layer_ids, "mbfs");
     } else { // has_expert
-        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos, is_group_channels);
+        dispatcher = std::make_shared<MuExpertDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
         mu_expert_pool_t pool = std::make_shared<MuExpertPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, 1);
         scheduler = std::make_shared<Scheduler>(mu_attn_pool_t{}, pool, layer_ids, "mbfs");
     }
@@ -182,15 +166,12 @@ static std::tuple<scheduler_t, mu_dispatcher_t> _init_engine_colocated(
     const std::map<int, std::string> &out_nccl_ids,
     const std::map<int, std::string> &in_nccl_ids_ext,
     const std::map<int, std::string> &out_nccl_ids_ext,
-    const std::vector<int> &device_group_ids,
     int local_attn_dp_rank) {
 
     ASSERT (has_attn && has_expert);
 
     std::vector<Channel_t> in_channels, out_channels;
     std::vector<Channel_t> in_channels_ext, out_channels_ext;
-    std::vector<bool> is_group_channels;
-    Channel_t intra_group_channel_1 = nullptr;
 
     std::vector<std::thread> threads;
 
@@ -218,9 +199,9 @@ static std::tuple<scheduler_t, mu_dispatcher_t> _init_engine_colocated(
     // attention scheduler uses the ext channels
     mu_attn_pool_t pool;
     if (top_k == 1) {
-        pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels_ext, device_group_ids, intra_group_channel_1);
+        pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels_ext);
     } else {
-        pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels_ext, device_group_ids, intra_group_channel_1, top_k);
+        pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels_ext, top_k);
     }
     scheduler = std::make_shared<Scheduler>(pool, mu_expert_pool_t{}, layer_ids, "mbfs");
 
@@ -324,7 +305,6 @@ std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
     const std::map<int, std::string> &out_nccl_ids,
     const std::map<int, std::string> &in_nccl_ids_ext,
     const std::map<int, std::string> &out_nccl_ids_ext,
-    const std::vector<int> &device_group_ids,
     int local_attn_dp_rank) {
 
     if (has_attn && has_expert) {
@@ -332,7 +312,7 @@ std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
             local_id, top_k, has_attn, has_expert, cfg, layer_ids,
             in_device_ids, out_device_ids, out_channel_infos,
             in_nccl_ids, out_nccl_ids, in_nccl_ids_ext, out_nccl_ids_ext,
-            device_group_ids, local_attn_dp_rank
+            local_attn_dp_rank
         );
         // For colocated, we return the attention-side pair
         return std::make_tuple(scheduler, dispatcher);
@@ -340,7 +320,7 @@ std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
         auto [scheduler, dispatcher] = _init_engine_split(
             local_id, top_k, has_attn, has_expert, cfg, layer_ids,
             in_device_ids, out_device_ids, out_channel_infos,
-            in_nccl_ids, out_nccl_ids, device_group_ids, local_attn_dp_rank
+            in_nccl_ids, out_nccl_ids, local_attn_dp_rank
         );
         return std::make_tuple(scheduler, dispatcher);
     }

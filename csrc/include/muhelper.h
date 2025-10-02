@@ -56,9 +56,6 @@ protected:
     std::vector<zmq::context_t> peer_ctx;
     std::vector<zmq::socket_t> peer_mq;
 
-    // use for nccl group channels
-    std::vector<bool> is_group_channels;
-    std::vector<std::shared_ptr<NcclGroupChannel>> group_channels;
 
     ParallelConfig cfg;
 
@@ -68,14 +65,12 @@ protected:
 
     void run() override;
 
-    bool _is_group_channel(int cid) const;
 
 public:
     MuDispatcher(std::vector<int> layer_ids, 
                  int device_id, 
                  ParallelConfig cfg, 
-                 std::vector<Channel_t> channels,
-                 const std::vector<bool> &is_group_channels={});
+                 std::vector<Channel_t> channels);
 
     void put(TensorBatch batch, int rank = 0);
 };
@@ -117,8 +112,7 @@ public:
                        int device_id, 
                        ParallelConfig cfg,
                        std::vector<Channel_t> channels={},
-                       std::vector<ChannelInfo> channel_infos={},
-                       const std::vector<bool> &is_group_channels={});
+                       std::vector<ChannelInfo> channel_infos={});
     
     void debug_put(TensorBatch batch);
 };
@@ -262,10 +256,6 @@ class MuAttentionPool: public MuPool {
 
 private:
 
-    // large device group: [previous_dispatcher; current_driver; current_workers]
-    // small device group: [current_driver; current_workers]
-    std::thread pool_thread;
-    std::vector<std::thread> group_threads;
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
@@ -273,27 +263,18 @@ private:
 
     void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
-protected:
-
-    std::vector<int> device_group_ids;
-    std::shared_ptr<NcclGroupChannel> group_comm;
-
 public:
 
     MuAttentionPool(
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        std::vector<int> device_group_ids = {},
-        Channel_t group_comm = nullptr,
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );
 
     virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
 
     std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
-
-    void run() override;
 
     void terminate() override;
 
@@ -349,8 +330,6 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        std::vector<int> device_group_ids = {},
-        Channel_t group_comm = nullptr,
         int top_k = 1,
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );

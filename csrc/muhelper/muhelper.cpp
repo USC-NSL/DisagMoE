@@ -61,44 +61,26 @@ void MuHelper::init_cuda_device() {
 // MuDispatcher
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, 
-                           ParallelConfig cfg, std::vector<Channel_t> channels,
-                           const std::vector<bool> &is_group_channels): 
+                           ParallelConfig cfg, std::vector<Channel_t> channels): 
     MuHelper(layer_ids, device_id, channels), 
     peer_ctx(channels.size()),
     peer_mq(channels.size()),
-    cfg(cfg),
-    is_group_channels(is_group_channels) {
+    cfg(cfg) {
     sprintf(this->device_id_str, "%d", this->device_id);
-    if (is_group_channels.empty())
-        this->is_group_channels.resize(channels.size(), false);
-    ASSERT(this->is_group_channels.size() == channels.size());
-    group_channels.resize(channels.size());
     for (int i = 0; i < channels.size(); i ++) {
         peer_ctx[i] = zmq::context_t(1);
         peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
-        if (_is_group_channel(i)) {
-            group_channels[i] = std::dynamic_pointer_cast<NcclGroupChannel>(channels[i]);
-        }
     }
-}
-
-bool MuDispatcher::_is_group_channel(int cid) const {
-    return is_group_channels[cid];
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const Metadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(DEBUG) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    if (!_is_group_channel(cid)) {
-        auto data = cerealize(std::make_shared<Metadata>(meta));
-        this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
-        this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
-        this->channels[cid]->send(buf, meta);
-    } else {
-        this->group_channels[cid]->send_metadata(meta);
-        this->group_channels[cid]->send(buf, meta);
-    }
+    auto data = cerealize(std::make_shared<Metadata>(meta));
+    this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
+    this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
+    this->channels[cid]->send(buf, meta);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -238,9 +220,8 @@ MuExpertDispatcher::MuExpertDispatcher(
     int device_id, 
     ParallelConfig cfg,
     std::vector<Channel_t> channels,
-    std::vector<ChannelInfo> channel_infos,
-    const std::vector<bool> &is_group_channels): 
-        MuDispatcher(layer_ids, device_id, cfg, channels, is_group_channels),
+    std::vector<ChannelInfo> channel_infos): 
+        MuDispatcher(layer_ids, device_id, cfg, channels),
         channel_infos(channel_infos) {
     this->peer_zmq_port_offset = 1;
     int max_layer = -1;
@@ -602,97 +583,14 @@ MuAttentionPool::MuAttentionPool(
     std::vector<int> layer_ids, 
     int device_id,
     std::vector<Channel_t> channels,
-    std::vector<int> device_group_ids,
-    Channel_t group_comm,
     LayerSchedulePolicy policy
-): MuPool(layer_ids, device_id, channels, policy, /* num_groups */ 1, /* local_zmq_port_offset */ 1), 
-    device_group_ids(device_group_ids),
-    group_comm(group_comm.get() != nullptr ? std::dynamic_pointer_cast<NcclGroupChannel>(group_comm) : nullptr) {
+): MuPool(layer_ids, device_id, channels, policy, /* num_groups */ 1, /* local_zmq_port_offset */ 1) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<AttentionBatch>>(num_layers);
 }
 
-void MuAttentionPool::run() {
-    pool_thread = std::thread([&]() {
-        Recorder::create();
-        MuPool::run();
-    });
-
-    if (device_group_ids.size() <= 1) {
-        DMOE_LOG(WARNING) << "No group channel is needed in MuAttnPool::run." << LEND;
-        return;
-    }
-
-    if (device_group_ids.size() > 1 && device_group_ids[0] != device_id) {
-        DMOE_LOG(INFO) << "Running ATTN Worker pool (intra-group)" << LEND;
-        group_threads.emplace_back(std::thread([&]() {
-            Recorder::create();
-            at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
-            at::cuda::CUDAStreamGuard guard(c10_stream);
-            while (!end_flag) {
-                // DMOE_LOG(DEBUG) << "Worker AttnPool fetching metadata ..." << LEND;
-                Metadata meta;
-                group_comm->recv_metadata(meta);
-
-                torch::Tensor tensor = torch::empty(
-                    {meta.num_tokens(), meta.token_hidden_dim()}, 
-                    torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
-                );
-
-                // DMOE_LOG(DEBUG) << "Worker AttnPool fetched result:" << meta << LEND;
-                group_comm->recv((uintptr_t) tensor.data_ptr(), meta);
-                // DMOE_LOG(DEBUG) << "Worker AttnPool broadcast finished" << LEND;
-                auto t_meta = std::make_shared<Metadata>(meta);
-                process_batch(tensor, t_meta, /*send_from_zmq=*/ false);
-            }
-        }));
-    }
-
-    // DMOE_LOG(INFO) << "Running ATTN Driver/Worker pool (inter-group)" << LEND;
-    for (auto &c: this->channels) {
-        if (is_embedding_node(c->get_peer_id()))
-            continue;
-        // if not embedding, then must be an expert dispatcher, which is a group channel
-        ASSERT(c.get() != nullptr);
-        auto group_c = std::dynamic_pointer_cast<NcclGroupChannel>(c);
-        ASSERT(group_c.get() != nullptr);
-        group_threads.emplace_back(std::thread(
-            [&](std::shared_ptr<NcclGroupChannel> c) {
-                Recorder::create();
-                // recv messages from multiple dispatchers
-                at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(0);
-                at::cuda::CUDAStreamGuard guard(c10_stream);
-
-                while (!end_flag) {
-                    // DMOE_LOG(DEBUG) << "AttnPool fetching metadata ..." << LEND;
-                    Metadata meta;
-                    c->recv_metadata(meta);
-                    // DMOE_LOG(DEBUG) << "AttnPool fetched in stream " << c10_stream.stream() << " " << meta << LEND;
-
-                    torch::Tensor tensor = torch::empty(
-                        {meta.num_tokens(), meta.token_hidden_dim()}, 
-                        torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
-                    );
-
-                    // DMOE_LOG(DEBUG) << "AttnPool created tensor" << LEND;
-                    c->recv((uintptr_t)tensor.data_ptr(), meta);
-                    // DMOE_LOG(DEBUG) << "AttnPool broadcast finished" << LEND;
-
-                    auto meta_t = std::make_shared<Metadata>(meta);
-
-                    // When using large_comm, all tensors are sent to the workers
-                    // Only using ZMQ & layer_id == 0, the tensors are required to be broadcast through small_comm
-                    // See MuAttentionPool::process_batch
-                    process_batch(tensor, meta_t, /*send_from_zmq=*/ false);
-                }
-            }, group_c
-        ));
-    }
-}
-
 void MuAttentionPool::terminate() {
     MuPool::terminate();
-    pool_thread.join();
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
@@ -744,14 +642,6 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
-    if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
-        // since only driver can have the pool, we can send the data from layer 0 to other workers here.
-        // NOTE(hogura|20241110): group_comm is only used when send_from_zmq, so it should be thread-safe
-        // DMOE_LOG(DEBUG) << "Broadcasting attn batch to workers" << LEND;
-        group_comm->send_metadata(*meta);
-        group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
-        // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
-    }
 
     int lid = this->layer_id_P2V[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor, meta);
@@ -892,11 +782,9 @@ MuAttentionTopKPool::MuAttentionTopKPool(
     std::vector<int> layer_ids, 
     int device_id,
     std::vector<Channel_t> channels,
-    std::vector<int> device_group_ids,
-    Channel_t group_comm,
     int top_k,
     LayerSchedulePolicy policy
-): MuAttentionPool(layer_ids, device_id, channels, device_group_ids, group_comm, policy), top_k(top_k) {
+): MuAttentionPool(layer_ids, device_id, channels, policy), top_k(top_k) {
     int num_layers = layer_ids.size();
     this->attn_token_queues = std::vector<std::vector<TokenTopKInfo>>(num_layers);
     this->topk_pools = std::vector<TokenTopKPool>{};
@@ -907,14 +795,6 @@ MuAttentionTopKPool::MuAttentionTopKPool(
 
 void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << *meta << LEND;
-    if (send_from_zmq && meta->layer_id == 0 && group_comm.get() != nullptr) {
-        // since only driver can have the pool, we can send the data from layer 0 to other workers here.
-        // NOTE: group_comm is only used when send_from_zmq, so it should be thread-safe
-        // DMOE_LOG(DEBUG) << "Broadcasting attn batch to workers" << LEND;
-        group_comm->send_metadata(*meta);
-        group_comm->send((uintptr_t) tensor.data_ptr(), *meta);
-        // DMOE_LOG(DEBUG) << "Broadcast finished." << LEND;
-    }
 
     int lid = this->layer_id_P2V[meta->layer_id];
     std::vector<TokenTopKInfo> ready_tokens{};

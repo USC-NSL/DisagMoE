@@ -56,7 +56,6 @@ public:
     TensorBatch schedule_expert();
     AttentionBatch schedule_attention();
 
-    virtual std::shared_ptr<NcclGroupChannel> get_attention_channel() { return nullptr; }
 
     bool has_attention() const { return attn_pool.get() != nullptr; }
     bool has_expert() const { return expert_pool.get() != nullptr; }
@@ -65,40 +64,6 @@ public:
 typedef std::shared_ptr<Scheduler> attn_scheduler_t; // for backward compatibility
 typedef std::shared_ptr<Scheduler> scheduler_t;
 
-class AttentionDriverScheduler : public Scheduler {
-protected:
-    // chan is used for intra-group communication in scheduler
-    // chan_dist is used for TP group's allreduce
-    std::shared_ptr<NcclGroupChannel> chan, chan_dist;
-
-public:
-    AttentionDriverScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
-
-    AttentionBatch schedule_attention();
-
-    std::shared_ptr<NcclGroupChannel> get_attention_channel() override;
-};
-
-class AttentionWorkerScheduler : public Scheduler {
-protected:
-    std::shared_ptr<NcclGroupChannel> chan, chan_dist;
-    
-    bool end_flag;
-    std::thread t_async;
-    std::mutex mutex;
-    std::condition_variable cv;
-    std::queue<AttentionBatch> _schedule_result;
-
-    void async_schedule();
-
-public:
-    AttentionWorkerScheduler(mu_attn_pool_t pool, std::vector<int> layer_ids, Channel_t chan, Channel_t chan_dist, std::string policy = "mbfs");
-    ~AttentionWorkerScheduler();
-
-    AttentionBatch schedule_attention();
-
-    std::shared_ptr<NcclGroupChannel> get_attention_channel() override;
-};
 
 
 /*

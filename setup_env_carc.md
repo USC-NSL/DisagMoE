@@ -5,12 +5,12 @@ Use 3.12. Even 3.11 won't work.
 
 ## Conda install
 ```
-conda install -c conda-forge ray-all cereal
+conda install -c conda-forge ray-all cereal cppzmq
 ```
 
 ## Module
 ```
-module load cuda/12.6.3 libzmq/4.3.5
+module load cuda/12.6.3
 ```
 
 ## Build from source
@@ -28,4 +28,11 @@ Sometimes carc's tmp cause compilation to crash. So,
 ```
 mkdir ~/my_tmp
 export TMPDIR=~/my_tmp/
+```
+
+## start Ray
+You may want to use a specific tmpdir.
+```
+export RAY_TMPDIR=/home1/yizhuoli/tmp_ray/
+ray start --head   --node-ip-address=10.125.0.48   --port=0   --dashboard-port=0   --min-worker-port=30000 --max-worker-port=39999   --temp-dir="$RAY_TMPDIR"
 ```

@@ -3,16 +3,16 @@ MAX_INPUT_LEN=300
 MIN_OUTPUT_LEN=100
 MAX_OUTPUT_LEN=500
 N_NODE=1
-N_GPU_PER_NODE=4
+N_GPU_PER_NODE=2
 NUM_LAYERS=16
 NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=2
+dp_size=1
 step_exp=1
-ep_size=2
+ep_size=1
 top_k=1
 
 REPORT_DIR=./reports
@@ -37,6 +37,7 @@ python benchmark/server.py \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
     --graph-stride $GRAPH_STRIDE \
+    --block-size 16 \
     --step-attn $step_attn \
     --step-exp $step_exp \
     --dp-size $dp_size \

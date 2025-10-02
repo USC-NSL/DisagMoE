@@ -539,7 +539,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 # Extra channels for future colocated mode
                 core_args.in_nccl_ids_ext,
                 core_args.out_nccl_ids_ext,
-                core_args.device_group_ids,
+                # core_args.device_group_ids,
                 core_args.local_attn_dp_rank,
             )
             
