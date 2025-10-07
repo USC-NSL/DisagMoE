@@ -21,7 +21,6 @@ def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
     ray.get(pg.ready(), timeout=10)
     global _placement_group
     _placement_group = pg
-    print("workers", n_worker, "gpus", n_gpu_per_worker)
 
 def get_global_placement_group():
     global _placement_group

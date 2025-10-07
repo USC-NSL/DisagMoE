@@ -10,7 +10,6 @@ from disagmoe.frontend.datatypes import AttentionBatchMetadata
 model_config = mixtral_config
 model_config.tp_size = 2
 model_config.ep_size = 2
-model_config.tp_enable_inter_group = False
 model_config.num_layers = 32
 
 cluster_config = ClusterConfig(
