@@ -519,6 +519,7 @@ MuExpertPool::MuExpertPool(
 }
 
 void MuExpertPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
+    meta->batch_tag = BatchTag::EXPERT;
     int lid = this->layer_id_P2V[meta->layer_id];
     int num_tokens = meta->num_tokens();
 
@@ -642,7 +643,7 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
-
+    meta->batch_tag = BatchTag::ATTENTION;
     int lid = this->layer_id_P2V[meta->layer_id];
     auto attn_batch = pack_attn_batch(tensor, meta);
     int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
@@ -795,7 +796,7 @@ MuAttentionTopKPool::MuAttentionTopKPool(
 
 void MuAttentionTopKPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << *meta << LEND;
-
+    meta->batch_tag = BatchTag::ATTENTION;
     int lid = this->layer_id_P2V[meta->layer_id];
     std::vector<TokenTopKInfo> ready_tokens{};
     int batched_tokens = 0;

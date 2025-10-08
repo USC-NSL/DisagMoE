@@ -19,6 +19,8 @@
 #include <cereal/types/map.hpp>
 #include <torch/torch.h>
 
+enum class BatchTag { ATTENTION, EXPERT, TOKENIZER };
+
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
     std::vector<T> res{};
@@ -133,6 +135,7 @@ struct Metadata;
 typedef std::shared_ptr<Metadata> metadata_t;
 
 struct Metadata {
+    BatchTag batch_tag;
     std::vector<size_t> shape;
     std::string dtype;
 
@@ -142,6 +145,10 @@ struct Metadata {
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
     std::vector<float> topk_weights;
+
+    inline BatchTag get_batch_tag() const {
+        return batch_tag;
+    }
  
     inline size_t num_element() const {
         size_t res = 1;
@@ -182,8 +189,8 @@ struct Metadata {
             sliced_topk_weights = slice_vector(topk_weights, l, r);
         }
 
-        return Metadata{
-            shape, this->dtype, this->layer_id, 
+        return Metadata {
+            this->batch_tag, shape, this->dtype, this->layer_id, 
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
             slice_vector(attn_dp_ranks, l, r),
@@ -215,8 +222,8 @@ struct Metadata {
         if (topk_weights.size() == 0) {
             topk_weights_.clear();
         }
-        return Metadata{
-            shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
+        return Metadata {
+            this->batch_tag, shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
         };
     }
 
@@ -260,8 +267,17 @@ struct Metadata {
     }
 
     friend std::ostream& operator<<(std::ostream &out, const Metadata& meta) {
-        out << "Metadata{";
+        out << "Metadata {";
         {
+            if (meta.batch_tag == BatchTag::ATTENTION) {
+                out << "attention_batch,";
+            }
+            if (meta.batch_tag == BatchTag::EXPERT) {
+                out << "expert_batch,";
+            }
+            if (meta.batch_tag == BatchTag::TOKENIZER) {
+                out << "tokenizer_batch,";
+            }
             out << "shape=(" << meta.shape[0];
             for (size_t i = 1; i < meta.shape.size(); i ++)
                 out << ", " << meta.shape[i];
@@ -332,7 +348,7 @@ struct Metadata {
             }
         }
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
+            BatchTag::EXPERT, shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
         });
     }
 
@@ -438,6 +454,7 @@ struct Metadata {
         return std::make_pair(
             std::make_shared<Metadata> (
                 Metadata {
+                    this->batch_tag,
                     {(size_t) p, shape[1]},
                     dtype,
                     layer_id,
@@ -450,6 +467,7 @@ struct Metadata {
             ),
             std::make_shared<Metadata> (
                 Metadata {
+                    this->batch_tag,
                     {(size_t) (shape[0] - p), shape[1]},
                     dtype,
                     layer_id,
@@ -484,7 +502,7 @@ struct Metadata {
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
+            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
         });
     }
 
@@ -832,7 +850,7 @@ struct AttentionBatchMetadata {
         }
         
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids_, {}, attn_dp_ranks_, init_prefill_lens_
+            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids_, {}, attn_dp_ranks_, init_prefill_lens_
         });
     }
 };

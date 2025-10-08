@@ -203,7 +203,6 @@ class AttentionEngineMixin:
         shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
     
-    
     @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
         assert False, "TP in attention is now deprecated"

@@ -63,6 +63,7 @@ void test_comm(int rank, std::vector<int> ranks, std::string uid) {
     torch::Tensor data = torch::empty({1, size}, torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0));
     uintptr_t buf = (uintptr_t) data.data_ptr();
     Metadata meta = Metadata {
+        /*batch_tag=*/ BatchTag::EXPERT,
         /*shape=*/ std::vector<size_t>({1, size}),
         /*dtype=*/ "fp16",
         /*layer_id=*/ 0,
@@ -166,6 +167,7 @@ void test_kernel(int rank) {
     auto stream = c10_stream.stream();
     size_t size = 4096;
     Metadata meta = Metadata {
+        /*batch_tag=*/ BatchTag::EXPERT,
         /*shape=*/ std::vector<size_t>({4, size}),
         /*dtype=*/ "fp16",
         /*layer_id=*/ 0,

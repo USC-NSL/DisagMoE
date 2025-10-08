@@ -22,6 +22,12 @@ PYBIND11_MAKE_OPAQUE(std::map<std::pair<int, int>, int>);
 namespace py = pybind11;
 
 PYBIND11_MODULE(disagmoe_c, m) {
+    // Bind the BatchTag enum
+    py::enum_<BatchTag>(m, "BatchTag")
+        .value("ATTENTION", BatchTag::ATTENTION)
+        .value("EXPERT", BatchTag::EXPERT)
+        .value("TOKENIZER", BatchTag::TOKENIZER);
+
     py::class_<MuHelper, std::shared_ptr<MuHelper>>(m, "MuHelper")
         .def("start", &MuHelper::start)
         .def("terminate", &MuHelper::terminate);
@@ -126,7 +132,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("to_metadata", &AttentionBatchMetadata::to_metadata);
 
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
-        .def(py::init<std::vector<size_t>>())
+        .def(py::init<>())
+        .def_readwrite("batch_tag", &Metadata::batch_tag)
         .def_readwrite("shape", &Metadata::shape)
         .def_readwrite("dtype", &Metadata::dtype)
         .def_readwrite("layer_id", &Metadata::layer_id)

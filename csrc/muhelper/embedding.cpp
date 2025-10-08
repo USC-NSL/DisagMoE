@@ -339,6 +339,7 @@ void Tokenizer::put_request(int req_id, int init_prefill_len, torch::Tensor tens
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
     auto meta_t = std::make_shared<Metadata>(Metadata {
+        BatchTag::TOKENIZER,
         shape, 
         "bf16", 
         /*layer_id=*/ 0, 
