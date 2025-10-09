@@ -1,7 +1,7 @@
-MIN_INPUT_LEN=100
-MAX_INPUT_LEN=300
-MIN_OUTPUT_LEN=100
-MAX_OUTPUT_LEN=500
+MIN_INPUT_LEN=10
+MAX_INPUT_LEN=11
+MIN_OUTPUT_LEN=50
+MAX_OUTPUT_LEN=51
 N_NODE=1
 N_GPU_PER_NODE=2
 NUM_LAYERS=16
@@ -15,7 +15,7 @@ step_exp=1
 ep_size=1
 top_k=1
 
-REPORT_DIR=./reports
+REPORT_DIR=./mqa_top$top_k
 
 if [ ! -d $REPORT_DIR ]; then
     mkdir -p $REPORT_DIR
@@ -31,7 +31,9 @@ python benchmark/server.py \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
-    -u 0.65 \
+    -u 0.75 \
+    -ca \
+    --num-kv-heads 1 \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
@@ -43,5 +45,6 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --file $REPORT_TABLE \
+    --expert-wise-schedule \
     --analyze-throughput \
     --trace

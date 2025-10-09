@@ -74,6 +74,8 @@ class ModelPlacement:
             return self.attn_rank_at(device_id)
     
     def out_expert_ranks_at(self, device_id: int) -> List[Tuple[int, int, int]]:
+        if device_id not in self.out_device_ids:
+            return []
         result = []
         for dev_out in self.out_device_ids[device_id]:
             if dev_out in self.expert:
@@ -168,26 +170,21 @@ class PlacementBase:
                 # tokenizer to the first layer
                 for dev in attn_devs[layer_id]:
                     place.add_edge(place.tokenizer, dev)
-                    
-                # add edges from sampler back to the first attn
-                for dev in attn_devs[layer_id]:
-                    if self.model_config.tp_size > 1 and place.is_worker_device(dev):
-                        # if TP is enabled, the sampler should only connect to driver attn
-                        continue
-                    place.add_edge(place.sampler, dev)
             else:
                 # last exp to current attn
                 for dev in attn_devs[layer_id]:
                     for prev_dev in exp_devs[layer_id - 1]:
                         place.add_edge(prev_dev, dev)
-            # the last layer to sampler
-            if layer_id == self.model_config.num_layers - 1:
-                for dev in exp_devs[layer_id]:
-                    place.add_edge(dev, place.sampler)
+                        
             # current attn to current exp
             for dev in attn_devs[layer_id]:
                 for exp_dev in exp_devs[layer_id]:
                     place.add_edge(dev, exp_dev)
+        
+        # connect first attention layer with sampler
+        for dev in attn_devs[0]:
+            place.add_edge(dev, place.sampler)
+                    
         return place
         
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:

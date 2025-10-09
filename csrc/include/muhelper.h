@@ -73,6 +73,8 @@ public:
                  std::vector<Channel_t> channels);
 
     void put(TensorBatch batch, int rank = 0);
+
+    virtual void send_to_sampler(TensorBatch batch) { ASSERT (false); }
 };
 
 
@@ -81,6 +83,7 @@ class MuAttnDispatcher: public MuDispatcher {
 protected:
     std::vector<int> exp_channels;
     int max_exp_id;
+    int sampler_channel_id;
 
     std::vector<std::vector<int>> _inner_expert_ranks;
 
@@ -96,13 +99,14 @@ public:
                      ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
+    
+    void send_to_sampler(TensorBatch batch) override;
 };
 
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<std::vector<int>> attn_channel;
-    int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
@@ -225,6 +229,8 @@ public:
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
 
+    void put_batch(TensorBatch batch);
+
     // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
     void set_layer_scheduler(std::shared_ptr<LayerScheduler> scheduler) { this->layer_scheduler = scheduler; }
     std::shared_ptr<LayerScheduler> get_layer_scheduler() { return this->layer_scheduler; }
@@ -271,6 +277,8 @@ public:
         std::vector<Channel_t> channels,
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );
+
+    void put_batch_to_attn_queue(int layer_id, const AttentionBatch &batch);
 
     virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
 

@@ -2,10 +2,11 @@ import torch
 import time
 import enum
 import os
+import random
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer, BlockManager
 from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
                                          AttentionBatchMetadata, SloStat, TraceContext,
                                          SamplerStepInfo)
@@ -126,9 +127,14 @@ class AttentionEngineMixin:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
+
         with self._timer.range("preprocess"):
             meta_py = AttentionBatchMetadata.from_c(meta_c)
             assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+            
+            if meta_py.layer_id == 0:
+                for i in range(meta_py.num_prefill_tokens):
+                    self.record_max_output_lens(meta_py.seq_ids[i], meta_py.max_output_lens[i])
 
             num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
 
@@ -138,6 +144,22 @@ class AttentionEngineMixin:
                 input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
                 input_tensor = torch.sum(input_topk_tensor, dim=1)
                 meta_c.shrink_topk(self.model_config.top_k)
+            
+            # TODO: consider the position of this code piece
+            if meta_c.layer_id == self.model_total_num_layers:
+                continue_ids, finish_req_ids = self.dummy_sampler.sample_once(meta_py.seq_ids)
+                new_meta = meta_c.to_metadata()
+                continue_meta = new_meta.select_indices(continue_ids)
+                continue_meta.init_prefill_lens = [-1] * len(continue_ids)
+                # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
+                self.release_seqs(finish_req_ids)
+                
+                new_meta.set_finish_signal(continue_ids)            
+                sampled_batch: TensorBatch = TensorBatch_C()
+                sampled_batch.data = input_tensor
+                sampled_batch.metadata = new_meta
+                self.attn_dispatcher.send_to_sampler(sampled_batch)
+                return input_tensor[continue_ids], continue_meta
 
             attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
             positions = meta_py.seq_lens_tensor.to(torch.int64)
@@ -191,6 +213,11 @@ class AttentionEngineMixin:
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        
+        if len(seq_ids) == 0:
+            return
+        for i in seq_ids:
+            self.finished_seq_lens[i] = self.decode_seq_lens[i]
         
         self.block_mgr.release_seqs(seq_ids)
         
@@ -323,18 +350,22 @@ class ExpertEngineMixin:
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
             num_tokens = meta_c.num_tokens()
-            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-                meta_c.get_expert_batch_sizes_cuda(
-                    self.model_config.num_experts, self.inner_exp_rank,
-                    self._static_bs_cuda, self.stream.cuda_stream
-                )
-                batch_sizes = self._static_bs_cuda
+            if self.model_config.enable_grouped_gemm:
+                if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                    meta_c.get_expert_batch_sizes_cuda(
+                        self.model_config.num_experts, self.inner_exp_rank,
+                        self._static_bs_cuda, self.stream.cuda_stream
+                    )
+                    batch_sizes = self._static_bs_cuda
+                else:
+                    batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                    batch_sizes = torch.tensor(
+                        [batch_sizes[i] for i in self.inner_exp_rank],
+                        dtype=torch.int64, device="cuda"
+                        )
             else:
                 batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-                batch_sizes = torch.tensor(
-                    [batch_sizes[i] for i in self.inner_exp_rank],
-                    dtype=torch.int64, device="cuda"
-                )
+                batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
             range_pop()
         
         with self._timer.range("execute"):
@@ -389,11 +420,19 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.dispatcher: MuDispatcher = None
         self.attn_executor: AttnExecutor = None
         self.expert_executor: ExpertsExecutor = None
+        self.attn_dispatcher: MuDispatcher = None
+        self.expert_dispatcher: MuDispatcher = None
+        self.attn_pool: MuPool = None
+        self.expert_pool: MuPool = None
+        self.dummy_sampler: DummySampler = None
         
         self.end_flag = False
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
-        self.cache_config: CacheConfig = None    
+        self.cache_config: CacheConfig = None
+        
+        self.model_total_num_layers = 0
+            
         self.loop_thread = None
         
         self._process_batch: Callable = None
@@ -401,6 +440,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.block_mgr: BlockManager = None
         
         self.decode_seq_lens = {}
+        self.finished_seq_lens = {}
         self.profiler = None
         self.inner_exp_rank = []
         self.device_group_ids = []
@@ -516,11 +556,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 core_args.local_attn_dp_rank,
             )
         else:
-            self.scheduler, self.dispatcher = init_engine(
+            self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
                 self.device_id,
                 self.model_config.top_k,
                 self.has_attn,
                 self.has_expert,
+                core_args.expert_wise_schedule,
                 ParallelConfig.from_c(
                     self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
                     self.model_config.ep_size,
@@ -553,7 +594,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                                         init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
-            self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
+            self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
+            self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
         
         if self.has_expert:
             self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
@@ -611,6 +653,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.model_config = model_config
         self.cache_config = cache_config
         
+        self.model_total_num_layers = model_config.num_layers
+        
         if self.has_attn:
             self.attn_max_batch_size = model_config.max_batch_size_attn 
             
@@ -629,16 +673,363 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     def _add_async_handle(self, handle):
         self.handles.append(handle)
+        
+    @nvtx_range("engine._update_block_table")
+    def _update_block_table(self, meta_c: AttentionBatchMetadata, meta_py: AttentionBatchMetadata) -> List[int]:
+        init_seq_ids = meta_py.seq_ids[ : meta_py.num_prefill_seqs]
+        decode_seq_ids = meta_py.seq_ids
+        # if the first layer in this attention worker, update block table and decode_seq_lens
+
+        if meta_py.layer_id == self.model_config.layer_ids[0]:
+            # allocate kv blocks for init seqs, update for all decoding seqs
+            
+            for i, seq_id in enumerate(init_seq_ids):
+                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+                
+            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+
+            # self._logger.info(f"update block table {meta_py.seq_ids}, {decode_seq_lens}")
+
+            self.block_mgr.update_block_table(meta_c, decode_seq_lens)
+            
+            for i, seq_id in enumerate(decode_seq_ids):
+                decode_seq_lens[i] += 1
+                self.decode_seq_lens[seq_id] += 1
+        else:
+            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+        
+        # self._logger.info(f"block table updated {meta_py.seq_ids}, {decode_seq_lens}")
+
+        return decode_seq_lens
+    
+    @nvtx_range("engine.pack_flash_attn_metadata")
+    def _pack_flash_attn_metadata(
+            self,
+            meta_c: AttentionBatchMetadata,
+            meta_py: AttentionBatchMetadata,
+            decode_seq_lens: List[int],
+            mocking: bool = False,
+        ) -> FlashAttentionMetadata:
+        
+        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+
+        # print(f"meta_py {meta_py}, decode_seq_lens {self.decode_seq_lens}")
+        
+        # 1. prepare block table
+        if not mocking:
+            block_table_1d = self.block_mgr.prepare_block_table(meta_c, decode_seq_lens)
+        else:
+            # mocking=True when _warmup_attn
+            block_table_1d = torch.zeros(
+                (num_tokens + num_seqs * self.model_config.max_seq_len // self.cache_config.block_size, ), 
+                dtype=torch.int32, device="cuda")
+
+        slot_mapping_cuda = block_table_1d[-num_tokens : ].to(torch.int64)
+        block_table_cuda = block_table_1d[ : -num_tokens].view(num_tokens, -1)
+
+        # 2. prepare seqlens and start_locs
+        # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
+        batch_infos_cuda = prepare_batch_infos(meta_c, decode_seq_lens)
+
+        seq_lens_cuda, context_lens_cuda, seq_start_loc_cuda = \
+            torch.split(batch_infos_cuda, [num_seqs, num_seqs, num_seqs + 1], dim=0)
+
+        seq_lens = decode_seq_lens
+            
+        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+        
+        max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
+        assert mocking or self.model_config.enable_cuda_graph_attn or \
+               max_num_blocks == block_table_cuda.shape[-1], f"block table wrong, {meta_py}, {block_table_cuda.shape}, {block_table_1d.shape}"
+        
+        return FlashAttentionMetadata(
+            0,
+            0,
+            num_tokens,
+            slot_mapping_cuda,
+            seq_lens=seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            query_start_loc=None,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
+            block_tables=block_table_cuda,
+            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+        )
+    
+    @nvtx_range("engine.attn_driver_preprocess")
+    def _attn_driver_preprocess(self, 
+                                meta_c: AttentionBatchMetadata, 
+                                meta_py: AttentionBatchMetadata, 
+                                input_tensor: Tensor) -> FlashAttentionMetadata:
+        decode_seq_lens = self._update_block_table(meta_c, meta_py)
+        
+        if self._intra_group_tp_enabled:
+            # 1. broadcast necessary metadata
+            bc_meta = [
+                meta_py.layer_id, # 0
+                0, # 1
+                0, # 2
+                meta_py.num_decode_tokens, # 3
+                *decode_seq_lens, # 4
+            ]
+            
+            self.buffer_meta[ : len(bc_meta)].copy_(torch.tensor(bc_meta, dtype=torch.int32, device="cpu"))
+            dist.broadcast(self.buffer_meta, 0)
+            
+            # 2. broadcast input tensor asynchronously
+            self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
+            
+        attn_meta = self._pack_flash_attn_metadata(meta_c, meta_py, decode_seq_lens)
+
+        if self._intra_group_tp_enabled:
+            self._wait_async_handles()
+            
+            # 3. broadcast attn_meta
+            # [slot_mapping, block_table]
+            max_num_blocks = attn_meta.block_tables.shape[-1]
+            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+            num_elems = num_tokens + max_num_blocks * num_tokens
+            
+            bc_attn_meta = self.buffer_attn_meta[ : num_elems]
+            
+            if not attn_meta.use_cuda_graph:
+                bc_attn_meta[ : num_tokens].copy_(attn_meta.slot_mapping.to(torch.int32))
+                bc_attn_meta[num_tokens : ].copy_(attn_meta.block_tables.view(-1))
+            else:
+                bc_attn_meta[ : num_tokens].copy_(
+                    attn_meta.slot_mapping[ : num_tokens].to(torch.int32))
+                self._logger.info(f"block_table shape: {attn_meta.block_tables.shape, num_tokens, max_num_blocks, bc_attn_meta.shape}")
+                bc_attn_meta[num_tokens : ].copy_(
+                    attn_meta.block_tables[ : num_tokens, : max_num_blocks].view(-1))
+            
+            dist.broadcast(bc_attn_meta, 0)
+        
+        return attn_meta
+    
+    @nvtx_range("engine.attn_worker_preprocess")
+    def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
+        assert False, "TP in attention is now deprecated"
+        dist.broadcast(self.buffer_meta, 0)
+        meta = self.buffer_meta.tolist()
+        layer_id = meta[0]
+        if layer_id == -1:
+            # terminated
+            return -1, None, None
+        num_prefill_seqs = meta[1]
+        num_prefill_tokens = meta[2]
+        num_decode_tokens = meta[3]
+
+        num_tokens = num_prefill_tokens + num_decode_tokens
+        num_seqs = num_prefill_seqs + num_decode_tokens
+
+        batch_size = get_graph_batch_size(num_tokens)[1] if self.model_config.enable_cuda_graph_attn else num_tokens
+        
+        input_tensor = self.buffer_tensor[ : num_tokens]
+        self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
+        
+        if not self.model_config.enable_cuda_graph_attn:
+            seq_lens = meta[4 : ]
+            seq_lens_cuda = self.buffer_meta[4 : 4 + num_tokens]
+            context_lens_tensor = seq_lens_cuda - 1
+            seq_start_loc = make_seqlens_cuda_tensor(seq_lens)
+        else:
+            # extend seq_lens to batch_size
+            seq_lens = meta[4 : ]
+            for _ in range(batch_size - num_seqs):
+                seq_lens.append(0)
+            seq_lens_cuda = self.static_seq_lens[ : batch_size]
+            seq_lens_cuda.copy_(self.buffer_meta[4 : 4 + batch_size])
+            context_lens_tensor = self.static_context_lens[ : batch_size]
+            context_lens_tensor.copy_(seq_lens_cuda - 1)
+            seq_start_loc = self.static_seq_start_loc[ : batch_size + 1]
+            seq_start_loc.copy_(make_seqlens_cuda_tensor(seq_lens))
+
+        decode_seq_lens = seq_lens
+        
+        max_num_blocks = (max(seq_lens) - 1) // self.cache_config.block_size + 1
+        # [slot_mapping, block_table]
+        num_elems = num_tokens + max_num_blocks * num_tokens
+        
+        max_decode_seq_len = max(decode_seq_lens) if len(decode_seq_lens) > 0 else 0
+        
+        self._wait_async_handles()
+        
+        bc_attn_meta = self.buffer_attn_meta[ : num_elems]
+        dist.broadcast(bc_attn_meta, 0)
+        
+        if not self.model_config.enable_cuda_graph_attn:
+            slot_mapping_cuda = bc_attn_meta[ : num_tokens].to(torch.int64)
+            block_table_cuda = bc_attn_meta[num_tokens : ].view(num_tokens, -1)
+        else:
+            self.static_slot_mapping[ : num_tokens].copy_(bc_attn_meta[ : num_tokens].to(torch.int64))
+            self.static_block_table[ : num_tokens, 0: max_num_blocks].copy_(bc_attn_meta[num_tokens : ].view(num_tokens, -1))
+            slot_mapping_cuda = self.static_slot_mapping
+            block_table_cuda = self.static_block_table
+        
+        return layer_id, input_tensor, FlashAttentionMetadata(
+            0,
+            0,
+            num_prefill_tokens + num_decode_tokens,
+            slot_mapping_cuda,
+            seq_lens=seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            query_start_loc=[],
+            seq_start_loc=seq_start_loc,
+            context_lens_tensor=context_lens_tensor,
+            block_tables=block_table_cuda,
+            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+        )
+    
+    @nvtx_range("engine.process_batch_attn")
+    def process_batch_attn(self, 
+                           meta_c: AttentionBatchMetadata, 
+                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        meta_py = AttentionBatchMetadata.from_c(meta_c)
+        assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+
+        num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+
+        if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+            assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            input_tensor = input_tensor[: num_tokens] + input_tensor[num_tokens :]
+            meta_c.shrink_topk(self.model_config.top_k)
+
+        # TODO(hogura|20241014): fill the real positions
+        positions = torch.ones(num_tokens, dtype=torch.long, device="cuda")
+        attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
+
+        self._timer.stop("preprocess")
+        self._timer.start("execute")
+        
+        if not self.model_config.enable_cuda_graph_attn or num_tokens > self.attn_max_batch_size:
+            # topk_weights and expert_ids: [batch_size, top_k]
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+        else:
+            range_push("engine.graph_replay")
+            hiddens, expert_weights, expert_ids = self.cuda_graph_executor.run(meta_py.layer_id, positions, input_tensor, attn_meta)
+            range_pop()
+            
+        self._timer.stop("execute")
+        self._timer.start("postprocess")
+        # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+        # hiddens = permute_tokens(hiddens, reorder_ids)
+        # d2h_event = torch.cuda.Event()
+        # with torch.cuda.stream(self.d2h_stream):
+        #     new_meta_c = meta_c.to_metadata()
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.duplicate_topk(self.model_config.top_k)
+        #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+        #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+        #     if self.model_config.top_k > 1:
+        #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+        #     d2h_event.record(self.d2h_stream)
+        # d2h_event.synchronize()
+        # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+        # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+        
+        new_meta_c = meta_c.to_metadata()
+        if self.model_config.top_k > 1:
+            new_meta_c.duplicate_topk(self.model_config.top_k)
+            
+        if self.model_config.top_k == 1:
+            expert_ids = expert_ids.view(-1).tolist()
+        else:
+            assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
+            expert_ids = expert_ids.view(-1).tolist()
+            expert_weights = expert_weights.view(-1).tolist()
+            new_meta_c.topk_weights = expert_weights
+            
+        exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+        hiddens = permute_tokens(hiddens, exp_mappings)
+        new_meta_c.update_exp_ids(expert_ids, exp_mappings)
+
+        assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
+        return hiddens, new_meta_c
+    
+    @nvtx_range("engine.process_batch_expert")
+    def process_batch_expert(self, 
+                             meta_c: Metadata, 
+                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+        # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        range_push("engine.copy_batch_sizes")
+        # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
+        num_tokens = meta_c.num_tokens()
+        if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+            meta_c.get_expert_batch_sizes_cuda(
+                self.model_config.num_experts, self.inner_exp_rank,
+                self._static_bs_cuda, self.stream.cuda_stream
+            )
+            batch_sizes = self._static_bs_cuda
+        else:
+            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            batch_sizes = torch.tensor(
+                [batch_sizes[i] for i in self.inner_exp_rank],
+                dtype=torch.int64, device="cuda"
+            )
+        range_pop()
+        self._timer.stop("preprocess")
+        self._timer.start("execute")
+        
+        # self._logger.info(f"executing expert {meta_c.req_ids}")
+        output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
+        
+        self._timer.stop("execute")
+        self._timer.start("postprocess")
+        
+        # 2. permute tokens back to <prefill><decode> order
+        h2d_event = torch.cuda.Event()
+        
+        new_mappings = list(meta_c.sort_by_prefill_order())
+        
+        with torch.cuda.stream(self.h2d_stream):
+            new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
+            
+            if num_tokens > self.expert_max_batch_size:
+                new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
+            else:
+                new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+            if self.model_config.top_k > 1:
+                topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
+            h2d_event.record(self.h2d_stream)
+
+        h2d_event.wait(self.h2d_stream)
+
+        if self.model_config.top_k > 1:
+            output = output * topk_weights
+        
+        output = permute_tokens(output, new_mappings_gpu)
+        meta_c.update_exp_ids([], [])
+        meta_c.step_layer()
+
+        # self._logger.info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
+        return output, meta_c
 
     @nvtx_range("Engine.post_process")
     def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
         assert not self.is_attn_worker
-        batch: TensorBatch = TensorBatch_C()
-        batch.data = output
-        batch.metadata = meta
-        
+        if self.has_attn and meta.layer_id == self.model_total_num_layers and meta.shape[0] > 0: # a hack for sampling check
+            assert self.dummy_sampler is not None
+            meta.layer_id = 0
+            batch: TensorBatch = TensorBatch_C()
+            batch.data = output
+            batch.metadata = meta
+            self.attn_pool.put_batch(batch)
+        else:
+            batch: TensorBatch = TensorBatch_C()
+            batch.data = output
+            batch.metadata = meta
+                
         range_push("Engine.stream_sync")
-        
         with self._timer.range("stream_sync"):
             self.stream.synchronize()
         range_pop()
@@ -677,22 +1068,29 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             pool_snapshot_dict = dict()
             queueing_tokens = 0
             queueing_batches = 0
+            num_groups = len(self._pool_snapshot) // len(self.model_config.layer_ids)
             for i, size in enumerate(self._pool_snapshot):
                 if size <= 0:
                     continue
-                layer = self.model_config.layer_ids[i]
-                pool_snapshot_dict[layer] = size
+                # layer = self.model_config.layer_ids[i]
+                pool_snapshot_dict[i] = size
                 queueing_tokens += size
                 queueing_batches += 1
                 
             executed_layer_id = batch.metadata.layer_id
+            
+            # !!! This code should be fixed for co-location
             if self.has_expert:
                 executed_layer_id -= 1
+                
+            if num_groups > 1:
+                executed_layer_id = executed_layer_id * num_groups + batch.metadata.get_expert_id() % num_groups
+            
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
                         real_batch_size, executed_layer_id,
-                        self.executor.layer_mappings[executed_layer_id],
+                        executed_layer_id,
                         pool_snapshot_dict)
             )
         else:
@@ -798,6 +1196,21 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     def fetch_queueing_delays(self) -> List[float]:
         return self._queueing_delays
     
+    def release_seqs(self, seq_ids: List[int]):
+        # TODO(optimize): master should only send release request to the driver
+        if not self.has_attn:
+            return
+        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
+            # is a worker and enabled intra-group communication, no kv cache to be released.
+            return
+        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
+        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
+        # self._logger.info(f"releasing seqs {seq_ids}")
+        for i in seq_ids:
+            # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
+            self.decode_seq_lens.pop(i)
+        self.block_mgr.batch_release(seq_ids)
+    
     def terminate(self):
         self.end_flag = True
         if self._intra_group_tp_enabled and self.is_attn_driver:
@@ -844,31 +1257,70 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self._queueing_delays.clear()
         self.release_seqs(list(self.decode_seq_lens.keys()))
         
+    def record_max_output_lens(self, req_id: int, max_output_len: int):
+        assert self.has_attn
+        self.dummy_sampler.create_request(req_id, max_output_len)
+        
     def set_schedule_policy(self, policy: str):
         if self.scheduler is not None:
             self.scheduler.set_schedule_policy(policy)
         else:
             raise ValueError("Scheduler is not initialized")
     
-    def set_schedule_block(self, step: int):
-        if self.scheduler is not None:
-            self.scheduler.set_schedule_block(step)
-        else:
-            raise ValueError("Scheduler is not initialized")
+    # def set_schedule_block(self, step: int):
+    #     if self.has_attn:
+    #         self.attn_scheduler.set_schedule_block(step)
+    #     if self.has_expert:
+    #         self.expert_scheduler.set_schedule_block(step)
+
+class DummySampler:
+    
+    def __init__(self, min_output_len: int, max_output_len: int):
+        if max_output_len == min_output_len:
+            max_output_len += 1
+        self.min_output_len = min_output_len
+        self.max_output_len = max_output_len
+        self.req_max_output_len: Dict[int, int] = {}
+        self.output_len: Dict[int, int] = {}
         
+    def sample_once(self, req_ids: List[int]) -> Tuple[List[int], List[int]]:
+        continue_ids = []
+        finish_req_ids = []
+        for i, req in enumerate(req_ids):
+            assert req in self.output_len, f"req {req} not found in output_len"
+            self.output_len[req] += 1
+            if self.check_end(req):
+                # print(f"req {req} finished with length {self.output_len[req]}")
+                self.clean_request(req)
+                finish_req_ids.append(req)
+            else:
+                continue_ids.append(i)
+        return continue_ids, finish_req_ids
+    
+    def create_request(self, req_id: int, max_output_len: int = -1):
+        if max_output_len == -1:
+            max_output_len = random.randint(self.min_output_len, self.max_output_len)
+        self.req_max_output_len[req_id] = max_output_len
+        self.output_len[req_id] = 0
+
+    def clean_request(self, req_id: int):
+        if req_id in self.req_max_output_len:
+            del self.req_max_output_len[req_id]
+        if req_id in self.output_len:
+            del self.output_len[req_id]
+                    
+    def check_end(self, req_id) -> bool:
+        return self.output_len[req_id] >= self.req_max_output_len[req_id]
+                    
 class SamplerEngine(Engine):
     
     def __init__(self):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
-        self.max_output_len = -1
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.sampler = init_sampler(
             self.device_id,
-            self.min_output_len,
-            self.max_output_len,
-            self.model_config.top_k,
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
@@ -892,10 +1344,6 @@ class SamplerEngine(Engine):
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
-    def set_sampling_params(self, min_output_len: int, max_output_len: int):
-        self.min_output_len = min_output_len
-        self.max_output_len = max_output_len
-        
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
         result = self.sampler.wait_slo_stats(n_request)
         while len(result) == 0:
@@ -916,27 +1364,27 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         
-    def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
+    def process_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        get_logger().info(f"tokenizer put request {req_id}")
-        self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
+        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
+        # get_logger().info(f"tokenizer put request {req_id}")
+        self.tokenizer.put_request(req_id, init_prefill_len, max_output_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
-    def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
-        self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_single_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
+        self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
-        for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
-            self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], max_output_lens: List[int], dp_ranks: List[int]):
+        for req_id, init_prefill_len, max_output_len, dp_rank in zip(req_ids, init_prefill_lens, max_output_lens, dp_ranks):
+            self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
     def fetch_submitted_time(self):
         return self.t_submitted
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.tokenizer = init_tokenizer(
             self.device_id,
             ParallelConfig.from_c(
