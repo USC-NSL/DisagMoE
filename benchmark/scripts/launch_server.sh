@@ -3,7 +3,7 @@ MAX_INPUT_LEN=300
 MIN_OUTPUT_LEN=100
 MAX_OUTPUT_LEN=500
 N_NODE=1
-N_GPU_PER_NODE=2
+N_GPU_PER_NODE=3
 NUM_LAYERS=16
 NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=160
@@ -12,8 +12,11 @@ GRAPH_STRIDE=8
 step_attn=1
 dp_size=1
 step_exp=1
-ep_size=1
+ep_size=2
 top_k=1
+
+# transport backend: zmq | ucx
+TRANSPORT=ucx
 
 REPORT_DIR=./reports
 
@@ -24,6 +27,7 @@ fi
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
+    --transport $TRANSPORT \
     --min-input-len $MIN_INPUT_LEN \
     --max-input-len $MAX_INPUT_LEN \
     --min-output-len $MIN_OUTPUT_LEN \

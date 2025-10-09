@@ -7,6 +7,7 @@ from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingCo
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from benchmark.utils import get_parser_base
+import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
 from typing import List, Dict, Tuple
 from argparse import ArgumentParser
@@ -85,6 +86,8 @@ class BenchmarkMetrics:
 
 
 def launch(args):
+    # Select transport in C++ backend (default from CLI is zmq)
+    c.select_transport(args.transport)
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
                                 id_tokenizer=tokenizer, 
                                 id_sampler=sampler)

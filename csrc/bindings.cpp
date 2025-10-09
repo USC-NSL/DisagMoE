@@ -13,6 +13,7 @@
 #include "binding_helper.h"
 #include "binding_tests.hpp"
 #include "profiler.hpp"
+#include "transport_factory.h"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
@@ -196,6 +197,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("init_sampler", &init_sampler);
     m.def("init_tokenizer", &init_tokenizer);
     REGISTER_FUNC(set_hosts);
+
+    // Transport selection from Python (required before engine init)
+    m.def("select_transport", &disagmoe::select_transport, py::arg("name"));
 
     /********
         Test functions

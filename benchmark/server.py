@@ -6,6 +6,7 @@ from flask import Flask
 from copy import copy
 
 from benchmark.benchmark_serving import benchmark_serving, launch, benchmark_warmup
+import disagmoe_c as c
 from benchmark.utils import get_parser_base
 
 from disagmoe.utils.logger import new_logger
@@ -104,6 +105,13 @@ def main():
     
     logger.info("Launching DisagMoE Controller")
     
+    # transport selection (default zmq)
+    try:
+        c.select_transport(args.transport)
+    except Exception as e:
+        logger.error(f"Failed to select transport '{args.transport}': {e}")
+        raise
+
     master = launch(args)
     asyncio.run(init(master, args))
     

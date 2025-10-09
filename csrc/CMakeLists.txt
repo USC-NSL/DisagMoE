@@ -29,6 +29,7 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(PkgConfig)
 ## use pkg-config to get hints for 0mq locations
 pkg_check_modules(PC_ZeroMQ QUIET zmq)
+pkg_check_modules(PC_UCX QUIET ucx)
 
 ## use the hint from above to find where 'zmq.hpp' is located
 find_path(ZeroMQ_INCLUDE_DIR
@@ -49,11 +50,20 @@ find_library(NCCL_LIBRARY
 
 message(ZMQ_INCLUDE=${ZeroMQ_INCLUDE_DIR})
 message(ZMQ_LIBRARY=${ZeroMQ_LIBRARY})
+message(UCX_INCLUDE=${UCX_INCLUDE_DIR})
+message(UCX_UCP_LIBRARY=${UCX_UCP_LIBRARY})
+message(UCX_UCS_LIBRARY=${UCX_UCS_LIBRARY})
+message(UCX_UCT_LIBRARY=${UCX_UCT_LIBRARY})
+
+if (NOT UCX_INCLUDE_DIR OR NOT UCX_UCP_LIBRARY OR NOT UCX_UCS_LIBRARY OR NOT UCX_UCT_LIBRARY)
+    message(FATAL_ERROR "UCX development package not found. Please install libucx and ensure pkg-config is configured.")
+endif()
 
 file(
     GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS
     "engine/*.cpp"
     "muhelper/*.cpp"
+    "include/transport_factory.h"
     "bindings.cpp"
 )
 
@@ -69,10 +79,12 @@ target_include_directories(disagmoe_c PUBLIC ${NCCL_HOME}/include)
 target_include_directories(disagmoe_c PUBLIC ${CUDA_HOME}/include)
 target_include_directories(disagmoe_c PUBLIC ${Python3_INCLUDE_DIRS})
 target_include_directories(disagmoe_c PUBLIC ${ZeroMQ_INCLUDE_DIR})
+target_include_directories(disagmoe_c PUBLIC ${UCX_INCLUDE_DIR})
 
 target_link_libraries(disagmoe_c PUBLIC CUDA::cudart)
 target_link_libraries(disagmoe_c PUBLIC ${NCCL_LIBRARY})
 target_link_libraries(disagmoe_c PUBLIC ${ZeroMQ_LIBRARY})
+target_link_libraries(disagmoe_c PUBLIC ${UCX_UCP_LIBRARY} ${UCX_UCS_LIBRARY} ${UCX_UCT_LIBRARY})
 target_link_libraries(disagmoe_c PUBLIC pybind11::module)
 
 install(TARGETS disagmoe_c DESTINATION ${PROJECT_DIR})

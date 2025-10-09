@@ -575,6 +575,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             
         self.loop_thread.start()
 
+    def set_transport(self, name: str):
+        import disagmoe_c as c
+        c.select_transport(name)
+
     def set_device_id(self, device_id: int):
         self.device_id = device_id
         

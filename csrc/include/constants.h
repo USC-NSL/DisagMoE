@@ -10,6 +10,9 @@ const int ZMQ_GROUP_PORT = 46000;
 const int ZMQ_MAGIC_MOD = 1007;
 const int ZMQ_OFFSET_BASE = 16;
 
+const int UCXQ_CPU_PORT_BASE = 36000;
+const int UCXQ_OFFSET_BASE = 16;
+
 #ifndef N_EXPERTS
 #define N_EXPERTS 8
 #endif
