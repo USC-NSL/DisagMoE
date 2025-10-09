@@ -273,9 +273,7 @@ public:
     );
 
     virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
-
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
-
+    
     void terminate() override;
 
     // for debug use only

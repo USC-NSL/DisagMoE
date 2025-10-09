@@ -13,6 +13,7 @@
 #include "logging.h"
 #include "constants.h"
 #include "permute.h"
+#include "vector_utils.hpp"
 
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
@@ -22,25 +23,6 @@
 enum class BatchTag { ATTENTION, EXPERT, TOKENIZER };
 
 template<class T>
-inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
-    std::vector<T> res{};
-    res.clear();
-    if (r < 0)
-        r = a.size();
-    if (l == r)
-        return {};
-    if (a.empty())
-        return {};
-    ASSERT(l <= r);
-    ASSERT(r <= a.size());
-    res.reserve(r - l);
-    for (auto i = a.begin() + l; i != a.begin() + r; i ++)
-        res.emplace_back(*i);
-    return res;
-}
-
-
-template<class T>
 inline void extend(std::vector<T> &a, const std::vector<T> &other) {
     for (const T &v: other)
         a.emplace_back(v);
@@ -48,7 +30,6 @@ inline void extend(std::vector<T> &a, const std::vector<T> &other) {
 
 // first == layer_id, second == expert_id
 #define ExpertId std::pair<int, int>
-
 
 struct ChannelInfo {
     std::vector<ExpertId> expert_ids;
@@ -619,9 +600,9 @@ struct AttentionBatchMetadata {
 
     std::vector<int> init_prefill_lens; // per perfill seq, length of (num_prefill_seqs)
 
-    std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
-
     std::vector<float> topk_weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
+
+    std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
     std::vector<uint8_t> attn_dp_ranks; // per token, length of (num_prefill_seqs + num_decode_tokens)
 
