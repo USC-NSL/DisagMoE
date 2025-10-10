@@ -45,13 +45,14 @@ class CPUBlockManager(BaseBlockManager):
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
 
     def reset_state(self):
+        self.release_seqs(list(self.decode_seq_lens.keys()))
         self.decode_seq_lens = {}
-        self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
     
     def release_seqs(self, seq_ids: List[int]):
-        self._block_mgr.batch_release(seq_ids)
-        for seq_id in seq_ids:
-            self.decode_seq_lens.pop(seq_id)
+        req_ids = [seq_id for seq_id in seq_ids if seq_id in self.decode_seq_lens]
+        self._block_mgr.batch_release(req_ids)
+        for req_id in req_ids:
+            self.decode_seq_lens.pop(req_id)
     
     @nvtx_range("CPUBlockManager.update_block_table")
     def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
@@ -180,7 +181,7 @@ class GPUBlockManager(BaseBlockManager):
         self.token_allocator.clear()  # Reset the token allocator
         
     def release_seqs(self, seq_ids: List[int]):
-        req_indices = [self.req_to_indice.get(i) for i in seq_ids]
+        req_indices = [self.req_to_indice.get(i) for i in seq_ids if i in self.decode_seq_lens]
         req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
         self.req_to_token_pool.free(req_indices)
         # get_logger().info(f"releasing seqs {seq_ids}")
