@@ -761,58 +761,6 @@ std::vector<AttentionBatch> MuAttentionPool::get_batch_from_layer(int layer_id) 
     return results;
 }
 
-std::vector<AttentionBatch> MuAttentionPool::fetch_batch_from(
-    int layer_id, std::set<int> &seq_ids) {
-
-    // DMOE_LOG(WARNING) << "fetching " << seq_ids.size() << " batches from worker's layer " << layer_id << LEND;
-
-    // wait until the data_queue has enough batches
-    for (bool flag = false; !flag;) {
-        std::lock_guard<std::mutex> lock(this->batch_mutex);
-        int sum = 0;
-        for (auto &batch: this->attn_data_queue[layer_id]) {
-            int id = batch.metadata->seq_ids[0];
-            if (seq_ids.find(id) != seq_ids.end()) {
-                // !NOTE(hogura|20241119): here we make an asumption:
-                // the batch in the attn_data_queue must not be merged,
-                // each batch send to the driver must be sent to the worker as-is.
-                sum += batch.metadata->seq_ids.size();
-            }
-        }
-        ASSERT(sum <= seq_ids.size());
-        if (sum == seq_ids.size()) {
-            flag = true;
-        }
-    }
-
-    // DMOE_LOG(WARNING) << "should have fetched " << seq_ids.size() << " seq_ids from worker's layer " << layer_id << LEND;
-
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
-    ASSERT(layer_id >= 0 && layer_id < this->attn_data_queue.size());
-
-    std::vector<AttentionBatch> result, remains;
-    for (auto &batch: this->attn_data_queue[layer_id]) {
-        int id = batch.metadata->seq_ids[0];
-        if (seq_ids.find(id) != seq_ids.end()) {
-            result.emplace_back(batch);
-        } else {
-            remains.emplace_back(batch);
-        }
-    }
-
-    int num_tokens = 0;
-    for (auto &batch: result)
-        num_tokens += batch.metadata->num_prefill_tokens + batch.metadata->num_decode_tokens;
-    this->tokens_per_layer_[layer_id] -= num_tokens;
-    this->attn_data_queue[layer_id] = remains;
-
-    maintain_largest_batch();
-
-    // DMOE_LOG(WARNING) << "fetched " << result.size() << " batches and " << num_tokens << " tokens from worker's layer " << layer_id << LEND;
-
-    return result;
-}
-
 std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
     std::vector<TokenTopKInfo> result(std::move(this->ready_tokens));
     return result;

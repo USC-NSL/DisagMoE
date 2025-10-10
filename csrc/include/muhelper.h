@@ -254,20 +254,19 @@ public:
     std::vector<TensorBatch> get_batch_from_layer(int layer_id);
 };
 
-typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
-typedef std::shared_ptr<MuExpertPool> mu_pool_t;  // For backward compatibility
-typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
 
 class MuAttentionPool: public MuPool {
 
 private:
 
+    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+protected:
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
     AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
-
-    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
 public:
 
@@ -282,8 +281,6 @@ public:
 
     virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
 
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
-
     void terminate() override;
 
     // for debug use only
@@ -297,7 +294,6 @@ public:
     }
 };
 
-typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
 
 class TokenTopKPool {
 
@@ -320,6 +316,8 @@ public:
 };
 
 class MuAttentionTopKPool: public MuAttentionPool {
+
+private:
 
     int top_k;
 
@@ -346,4 +344,17 @@ public:
 
     std::vector<AttentionBatch> get_batch_from_layer(int layer_id) override;
 
+    std::vector<AttentionBatch> fetch_largest_batch(int *selected_layer_id);
+
 };
+
+typedef std::shared_ptr<MuPool> mu_pool_t;  // For backward compatibility
+typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
+typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
+typedef std::shared_ptr<MuExpertDispatcher> mu_expert_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
+typedef std::shared_ptr<MuAttnDispatcher> mu_attn_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionTopKPool> mu_attn_topk_pool_t;
