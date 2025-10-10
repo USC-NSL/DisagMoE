@@ -93,7 +93,6 @@ def launch(args):
     model_config.num_layers = args.num_layers
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
-    model_config.tp_enable_inter_group = False
     model_config.enable_cuda_graph_attn = args.cuda_graph_attn
     model_config.enable_cuda_graph_expert = False
     model_config.enable_grouped_gemm = not args.serial_gemm and not args.expert_wise_schedule

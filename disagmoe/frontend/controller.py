@@ -250,7 +250,7 @@ class Controller:
                     layer_ids=model_place.layer_ids_at(device_id),
                     max_output_len=self.max_output_len,
                     min_output_len=self.min_output_len,
-                    in_device_ids=model_place.in_device_ids_at(device_id, model_config.tp_enable_inter_group),
+                    in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
                     out_channel_infos=[
                         ChannelInfo(

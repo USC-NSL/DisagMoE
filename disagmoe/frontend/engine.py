@@ -62,7 +62,7 @@ class AttentionEngineMixin:
         self.decode_seq_lens = {} # indexing by seq_id
         
         self.block_mgr = self.attn_executor.get_block_mgr()
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             self._create_attn_broadcast_buffers()
             
         self.attn_executor.warmup(self.attn_max_batch_size)
@@ -78,7 +78,7 @@ class AttentionEngineMixin:
         self.block_mgr.update_block_table(meta_c, meta_py)
         seq_lens = meta_py.seq_lens
         
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             # 1. broadcast necessary metadata
             bc_meta = [
                 meta_py.layer_id, # 0
@@ -96,7 +96,7 @@ class AttentionEngineMixin:
             
         attn_meta = self.block_mgr.pack_flash_attn_metadata(meta_c, meta_py)
 
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             self._wait_async_handles()
             
             # 3. broadcast attn_meta
@@ -208,8 +208,8 @@ class AttentionEngineMixin:
         # TODO(optimize): master should only send release request to the driver
         if not self.has_attn:
             return
-        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
-            # is a worker and enabled intra-group communication, no kv cache to be released.
+        if not self.is_attn_driver:
+            # is a worker, no kv cache to be released.
             return
         # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
@@ -464,23 +464,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     @property
     def is_attn_driver(self):
-        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+        return self.has_attn and self.rank_in_group == 0
     
     @property
     def is_attn_worker(self):
-        return self._intra_group_tp_enabled and self.rank_in_group > 0
+        return self.rank_in_group > 0
     
     @property
     def _tp_enabled(self):
         return self.has_attn and self.model_config.tp_size > 1
-    
-    @property
-    def _inter_group_tp_enabled(self):
-        return self._tp_enabled and self.model_config.tp_enable_inter_group
-    
-    @property
-    def _intra_group_tp_enabled(self):
-        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
     
     def _delegate_modules(self):
         if self.has_attn and self.has_expert:
@@ -510,8 +502,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.device_group_ids = core_args.device_group_ids
         
-        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
-        
         self.model_config.layer_ids = core_args.layer_ids
             
         get_logger().info(
@@ -536,7 +526,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 self.has_attn,
                 self.has_expert,
                 ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
+                    1, # control the init of attn_scheduler
                     self.model_config.ep_size,
                     self.model_config.dp_size,
                     self.model_config.num_experts_per_rank,
@@ -563,7 +553,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 self.has_expert,
                 core_args.expert_wise_schedule,
                 ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
+                    1, # control the init of attn_scheduler
                     self.model_config.ep_size,
                     self.model_config.dp_size,
                     self.model_config.num_experts_per_rank,
@@ -584,14 +574,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 core_args.local_attn_dp_rank,
             )
             
-        if self.model_config.tp_enable_inter_group:
-            set_tensor_model_parallel_channel(self.scheduler.get_attention_channel() if self.has_attn else None)
-        else:
-            if self.has_attn and self._intra_group_tp_enabled:
-                dist.init_process_group(backend="nccl", 
-                                        world_size=len(self.device_group_ids), 
-                                        rank=self.rank_in_group,
-                                        init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
+        if self.has_attn and self._tp_enabled:
+            dist.init_process_group(backend="nccl", 
+                                    world_size=len(self.device_group_ids), 
+                                    rank=self.rank_in_group,
+                                    init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
             self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
@@ -1213,7 +1200,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     def terminate(self):
         self.end_flag = True
-        if self._intra_group_tp_enabled and self.is_attn_driver:
+        if self._tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
             get_logger().info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1
