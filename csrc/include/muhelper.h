@@ -198,6 +198,10 @@ public:
 
     void set_max_batch_size(int max_batch_size);
 
+    int get_num_layers() { return num_layers; }
+
+    int get_num_groups() { return num_groups; }
+
     /* 
 
     for attention, consider waiting sequences,

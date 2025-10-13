@@ -97,15 +97,15 @@ class ModelPlacement:
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
         )))
         
-    def add_edge(self, start, end):
-        # assert start != end
-        if end not in self.in_device_ids:
-            self.in_device_ids[end] = []
-        if start not in self.out_device_ids:
-            self.out_device_ids[start] = []
-        if start not in self.in_device_ids[end]:
-            self.in_device_ids[end].append(start)
-            self.out_device_ids[start].append(end)
+    def add_edge(self, src, dst):
+        # assert src != dst
+        if dst not in self.in_device_ids:
+            self.in_device_ids[dst] = []
+        if src not in self.out_device_ids:
+            self.out_device_ids[src] = []
+        if src not in self.in_device_ids[dst]:
+            self.in_device_ids[dst].append(src)
+            self.out_device_ids[src].append(dst)
             
     def is_worker_device(self, device_id: int) -> bool:
         return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
@@ -177,6 +177,11 @@ class PlacementBase:
                 for exp_dev in exp_devs[layer_id]:
                     place.add_edge(dev, exp_dev)
         
+        # connect first attn layer with last exp layer
+        for dev in attn_devs[0]:
+            for prev_dev in exp_devs[self.num_layers - 1]:
+                place.add_edge(prev_dev, dev)
+                
         # connect first attention layer with sampler
         for dev in attn_devs[0]:
             place.add_edge(dev, place.sampler)

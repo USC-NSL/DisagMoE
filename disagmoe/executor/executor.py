@@ -276,10 +276,10 @@ class AttnExecutor(Executor):
         meta_py = make_dummy_meta(0, batch_size, 256)
         meta = self.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
         for layer_id in self.model_config.layer_ids:
-            get_logger().info(f"Attention warmup layer {layer_id} start")
+            # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
                 self.execute_eager(layer_id, positions, input, meta)
-            get_logger().info(f"Attention warmup layer {layer_id} done")
+            # get_logger().info(f"Attention warmup layer {layer_id} done")
                 
         get_logger().info("Attention warmup done")
     
@@ -356,8 +356,9 @@ class CUDAGraphAttnExecutor:
     def capture(self):
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
-                meta_py = make_dummy_meta(0, graph_batch_size)
+                meta_py = make_dummy_meta(0, graph_batch_size, self.model_config.max_seq_len)
                 attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
+                self.cuda_graph_preprocess(self.static_input[ : graph_batch_size], self.static_positions[ : graph_batch_size], attn_meta)
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
                     return self.attn_executor.execute(
@@ -392,7 +393,7 @@ class CUDAGraphAttnExecutor:
     def test_graph(self):
         for layer_id in self.model_config.layer_ids:
             for bs in range(1, self.model_config.max_batch_size_attn + 1):
-                meta_py = make_dummy_meta(0, bs)
+                meta_py = make_dummy_meta(0, bs, self.model_config.max_seq_len)
                 meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
                 hiddens, expert_weights, expert_ids = self.run(layer_id, torch.zeros(bs, dtype=torch.long, device="cuda"), torch.randn(bs, self.model_config.hidden_size, device="cuda"), meta)
                 torch.cuda.synchronize()

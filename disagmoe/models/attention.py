@@ -10,7 +10,7 @@ from vllm.distributed import get_tensor_model_parallel_world_size
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
-from disagmoe.ops.memory import  permute_tokens_cuda
+from disagmoe.ops.memory import permute_tokens_cuda
 
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)

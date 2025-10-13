@@ -47,12 +47,15 @@ class EngineType(enum.Enum):
     
 class AttentionEngineMixin:
     
+    _timer: Timer
     attn_executor: AttnExecutor
     model_config: ModelConfig
     cache_config: CacheConfig
     device: str
     req_seq_lens: Tensor
     block_mgr: BaseBlockManager
+    attn_dispatcher: MuDispatcher
+    
     
     def build_attn_executor(self):
         self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
@@ -123,6 +126,7 @@ class AttentionEngineMixin:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.seq_ids}")
 
         with self._timer.range("preprocess"):
             meta_py = AttentionBatchMetadata.from_c(meta_c)
@@ -143,6 +147,7 @@ class AttentionEngineMixin:
             
             # TODO: consider the position of this code piece
             if meta_c.layer_id == self.model_total_num_layers:
+                get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {meta_py.seq_ids}")
                 continue_ids, finish_req_ids = self.dummy_sampler.sample_once(meta_py.seq_ids)
                 new_meta = meta_c.to_metadata()
                 continue_meta = new_meta.select_indices(continue_ids)
@@ -207,7 +212,6 @@ class AttentionEngineMixin:
         if not self.is_attn_driver:
             # is a worker, no kv cache to be released.
             return
-        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
         self.block_mgr.release_seqs(seq_ids)
         
     def _create_attn_broadcast_buffers(self):
@@ -315,7 +319,11 @@ class AttentionEngineMixin:
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
 class ExpertEngineMixin:
-    
+
+    _timer: Timer
+    stream: torch.cuda.Stream
+    _static_bs_cuda: Tensor
+    expert_max_batch_size: int
     expert_executor: ExpertsExecutor
     model_config: ModelConfig
     cache_config: CacheConfig
@@ -334,6 +342,7 @@ class ExpertEngineMixin:
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
         with self._timer.range("preprocess"):
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
@@ -462,10 +471,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         if self.has_attn and self.has_expert:
             assert False, "Hybrid engine is not supported yet"
         if self.has_attn:
+            self.scheduler = self.attn_scheduler
             self.executor = self.attn_executor
+            self.dispatcher = self.attn_dispatcher
             self._process_batch = self.process_batch_attn
         elif self.has_expert:
+            self.scheduler = self.expert_scheduler
             self.executor = self.expert_executor
+            self.dispatcher = self.expert_dispatcher
             self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
@@ -503,36 +516,34 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
-        if self.engine_type == EngineType.HYBRID:
-            assert False, "Hybrid engine is not supported yet"
-        else:
-            self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
-                self.device_id,
-                self.model_config.top_k,
-                self.has_attn,
-                self.has_expert,
-                core_args.expert_wise_schedule,
-                ParallelConfig.from_c(
-                    1, # control the init of attn_scheduler
-                    self.model_config.ep_size,
-                    self.model_config.dp_size,
-                    self.model_config.num_experts_per_rank,
-                    core_args.expert_ranks,
-                ), # parallel config
-                core_args.layer_ids,
-                # P2P Channels
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                [info.to_c() for info in core_args.out_channel_infos],
-                # Group Channels
-                core_args.in_nccl_ids,
-                core_args.out_nccl_ids,
-                # Extra channels for future colocated mode
-                core_args.in_nccl_ids_ext,
-                core_args.out_nccl_ids_ext,
-                # core_args.device_group_ids,
-                core_args.local_attn_dp_rank,
-            )
+        assert self.engine_type != EngineType.HYBRID, "Hybrid engine is not supported yet"
+        self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
+            self.device_id,
+            self.model_config.top_k,
+            self.has_attn,
+            self.has_expert,
+            core_args.expert_wise_schedule,
+            ParallelConfig.from_c(
+                1, # control the init of attn_scheduler
+                self.model_config.ep_size,
+                self.model_config.dp_size,
+                self.model_config.num_experts_per_rank,
+                core_args.expert_ranks,
+            ), # parallel config
+            core_args.layer_ids,
+            # P2P Channels
+            core_args.in_device_ids,
+            core_args.out_device_ids,
+            [info.to_c() for info in core_args.out_channel_infos],
+            # Group Channels
+            core_args.in_nccl_ids,
+            core_args.out_nccl_ids,
+            # Extra channels for future colocated mode
+            # core_args.in_nccl_ids_ext,
+            # core_args.out_nccl_ids_ext,
+            # core_args.device_group_ids,
+            core_args.local_attn_dp_rank,
+        )
             
         if self.has_attn and self._tp_enabled:
             dist.init_process_group(backend="nccl", 
@@ -545,7 +556,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
         
         if self.has_expert:
-            self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
+            self.expert_scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
             
         self.build_executor()
@@ -635,12 +646,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             batch: TensorBatch = TensorBatch_C()
             batch.data = output
             batch.metadata = meta
-                
-        range_push("Engine.stream_sync")
-        with self._timer.range("stream_sync"):
-            self.stream.synchronize()
-        range_pop()
-        dispatcher.put(batch, 0)
+            range_push("Engine.stream_sync")
+            with self._timer.range("stream_sync"):
+                self.stream.synchronize()
+            range_pop()
+            dispatcher.put(batch, 0)
 
     def stats_pre_process(self, batch: TensorBatch):
         # Explicitly select which pool's snapshot to fetch.

@@ -25,11 +25,11 @@ Scheduler::Scheduler(mu_attn_pool_t attn_pool, mu_expert_pool_t expert_pool, std
     attn_pool(attn_pool), expert_pool(expert_pool), layer_ids(layer_ids), policy(policy), max_batch_size(MAX_BATCH_SIZE), cur_queueing_delay(0) {
     if (this->attn_pool && !this->expert_pool) {
         // Hardcode policy to MBFLFS for attention
-        this->layer_scheduler = std::make_shared<LayerScheduler>((int)layer_ids.size(), LayerScheduler::LayerScheduleType::MBFLFS);
+        this->layer_scheduler = std::make_shared<LayerScheduler>(this->attn_pool->get_num_layers(), LayerScheduler::LayerScheduleType::MBFLFS);
         this->attn_pool->set_layer_scheduler(this->layer_scheduler);
     } else if (!this->attn_pool && this->expert_pool) {
         // Hardcode policy to GROUP for experts for now (num_groups=1)
-        this->layer_scheduler = std::make_shared<GroupLayerScheduler>((int)layer_ids.size(), /*num_groups=*/1);
+        this->layer_scheduler = std::make_shared<GroupLayerScheduler>(this->expert_pool->get_num_layers(), /*num_groups=*/1);
         this->expert_pool->set_layer_scheduler(this->layer_scheduler);
     } else if (this->attn_pool && this->expert_pool) {
         // Future: colocated pools goes to this path
@@ -156,12 +156,16 @@ int LayerScheduler::schedule() {
     switch (this->type) {
         case LayerScheduleType::MBFS:
             layer_id = this->_schedule_mbfs();
+            break;
         case LayerScheduleType::FLFS:
             layer_id = this->_schedule_flfs();
+            break;
         case LayerScheduleType::MBFLFS:
             layer_id = this->_schedule_mbflfs();
+            break;
         case LayerScheduleType::MBTFS:
             layer_id = this->_schedule_batches_tokens();
+            break;
         default:
             throw std::runtime_error("Unknown schedule type.");
     }

@@ -257,8 +257,7 @@ class Controller:
                             model_place.expert_ids_at(out),
                             model_place.attn_layer_ids_at(out),
                             model_place.attn_dp_rank_at(out),
-                        )
-                            for out in model_place.out_device_ids.get(device_id, [])
+                        ) for out in model_place.out_device_ids.get(device_id, [])
                     ],
                     in_nccl_ids=in_nccl_ids.get(device_id, {}),
                     out_nccl_ids=out_nccl_ids.get(device_id, {}),
