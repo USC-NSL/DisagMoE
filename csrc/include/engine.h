@@ -10,13 +10,12 @@
 using std::vector;
 using std::string;
 
-// Unified entry point (single Scheduler + Dispatcher)
-// Handles attention-only, expert-only, and colocated (both) cases.
-std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
+std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_dispatcher_t> init_engine(
     int local_id, 
     int top_k,
     bool has_attn,
     bool has_expert,
+    bool expert_wise_schedule,
     ParallelConfig cfg,
     const std::vector<int> &layer_ids,
     // P2P Channels
@@ -26,8 +25,8 @@ std::tuple<scheduler_t, mu_dispatcher_t> init_engine(
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids,
     // Optional extra channels used in colocated mode
-    const std::map<int, std::string> &in_nccl_ids_ext,
-    const std::map<int, std::string> &out_nccl_ids_ext,
+    // const std::map<int, std::string> &in_nccl_ids_ext,
+    // const std::map<int, std::string> &out_nccl_ids_ext,
     int local_attn_dp_rank // DP rank
 );
 
@@ -35,9 +34,6 @@ void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher);
 
 Sampler_t init_sampler(
     int device_id,
-    int min_output_len,
-    int max_output_len,
-    int top_k,
     ParallelConfig cfg,
     const vector<int> &in_device_ids,
     const vector<int> &out_device_ids,

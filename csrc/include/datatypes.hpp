@@ -21,22 +21,34 @@
 
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
-    std::vector<T> res{};
-    res.clear();
-    if (r < 0)
-        r = a.size();
-    if (l == r)
-        return {};
-    if (a.empty())
-        return {};
-    ASSERT(l <= r);
-    ASSERT(r <= a.size());
-    res.reserve(r - l);
-    for (auto i = a.begin() + l; i != a.begin() + r; i ++)
-        res.emplace_back(*i);
+    if (a.empty()) return {};
+    return std::vector<T>(a.begin() + l, a.begin() + r);
+}
+
+template<class T>
+inline std::vector<std::vector<T>> split_vector(const std::vector<T> &vec, const std::vector<int> &indices) {
+    std::vector<std::vector<T>> res{};
+    if (vec.empty()) return {};
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(std::vector<T>(vec.begin() + l, vec.begin() + r));
+    }
     return res;
 }
 
+inline std::vector<torch::Tensor> split_tensor(const torch::Tensor &tensor, const std::vector<int> &indices) {
+    std::vector<torch::Tensor> res{};
+    ASSERT (tensor.size(0) == indices.back());
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(tensor.slice(0, l, r));
+    }
+    return res;
+}
 
 template<class T>
 inline void extend(std::vector<T> &a, const std::vector<T> &other) {
@@ -90,7 +102,6 @@ struct TokenTopKInfo {
     int seq_id;
     int init_prefill_len; // -1 for decoding
     int attn_dp_rank; 
-    std::vector<float> topk_weights;
     std::vector<torch::Tensor> topk_tensors;
 
     TokenTopKInfo() {}
@@ -98,32 +109,22 @@ struct TokenTopKInfo {
     TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank):
         seq_id(seq_id), init_prefill_len(init_prefill_len), attn_dp_rank(attn_dp_rank) {}
 
-    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, float weight, torch::Tensor tensor):
+    TokenTopKInfo(int seq_id, int init_prefill_len, int attn_dp_rank, torch::Tensor tensor):
         seq_id(seq_id), init_prefill_len(init_prefill_len), 
         attn_dp_rank(attn_dp_rank),
-        topk_weights(std::vector<float>{weight}), 
         topk_tensors(std::vector<torch::Tensor>{tensor}) {}
 
     int count() const {
-        ASSERT (topk_weights.size() == 0 || topk_weights.size() == topk_tensors.size());
         return topk_tensors.size();
     }
 
-    void append_tensor(float weight, torch::Tensor tensor) {
-        topk_weights.emplace_back(weight);
+    void append_tensor(torch::Tensor tensor) {
         topk_tensors.emplace_back(tensor);
     }
 
     friend std::ostream& operator<<(std::ostream &out, const TokenTopKInfo& token) {
         out << "TokenTopKInfo{seq_id=" << token.seq_id << ", "
-            << "init_prefill_len=" << token.init_prefill_len << ", "
-            << "topk_weights={";
-        if (token.topk_weights.size() > 0) {
-            out << token.topk_weights[0];
-            for (size_t i = 1; i < token.topk_weights.size(); i ++)
-                out << ", " << token.topk_weights[i];
-        }
-        out << "}";
+            << "init_prefill_len=" << token.init_prefill_len << "}";
         return out;
     }
 };
@@ -140,8 +141,9 @@ struct Metadata {
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
     std::vector<int> attn_dp_ranks;
-    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
+    std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens, 0 for finished requests
     std::vector<float> topk_weights;
+    std::vector<int> max_output_lens; // NOTE: only used by first layer attention to initialize sampler, can be ignored after that
  
     inline size_t num_element() const {
         size_t res = 1;
@@ -169,8 +171,52 @@ struct Metadata {
         return attn_dp_ranks[0];
     }
 
+    inline int get_expert_id() const {
+        // NOTE: this is only used in expert worker,
+        //       caller must make sure all tokens in
+        //       the batch have the same expert id
+        return exp_ids[0];
+    }
+
+    inline std::vector<int> get_expert_seg_indices() const {
+        // NOTE: this is only used in expert worker, 
+        //       caller must make sure all tokens are permuted by expert_id
+        std::vector<int> indices{0};
+        int n = exp_ids.size();
+        for (int i = 1; i < n; i ++) {
+            if (exp_ids[i] != exp_ids[i - 1]) {
+                indices.emplace_back(i);
+            }
+        }
+        indices.emplace_back(n);
+        return indices;
+    }
+
     constexpr size_t get_datatype_size() const {
         return 2; // bf16
+    }
+
+    inline std::vector<metadata_t> split_by_indices(const std::vector<int> &indices) {
+        int n = indices.size() - 1;
+        std::vector<std::vector<int>> split_req_ids = split_vector(req_ids, indices);
+        std::vector<std::vector<int>> split_exp_ids = split_vector(exp_ids, indices);
+        std::vector<std::vector<int>> split_attn_dp_ranks = split_vector(attn_dp_ranks, indices);
+        std::vector<std::vector<int>> split_init_prefill_lens = split_vector(init_prefill_lens, indices);
+        std::vector<std::vector<float>> split_topk_weights = split_vector(topk_weights, indices);
+        std::vector<metadata_t> metas;
+        for (int i = 0; i < n; i ++) {
+            metas.emplace_back(std::make_shared<Metadata>(
+                Metadata {
+                    {split_req_ids[i].size(), shape[1]},
+                    this->dtype, this->layer_id,
+                    split_req_ids[i], split_exp_ids[i],
+                    split_attn_dp_ranks[i],
+                    split_init_prefill_lens[i],
+                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i],
+                }
+            ));
+        }
+        return metas;
     }
 
     inline Metadata slice(int l, int r) {
@@ -190,6 +236,25 @@ struct Metadata {
             slice_vector(init_prefill_lens, l, r),
             sliced_topk_weights,
         };
+    }
+
+    void set_finish_signal(const std::vector<int> &continue_ids) {
+        for (auto &x: init_prefill_lens) {
+            x = 0;
+        }
+        for (auto &x: continue_ids) {
+            init_prefill_lens[x] = -1;
+        }
+    }
+
+    std::vector<int> get_finished_indices() {
+        std::vector<int> finish_indices{};
+        for (size_t i = 0; i < init_prefill_lens.size(); i ++) {
+            if (init_prefill_lens[i] == 0) {
+                finish_indices.emplace_back(i);
+            }
+        }
+        return finish_indices;
     }
 
     inline Metadata at(const std::vector<int>& ids) const {
@@ -220,9 +285,13 @@ struct Metadata {
         };
     }
 
+    metadata_t select_indices(const std::vector<int> &indices) {
+        return std::make_shared<Metadata>(this->at(indices));
+    }
+
     template<class Archive>
     void serialize(Archive &archive) {
-        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights);
+        archive(shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights, max_output_lens);
     }
 
     std::vector<int> get_expert_batch_sizes(int n_expert) {
@@ -468,7 +537,6 @@ struct Metadata {
         int n = tokens.size();
 
         std::vector<int> req_ids, exp_ids, attn_dp_ranks, init_prefill_lens;
-        std::vector<float> topk_weights(n * topk);
         std::vector<size_t> shape = {n * topk, tokens[0].topk_tensors[0].size(0)};
         std::string dtype = "bf16";
 
@@ -478,19 +546,14 @@ struct Metadata {
             exp_ids.push_back(token.init_prefill_len);
             attn_dp_ranks.push_back(token.attn_dp_rank);
             init_prefill_lens.push_back(token.init_prefill_len);
-            for (int k = 0; k < topk; k ++) {
-                topk_weights[k * n + i] = token.topk_weights[k];
-            }
         }
 
         return std::make_shared<Metadata>(Metadata {
-            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
+            shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, {}
         });
     }
 
     std::vector<TokenTopKInfo> unpack_tokens() {
-        ASSERT (topk_weights.size() == 0);
-        int topk = topk_weights.size() / req_ids.size();
         std::vector<TokenTopKInfo> tokens;
         tokens.reserve(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++) {
@@ -503,6 +566,27 @@ struct Metadata {
 struct TensorBatch {
     torch::Tensor data;
     metadata_t metadata;
+
+    static std::vector<TensorBatch> split_by_expert_id(torch::Tensor tensor, metadata_t meta) {
+        // !!! This is only used in experts
+        auto seg_indices = meta->get_expert_seg_indices();
+        int n = seg_indices.size() - 1;
+        if (n == 1) {
+            // only one segment
+            return {TensorBatch{tensor, meta}};
+        }
+        std::vector<TensorBatch> batches;
+        auto metas = meta->split_by_indices(seg_indices);
+        auto tensors = split_tensor(tensor, seg_indices);
+        for (int i = 0; i < n; i++) {
+            batches.emplace_back(TensorBatch{tensors[i], metas[i]});
+        }
+        return batches;
+    }
+
+    std::vector<TensorBatch> split_by_expert_id() {
+        return TensorBatch::split_by_expert_id(this->data, this->metadata);
+    }
 
     // NOTE: merge by exp_ids, this function is only called in expert worker
     static TensorBatch merge(const std::vector<TensorBatch>& batches) {
@@ -606,6 +690,8 @@ struct AttentionBatchMetadata {
     std::vector<float> topk_weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
 
     std::vector<uint8_t> attn_dp_ranks; // per token, length of (num_prefill_seqs + num_decode_tokens)
+
+    std::vector<int> max_output_lens; // NOTE: this is only used when a request first enter attention layer, should be ignored later
 
     constexpr int get_datatype_size() const {
         return 2; // bf16
@@ -721,6 +807,7 @@ struct AttentionBatchMetadata {
         std::vector<int> new_seq_ids{};
         std::vector<uint8_t> new_attn_dp_ranks{};
         std::vector<int> new_init_prefill_lens{};
+        std::vector<int> new_max_output_lens{};
 
         for (auto &batch: batches) {
             new_prefills_seqs += batch->num_prefill_seqs;
@@ -731,6 +818,8 @@ struct AttentionBatchMetadata {
                 new_seq_ids.emplace_back(batch->seq_ids[i]);
                 new_attn_dp_ranks.emplace_back(batch->attn_dp_ranks[i]);
                 new_init_prefill_lens.emplace_back(batch->init_prefill_lens[i]);
+                if (batch->layer_id == 0)
+                    new_max_output_lens.emplace_back(batch->max_output_lens[i]);
             }
         }
 
@@ -757,6 +846,7 @@ struct AttentionBatchMetadata {
                 {}, // expert_ids
                 {}, // topk_weights
                 new_attn_dp_ranks,
+                new_max_output_lens,
             }
         );
     }
@@ -955,7 +1045,7 @@ struct AttentionBatch {
 struct SloStat {
     int req_id;
     clock_t t_prefill;  // time to all finished prefill tokens, in us
-    clock_t t_prefill_std; // the same as t_prefill, but use chrono instead of clock(), in seconds
+    clock_t t_prefill_std; // the same as t_prefill, but use chrono instead of clock(), in miliseconds
     clock_t t_decode;   // time to all finished decode tokens, in us
 
     std::vector<clock_t> t_tokens;

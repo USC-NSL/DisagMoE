@@ -165,6 +165,7 @@ def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int, seq_len: in
         [0] * bs,
         [],
         [0] * bs,
+        [],
         req_indices=list(range(bs)),
         req_indices_tensor=torch.arange(bs, dtype=torch.int32),
         seq_lens=[seq_len] * bs,

@@ -14,3 +14,4 @@ fi
 python benchmark/plotter/output_req.py "$working_dir"
 python benchmark/plotter/sampler_step.py --gap-t 5 "$working_dir"
 python benchmark/plotter/queue_length.py "$working_dir"
+python benchmark/plotter/execution_batch_size.py "$working_dir"

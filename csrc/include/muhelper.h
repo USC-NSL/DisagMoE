@@ -73,6 +73,8 @@ public:
                  std::vector<Channel_t> channels);
 
     void put(TensorBatch batch, int rank = 0);
+
+    virtual void send_to_sampler(TensorBatch batch) { ASSERT (false); }
 };
 
 
@@ -81,6 +83,7 @@ class MuAttnDispatcher: public MuDispatcher {
 protected:
     std::vector<int> exp_channels;
     int max_exp_id;
+    int sampler_channel_id;
 
     std::vector<std::vector<int>> _inner_expert_ranks;
 
@@ -96,13 +99,14 @@ public:
                      ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
+    
+    void send_to_sampler(TensorBatch batch) override;
 };
 
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<std::vector<int>> attn_channel;
-    int sampler_channel_id;
 
     void _send_once(TensorBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
@@ -194,6 +198,10 @@ public:
 
     void set_max_batch_size(int max_batch_size);
 
+    int get_num_layers() { return num_layers; }
+
+    int get_num_groups() { return num_groups; }
+
     /* 
 
     for attention, consider waiting sequences,
@@ -225,6 +233,8 @@ public:
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
 
+    void put_batch(TensorBatch batch);
+
     // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
     void set_layer_scheduler(std::shared_ptr<LayerScheduler> scheduler) { this->layer_scheduler = scheduler; }
     std::shared_ptr<LayerScheduler> get_layer_scheduler() { return this->layer_scheduler; }
@@ -248,20 +258,19 @@ public:
     std::vector<TensorBatch> get_batch_from_layer(int layer_id);
 };
 
-typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
-typedef std::shared_ptr<MuExpertPool> mu_pool_t;  // For backward compatibility
-typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
 
 class MuAttentionPool: public MuPool {
 
 private:
 
+    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+
+protected:
 
     std::vector<std::vector<AttentionBatch>> attn_data_queue;
 
     AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
-
-    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
 
 public:
 
@@ -272,9 +281,9 @@ public:
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );
 
-    virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
+    void put_batch_to_attn_queue(int layer_id, const AttentionBatch &batch);
 
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
+    virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
 
     void terminate() override;
 
@@ -289,7 +298,6 @@ public:
     }
 };
 
-typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
 
 class TokenTopKPool {
 
@@ -312,6 +320,8 @@ public:
 };
 
 class MuAttentionTopKPool: public MuAttentionPool {
+
+private:
 
     int top_k;
 
@@ -338,4 +348,17 @@ public:
 
     std::vector<AttentionBatch> get_batch_from_layer(int layer_id) override;
 
+    std::vector<AttentionBatch> fetch_largest_batch(int *selected_layer_id);
+
 };
+
+typedef std::shared_ptr<MuPool> mu_pool_t;  // For backward compatibility
+typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
+typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
+typedef std::shared_ptr<MuExpertDispatcher> mu_expert_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
+typedef std::shared_ptr<MuAttnDispatcher> mu_attn_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionTopKPool> mu_attn_topk_pool_t;
