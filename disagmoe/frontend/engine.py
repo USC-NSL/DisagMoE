@@ -126,7 +126,7 @@ class AttentionEngineMixin:
                            meta_c: AttentionBatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.seq_ids}")
+        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.seq_ids}")
 
         with self._timer.range("preprocess"):
             meta_py = AttentionBatchMetadata.from_c(meta_c)
@@ -147,7 +147,7 @@ class AttentionEngineMixin:
             
             # TODO: consider the position of this code piece
             if meta_c.layer_id == self.model_total_num_layers:
-                get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {meta_py.seq_ids}")
+                # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {meta_py.seq_ids}")
                 continue_ids, finish_req_ids = self.dummy_sampler.sample_once(meta_py.seq_ids)
                 new_meta = meta_c.to_metadata()
                 continue_meta = new_meta.select_indices(continue_ids)
@@ -342,7 +342,7 @@ class ExpertEngineMixin:
                              meta_c: Metadata, 
                              input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+        # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
         with self._timer.range("preprocess"):
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()

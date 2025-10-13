@@ -189,7 +189,7 @@ void MuAttnDispatcher::send_to_sampler(TensorBatch batch) {
 
 void MuAttnDispatcher::_send_once(TensorBatch batch) {
     tx_range _{"MuAttnDispatcher::_send_once"};
-    DMOE_LOG(INFO) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
+    // DMOE_LOG(INFO) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
     // DMOE_LOG(DEBUG) << "shape size: " << batch.metadata->shape.size()
     //            << " info size: " << batch.metadata->infos.size() << LEND;
 
@@ -559,7 +559,7 @@ MuExpertPool::MuExpertPool(
 }
 
 void MuExpertPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-    DMOE_LOG(INFO) << "expert " << this->device_id << " processing a batch: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "expert " << this->device_id << " processing a batch: " << *meta << LEND;
     int lid = this->layer_id_P2V[meta->layer_id];
     int num_tokens = meta->num_tokens();
 
@@ -640,7 +640,7 @@ void MuAttentionPool::terminate() {
 }
 
 AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t meta) {
-    DMOE_LOG(INFO) << "packing attn batch: " << *meta << LEND;
+    // DMOE_LOG(INFO) << "packing attn batch: " << *meta << LEND;
     ASSERT(meta.get() != nullptr);
 
     auto shape = meta->shape;
