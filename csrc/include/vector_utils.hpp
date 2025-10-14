@@ -6,6 +6,7 @@
 #include <vector>
 #include <cassert>
 #include <utility>
+#include <torch/torch.h>
 
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
@@ -14,11 +15,7 @@ inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
     return std::vector<T>(a.begin() + l, a.begin() + r);
 }
 
-template<class T>
-inline std::optional<std::vector<T>> slice_vector(const std::optional<std::vector<T>> &a, int l, int r) {
-    if (!a.has_value()) return std::nullopt;
-    return slice_vector(*a, l, r);
-}
+
 
 template<class T>
 inline std::vector<T> duplicate_vector(const std::vector<T> &a, int times) {
@@ -30,11 +27,6 @@ inline std::vector<T> duplicate_vector(const std::vector<T> &a, int times) {
     return res;
 }
 
-template<class T>
-inline std::optional<std::vector<T>> duplicate_vector(const std::optional<std::vector<T>> &a, int times) {
-    if (!a.has_value()) return std::nullopt;
-    return duplicate_vector(*a, times);
-}
 
 template<typename T>
 std::vector<T> permute_vector(const std::vector<T> &data, const std::vector<int> &positions) {
@@ -46,17 +38,13 @@ std::vector<T> permute_vector(const std::vector<T> &data, const std::vector<int>
     return result;
 }
 
-template<typename T>
-inline std::optional<std::vector<T>> permute_vector(const std::optional<std::vector<T>> &data, const std::vector<int> &positions) {
-    if (!data.has_value()) return std::nullopt;
-    return permute_vector(*data, positions);
-}
 
 template<class T>
-inline std::vector<std::vector<T>> split_vector(const std::vector<T> &vec, const std::vector<int> &indices) {
+std::vector<std::vector<T>> split_vector_by_indice(const std::vector<T> &vec, const std::vector<int> &indices) {
+    if (vec.empty()) {
+        return std::vector<std::vector<T>>(indices.size() - 1, std::vector<T>());
+    }
     std::vector<std::vector<T>> res{};
-    if (vec.empty()) return {};
-
     for (size_t i = 0; i < indices.size() - 1; i ++) {
         int l = indices[i];
         int r = indices[i + 1];
@@ -66,12 +54,56 @@ inline std::vector<std::vector<T>> split_vector(const std::vector<T> &vec, const
 }
 
 template<class T>
-inline std::optional<std::vector<std::vector<T>>> split_vector(const std::optional<std::vector<T>> &vec, const std::vector<int> &indices) {
-    if (!vec.has_value()) return std::nullopt;
-    return split_vector(*vec, indices);
+std::vector<std::vector<T>> split_vector_by_size(const std::vector<T> &vec, const std::vector<int> &sizes) {
+    if (vec.empty()) {
+        return std::vector<std::vector<T>>(sizes.size(), std::vector<T>());
+    }
+    std::vector<std::vector<T>> res{};
+    int base = 0;
+    for (size_t i = 0; i < sizes.size(); i ++) {
+        res.emplace_back(vec.begin() + base, vec.begin() + base + sizes[i]);
+        base += sizes[i];
+    }
+    return res;
 }
 
-inline std::vector<torch::Tensor> split_tensor(const torch::Tensor &tensor, const std::vector<int> &indices) {
+// NOTE: optional version
+
+template<class T>
+inline std::optional<std::vector<T>> slice_vector(const std::optional<std::vector<T>> &a, int l, int r) {
+    if (!a.has_value()) return std::nullopt;
+    return slice_vector(*a, l, r);
+}
+
+template<class T>
+inline std::optional<std::vector<T>> duplicate_vector(const std::optional<std::vector<T>> &a, int times) {
+    if (!a.has_value()) return std::nullopt;
+    return duplicate_vector(*a, times);
+}
+
+
+template<typename T>
+inline std::optional<std::vector<T>> permute_vector(const std::optional<std::vector<T>> &data, const std::vector<int> &positions) {
+    if (!data.has_value()) return std::nullopt;
+    return permute_vector(*data, positions);
+}
+
+
+template<class T>
+inline std::optional<std::vector<std::vector<T>>> split_vector_by_indice(const std::optional<std::vector<T>> &vec, const std::vector<int> &indices) {
+    if (!vec.has_value()) return std::nullopt;
+    return split_vector_by_indice(*vec, indices);
+}
+
+template<class T>
+inline std::optional<std::vector<std::vector<T>>> split_vector_by_size(const std::optional<std::vector<T>> &vec, const std::vector<int> &sizes) {
+    if (!vec.has_value()) return std::nullopt;
+    return split_vector_by_size(*vec, sizes);
+}
+
+// NOTE: tensor operations, could be moved to another file
+
+inline std::vector<torch::Tensor> split_tensor_by_indice(const torch::Tensor &tensor, const std::vector<int> &indices) {
     std::vector<torch::Tensor> res{};
     ASSERT (tensor.size(0) == indices.back());
 
@@ -81,6 +113,11 @@ inline std::vector<torch::Tensor> split_tensor(const torch::Tensor &tensor, cons
         res.emplace_back(tensor.slice(0, l, r));
     }
     return res;
+}
+
+inline std::vector<torch::Tensor> split_tensor_by_size(const torch::Tensor &tensor, const std::vector<int> &sizes) {
+    std::vector<int64_t> sizes64(sizes.begin(), sizes.end());
+    return torch::split(tensor, sizes64, 0);
 }
 
 #endif

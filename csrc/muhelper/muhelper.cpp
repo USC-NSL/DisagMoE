@@ -851,36 +851,6 @@ std::vector<AttentionBatch> MuAttentionTopKPool::get_batch_from_layer(int layer_
     return {batch};
 }
 
-
-std::vector<AttentionBatch> MuAttentionTopKPool::fetch_largest_batch(int *selected_layer_id) {
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
-
-    if (this->largest_batch_size_ == 0) {
-        if (selected_layer_id)
-            *selected_layer_id = -1;
-        return {};
-    }
-    int id = this->layer_scheduler->schedule();
-    this->tokens_per_layer_[id] = 0;
-    this->num_batches_per_layer_[id] = 0;
-
-    maintain_largest_batch();
-
-    if (selected_layer_id)
-        *selected_layer_id = id;
-
-    int physical_layer = this->layer_id_V2P[id];
-    if (physical_layer == 0) {
-        // for the first layer there is no topk
-        auto batches = std::move(this->attn_data_queue[id]);
-        this->attn_data_queue[id].clear();
-        return batches;
-    }
-    auto batch = AttentionBatch::pack_tokens(physical_layer, this->attn_token_queues[id]);
-    this->attn_token_queues[id].clear();
-    return {batch};
-}
-
 #include <profiler.hpp>
 #include <cstdlib>
 std::shared_mutex Recorder::mtx = std::shared_mutex();

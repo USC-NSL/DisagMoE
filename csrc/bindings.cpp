@@ -171,10 +171,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("update_block_table", &BlockManager::update_block_table)
         .def("prepare_block_table", &BlockManager::prepare_block_table);
 
-    m.def("prepare_batch_infos", &prepare_batch_infos);
+    REGISTER_FUNC(prepare_batch_infos);
 
     // custom ops
-    m.def("permute_tokens_cuda", &permute_tokens_cuda);
+    REGISTER_FUNC(permute_tokens_cuda);
 
     // profiler functions
     m.def("recorder_output", &Recorder::output);
@@ -196,24 +196,17 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("create_channel_py_single", [](int local, int peer, char* uid) {
         return create_channel(local, peer, (void*) uid);
     });
-    m.def("get_nccl_unique_id", &get_nccl_unique_id);
-    m.def("instantiate_channels", &instantiate_channels);
-    m.def("init_engine", &init_engine);
-    m.def("start_engine", &start_engine);
-    m.def("init_sampler", &init_sampler);
-    m.def("init_tokenizer", &init_tokenizer);
+
+    REGISTER_FUNC(get_nccl_unique_id);
+    REGISTER_FUNC(instantiate_channels);
+    REGISTER_FUNC(init_engine);
+    REGISTER_FUNC(start_engine);
+    REGISTER_FUNC(init_sampler);
+    REGISTER_FUNC(init_tokenizer);
     REGISTER_FUNC(set_hosts);
 
     /********
         Test functions
     ********/
-    m.def("test_nccl_p2p", &test_nccl_p2p);
-
-    REGISTER_FUNC(test_op_overlap);
-    // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
-    // m.def("test_attn_dispatcher", &test_attn_dispatcher);
-    // m.def("test_expert_dispatcher", &test_expert_dispatcher);
-    // m.def("test_scheduler", &test_scheduler);
-    // m.def("test_sampler_recv", &test_sampler_recv);
-    // m.def("test_sampler_send", &test_sampler_send);
+    REGISTER_FUNC(test_nccl_p2p);
 }

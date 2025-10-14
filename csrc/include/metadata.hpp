@@ -31,7 +31,8 @@ struct BatchMetadata {
     std::vector<float> topk_weights;
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
-
+    std::vector<int> max_output_lens; // only used at attention layer 0, should be ignored later
+    
     // Only used in attention batch.
     // Note: All metadata operations will ignore these optional fields.
     std::optional<int> num_prefill_tokens;
@@ -43,7 +44,7 @@ struct BatchMetadata {
         archive(
             batch_tag, shape, dtype, layer_id, 
             req_ids, exp_ids, topk_weights, 
-            attn_dp_ranks, init_prefill_lens, 
+            attn_dp_ranks, init_prefill_lens, max_output_lens,
             num_prefill_tokens, num_prefill_seqs, num_decode_tokens
         );
     }
@@ -124,6 +125,21 @@ struct BatchMetadata {
         shape[0] *= topk;
     }
 
+    std::vector<int> get_chunk_size() const {
+        // NOTE: token of same attention or expert must be consecutive
+        std::vector<int> &index_vec = is_expert() ? exp_ids : attn_dp_ranks;
+        std::vector<int> chunk_sizes;
+        int last = 0;
+        for (int i = 1; i < num_tokens(); i ++) {
+            if (index_vec[i] != index_vec[i - 1]) {
+                chunk_sizes.emplace_back(i - last);
+                last = i;
+            }
+        }
+        chunk_sizes.emplace_back(num_tokens() - last);
+        return chunk_sizes;
+    }
+
     std::vector<int> sort_by_attention() {
         // return value: corresponding positions after permutation. 
         //               e.g. positions[i] = j means tokens i should be at position j after permutation.
@@ -177,10 +193,34 @@ struct BatchMetadata {
         permute_token_infos(positions);
         return positions;
     }
-
 };
 
 typedef std::shared_ptr<BatchMetadata> batch_metadata_t;
+
+std::vector<BatchMetadata> split_with_sizes(const BatchMetadata &meta, const std::vector<int> &sizes) {
+    int n = sizes.size();
+    std::vector<std::vector<int>> split_req_ids = split_vector_by_size(meta.req_ids, sizes);
+    std::vector<std::vector<int>> split_exp_ids = split_vector_by_size(meta.exp_ids, sizes);
+    std::vector<std::vector<int>> split_attn_dp_ranks = split_vector_by_size(meta.attn_dp_ranks, sizes);
+    std::vector<std::vector<int>> split_init_prefill_lens = split_vector_by_size(meta.init_prefill_lens, sizes);
+    std::vector<std::vector<float>> split_topk_weights = split_vector_by_size(meta.topk_weights, sizes);
+    std::vector<BatchMetadata> metas;
+    for (int i = 0; i < n; i ++) {
+        metas.emplace_back(
+            BatchMetadata {
+                meta.batch_tag,
+                {sizes[i], meta.shape[1]},
+                meta.dtype, meta.layer_id,
+                split_req_ids[i], 
+                split_exp_ids[i],
+                split_topk_weights[i],
+                split_attn_dp_ranks[i],
+                split_init_prefill_lens[i]
+            }
+        );
+    }
+    return metas;
+}
 
 BatchMetadata merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
     static std::array<int, max_num_experts> expert_cnts;

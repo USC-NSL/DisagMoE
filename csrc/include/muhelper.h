@@ -348,8 +348,6 @@ public:
 
     std::vector<AttentionBatch> get_batch_from_layer(int layer_id) override;
 
-    std::vector<AttentionBatch> fetch_largest_batch(int *selected_layer_id);
-
 };
 
 typedef std::shared_ptr<MuPool> mu_pool_t;  // For backward compatibility

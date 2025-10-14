@@ -174,11 +174,11 @@ struct Metadata {
 
     inline std::vector<metadata_t> split_by_indices(const std::vector<int> &indices) {
         int n = indices.size() - 1;
-        std::vector<std::vector<int>> split_req_ids = split_vector(req_ids, indices);
-        std::vector<std::vector<int>> split_exp_ids = split_vector(exp_ids, indices);
-        std::vector<std::vector<int>> split_attn_dp_ranks = split_vector(attn_dp_ranks, indices);
-        std::vector<std::vector<int>> split_init_prefill_lens = split_vector(init_prefill_lens, indices);
-        std::vector<std::vector<float>> split_topk_weights = split_vector(topk_weights, indices);
+        std::vector<std::vector<int>> split_req_ids = split_vector_by_indice(req_ids, indices);
+        std::vector<std::vector<int>> split_exp_ids = split_vector_by_indice(exp_ids, indices);
+        std::vector<std::vector<int>> split_attn_dp_ranks = split_vector_by_indice(attn_dp_ranks, indices);
+        std::vector<std::vector<int>> split_init_prefill_lens = split_vector_by_indice(init_prefill_lens, indices);
+        std::vector<std::vector<float>> split_topk_weights = split_vector_by_indice(topk_weights, indices);
         std::vector<metadata_t> metas;
         for (int i = 0; i < n; i ++) {
             metas.emplace_back(std::make_shared<Metadata>(
@@ -188,10 +188,9 @@ struct Metadata {
                     this->dtype, this->layer_id,
                     split_req_ids[i], 
                     split_exp_ids[i],
-                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i],
+                    split_topk_weights[i],
                     split_attn_dp_ranks[i],
-                    split_init_prefill_lens[i],
-                    {}
+                    split_init_prefill_lens[i]
                 }
             ));
         }
@@ -534,7 +533,7 @@ struct TensorBatch {
         }
         std::vector<TensorBatch> batches;
         auto metas = meta->split_by_indices(seg_indices);
-        auto tensors = split_tensor(tensor, seg_indices);
+        auto tensors = split_tensor_by_indice(tensor, seg_indices);
         for (int i = 0; i < n; i++) {
             batches.emplace_back(TensorBatch{tensors[i], metas[i]});
         }
