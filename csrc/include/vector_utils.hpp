@@ -52,4 +52,35 @@ inline std::optional<std::vector<T>> permute_vector(const std::optional<std::vec
     return permute_vector(*data, positions);
 }
 
+template<class T>
+inline std::vector<std::vector<T>> split_vector(const std::vector<T> &vec, const std::vector<int> &indices) {
+    std::vector<std::vector<T>> res{};
+    if (vec.empty()) return {};
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(std::vector<T>(vec.begin() + l, vec.begin() + r));
+    }
+    return res;
+}
+
+template<class T>
+inline std::optional<std::vector<std::vector<T>>> split_vector(const std::optional<std::vector<T>> &vec, const std::vector<int> &indices) {
+    if (!vec.has_value()) return std::nullopt;
+    return split_vector(*vec, indices);
+}
+
+inline std::vector<torch::Tensor> split_tensor(const torch::Tensor &tensor, const std::vector<int> &indices) {
+    std::vector<torch::Tensor> res{};
+    ASSERT (tensor.size(0) == indices.back());
+
+    for (size_t i = 0; i < indices.size() - 1; i ++) {
+        int l = indices[i];
+        int r = indices[i + 1];
+        res.emplace_back(tensor.slice(0, l, r));
+    }
+    return res;
+}
+
 #endif

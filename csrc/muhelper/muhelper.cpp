@@ -682,10 +682,10 @@ AttentionBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, metadata_t
         num_prefill_tokens,
         num_decode_tokens,
         seq_ids,
-        init_prefill_lens,
         {}, // expert_ids
         {}, // topk_weights
         attn_dp_ranks,
+        init_prefill_lens,
         max_output_lens
     });
 
@@ -706,34 +706,6 @@ void MuAttentionPool::put_batch_to_attn_queue(int layer_id, const AttentionBatch
 
     this->attn_data_queue[layer_id].push_back(attn_batch);
 }
-
-// void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
-//     // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
-
-//     int lid = this->layer_id_P2V[meta->layer_id];
-//     auto attn_batch = pack_attn_batch(tensor, meta);
-//     int batched_tokens = attn_batch.metadata->num_decode_tokens + attn_batch.metadata->num_prefill_tokens;
-
-//     // {
-//     //     std::lock_guard<std::mutex> lock(this->request_mutex);
-//     //     this->cur_request_count += batched_tokens;
-//     //     this->request_cv.notify_all();
-//     //     DMOE_LOG(WARNING) << "add cur_request_count:" << cur_request_count << " " << batched_tokens << LEND;
-//     // }
-    
-//     {
-//         std::lock_guard<std::mutex> lock(this->batch_mutex);
-//         this->num_batches_per_layer_[lid] += 1;
-//         this->layer_scheduler->add_tokens_to_layer(lid, batched_tokens);
-//         int &tokens_cur_layer = this->tokens_per_layer_[lid];
-//         tokens_cur_layer += batched_tokens;
-//         if (tokens_cur_layer > this->largest_batch_size_) {
-//             this->largest_batch_size_ = tokens_cur_layer;
-//             this->largest_batch_layer_id_ = lid;
-//         }
-
-//     this->attn_data_queue[layer_id].push_back(attn_batch);
-// }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq) {
     // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;

@@ -112,9 +112,9 @@ struct Metadata {
     int layer_id;
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
+    std::vector<float> topk_weights;
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens, 0 for finished requests
-    std::vector<float> topk_weights;
     std::vector<int> max_output_lens; // NOTE: only used by first layer attention to initialize sampler, can be ignored after that
 
     inline BatchTag get_batch_tag() const {
@@ -183,12 +183,15 @@ struct Metadata {
         for (int i = 0; i < n; i ++) {
             metas.emplace_back(std::make_shared<Metadata>(
                 Metadata {
+                    batch_tag,
                     {split_req_ids[i].size(), shape[1]},
                     this->dtype, this->layer_id,
-                    split_req_ids[i], split_exp_ids[i],
+                    split_req_ids[i], 
+                    split_exp_ids[i],
+                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i],
                     split_attn_dp_ranks[i],
                     split_init_prefill_lens[i],
-                    split_topk_weights.empty() ? std::vector<float>{} : split_topk_weights[i],
+                    {}
                 }
             ));
         }
@@ -208,9 +211,9 @@ struct Metadata {
             this->batch_tag, shape, this->dtype, this->layer_id, 
             slice_vector(req_ids, l, r), 
             slice_vector(exp_ids, l, r),
+            sliced_topk_weights,
             slice_vector(attn_dp_ranks, l, r),
             slice_vector(init_prefill_lens, l, r),
-            sliced_topk_weights,
         };
     }
 
@@ -257,7 +260,7 @@ struct Metadata {
             topk_weights_.clear();
         }
         return Metadata {
-            this->batch_tag, shape, this->dtype, this->layer_id, req_ids_, exp_ids_, attn_dp_ranks_, init_prefill_lens_, topk_weights_
+            this->batch_tag, shape, this->dtype, this->layer_id, req_ids_, exp_ids_, topk_weights_, attn_dp_ranks_, init_prefill_lens_
         };
     }
 
@@ -386,7 +389,7 @@ struct Metadata {
             }
         }
         return std::make_shared<Metadata>(Metadata {
-            BatchTag::EXPERT, shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, topk_weights
+            BatchTag::EXPERT, shape, dtype, layer_id, req_ids, exp_ids, topk_weights, attn_dp_ranks, init_prefill_lens, 
         });
     }
 
@@ -486,39 +489,6 @@ struct Metadata {
         return mapping;
     }
 
-    std::pair<metadata_t, metadata_t> split(int p) {
-        ASSERT(p > 0);
-        ASSERT(p < shape[0]);
-        return std::make_pair(
-            std::make_shared<Metadata> (
-                Metadata {
-                    this->batch_tag,
-                    {(size_t) p, shape[1]},
-                    dtype,
-                    layer_id,
-                    slice_vector(req_ids, 0, p),
-                    slice_vector(exp_ids, 0, p),
-                    slice_vector(attn_dp_ranks, 0, p),
-                    slice_vector(init_prefill_lens, 0, p),
-                    topk_weights.empty() ? std::vector<float>{} : slice_vector(topk_weights, 0, p)
-                }
-            ),
-            std::make_shared<Metadata> (
-                Metadata {
-                    this->batch_tag,
-                    {(size_t) (shape[0] - p), shape[1]},
-                    dtype,
-                    layer_id,
-                    slice_vector(req_ids, p, -1),
-                    slice_vector(exp_ids, p, -1),
-                    slice_vector(attn_dp_ranks, p, -1),
-                    slice_vector(init_prefill_lens, p, -1),
-                    topk_weights.empty() ? std::vector<float>{} : slice_vector(topk_weights, p, -1)
-                }
-            )
-        );
-    }
-
     static metadata_t pack_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
         int topk = tokens[0].count();
         int n = tokens.size();
@@ -536,7 +506,7 @@ struct Metadata {
         }
 
         return std::make_shared<Metadata>(Metadata {
-            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids, exp_ids, attn_dp_ranks, init_prefill_lens, {}
+            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids, exp_ids, {}, attn_dp_ranks, init_prefill_lens
         });
     }
 
@@ -670,13 +640,13 @@ struct AttentionBatchMetadata {
 
     std::vector<int> seq_ids; // per seq, length of (num_prefill_seqs + num_decode_tokens)
 
-    std::vector<int> init_prefill_lens; // per perfill seq, length of (num_prefill_seqs)
+    std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
 
     std::vector<float> topk_weights; // optional, length of (num_prefill_tokens + num_decode_tokens) * topk
 
-    std::vector<uint8_t> expert_ids; // optional, per token, length of (num_prefill_tokens + num_decode_tokens)
-
     std::vector<uint8_t> attn_dp_ranks; // per token, length of (num_prefill_seqs + num_decode_tokens)
+
+    std::vector<int> init_prefill_lens; // per perfill seq, length of (num_prefill_seqs)
 
     std::vector<int> max_output_lens; // NOTE: this is only used when a request first enter attention layer, should be ignored later
 
@@ -698,84 +668,6 @@ struct AttentionBatchMetadata {
 
     inline int decode_data_size() const {
         return num_decode_tokens * shape[1] * get_datatype_size();
-    }
-
-    std::pair<attn_metadata_t, attn_metadata_t> split(int p) {
-        /*
-            Split the Metadata into [0, p) and [p, n)
-        */
-
-        ASSERT(num_prefill_tokens == num_prefill_seqs);
-        ASSERT(p > 0);
-        if (p < num_prefill_tokens) {
-            ASSERT(seq_ids.size() >= p);
-            ASSERT(init_prefill_lens.size() >= p);
-            return std::make_pair(
-                std::make_shared<AttentionBatchMetadata> (
-                    AttentionBatchMetadata {
-                        layer_id,
-                        {(size_t) p, shape[1]},
-                        dtype,
-                        p,
-                        p,
-                        0,
-                        slice_vector(seq_ids, 0, p),
-                        slice_vector(init_prefill_lens, 0, p),
-                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
-                        !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
-                        slice_vector(attn_dp_ranks, 0, p)
-                    }
-                ),
-                std::make_shared<AttentionBatchMetadata> (
-                    AttentionBatchMetadata {
-                        layer_id,
-                        {(size_t) (shape[0] - p), shape[1]},
-                        dtype,
-                        num_prefill_seqs - p,
-                        num_prefill_tokens - p,
-                        num_decode_tokens,
-                        slice_vector(seq_ids, p, -1),
-                        slice_vector(init_prefill_lens, p, -1),
-                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
-                        !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
-                        slice_vector(attn_dp_ranks, p, -1)
-                    }
-                )
-            );
-        } else {
-            return std::make_pair(
-                std::make_shared<AttentionBatchMetadata> (
-                    AttentionBatchMetadata {
-                        layer_id,
-                        {(size_t) p, shape[1]},
-                        dtype,
-                        num_prefill_seqs,
-                        num_prefill_tokens,
-                        p - num_prefill_tokens,
-                        slice_vector(seq_ids, 0, p),
-                        init_prefill_lens,
-                        !expert_ids.empty() ? slice_vector(expert_ids, 0, p) : std::vector<uint8_t>{},
-                        !topk_weights.empty() ? slice_vector(topk_weights, 0, p) : std::vector<float>{},
-                        slice_vector(attn_dp_ranks, 0, p),
-                    }
-                ),
-                std::make_shared<AttentionBatchMetadata> (
-                    AttentionBatchMetadata {
-                        layer_id,
-                        {(size_t) (shape[0] - p), shape[1]},
-                        dtype,
-                        0,
-                        0,
-                        num_decode_tokens - (p - num_prefill_tokens),
-                        slice_vector(seq_ids, p, -1),
-                        std::vector<int>{},
-                        !expert_ids.empty() ? slice_vector(expert_ids, p, -1) : std::vector<uint8_t>{},
-                        !topk_weights.empty() ? slice_vector(topk_weights, p, -1) : std::vector<float>{},
-                        slice_vector(attn_dp_ranks, p, -1)
-                    }
-                )
-            );
-        }
     }
 
     void shrink_topk(int topk) {
@@ -829,10 +721,10 @@ struct AttentionBatchMetadata {
                 new_prefill_tokens,
                 new_decode_tokens,
                 new_seq_ids,
-                new_init_prefill_lens,
                 {}, // expert_ids
                 {}, // topk_weights
                 new_attn_dp_ranks,
+                new_init_prefill_lens,
                 new_max_output_lens,
             }
         );
@@ -875,10 +767,10 @@ struct AttentionBatchMetadata {
                 new_prefill_tokens,
                 new_decode_tokens,
                 new_seq_ids,
-                new_init_prefill_lens,
                 {}, // expert_ids
                 {}, // topk_weights
-                attn_dp_ranks // attn_dp_ranks
+                attn_dp_ranks, // attn_dp_ranks
+                new_init_prefill_lens // init_prefill_lens
             }
         );
     }
@@ -909,7 +801,7 @@ struct AttentionBatchMetadata {
         }
         
         return std::make_shared<Metadata>(Metadata {
-            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids_, {}, attn_dp_ranks_, init_prefill_lens_
+            BatchTag::ATTENTION, shape, dtype, layer_id, req_ids_, {}, {}, attn_dp_ranks_, init_prefill_lens_
         });
     }
 };
