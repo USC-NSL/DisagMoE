@@ -16,8 +16,5 @@ for working_dir in "${working_dirs[@]}"; do
     if [[ ! -d "$working_dir" ]]; then
         continue
     fi
-    python benchmark/plotter/output_req.py "$working_dir"
-    python benchmark/plotter/sampler_step.py --gap-t 5 "$working_dir"
-    python benchmark/plotter/queue_length.py "$working_dir"
-
+    bash benchmark/plotter/plot_trace.sh "$working_dir"
 done
