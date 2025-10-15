@@ -27,6 +27,11 @@ inline torch::Tensor torch_tensor_slice(torch::Tensor tensor, const std::vector<
     });
 }
 
+inline at::cuda::CUDAStream get_new_torch_stream() {
+    at::cuda::CUDAStream c10_stream = at::cuda::getStreamFromPool(true, -1);
+    return c10_stream;
+}
+
 inline uintptr_t tensor_at(uintptr_t buf, const Metadata& metadata, int i) {
     return buf + i * metadata.num_element() / metadata.num_tokens() * metadata.get_datatype_size();
 }

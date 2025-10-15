@@ -6,7 +6,6 @@
 #include <vector>
 #include <cassert>
 #include <utility>
-#include <torch/torch.h>
 
 template<class T>
 inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
@@ -14,8 +13,6 @@ inline std::vector<T> slice_vector(const std::vector<T> &a, int l, int r) {
     ASSERT(l <= r && l >= 0 && r <= a.size());
     return std::vector<T>(a.begin() + l, a.begin() + r);
 }
-
-
 
 template<class T>
 inline std::vector<T> duplicate_vector(const std::vector<T> &a, int times) {
@@ -27,7 +24,6 @@ inline std::vector<T> duplicate_vector(const std::vector<T> &a, int times) {
     return res;
 }
 
-
 template<typename T>
 std::vector<T> permute_vector(const std::vector<T> &data, const std::vector<int> &positions) {
     if (data.empty()) return {};
@@ -38,9 +34,9 @@ std::vector<T> permute_vector(const std::vector<T> &data, const std::vector<int>
     return result;
 }
 
-
 template<class T>
 std::vector<std::vector<T>> split_vector_by_indice(const std::vector<T> &vec, const std::vector<int> &indices) {
+    // NOTE: will split to [indices[0], indices[1]), [indices[1], indices[2]), ..., [indices[n-1], indices[n])
     if (vec.empty()) {
         return std::vector<std::vector<T>>(indices.size() - 1, std::vector<T>());
     }
@@ -99,25 +95,6 @@ template<class T>
 inline std::optional<std::vector<std::vector<T>>> split_vector_by_size(const std::optional<std::vector<T>> &vec, const std::vector<int> &sizes) {
     if (!vec.has_value()) return std::nullopt;
     return split_vector_by_size(*vec, sizes);
-}
-
-// NOTE: tensor operations, could be moved to another file
-
-inline std::vector<torch::Tensor> split_tensor_by_indice(const torch::Tensor &tensor, const std::vector<int> &indices) {
-    std::vector<torch::Tensor> res{};
-    ASSERT (tensor.size(0) == indices.back());
-
-    for (size_t i = 0; i < indices.size() - 1; i ++) {
-        int l = indices[i];
-        int r = indices[i + 1];
-        res.emplace_back(tensor.slice(0, l, r));
-    }
-    return res;
-}
-
-inline std::vector<torch::Tensor> split_tensor_by_size(const torch::Tensor &tensor, const std::vector<int> &sizes) {
-    std::vector<int64_t> sizes64(sizes.begin(), sizes.end());
-    return torch::split(tensor, sizes64, 0);
 }
 
 #endif

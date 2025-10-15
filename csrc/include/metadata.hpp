@@ -15,10 +15,13 @@
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/map.hpp>
-#include <torch/torch.h>
 
 constexpr int max_num_experts = 32;
 constexpr int max_num_attn_dp_ranks = 32;
+
+struct BatchMetadata;
+
+typedef std::shared_ptr<BatchMetadata> batch_metadata_t;
 
 struct BatchMetadata {
     BatchTag batch_tag;
@@ -74,6 +77,22 @@ struct BatchMetadata {
         return shape[0];
     }
 
+    inline int token_hidden_dim() const {
+        return shape[1];
+    }
+
+    inline int get_datatype_size() const {
+        return 2; // bf16
+    }
+
+    inline int prefill_data_size() const {
+        return num_prefill_tokens.value() * shape[1] * get_datatype_size(); 
+    }
+
+    inline int decode_data_size() const {
+        return num_decode_tokens.value() * shape[1] * get_datatype_size();
+    }
+
     inline void step_layer() {
         this->layer_id ++;
     }
@@ -90,18 +109,6 @@ struct BatchMetadata {
             slice_vector(attn_dp_ranks, l, r),
             slice_vector(init_prefill_lens, l, r),
         };
-    }
-
-    std::vector<BatchMetadata> split(const std::vector<int> &positions) {
-        // Note: will split to [0, positions[0]), [positions[0], positions[1]), ..., [positions[n-1], n)
-        std::vector<BatchMetadata> res;
-        int start = 0;
-        for (int i = 0; i < positions.size(); i++) {
-            res.push_back(this->slice(start, positions[i]));
-            start = positions[i];
-        }
-        res.push_back(this->slice(start, this->num_tokens()));
-        return res;
     }
 
     void permute_token_infos(const std::vector<int> &positions) {
@@ -125,7 +132,7 @@ struct BatchMetadata {
         shape[0] *= topk;
     }
 
-    std::vector<int> get_chunk_size() const {
+    std::vector<int> get_chunk_sizes() const {
         // NOTE: token of same attention or expert must be consecutive
         std::vector<int> &index_vec = is_expert() ? exp_ids : attn_dp_ranks;
         std::vector<int> chunk_sizes;
@@ -193,24 +200,34 @@ struct BatchMetadata {
         permute_token_infos(positions);
         return positions;
     }
+
+    std::vector<BatchMetadata> split_with_sizes(const std::vector<int> &sizes);
+
+    std::vector<BatchMetadata> split_by_indices(const std::vector<int> &positions);
+
+    static batch_metadata_t merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions);
+
+    static batch_metadata_t merge_by_attention(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions);
+
+    static batch_metadata_t pack_topk_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens);
 };
 
-typedef std::shared_ptr<BatchMetadata> batch_metadata_t;
 
-std::vector<BatchMetadata> split_with_sizes(const BatchMetadata &meta, const std::vector<int> &sizes) {
+std::vector<BatchMetadata> BatchMetadata::split_with_sizes(const std::vector<int> &sizes) {
+    // NOTE: this will only be called for expert batch, so we don't need to consider optional fields
     int n = sizes.size();
-    std::vector<std::vector<int>> split_req_ids = split_vector_by_size(meta.req_ids, sizes);
-    std::vector<std::vector<int>> split_exp_ids = split_vector_by_size(meta.exp_ids, sizes);
-    std::vector<std::vector<int>> split_attn_dp_ranks = split_vector_by_size(meta.attn_dp_ranks, sizes);
-    std::vector<std::vector<int>> split_init_prefill_lens = split_vector_by_size(meta.init_prefill_lens, sizes);
-    std::vector<std::vector<float>> split_topk_weights = split_vector_by_size(meta.topk_weights, sizes);
+    std::vector<std::vector<int>> split_req_ids = split_vector_by_size(this->req_ids, sizes);
+    std::vector<std::vector<int>> split_exp_ids = split_vector_by_size(this->exp_ids, sizes);
+    std::vector<std::vector<int>> split_attn_dp_ranks = split_vector_by_size(this->attn_dp_ranks, sizes);
+    std::vector<std::vector<int>> split_init_prefill_lens = split_vector_by_size(this->init_prefill_lens, sizes);
+    std::vector<std::vector<float>> split_topk_weights = split_vector_by_size(this->topk_weights, sizes);
     std::vector<BatchMetadata> metas;
     for (int i = 0; i < n; i ++) {
         metas.emplace_back(
             BatchMetadata {
-                meta.batch_tag,
-                {sizes[i], meta.shape[1]},
-                meta.dtype, meta.layer_id,
+                this->batch_tag,
+                {sizes[i], this->shape[1]},
+                this->dtype, this->layer_id,
                 split_req_ids[i], 
                 split_exp_ids[i],
                 split_topk_weights[i],
@@ -222,7 +239,16 @@ std::vector<BatchMetadata> split_with_sizes(const BatchMetadata &meta, const std
     return metas;
 }
 
-BatchMetadata merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
+std::vector<BatchMetadata> BatchMetadata::split_by_indices(const std::vector<int> &positions) {
+    // Note: will split to [positions[0], positions[1]), [positions[1], positions[2]), ..., [positions[n-1], positions[n])
+    std::vector<int> sizes(positions.size() - 1);
+    for (int i = 0; i < positions.size() - 1; i++) {
+        sizes[i] = positions[i + 1] - positions[i];
+    }
+    return this->split_with_sizes(sizes);
+}
+
+batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
     static std::array<int, max_num_experts> expert_cnts;
 
     expert_cnts.fill(0);
@@ -268,7 +294,7 @@ BatchMetadata merge_by_expert(const std::vector<batch_metadata_t> &metas, std::v
             idx ++;
         }
     }
-    return BatchMetadata {
+    return std::make_shared<BatchMetadata>(BatchMetadata {
         BatchTag::EXPERT, 
         shape, 
         dtype, 
@@ -278,10 +304,10 @@ BatchMetadata merge_by_expert(const std::vector<batch_metadata_t> &metas, std::v
         topk_weights, 
         attn_dp_ranks, 
         init_prefill_lens 
-    };
+    });
 }
 
-BatchMetadata merge_by_attention(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
+batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batch_metadata_t> &metas) {
     int new_prefills_seqs = 0;
     int new_prefill_tokens = 0;
     int new_decode_tokens = 0;
@@ -310,7 +336,7 @@ BatchMetadata merge_by_attention(const std::vector<batch_metadata_t> &metas, std
     for (int i = 1; i < metas.size(); i ++)
         new_shape[0] += metas[i]->shape[0];
 
-    return BatchMetadata {
+    return std::make_shared<BatchMetadata>(BatchMetadata {
         BatchTag::ATTENTION,
         new_shape,
         metas[0]->dtype,
@@ -320,10 +346,57 @@ BatchMetadata merge_by_attention(const std::vector<batch_metadata_t> &metas, std
         {}, // topk_weights
         {}, // attn_dp_ranks
         new_init_prefill_lens,
+        {}, // max_output_lens
         new_prefills_seqs,
         new_prefill_tokens,
         new_decode_tokens
-    };
+    });
+}
+
+batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+    int new_prefill_seqs = 0;
+    int new_prefill_tokens = 0
+    int new_decode_tokens = 0;
+
+    int topk = tokens[0].count();
+    int n = tokens.size();
+
+    std::vector<int> new_req_ids{};
+    std::vector<int> new_init_prefill_lens{};
+    std::vector<uint8_t> attn_dp_ranks{};
+
+    for (int i = 0; i < n; i++) {
+        auto &token = tokens[i];
+        new_req_ids.emplace_back(token.seq_id);
+        attn_dp_ranks.emplace_back(token.attn_dp_rank);
+        if (token.init_prefill_len == -1) {
+            new_decode_tokens ++;
+        } else {
+            new_prefill_tokens ++;
+            new_prefill_seqs ++;
+            new_init_prefill_lens.emplace_back(token.init_prefill_len);
+        }
+    }
+
+    std::vector<size_t> new_shape{n * topk, tokens[0].topk_tensors[0].size(-1)};
+
+    return std::make_shared<BatchMetadata> (
+        BatchMetadata {
+            BatchTag::ATTENTION,
+            new_shape,
+            "bf16",
+            layer_id,
+            new_req_ids,
+            {}, // exp_ids
+            {}, // topk_weights
+            attn_dp_ranks, // attn_dp_ranks
+            new_init_prefill_lens, // init_prefill_lens
+            {}, // max_output_lens
+            new_prefill_seqs,
+            new_prefill_tokens,
+            new_decode_tokens,
+        }
+    );
 }
 
 #endif
