@@ -4,7 +4,6 @@
 #define METADATA_H_
 
 #include "datatypes.hpp"
-#include "utils.hpp"
 #include "vector_utils.hpp"
 
 #include <vector>
@@ -12,9 +11,11 @@
 #include <optional>
 #include <memory>
 
+#include "nccl.h"
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/map.hpp>
+#include <cereal/types/optional.hpp>
 
 constexpr int max_num_experts = 32;
 constexpr int max_num_attn_dp_ranks = 32;
@@ -32,14 +33,15 @@ struct BatchMetadata {
     std::vector<int> req_ids;
     std::vector<int> exp_ids;
     std::vector<float> topk_weights;
+
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
     std::vector<int> max_output_lens; // only used at attention layer 0, should be ignored later
     
     // Only used in attention batch.
     // Note: All metadata operations will ignore these optional fields.
-    std::optional<int> num_prefill_tokens;
     std::optional<int> num_prefill_seqs;
+    std::optional<int> num_prefill_tokens;
     std::optional<int> num_decode_tokens;
 
     template<class Archive>
@@ -81,8 +83,19 @@ struct BatchMetadata {
         return shape[1];
     }
 
+    inline size_t num_element() const {
+        size_t res = 1;
+        for (size_t s: this->shape)
+            res *= s;
+        return res;
+    }
+
     inline int get_datatype_size() const {
         return 2; // bf16
+    }
+
+    inline ncclDataType_t get_nccl_datatype() const {
+        return ncclBfloat16;
     }
 
     inline int prefill_data_size() const {
@@ -93,8 +106,35 @@ struct BatchMetadata {
         return num_decode_tokens.value() * shape[1] * get_datatype_size();
     }
 
+    inline int get_expert_id() const {
+        // NOTE: this is only used in expert worker,
+        //       caller must make sure all tokens in
+        //       the batch have the same expert id
+        return exp_ids[0];
+    }
+
+
     inline void step_layer() {
         this->layer_id ++;
+    }
+
+    void set_finish_signal(const std::vector<int> &continue_ids) {
+        for (auto &x: init_prefill_lens) {
+            x = 0;
+        }
+        for (auto &x: continue_ids) {
+            init_prefill_lens[x] = -1;
+        }
+    }
+
+    std::vector<int> get_finished_indices() {
+        std::vector<int> finish_indices{};
+        for (size_t i = 0; i < init_prefill_lens.size(); i ++) {
+            if (init_prefill_lens[i] == 0) {
+                finish_indices.emplace_back(i);
+            }
+        }
+        return finish_indices;
     }
 
     BatchMetadata slice(int l, int r) {
@@ -132,7 +172,7 @@ struct BatchMetadata {
         shape[0] *= topk;
     }
 
-    std::vector<int> get_chunk_sizes() const {
+    std::vector<int> get_chunk_sizes() {
         // NOTE: token of same attention or expert must be consecutive
         std::vector<int> &index_vec = is_expert() ? exp_ids : attn_dp_ranks;
         std::vector<int> chunk_sizes;
@@ -207,13 +247,13 @@ struct BatchMetadata {
 
     static batch_metadata_t merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions);
 
-    static batch_metadata_t merge_by_attention(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions);
+    static batch_metadata_t merge_by_attention(const std::vector<batch_metadata_t> &metas);
 
     static batch_metadata_t pack_topk_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens);
 };
 
 
-std::vector<BatchMetadata> BatchMetadata::split_with_sizes(const std::vector<int> &sizes) {
+inline std::vector<BatchMetadata> BatchMetadata::split_with_sizes(const std::vector<int> &sizes) {
     // NOTE: this will only be called for expert batch, so we don't need to consider optional fields
     int n = sizes.size();
     std::vector<std::vector<int>> split_req_ids = split_vector_by_size(this->req_ids, sizes);
@@ -239,7 +279,7 @@ std::vector<BatchMetadata> BatchMetadata::split_with_sizes(const std::vector<int
     return metas;
 }
 
-std::vector<BatchMetadata> BatchMetadata::split_by_indices(const std::vector<int> &positions) {
+inline std::vector<BatchMetadata> BatchMetadata::split_by_indices(const std::vector<int> &positions) {
     // Note: will split to [positions[0], positions[1]), [positions[1], positions[2]), ..., [positions[n-1], positions[n])
     std::vector<int> sizes(positions.size() - 1);
     for (int i = 0; i < positions.size() - 1; i++) {
@@ -248,7 +288,7 @@ std::vector<BatchMetadata> BatchMetadata::split_by_indices(const std::vector<int
     return this->split_with_sizes(sizes);
 }
 
-batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
+inline batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_metadata_t> &metas, std::vector<int> &positions) {
     static std::array<int, max_num_experts> expert_cnts;
 
     expert_cnts.fill(0);
@@ -307,7 +347,7 @@ batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_metadata
     });
 }
 
-batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batch_metadata_t> &metas) {
+inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batch_metadata_t> &metas) {
     int new_prefills_seqs = 0;
     int new_prefill_tokens = 0;
     int new_decode_tokens = 0;
@@ -353,9 +393,9 @@ batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batch_metad
     });
 }
 
-batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
+inline batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std::vector<TokenTopKInfo>& tokens) {
     int new_prefill_seqs = 0;
-    int new_prefill_tokens = 0
+    int new_prefill_tokens = 0;
     int new_decode_tokens = 0;
 
     int topk = tokens[0].count();
@@ -363,7 +403,7 @@ batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std::vector
 
     std::vector<int> new_req_ids{};
     std::vector<int> new_init_prefill_lens{};
-    std::vector<uint8_t> attn_dp_ranks{};
+    std::vector<int> attn_dp_ranks{};
 
     for (int i = 0; i < n; i++) {
         auto &token = tokens[i];

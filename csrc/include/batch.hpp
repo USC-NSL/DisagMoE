@@ -7,13 +7,14 @@
 #include "metadata.hpp"
 #include "vector_utils.hpp"
 #include "tensor_utils.hpp"
+#include "utils.hpp"
 
 #include <torch/torch.h>
 #include <memory>
 
 struct TokenBatch {
     torch::Tensor data;
-    metadata_t metadata;
+    batch_metadata_t metadata;
 
     std::vector<TokenBatch> split_by_expert() {
         auto chunk_sizes = metadata->get_chunk_sizes();
@@ -26,7 +27,7 @@ struct TokenBatch {
         return batches;
     }
 
-    static TokenBatch merge_by_expert(const std::vector<TokenBatch>& batches) {
+    inline static TokenBatch merge_by_expert(const std::vector<TokenBatch>& batches) {
         if (batches.empty()) {
             return TokenBatch {};
         }
@@ -37,7 +38,7 @@ struct TokenBatch {
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
 
-        std::vector<metadata_t> metas(batches.size());
+        std::vector<batch_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
         }
@@ -72,7 +73,7 @@ struct TokenBatch {
         return TokenBatch {merged_tokens, merged_meta};
     }
 
-    static TokenBatch merge_by_attention(const std::vector<TokenBatch>& batches) {
+    inline static TokenBatch merge_by_attention(const std::vector<TokenBatch>& batches) {
         if (batches.empty()) {
             return TokenBatch {};
         }
@@ -84,7 +85,7 @@ struct TokenBatch {
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
 
-        std::vector<metadata_t> metas(batches.size());
+        std::vector<batch_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
         }
@@ -128,7 +129,7 @@ struct TokenBatch {
         return TokenBatch {merged_tokens, merged_meta};
     }
 
-    static TokenBatch pack_topk_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
+    inline static TokenBatch pack_topk_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {
                 if (a.init_prefill_len == -1 || b.init_prefill_len == -1) {
@@ -162,6 +163,6 @@ struct TokenBatch {
         
         return TokenBatch{gathered_topk_tensor, meta};
     }
-}
+};
 
 #endif

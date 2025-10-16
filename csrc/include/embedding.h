@@ -47,7 +47,7 @@ public:
             std::vector<Channel_t> out_channels,
             std::vector<ChannelInfo> out_channel_infos);
 
-    int process_batch(torch::Tensor data, metadata_t meta);
+    int process_batch(torch::Tensor data, batch_metadata_t meta);
 
     void start();
 

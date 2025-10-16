@@ -58,7 +58,7 @@ void Sampler::run() {
         // DMOE_LOG(WARNING) << "sampler got msg !!!" << LEND;
         ASSERT(*result == 2);
         int peer_id = std::stoi(recv_msgs[0].to_string());
-        auto metadata = decerealize<Metadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        auto metadata = decerealize<BatchMetadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
         torch::Tensor tensor = torch::empty(
             {metadata->num_tokens(), metadata->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)
@@ -83,7 +83,7 @@ void Sampler::run() {
     }
 }
 
-int Sampler::process_batch(torch::Tensor tensor, metadata_t meta) {
+int Sampler::process_batch(torch::Tensor tensor, batch_metadata_t meta) {
     std::lock_guard<std::mutex> _(this->result_lock);
     // DMOE_LOG(WARNING) << "processing batch:" << *meta << ", with shape: " << tensor.sizes()[0] << ", " << tensor.sizes()[1] << LEND;
     int num_tokens = meta->req_ids.size();
@@ -165,18 +165,19 @@ void Tokenizer::put_request(int req_id, int init_prefill_len, int max_output_len
     // TODO(hogura|20241007): set the first attn
     ASSERT (tensor.dim() == 2);
     std::vector<size_t> shape{tensor.size(0), tensor.size(1)};
-    auto meta_t = std::make_shared<Metadata>(Metadata {
+    auto meta_t = std::make_shared<BatchMetadata>(BatchMetadata {
         BatchTag::TOKENIZER,
         shape, 
         "bf16", 
         /*layer_id=*/ 0, 
         /*req_id=*/ {req_id},
         /*exp_ids=*/ {-1},
+        /*topk_weights=*/ {1.0},
         /*attn_ids=*/ {dp_rank},
         /*init_prefill_lens=*/ {init_prefill_len},
+        /*max_output_lens=*/ {max_output_len},
     });
-    meta_t->max_output_lens = std::vector<int> {max_output_len};
-    this->put(TensorBatch {tensor.clone().detach(), meta_t}, 0);
+    this->put(TokenBatch {tensor.clone().detach(), meta_t}, 0);
 }
 
 void Tokenizer::start() {
