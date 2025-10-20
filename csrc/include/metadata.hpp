@@ -127,6 +127,27 @@ struct BatchMetadata {
         }
     }
 
+    std::vector<int> get_expert_batch_sizes(int n_expert) {
+        ASSERT(n_expert > 0);
+        std::vector<int> batches(n_expert, 0);
+        for (int eid: exp_ids)
+            batches[eid] += 1;
+        return batches;
+    }
+
+    void get_expert_batch_sizes_cuda(int n_expert, const std::vector<int> &inner_exp_rank, torch::Tensor tensor_cuda, uintptr_t stream_ptr) {
+        AUTO_TX_RANGE;
+        ASSERT(n_expert > 0);
+        auto batch_sizes = get_expert_batch_sizes(n_expert);
+        int64_t batches[MAX_N_EXPERTS];
+        int m = inner_exp_rank.size();
+        for (int i = 0; i < m; i ++) {
+            ASSERT(0 <= inner_exp_rank[i] && inner_exp_rank[i] < n_expert);
+            batches[i] = batch_sizes[inner_exp_rank[i]];
+        }
+        CUDACHECK(cudaMemcpyAsync(tensor_cuda.data_ptr(), batches, m * sizeof(int64_t), cudaMemcpyHostToDevice, cudaStream_t(stream_ptr)));
+    }
+
     std::vector<int> get_finished_indices() {
         std::vector<int> finish_indices{};
         for (size_t i = 0; i < init_prefill_lens.size(); i ++) {
@@ -398,7 +419,6 @@ inline batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std:
     int new_prefill_tokens = 0;
     int new_decode_tokens = 0;
 
-    int topk = tokens[0].count();
     int n = tokens.size();
 
     std::vector<int> new_req_ids{};
@@ -418,7 +438,7 @@ inline batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std:
         }
     }
 
-    std::vector<size_t> new_shape{n * topk, tokens[0].topk_tensors[0].size(-1)};
+    std::vector<size_t> new_shape{n, tokens[0].topk_tensors[0].size(-1)};
 
     return std::make_shared<BatchMetadata> (
         BatchMetadata {

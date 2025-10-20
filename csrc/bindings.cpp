@@ -23,12 +23,6 @@ PYBIND11_MAKE_OPAQUE(std::map<std::pair<int, int>, int>);
 namespace py = pybind11;
 
 PYBIND11_MODULE(disagmoe_c, m) {
-    // Bind the BatchTag enum
-    py::enum_<BatchTag>(m, "BatchTag")
-        .value("ATTENTION", BatchTag::ATTENTION)
-        .value("EXPERT", BatchTag::EXPERT)
-        .value("TOKENIZER", BatchTag::TOKENIZER);
-
     py::class_<MuHelper, std::shared_ptr<MuHelper>>(m, "MuHelper")
         .def("start", &MuHelper::start)
         .def("terminate", &MuHelper::terminate);
@@ -106,7 +100,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<BatchMetadata, std::shared_ptr<BatchMetadata>>(m, "BatchMetadata")
         .def(py::init<>())
-        .def_readwrite("batch_tag", &BatchMetadata::batch_tag)
         .def_readwrite("shape", &BatchMetadata::shape)
         .def_readwrite("dtype", &BatchMetadata::dtype)
         .def_readwrite("layer_id", &BatchMetadata::layer_id)
@@ -126,6 +119,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("token_hidden_dim", &BatchMetadata::token_hidden_dim)
         .def("step_layer", &BatchMetadata::step_layer)
         .def("set_finish_signal", &BatchMetadata::set_finish_signal)
+        .def("get_expert_batch_sizes", &BatchMetadata::get_expert_batch_sizes)
+        .def("get_expert_batch_sizes_cuda", &BatchMetadata::get_expert_batch_sizes_cuda)
         .def("get_finished_indices", &BatchMetadata::get_finished_indices)
         .def("permute_token_infos", &BatchMetadata::permute_token_infos)
         .def("duplicate_topk", &BatchMetadata::duplicate_topk)

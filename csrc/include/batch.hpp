@@ -159,9 +159,10 @@ struct TokenBatch {
                 src_ptrs[k * n + i] = (uintptr_t) tokens[i].topk_tensors[k].data_ptr();
             }
         }
+        // TODO: Fuse gather and sum
         gather_tokens_cuda(gathered_topk_tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream.stream());
-        
-        return TokenBatch{gathered_topk_tensor, meta};
+        auto aggregated_tokens_tensor = torch::sum(gathered_topk_tensor.view({n, topk, -1}), 1);
+        return TokenBatch{aggregated_tokens_tensor, meta};
     }
 };
 
