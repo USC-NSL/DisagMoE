@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <cassert>
 
 namespace ucxq {
 
@@ -255,21 +256,22 @@ void FanInQueueReceiver::progressThread() {
                 if (status == UCS_OK) {
                     Message m;
                     m.data = std::move(*buf);
+                    bool enqueued = false;
                     for (int spin = 0; spin < 64; ++spin) {
                         if (q_.try_enqueue(std::move(m))) {
+                            enqueued = true;
                             break;
                         }
                         std::this_thread::yield();
                     }
+                    assert(enqueued && "ucxq FanInQueueReceiver queue overflow (progressThread)");
                 }
                 delete buf;
                 delete ctx;
             }
         }
 
-        if (ucp_worker_progress(worker_) == 0) {
-            std::this_thread::yield();
-        }
+        ucp_worker_progress(worker_); // drive the worker
     }
 }
 
@@ -281,12 +283,15 @@ void FanInQueueReceiver::onRecvCallback(void* request, ucs_status_t status, cons
     if (status == UCS_OK) {
         Message m;
         m.data = std::move(*buf);
+        bool enqueued = false;
         for (int spin = 0; spin < 64; ++spin) {
             if (self->q_.try_enqueue(std::move(m))) {
+                enqueued = true;
                 break;
             }
             std::this_thread::yield();
         }
+        assert(enqueued && "ucxq FanInQueueReceiver queue overflow (onRecvCallback)");
     }
 
     delete buf;
@@ -301,7 +306,6 @@ bool FanInQueueReceiver::dequeue(Message& out) {
         if (q_.try_dequeue(out)) {
             return true;
         }
-        std::this_thread::yield();
     }
     return q_.try_dequeue(out);
 }
