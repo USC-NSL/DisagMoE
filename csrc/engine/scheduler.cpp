@@ -85,29 +85,27 @@ void Scheduler::set_schedule_block(int step) {
     this->layer_scheduler->set_block_size(step);
 }
 
-TensorBatch Scheduler::schedule_expert() {
+TokenBatch Scheduler::schedule_expert() {
     tx_range _{"Scheduler::schedule_expert"};
-    if (!this->expert_pool) return TensorBatch{};
+    if (!this->expert_pool) return TokenBatch{};
     std::lock_guard lock(this->mutex);
     this->pool_snapshot_ = expert_pool->get_pool_snapshot();
     int id = this->layer_scheduler->schedule();
     auto batches = expert_pool->get_batch_from_layer(id);
-    auto batch = TensorBatch::merge(batches);
+    auto batch = TokenBatch::merge_by_expert(batches);
     return batch;
 }
 
-AttentionBatch Scheduler::schedule_attention() {
+TokenBatch Scheduler::schedule_attention() {
     tx_range _{"Scheduler::schedule_attention"};
-    if (!this->attn_pool) return AttentionBatch{};
+    if (!this->attn_pool) return TokenBatch{};
     std::lock_guard lock(this->mutex);
     this->pool_snapshot_ = attn_pool->get_pool_snapshot();
     int id = this->layer_scheduler->schedule();
     auto batches = attn_pool->get_batch_from_layer(id);
-    auto batch = AttentionBatch::merge(batches);
+    auto batch = TokenBatch::merge_by_attention(batches);
     return batch;
 }
-
-
 
 /*
 

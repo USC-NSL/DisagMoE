@@ -15,8 +15,7 @@ from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
-from disagmoe.models.utils import make_dummy_meta, make_prefill_meta
-from disagmoe.frontend.datatypes import AttentionBatchMetadata
+from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -271,14 +270,12 @@ class AttnExecutor(Executor):
             
     def warmup(self, batch_size: int):
         get_logger().info("Attention warmup start")
-        input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
-        positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
-        meta_py = make_dummy_meta(0, batch_size, 256)
-        meta = self.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
+        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, 256)
+        meta = self.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
         for layer_id in self.model_config.layer_ids:
             # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
-                self.execute_eager(layer_id, positions, input, meta)
+                self.execute_eager(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
             # get_logger().info(f"Attention warmup layer {layer_id} done")
                 
         get_logger().info("Attention warmup done")
@@ -356,9 +353,9 @@ class CUDAGraphAttnExecutor:
     def capture(self):
         for layer_id in self.model_config.layer_ids:
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
-                meta_py = make_dummy_meta(0, graph_batch_size, self.model_config.max_seq_len)
-                attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
-                self.cuda_graph_preprocess(self.static_input[ : graph_batch_size], self.static_positions[ : graph_batch_size], attn_meta)
+                batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
+                attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
+                self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
                     return self.attn_executor.execute(
@@ -393,9 +390,9 @@ class CUDAGraphAttnExecutor:
     def test_graph(self):
         for layer_id in self.model_config.layer_ids:
             for bs in range(1, self.model_config.max_batch_size_attn + 1):
-                meta_py = make_dummy_meta(0, bs, self.model_config.max_seq_len)
-                meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(meta_py.to_c(), meta_py, dummy_cache=True)
-                hiddens, expert_weights, expert_ids = self.run(layer_id, torch.zeros(bs, dtype=torch.long, device="cuda"), torch.randn(bs, self.model_config.hidden_size, device="cuda"), meta)
+                batch = make_attention_dummy_batch(0, bs, self.model_config.hidden_size, self.model_config.max_seq_len)
+                meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
+                hiddens, expert_weights, expert_ids = self.run(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
                 torch.cuda.synchronize()
                 _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
 

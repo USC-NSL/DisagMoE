@@ -53,8 +53,8 @@ public:
     void set_schedule_policy(std::string type);
     void set_schedule_block(int step);
 
-    TensorBatch schedule_expert();
-    AttentionBatch schedule_attention();
+    TokenBatch schedule_expert();
+    TokenBatch schedule_attention();
 
 
     bool has_attention() const { return attn_pool.get() != nullptr; }

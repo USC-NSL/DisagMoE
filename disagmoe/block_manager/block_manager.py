@@ -7,11 +7,11 @@ import numpy as np
 from typing import List
 from disagmoe.utils.utils import nvtx_range
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.datatypes import AttentionBatchMetadata
+from disagmoe.frontend.datatypes import AttentionForwardBatch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
-from disagmoe_c import BlockManager as BlockManager_C, AttentionBatchMetadata as AttentionBatchMetadata_C, prepare_batch_infos
+from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, prepare_batch_infos
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -27,13 +27,13 @@ class BaseBlockManager:
     def reset_state(self):
         pass
     
-    def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
         pass
     
-    def pack_flash_attn_metadata(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata, dummy_cache: bool = False) -> FlashAttentionMetadata:
+    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
         pass
     
-    def release_seqs(self, seq_ids: List[int]):
+    def release_seqs(self, req_ids: List[int]):
         pass
 
 class CPUBlockManager(BaseBlockManager):
@@ -48,47 +48,47 @@ class CPUBlockManager(BaseBlockManager):
         self.release_seqs(list(self.decode_seq_lens.keys()))
         self.decode_seq_lens = {}
     
-    def release_seqs(self, seq_ids: List[int]):
-        req_ids = [seq_id for seq_id in seq_ids if seq_id in self.decode_seq_lens]
+    def release_seqs(self, req_ids: List[int]):
+        req_ids = [req_id for req_id in req_ids if req_id in self.decode_seq_lens]
         self._block_mgr.batch_release(req_ids)
         for req_id in req_ids:
             self.decode_seq_lens.pop(req_id)
     
     @nvtx_range("CPUBlockManager.update_block_table")
-    def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
-        init_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
-        decode_seq_ids = meta_py.seq_ids
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
+        init_req_ids = batch.req_ids[:batch.num_prefill_seqs]
+        decode_req_ids = batch.req_ids
         
         # If the first layer in this attention worker, update block table and decode_seq_lens
-        if meta_py.layer_id == self.model_config.layer_ids[0]:
+        if batch.layer_id == self.model_config.layer_ids[0]:
             # Allocate kv blocks for init seqs, update for all decoding seqs
-            for i, seq_id in enumerate(init_seq_ids):
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+            for i, req_id in enumerate(init_req_ids):
+                self.decode_seq_lens[req_id] = batch.init_prefill_lens[i]
             
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+            decode_seq_lens = [self.decode_seq_lens.get(req_id) for req_id in decode_req_ids]
             
             # Update block table
             self._block_mgr.update_block_table(meta_c, decode_seq_lens)
             
             # Increment sequence lengths for all sequences
-            for i, seq_id in enumerate(decode_seq_ids):
+            for i, req_id in enumerate(decode_req_ids):
                 decode_seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
+                self.decode_seq_lens[req_id] += 1
         else:
-            decode_seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in decode_seq_ids]
+            decode_seq_lens = [self.decode_seq_lens.get(req_id) for req_id in decode_req_ids]
             
-        meta_py.seq_lens = decode_seq_lens
+        batch.seq_lens = decode_seq_lens
         
     @nvtx_range("CPUBlockManager.pack_flash_attn_metadata")
     def pack_flash_attn_metadata(
         self, 
-        meta_c: AttentionBatchMetadata_C, 
-        meta_py: AttentionBatchMetadata, 
+        meta_c: BatchMetadata_C, 
+        batch: AttentionForwardBatch, 
         dummy_cache: bool = False
     ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using CPU approach - follows original implementation"""
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+        num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
+        num_seqs = batch.num_prefill_seqs + batch.num_decode_tokens
         
         # 1. prepare block table
         if dummy_cache:
@@ -97,30 +97,30 @@ class CPUBlockManager(BaseBlockManager):
                 (num_tokens + num_seqs * self.model_config.max_seq_len // self.block_size, ), 
                 dtype=torch.int32, device=self.device)
         else:
-            block_table_1d = self._block_mgr.prepare_block_table(meta_c, meta_py.seq_lens)
+            block_table_1d = self._block_mgr.prepare_block_table(meta_c, batch.seq_lens)
 
         slot_mapping_cuda = block_table_1d[-num_tokens:].to(torch.int64)
         block_table_cuda = block_table_1d[:-num_tokens].view(num_tokens, -1)
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos_cuda = prepare_batch_infos(meta_c, meta_py.seq_lens)
+        batch_infos_cuda = prepare_batch_infos(meta_c, batch.seq_lens)
         
         seq_lens_cuda = batch_infos_cuda[ : num_seqs]
         context_lens_cuda = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
         seq_start_loc_cuda = batch_infos_cuda[num_seqs + num_seqs : ]
             
         query_start_loc = self.query_start_loc[ : num_tokens + 1]
-        max_decode_seq_len = max(meta_py.seq_lens) if len(meta_py.seq_lens) > 0 else 0
+        max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
         
-        meta_py.seq_lens_tensor = seq_lens_cuda
+        batch.seq_lens_tensor = seq_lens_cuda
         
         return FlashAttentionMetadata(
             0,
             0,
             num_tokens,
             slot_mapping_cuda,
-            seq_lens=meta_py.seq_lens,
+            seq_lens=batch.seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=0,
             max_prefill_seq_len=0,
@@ -180,83 +180,83 @@ class GPUBlockManager(BaseBlockManager):
         self.req_to_token_pool.clear()
         self.token_allocator.clear()  # Reset the token allocator
         
-    def release_seqs(self, seq_ids: List[int]):
-        req_indices = [self.req_to_indice.get(i) for i in seq_ids if i in self.decode_seq_lens]
+    def release_seqs(self, req_ids: List[int]):
+        req_indices = [self.req_to_indice.get(i) for i in req_ids if i in self.decode_seq_lens]
         req_indices_tensor = torch.tensor(req_indices, dtype=torch.int32, device=self.device)
         self.req_to_token_pool.free(req_indices)
-        # get_logger().info(f"releasing seqs {seq_ids}")
+        # get_logger().info(f"releasing seqs {req_ids}")
 
         self.token_allocator.free_group_begin()
-        for seq_id, req_indice in zip(seq_ids, req_indices):
+        for req_id, req_indice in zip(req_ids, req_indices):
             # NOTE: single read/write to python dict is thread-safe due to GIL, but iterating should be protected by a lock
-            seq_len = self.decode_seq_lens[seq_id]
+            seq_len = self.decode_seq_lens[req_id]
             kv_indices = self.req_to_token_pool.req_to_token[req_indice, : seq_len]
             self.token_allocator.free(kv_indices)
-            self.decode_seq_lens.pop(seq_id)
+            self.decode_seq_lens.pop(req_id)
         self.token_allocator.free_group_end()
     
     @nvtx_range("GPUBlockManager.update_block_table")
-    def update_block_table(self, meta_c: AttentionBatchMetadata_C, meta_py: AttentionBatchMetadata):
-        init_seq_ids = meta_py.seq_ids[:meta_py.num_prefill_seqs]
-        running_seq_ids = meta_py.seq_ids[meta_py.num_prefill_seqs:]
-        seq_ids = meta_py.seq_ids
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
+        init_req_ids = batch.req_ids[:batch.num_prefill_seqs]
+        running_seq_ids = batch.req_ids[batch.num_prefill_seqs:]
+        req_ids = batch.req_ids
+        num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
         
-        if meta_py.layer_id == 0:  # First layer
+        if batch.layer_id == 0:  # First layer
             # Allocate prefill token slots for init seqs
-            new_req_indices = self.req_to_token_pool.alloc(meta_py.num_prefill_seqs)
-            for i, seq_id in enumerate(init_seq_ids):
+            new_req_indices = self.req_to_token_pool.alloc(batch.num_prefill_seqs)
+            for i, req_id in enumerate(init_req_ids):
                 req_indice = new_req_indices[i]
-                self.req_to_indice[seq_id] = req_indice
-                prefill_kv_locs = self.token_allocator.alloc(meta_py.init_prefill_lens[i])
-                self.req_to_token_pool.write((req_indice, slice(0, meta_py.init_prefill_lens[i])), prefill_kv_locs)
-                self.decode_seq_lens[seq_id] = meta_py.init_prefill_lens[i]
+                self.req_to_indice[req_id] = req_indice
+                prefill_kv_locs = self.token_allocator.alloc(batch.init_prefill_lens[i])
+                self.req_to_token_pool.write((req_indice, slice(0, batch.init_prefill_lens[i])), prefill_kv_locs)
+                self.decode_seq_lens[req_id] = batch.init_prefill_lens[i]
                 
-            running_req_indices = [self.req_to_indice.get(seq_id) for seq_id in running_seq_ids]
+            running_req_indices = [self.req_to_indice.get(req_id) for req_id in running_seq_ids]
             batch_req_indices = running_req_indices + new_req_indices
             batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
             
-            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
+            seq_lens = [self.decode_seq_lens.get(req_id) for req_id in req_ids]
             seq_lens_tensor = torch.tensor(seq_lens, dtype=torch.int32, device=self.device)
             
-            for i, seq_id in enumerate(seq_ids):
+            for i, req_id in enumerate(req_ids):
                 seq_lens[i] += 1
-                self.decode_seq_lens[seq_id] += 1
+                self.decode_seq_lens[req_id] += 1
                 
             increment_locs = self.token_allocator.alloc(num_tokens)
             self.req_to_token_pool.write_loc(batch_req_indices_tensor, seq_lens_tensor, increment_locs.to(torch.int32))
             seq_lens_tensor = seq_lens_tensor + 1
             self.req_seq_lens[batch_req_indices_tensor] = seq_lens_tensor
         else:
-            seq_lens = [self.decode_seq_lens.get(seq_id) for seq_id in seq_ids]
-            batch_req_indices = [self.req_to_indice.get(seq_id) for seq_id in seq_ids]
+            seq_lens = [self.decode_seq_lens.get(req_id) for req_id in req_ids]
+            batch_req_indices = [self.req_to_indice.get(req_id) for req_id in req_ids]
             batch_req_indices_tensor = torch.tensor(batch_req_indices, dtype=torch.int32, device=self.device)
             seq_lens_tensor = self.req_seq_lens[batch_req_indices_tensor]
             
-        meta_py.seq_lens = seq_lens
-        meta_py.seq_lens_tensor = seq_lens_tensor
-        meta_py.req_indices = batch_req_indices
-        meta_py.req_indices_tensor = batch_req_indices_tensor
+        batch.seq_lens = seq_lens
+        batch.seq_lens_tensor = seq_lens_tensor
+        batch.req_indices = batch_req_indices
+        batch.req_indices_tensor = batch_req_indices_tensor
         
         return seq_lens
     
     @nvtx_range("GPUBlockManager.pack_flash_attn_metadata")
     def pack_flash_attn_metadata(
             self, 
-            meta_c: AttentionBatchMetadata, 
-            meta_py: AttentionBatchMetadata, 
+            meta_c: BatchMetadata_C, 
+            batch: AttentionForwardBatch, 
             dummy_cache: bool = False
         ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using GPU approach"""
-        num_tokens = meta_py.num_decode_tokens + meta_py.num_prefill_tokens
-        num_seqs = meta_py.num_prefill_seqs + meta_py.num_decode_tokens
+        num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
+        num_seqs = batch.num_prefill_seqs + batch.num_decode_tokens
 
-        seq_lens_cuda = meta_py.seq_lens_tensor
+        seq_lens_cuda = batch.seq_lens_tensor
         context_lens_cuda = seq_lens_cuda - 1
         torch.cumsum(seq_lens_cuda, dim=0, out=self.seq_start_loc[1 : num_tokens + 1])
         seq_start_loc_cuda = self.seq_start_loc[ : num_tokens + 1]
         query_start_loc = self.query_start_loc[ : num_tokens + 1]
-        seq_lens = meta_py.seq_lens
+        seq_lens = batch.seq_lens
         max_decode_seq_len = max(seq_lens) if len(seq_lens) > 0 else 0
         
         if dummy_cache:
@@ -266,7 +266,7 @@ class GPUBlockManager(BaseBlockManager):
             ).view(num_seqs, -1)
             slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
         else:
-            req_indices = meta_py.req_indices_tensor
+            req_indices = batch.req_indices_tensor
             block_table_cuda = self.req_to_token_pool.get_block_table(req_indices, max_decode_seq_len)
             slot_mapping_cuda = self.req_to_token_pool.req_to_token[req_indices, context_lens_cuda].to(torch.int64)
 
