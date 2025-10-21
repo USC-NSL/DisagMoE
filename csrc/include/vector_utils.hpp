@@ -34,6 +34,16 @@ std::vector<T> permute_vector(const std::vector<T> &data, const std::vector<int>
     return result;
 }
 
+template<typename T>
+std::vector<T> index_select_vector(const std::vector<T> &data, const std::vector<int> &indices) {
+    if (data.empty()) return {};
+    std::vector<T> result(indices.size());
+    for (size_t i = 0; i < indices.size(); ++i) {
+        result[i] = data[indices[i]];
+    }
+    return result;
+}
+
 template<class T>
 std::vector<std::vector<T>> split_vector_by_indice(const std::vector<T> &vec, const std::vector<int> &indices) {
     // NOTE: will split to [indices[0], indices[1]), [indices[1], indices[2]), ..., [indices[n-1], indices[n])
@@ -84,6 +94,11 @@ inline std::optional<std::vector<T>> permute_vector(const std::optional<std::vec
     return permute_vector(*data, positions);
 }
 
+template<typename T>
+inline std::optional<std::vector<T>> index_select_vector(const std::optional<std::vector<T>> &data, const std::vector<int> &indices) {
+    if (!data.has_value()) return std::nullopt;
+    return index_select_vector(*data, indices);
+}
 
 template<class T>
 inline std::optional<std::vector<std::vector<T>>> split_vector_by_indice(const std::optional<std::vector<T>> &vec, const std::vector<int> &indices) {

@@ -33,7 +33,7 @@ LD_LIBRARY_PATH = os.environ.get("LD_LIBRARY_PATH", "")
 ZMQ_HOME = os.environ.get("ZMQ_HOME", "")
 ZMQ_INCLUDE_PATH = os.path.join(ZMQ_HOME, "include")
 ZMQ_LIBRARY_PATH = os.path.join(ZMQ_HOME, "lib")
-
+TMPDIR=os.environ.get("TMPDIR", "/tmp/disagmoe/")
 
 def find_all_c_targets(path):
     res = []
@@ -82,6 +82,7 @@ ext_modules = [
         define_macros=[
             ("D_ENABLE_RAY", "1"),
             ("D_ENABLE_NVTX", "1"),
+            ("TEMP_DIR", f'"{TMPDIR}"'),
         ],
         language='c++',
     ),

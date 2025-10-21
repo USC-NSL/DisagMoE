@@ -125,7 +125,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("permute_token_infos", &BatchMetadata::permute_token_infos)
         .def("duplicate_topk", &BatchMetadata::duplicate_topk)
         .def("sort_by_attention", &BatchMetadata::sort_by_attention)
-        .def("sort_by_expert", &BatchMetadata::sort_by_expert);
+        .def("sort_by_expert", &BatchMetadata::sort_by_expert)
+        .def("index_select", &BatchMetadata::index_select);
 
     py::class_<TokenBatch>(m, "TokenBatch")
         .def(py::init<>())

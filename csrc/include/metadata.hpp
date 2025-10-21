@@ -44,6 +44,21 @@ struct BatchMetadata {
     std::optional<int> num_prefill_tokens;
     std::optional<int> num_decode_tokens;
 
+    friend std::ostream& operator<<(std::ostream &out, const BatchMetadata &meta) {
+        out << "BatchMetadata {";
+        out << "num_tokens=" << meta.num_tokens() << ", ";
+        out << "layer_id=" << meta.layer_id << ", ";
+        for (int i = 0; i < meta.req_ids.size(); i++) {
+            out << "token[i]: {";
+            out << "req_id=" << meta.req_ids[i] << ", ";
+            out << "attn_dp_rank=" << meta.attn_dp_ranks[i] << ", ";
+            out << "init_prefill_len=" << meta.init_prefill_lens[i] << ", ";
+            out << "}";
+        }
+        out << "}";
+        return out;
+    }
+
     template<class Archive>
     void serialize(Archive &archive) {
         archive(
@@ -211,6 +226,7 @@ struct BatchMetadata {
     std::vector<int> sort_by_attention() {
         // return value: corresponding positions after permutation. 
         //               e.g. positions[i] = j means tokens i should be at position j after permutation.
+
         std::vector<int> rank(req_ids.size()), positions(req_ids.size());
         for (int i = 0; i < req_ids.size(); i ++)
             rank[i] = i;
@@ -260,6 +276,22 @@ struct BatchMetadata {
         }
         permute_token_infos(positions);
         return positions;
+    }
+
+    batch_metadata_t index_select(const std::vector<int> &indices) {
+        int n = indices.size();
+        return std::make_shared<BatchMetadata>(BatchMetadata {
+            batch_tag,
+            {n, shape[1]},
+            dtype, 
+            layer_id, 
+            index_select_vector(req_ids, indices),
+            index_select_vector(exp_ids, indices),
+            index_select_vector(topk_weights, indices),
+            index_select_vector(attn_dp_ranks, indices),
+            index_select_vector(init_prefill_lens, indices),
+            index_select_vector(max_output_lens, indices),
+        });
     }
 
     std::vector<BatchMetadata> split_with_sizes(const std::vector<int> &sizes);
@@ -337,25 +369,32 @@ inline batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_m
         expert_cnts[i] += expert_cnts[i - 1];
     }
 
+    int first_expert_cnt = 0;
     positions.resize(total_tokens);
     int idx = 0;
     for (auto &meta: metas) {
         // DMOE_LOG(INFO) << "merging expert metadata: " << *meta << LEND;
         for (int i = 0; i < meta->num_tokens(); i ++) {
-            expert_cnts[meta->exp_ids[i]] --;
-            int j = expert_cnts[meta->exp_ids[i]];
-            positions[idx] = j; // later: tokens[j] = tokens[idx]
-            req_ids[j] = meta->req_ids[i];
-            exp_ids[j] = meta->exp_ids[i];
-            attn_dp_ranks[j] = meta->attn_dp_ranks[i];
-            init_prefill_lens[j] = meta->init_prefill_lens[i];
+            int pos;
+            if (meta->exp_ids[i] == 0) {
+                pos = first_expert_cnt ++;
+            } else {
+                pos = expert_cnts[meta->exp_ids[i] - 1] ++;
+            }
+            positions[idx] = pos; // later: tokens[pos] = tokens[idx]
+            req_ids[pos] = meta->req_ids[i];
+            exp_ids[pos] = meta->exp_ids[i];
+            attn_dp_ranks[pos] = meta->attn_dp_ranks[i];
+            init_prefill_lens[pos] = meta->init_prefill_lens[i];
             if (!meta->topk_weights.empty()) {
-                topk_weights[j] = meta->topk_weights[i];
+                topk_weights[pos] = meta->topk_weights[i];
             }
             idx ++;
         }
     }
-    return std::make_shared<BatchMetadata>(BatchMetadata {
+
+
+    auto merged_meta = std::make_shared<BatchMetadata>(BatchMetadata {
         BatchTag::EXPERT, 
         shape, 
         dtype, 
@@ -366,6 +405,10 @@ inline batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_m
         attn_dp_ranks, 
         init_prefill_lens 
     });
+
+    DMOE_LOG(INFO) << "Merged expert metadata: " << *merged_meta << LEND;
+
+    return merged_meta;
 }
 
 inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batch_metadata_t> &metas) {
@@ -375,6 +418,7 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
 
     std::vector<int> new_req_ids{};
     std::vector<int> new_init_prefill_lens{};
+    std::vector<int> new_max_output_lens{};
 
     for (auto &meta: metas) {
         ASSERT (meta->attention_batch_safe_check());
@@ -385,17 +429,20 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
         for (int i = 0; i < meta->num_prefill_seqs.value(); i++) {
             new_req_ids.emplace_back(meta->req_ids[i]);
             new_init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
+            if (meta->layer_id == 0) {
+                new_max_output_lens.emplace_back(meta->max_output_lens[i]);
+            }
         }
     }
 
     for (auto &meta: metas) {
         for (int i = meta->num_prefill_seqs.value(); i < meta->num_prefill_seqs.value() + meta->num_decode_tokens.value(); i++) {
             new_req_ids.emplace_back(meta->req_ids[i]);
+            new_init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
         }
     }
     auto new_shape = metas[0]->shape;
-    for (int i = 1; i < metas.size(); i ++)
-        new_shape[0] += metas[i]->shape[0];
+    new_shape[0] = new_req_ids.size();
 
     return std::make_shared<BatchMetadata>(BatchMetadata {
         BatchTag::ATTENTION,
@@ -407,7 +454,7 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
         {}, // topk_weights
         {}, // attn_dp_ranks
         new_init_prefill_lens,
-        {}, // max_output_lens
+        new_max_output_lens, // max_output_lens
         new_prefills_seqs,
         new_prefill_tokens,
         new_decode_tokens

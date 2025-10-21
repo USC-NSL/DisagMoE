@@ -18,7 +18,6 @@ from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
@@ -57,7 +56,8 @@ class AttentionEngineMixin:
     attn_dispatcher: MuDispatcher
     buffer_meta: Tensor
     buffer_attn_meta: Tensor
-    dummy_sampler: DummySampler
+    dummy_sampler: "DummySampler"
+    attn_dp_rank: int
     
     def build_attn_executor(self):
         self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
@@ -127,7 +127,7 @@ class AttentionEngineMixin:
                            meta_c: BatchMetadata, 
                            input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.seq_ids}")
+        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
 
         with self._timer.range("preprocess"):
             batch = AttentionForwardBatch.build(meta_c, input_tensor)
@@ -149,9 +149,10 @@ class AttentionEngineMixin:
             if batch.layer_id == self.model_total_num_layers:
                 # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
                 continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
-                new_meta = meta_c.to_metadata()
-                continue_meta = new_meta.select_indices(continue_ids)
+                new_meta = meta_c
+                continue_meta = new_meta.index_select(continue_ids)
                 continue_meta.init_prefill_lens = [-1] * len(continue_ids)
+                continue_meta.attn_dp_ranks = [self.attn_dp_rank] * len(continue_ids)
                 # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
                 self.release_seqs(finish_req_ids)
                 
@@ -199,6 +200,7 @@ class AttentionEngineMixin:
                 
             new_meta_c.exp_ids = expert_ids
             exp_mappings = new_meta_c.sort_by_expert()
+            new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
             # exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
             hiddens = permute_tokens(hiddens, exp_mappings)
 
@@ -373,7 +375,6 @@ class ExpertEngineMixin:
         # 2. permute tokens back to <prefill><decode> order
         with self._timer.range("postprocess"):
             h2d_event = torch.cuda.Event()
-            
             new_mappings = list(meta_c.sort_by_attention())
             
             with torch.cuda.stream(self.h2d_stream):
@@ -449,6 +450,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self._timer = Timer()
         self._queueing_timer = {} # placeholder, not used at the moment
         self._queueing_delays = []
+        
+        self.attn_dp_rank = None
+        self.expert_ep_rank = None
 
     @property
     def has_attn(self):
@@ -499,6 +503,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         NOTE(hogura|20241003): When using ray, all the device_id called to CUDA should become 0
         """
         disagmoe_recorder_create()
+        
+        self.attn_dp_rank = core_args.local_attn_dp_rank
         
         self.device_group_ids = core_args.device_group_ids
         

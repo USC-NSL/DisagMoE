@@ -99,22 +99,25 @@ class BatchMetadata:
     
     def sort_by_expert(self) -> List[int]:
         ...
+        
+    def index_select(self, indices: List[int]) -> "BatchMetadata_C":
+        ...
     
     @staticmethod
     def from_c(meta_c: "BatchMetadata_C") -> "BatchMetadata":
         return BatchMetadata(
-            meta_c.shape,
-            meta_c.dtype,
-            meta_c.layer_id,
-            meta_c.req_ids,
-            meta_c.exp_ids,
-            meta_c.topk_weights,
-            meta_c.attn_dp_ranks,
-            meta_c.init_prefill_lens,
-            meta_c.max_output_lens,
-            meta_c.num_prefill_seqs,
-            meta_c.num_prefill_tokens,
-            meta_c.num_decode_tokens
+            shape=meta_c.shape,
+            dtype=meta_c.dtype,
+            layer_id=meta_c.layer_id,
+            req_ids=meta_c.req_ids,
+            exp_ids=meta_c.exp_ids,
+            topk_weights=meta_c.topk_weights,
+            attn_dp_ranks=meta_c.attn_dp_ranks,
+            init_prefill_lens=meta_c.init_prefill_lens,
+            max_output_lens=meta_c.max_output_lens,
+            num_prefill_seqs=meta_c.num_prefill_seqs,
+            num_prefill_tokens=meta_c.num_prefill_tokens,
+            num_decode_tokens=meta_c.num_decode_tokens
         )
         
     def to_c(self) -> "BatchMetadata_C":
@@ -152,7 +155,6 @@ class AttentionForwardBatch:
     dtype: str
     layer_id: int
     req_ids: List[int]
-    exp_ids: List[int]
     init_prefill_lens: List[int]
     max_output_lens: List[int]
     
@@ -171,18 +173,36 @@ class AttentionForwardBatch:
     @staticmethod
     def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionForwardBatch":
         return AttentionForwardBatch(
-            meta.shape,
-            meta.dtype,
-            meta.layer_id,
-            meta.req_ids,
-            meta.exp_ids,
-            meta.init_prefill_lens,
-            meta.max_output_lens,
-            meta.num_prefill_seqs,
-            meta.num_prefill_tokens,
-            meta.num_decode_tokens,
-            data
+            shape=meta.shape,
+            dtype=meta.dtype,
+            layer_id=meta.layer_id,
+            req_ids=meta.req_ids,
+            init_prefill_lens=meta.init_prefill_lens,
+            max_output_lens=meta.max_output_lens,
+            num_prefill_seqs=meta.num_prefill_seqs,
+            num_prefill_tokens=meta.num_prefill_tokens,
+            num_decode_tokens=meta.num_decode_tokens,
+            data=data
         )
+        
+    def to_metadata(self) -> BatchMetadata:
+        return BatchMetadata(
+            shape=self.shape,
+            dtype=self.dtype,
+            layer_id=self.layer_id,
+            req_ids=self.req_ids,
+            exp_ids=[],
+            topk_weights=[],
+            attn_dp_ranks=[],
+            init_prefill_lens=self.init_prefill_lens,
+            max_output_lens=self.max_output_lens,
+            num_prefill_seqs=self.num_prefill_seqs,
+            num_prefill_tokens=self.num_prefill_tokens,
+            num_decode_tokens=self.num_decode_tokens
+        )
+        
+    def to_metadata_c(self) -> "BatchMetadata_C":
+        return self.to_metadata().to_c()
     
 @dataclass
 class SloStat:

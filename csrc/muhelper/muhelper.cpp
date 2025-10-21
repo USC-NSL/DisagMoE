@@ -618,57 +618,24 @@ void MuAttentionPool::terminate() {
 }
 
 TokenBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, batch_metadata_t meta) {
-    // TODO: can be optimized
-    // DMOE_LOG(INFO) << "packing attn batch: " << *meta << LEND;
     ASSERT(meta.get() != nullptr);
-
-    auto shape = meta->shape;
-    auto dtype = meta->dtype;
-    int layer_id = meta->layer_id;
-
-    int num_tokens = meta->req_ids.size();
-
     int num_prefill_seqs = 0;
     int num_prefill_tokens = 0;
     int num_decode_tokens = 0;
-
-    std::vector<int> req_ids{};
-    std::vector<int> init_prefill_lens{};
-    std::vector<int> attn_dp_ranks{};
-    std::vector<int> max_output_lens{};
-
-    ASSERT(meta->req_ids.size() == meta->attn_dp_ranks.size());
 
     for (int i = 0; i < meta->req_ids.size(); i ++) {
         if (meta->init_prefill_lens[i] != -1) {
             num_prefill_tokens ++;
             num_prefill_seqs ++;
-            init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
-            if (meta->layer_id == 0) {
-                max_output_lens.emplace_back(meta->max_output_lens[i]);
-            } 
         } else {
             num_decode_tokens ++;
         }
-        req_ids.emplace_back(meta->req_ids[i]);
-        attn_dp_ranks.emplace_back(meta->attn_dp_ranks[i]);
     }
 
-    auto attn_meta = std::make_shared<BatchMetadata> (BatchMetadata {
-        BatchTag::ATTENTION,
-        shape, dtype, layer_id, 
-        req_ids,
-        {}, // expert_ids
-        {}, // topk_weights
-        attn_dp_ranks,
-        init_prefill_lens,
-        max_output_lens,
-        num_prefill_seqs,
-        num_prefill_tokens,
-        num_decode_tokens
-    });
-
-    return TokenBatch {tensor, attn_meta};
+    meta->num_prefill_seqs = num_prefill_seqs;
+    meta->num_prefill_tokens = num_prefill_tokens;
+    meta->num_decode_tokens = num_decode_tokens;
+    return TokenBatch {tensor, meta};
 }
 
 void MuAttentionPool::put_batch_to_attn_queue(int layer_id, const TokenBatch &attn_batch) {
