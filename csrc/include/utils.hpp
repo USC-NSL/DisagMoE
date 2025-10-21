@@ -14,7 +14,12 @@
 #include "logging.h"
 #include "nccl.h"
 
-#define t_now clock
+inline clock_t t_now() {
+    // Monotonic wall-clock time in microseconds
+    return (clock_t) std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count();
+}
 
 inline clock_t t_now_high() {
     auto now = std::chrono::system_clock::now();

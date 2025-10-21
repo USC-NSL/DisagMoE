@@ -5,6 +5,7 @@
 #include <queue>
 #include <ctime>
 #include <utility>
+#include <atomic>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -98,7 +99,6 @@ void MuDispatcher::run() {
             // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
             auto pr = this->send_queue.front();
             batch = pr.first;
-            // pr.second(i.e. rank) is not used for now
             this->send_queue.pop();
         }
         // Send the batch, no lock required, since send_queue won't be changed.
@@ -412,7 +412,8 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
             this->queueing_timers[req_id] = -1;
             continue;
         }
-        total_delay += 1.0 * (now - this->queueing_timers.at(req_id)) / CLOCKS_PER_SEC;
+        // t_now() now returns microseconds since an epoch; convert to seconds
+        total_delay += 1.0 * (now - this->queueing_timers.at(req_id)) / 1e6;
         this->queueing_timers.erase(req_id);
     }
     return total_delay / req_ids.size();
