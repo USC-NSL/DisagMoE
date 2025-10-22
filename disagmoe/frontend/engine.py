@@ -436,8 +436,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             
         self.loop_thread = None
         
-        self._process_batch: Callable = None
-        
         self.profiler = None
         self.inner_exp_rank = []
         self.device_group_ids = []
@@ -481,12 +479,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.scheduler = self.attn_scheduler
             self.executor = self.attn_executor
             self.dispatcher = self.attn_dispatcher
-            self._process_batch = self.process_batch_attn
         elif self.has_expert:
             self.scheduler = self.expert_scheduler
             self.executor = self.expert_executor
             self.dispatcher = self.expert_dispatcher
-            self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
             
@@ -732,6 +728,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self._metric.update("effective_tokens", real_batch_size)
             self._metric.update("queueing_tokens", queueing_tokens - real_batch_size)
             self._metric.update("queueing_batches", queueing_batches - 1)
+            
+    def process_batch(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
+        if meta_c.is_attention():
+            return self.process_batch_attn(meta_c, input_tensor)
+        elif meta_c.is_expert():
+            return self.process_batch_expert(meta_c, input_tensor)
+        else:
+            assert False, "Invalid batch metadata"
 
     @torch.inference_mode()
     def single_module_loop(self):
@@ -769,7 +773,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             meta: BatchMetadata = batch.metadata
             
             self.stats_pre_process(batch)
-            output, meta = self._process_batch(meta, batch.data)
+            output, meta = self.process_batch(meta, batch.data)
             self.post_process(output, meta, self.dispatcher)
             self.stats_post_process(batch)
     
