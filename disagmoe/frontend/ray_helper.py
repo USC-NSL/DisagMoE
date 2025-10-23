@@ -42,9 +42,6 @@ class InitCoreArgs:
     in_nccl_ids: Dict[int, int]
     out_nccl_ids: Dict[int, int]
     
-    in_nccl_ids_ext: Dict[int, int]
-    out_nccl_ids_ext: Dict[int, int]
-    
     expert_ranks: List[Tuple[int, int, int]]
     expert_wise_schedule: bool = False
     

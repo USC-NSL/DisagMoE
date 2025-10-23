@@ -52,6 +52,7 @@ void init_all_channels(
             if (skip_embedding) {
                 continue;
             }
+            // TODO: remove c++ detokenizer (sampler), implement in python. ZMQ channel can be discarded then.
             channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ false, 
                 // only attn needs to consider the DP
                 is_attn ? local_attn_dp_rank : 0);

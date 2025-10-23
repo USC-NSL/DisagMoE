@@ -123,9 +123,7 @@ class AttentionEngineMixin:
         return attn_meta
     
     @nvtx_range("attn_engine.process_batch_attn")
-    def process_batch_attn(self, 
-                           meta_c: BatchMetadata, 
-                           input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
+    def process_batch_attn(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
         # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
 
@@ -341,9 +339,7 @@ class ExpertEngineMixin:
         self.expert_executor.warmup(self.expert_max_batch_size)
         
     @nvtx_range("expert_engine.process_batch_expert")
-    def process_batch_expert(self, 
-                             meta_c: BatchMetadata, 
-                             input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
+    def process_batch_expert(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
         # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
         with self._timer.range("preprocess"):
@@ -387,14 +383,13 @@ class ExpertEngineMixin:
                     new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
                 if self.model_config.top_k > 1:
                     topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
+                    output = output * topk_weights
+                    
                 h2d_event.record(self.h2d_stream)
 
             h2d_event.wait(self.h2d_stream)
-
-            # TODO: might fuse weights apply and permute
-            if self.model_config.top_k > 1:
-                output = output * topk_weights
             
+            # TODO: fuse permute and weights apply
             output = permute_tokens(output, new_mappings_gpu)
             meta_c.exp_ids = []
             meta_c.topk_weights = []

@@ -31,7 +31,7 @@ class ModelPlacement:
     # device_id -> layer_id
     attn: Dict[int, List[int]]
     
-    # device_id -> (layer_id, expert_id)
+    # device_id -> list(layer_id, expert_id)
     expert: Dict[int, List[Tuple[int, int]]]
     tokenizer: int
     sampler: int
