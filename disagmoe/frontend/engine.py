@@ -468,7 +468,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     @property
     def is_attn_worker(self):
-        return self.rank_in_group > 0
+        return self.has_attn and self.rank_in_group > 0
     
     @property
     def _tp_enabled(self):

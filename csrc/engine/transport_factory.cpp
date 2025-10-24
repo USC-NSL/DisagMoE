@@ -1,3 +1,8 @@
+/*
+    With these classes, we provide a single unified interface
+    for both ZMQ or UCX
+*/
+
 #include "transport_factory.h"
 #include "distributed.hpp"
 

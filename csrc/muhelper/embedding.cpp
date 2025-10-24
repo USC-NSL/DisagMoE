@@ -40,7 +40,7 @@ Sampler::Sampler(int device_id,
 }
 
 void Sampler::run() {
-    this->recv_mq->bind(disagmoe::mq_endpoint_factory()(device_id, true, -1, 1));
+    this->recv_mq->bind(disagmoe::mq_endpoint_factory()(device_id, true, -1, 0));
     // for (int i = 0; i < this->channels.size(); i ++)
     //     this->peer_mq[i]->connect(disagmoe::mq_endpoint_factory()(this->channels[i]->get_peer_id(), true, -1, 1));
 
