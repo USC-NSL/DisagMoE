@@ -13,6 +13,8 @@
 #include "ucxq.hpp"
 
 #include "datatypes.hpp"
+#include "metadata.hpp"
+#include "batch.hpp"
 #include "cuda_utils.h"
 
 class Channel {
@@ -32,8 +34,8 @@ public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
     virtual void instantiate() = 0;
-    virtual void send(uintptr_t data, const Metadata& metadata) = 0;
-    virtual void recv(uintptr_t data, const Metadata& metadata) = 0;
+    virtual void send(uintptr_t data, const BatchMetadata& metadata) = 0;
+    virtual void recv(uintptr_t data, const BatchMetadata& metadata) = 0;
 
     void _debug_print() {
         printf("%d %d\n", local, other);
@@ -67,9 +69,9 @@ public:
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(uintptr_t data, const BatchMetadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata& metadata) override;
+    void recv(uintptr_t data, const BatchMetadata& metadata) override;
 
     void sync() override;
 };
@@ -88,9 +90,9 @@ class TensorLocalChannel: public Channel {
     
         void instantiate() override;
     
-        void send(uintptr_t data, const Metadata& metadata) override;
+        void send(uintptr_t data, const BatchMetadata& metadata) override;
     
-        void recv(uintptr_t data, const Metadata& metadata) override;
+        void recv(uintptr_t data, const BatchMetadata& metadata) override;
     
         void sync() override;
 };
@@ -110,16 +112,16 @@ protected:
 
     int rank_offset;
 
-    void* _tensor_copy(uintptr_t src, const Metadata& metadata, bool to_gpu, uintptr_t dst = 0);
+    void* _tensor_copy(uintptr_t src, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst = 0);
 
 public:
     ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(uintptr_t data, const BatchMetadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata &metadata) override;
+    void recv(uintptr_t data, const BatchMetadata &metadata) override;
 };
 
 class UcxqChannel: public Channel {
@@ -133,9 +135,9 @@ public:
 
     void instantiate() override;
 
-    void send(uintptr_t data, const Metadata& metadata) override;
+    void send(uintptr_t data, const BatchMetadata& metadata) override;
 
-    void recv(uintptr_t data, const Metadata& metadata) override;
+    void recv(uintptr_t data, const BatchMetadata& metadata) override;
 };
 
 

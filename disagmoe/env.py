@@ -15,6 +15,7 @@ _env_vars = {
     "ENABLE_NVTX": "0",
     "DMOE_WEIGHTED_ROUTER_FILE": "",
     "VLLM_FLASH_ATTN_VERSION": "3",
+    "TMPDIR": "/tmp/disagmoe/",
 }
 
 ENV_VARS = {

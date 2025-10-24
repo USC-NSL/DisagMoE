@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "datatypes.hpp"
+#include "metadata.hpp"
 
 typedef std::shared_ptr<std::vector<int>> block_list_t;
 
@@ -52,9 +53,9 @@ public:
 
     void append_tokens(int seq_id, int context_len, int num_tokens);
 
-    void update_block_table(attn_metadata_t meta, const std::vector<int> &context_lens);
+    void update_block_table(batch_metadata_t meta, const std::vector<int> &context_lens);
 
-    torch::Tensor prepare_block_table(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    torch::Tensor prepare_block_table(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
@@ -62,4 +63,4 @@ typedef std::shared_ptr<BlockManager> block_manager_t;
 typedef std::vector<block_list_t> block_table_t;
 
 
-torch::Tensor prepare_batch_infos(attn_metadata_t meta, const std::vector<int> &decode_seq_lens);
+torch::Tensor prepare_batch_infos(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);

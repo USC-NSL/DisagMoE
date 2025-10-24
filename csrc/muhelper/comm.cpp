@@ -2,6 +2,8 @@
 #include "logging.h"
 #include "utils.hpp"
 #include "distributed.hpp"
+#include "metadata.hpp"
+#include "batch.hpp"
 
 #include <iomanip>
 #include <mutex>
@@ -50,7 +52,7 @@ void NcclChannel::instantiate() {
     ));
 }
 
-void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
+void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
@@ -66,7 +68,7 @@ void NcclChannel::send(uintptr_t data_ptr, const Metadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
-void NcclChannel::recv(uintptr_t data_ptr, const Metadata& metadata) {
+void NcclChannel::recv(uintptr_t data_ptr, const BatchMetadata& metadata) {
     tx_range _{"NcclChannel::recv"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclRecv(
@@ -101,13 +103,13 @@ void TensorLocalChannel::instantiate() {
     // do nothing
 }
 
-void TensorLocalChannel::send(uintptr_t data, const Metadata& metadata) {
+void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
     std::lock_guard<std::mutex> lock(m);
     data_buffer.push(data);
     c.notify_one();
 }
 
-void TensorLocalChannel::recv(uintptr_t data, const Metadata& metadata) {
+void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     std::unique_lock<std::mutex> lock(m);
     while (data_buffer.empty()) {
         c.wait(lock);
@@ -141,16 +143,19 @@ void ZmqChannel::instantiate() {
         this->ctx, 
         this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
     );
+    std::string addr;
     if (is_sender) {
-        this->mq->bind(get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
+        addr = get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+        this->mq->bind(addr);
     } else {
-        this->mq->connect(get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset));
+        addr = get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+        this->mq->connect(addr);
     }
-    DMOE_LOG(INFO) << "ZmqChannel instantiated " << this->local << LEND;
+    // DMOE_LOG(WARNING) << "ZmqChannel instantiated, local: " << this->local << ", remote: " << this->other << ", addr: " << addr << LEND;
 }
 
 // Not used currently
-void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to_gpu, uintptr_t dst) {
+void* ZmqChannel::_tensor_copy(uintptr_t data, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst) {
     if (is_embedding_node(this->local))
         return (void*) data;
     tx_range _{"ZmqChannel::_tensor_copy"};
@@ -186,7 +191,7 @@ void* ZmqChannel::_tensor_copy(uintptr_t data, const Metadata& metadata, bool to
     return (void*) buf;
 }
 
-void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
+void ZmqChannel::send(uintptr_t data, const BatchMetadata& metadata) {
     tx_range _{"ZmqChannel::send"};
 
     // DMOE_LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
@@ -201,7 +206,7 @@ void ZmqChannel::send(uintptr_t data, const Metadata& metadata) {
     // DMOE_LOG(DEBUG) << "ZMQ Sent." << LEND;
 }
 
-void ZmqChannel::recv(uintptr_t data, const Metadata &metadata) {
+void ZmqChannel::recv(uintptr_t data, const BatchMetadata &metadata) {
     tx_range _{"ZmqChannel::recv"};
 
     // DMOE_LOG(DEBUG) << "ZMQ Recving from " << get_peer_id() << LEND;
@@ -235,7 +240,7 @@ void UcxqChannel::instantiate() {
     }
 }
 
-void UcxqChannel::send(uintptr_t data, const Metadata& metadata) {
+void UcxqChannel::send(uintptr_t data, const BatchMetadata& metadata) {
     tx_range _{"UcxqChannel::send"};
     // Mirror ZmqChannel's dummy behavior: ignore `data`, send only metadata-sized dummy payload
     std::vector<int> token_ids(metadata.num_tokens(), 0);
@@ -243,7 +248,7 @@ void UcxqChannel::send(uintptr_t data, const Metadata& metadata) {
     this->mq->send(ucxq::buffer(token_ids.data(), size));
 }
 
-void UcxqChannel::recv(uintptr_t data, const Metadata& metadata) {
+void UcxqChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     tx_range _{"UcxqChannel::recv"};
     size_t size = metadata.num_tokens() * sizeof(int);
     ucxq::message_t msg(size);

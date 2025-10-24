@@ -1,7 +1,7 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.utils.constants import MAX_SEQ_LEN
 from disagmoe.frontend.datatypes import AttentionBatchMetadata
-from disagmoe.models.utils import make_dummy_meta
+from disagmoe.models.utils import make_attention_dummy_batch
 import torch
 from typing import List
 import time
@@ -59,7 +59,7 @@ def pack_attn_metadata(
 
 if __name__ == '__main__':
     batch_size = 256
-    meta_py = make_dummy_meta(0, batch_size)
+    meta_py = make_attention_dummy_batch(0, batch_size, 4096, 256)
 
     def run():
         meta = pack_attn_metadata(meta_py.to_c(), meta_py, [256] * batch_size)

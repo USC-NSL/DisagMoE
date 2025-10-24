@@ -463,13 +463,13 @@ void FanInQueueSender::add_remote(const std::string& ip, int tcp_port) {
         throw std::runtime_error("inet_pton failed");
     }
     int attempts = 0;
-    constexpr int kMaxAttempts = 200;
+    constexpr int kMaxAttempts = 400;
     while (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         if (++attempts >= kMaxAttempts) {
             close(fd);
             throw std::runtime_error("connect failed");
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
     // Send my UCX worker address, then receive peer's, and create an endpoint

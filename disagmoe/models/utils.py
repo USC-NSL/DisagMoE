@@ -1,5 +1,5 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-from disagmoe.frontend.datatypes import AttentionBatchMetadata
+from disagmoe.frontend.datatypes import BatchMetadata, AttentionForwardBatch  
 from typing import Tuple
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
@@ -151,26 +151,30 @@ def make_prefill_meta(num_prefills: int, block_size: int) -> FlashAttentionMetad
     )
     return meta
 
-def make_dummy_meta(num_prefill_tokens: int, num_decode_tokens: int, seq_len: int) -> AttentionBatchMetadata:
+def make_attention_dummy_batch(
+    num_prefill_tokens: int, 
+    num_decode_tokens: int, 
+    hidden_size: int = 1024,
+    seq_len: int = 1024,
+) -> AttentionForwardBatch:
     bs = num_prefill_tokens + num_decode_tokens
-    meta = AttentionBatchMetadata(
-        0,
-        [num_decode_tokens + num_prefill_tokens, 1],
-        "bf16",
-        num_prefill_tokens,
-        num_prefill_tokens,
-        num_decode_tokens,
-        [0] * bs,
-        [0] * bs,
-        [0] * bs,
-        [],
-        [0] * bs,
+    batch = AttentionForwardBatch(
+        shape=[bs, hidden_size],
+        dtype="bf16",
+        layer_id=0,
+        req_ids=list(range(bs)),
+        init_prefill_lens=[seq_len] * bs,
+        max_output_lens=[seq_len] * bs,
+        num_prefill_seqs=num_prefill_tokens,
+        num_prefill_tokens=num_prefill_tokens,
+        num_decode_tokens=num_decode_tokens,
         req_indices=list(range(bs)),
         req_indices_tensor=torch.arange(bs, dtype=torch.int32),
         seq_lens=[seq_len] * bs,
         seq_lens_tensor=torch.full([bs], seq_len, dtype=torch.int32),
+        data=torch.zeros((bs, hidden_size), dtype=torch.bfloat16),
     )
-    return meta
+    return batch
 
 @dataclass
 class CudaGraphContext:

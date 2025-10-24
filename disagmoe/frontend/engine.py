@@ -2,13 +2,13 @@ import torch
 import time
 import enum
 import os
+import random
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuDispatcher, Sampler, Tokenizer, BlockManager
-from disagmoe.frontend.datatypes import (Metadata, ChannelInfo, TensorBatch,
-                                         AttentionBatchMetadata, SloStat, TraceContext,
-                                         SamplerStepInfo)
+from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.datatypes import (AttentionForwardBatch, BatchMetadata, TokenBatch,
+                                         SloStat, TraceContext, SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import initialize_logger, get_logger
@@ -18,7 +18,6 @@ from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.utils import make_dummy_meta
 from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
@@ -32,7 +31,7 @@ from torch import Tensor
 import torch.distributed as dist
 
 from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
-                        TensorBatch as TensorBatch_C,
+                        TokenBatch as TokenBatch_C,
                         BlockManager as BlockManager_C,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
@@ -46,22 +45,26 @@ class EngineType(enum.Enum):
     
 class AttentionEngineMixin:
     
+    _timer: Timer
+    model_total_num_layers: int
     attn_executor: AttnExecutor
     model_config: ModelConfig
     cache_config: CacheConfig
     device: str
-    req_to_indice: Dict[int, int]
     req_seq_lens: Tensor
-    decode_seq_lens: Dict[int, int]
     block_mgr: BaseBlockManager
+    attn_dispatcher: MuDispatcher
+    buffer_meta: Tensor
+    buffer_attn_meta: Tensor
+    dummy_sampler: "DummySampler"
+    attn_dp_rank: int
     
     def build_attn_executor(self):
         self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
         self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
-        self.decode_seq_lens = {} # indexing by seq_id
         
         self.block_mgr = self.attn_executor.get_block_mgr()
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             self._create_attn_broadcast_buffers()
             
         self.attn_executor.warmup(self.attn_max_batch_size)
@@ -71,19 +74,18 @@ class AttentionEngineMixin:
     
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(self, 
-                                meta_c: AttentionBatchMetadata, 
-                                meta_py: AttentionBatchMetadata, 
-                                input_tensor: Tensor) -> FlashAttentionMetadata:
-        self.block_mgr.update_block_table(meta_c, meta_py)
-        seq_lens = meta_py.seq_lens
+                                meta_c: BatchMetadata, 
+                                batch: AttentionForwardBatch) -> FlashAttentionMetadata:
+        self.block_mgr.update_block_table(meta_c, batch)
+        seq_lens = batch.seq_lens
         
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             # 1. broadcast necessary metadata
             bc_meta = [
-                meta_py.layer_id, # 0
+                batch.layer_id, # 0
                 0, # 1
                 0, # 2
-                meta_py.num_decode_tokens, # 3
+                batch.num_decode_tokens, # 3
                 *seq_lens, # 4
             ]
             
@@ -91,17 +93,17 @@ class AttentionEngineMixin:
             dist.broadcast(self.buffer_meta, 0)
             
             # 2. broadcast input tensor asynchronously
-            self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
+            self._add_async_handle(dist.broadcast(batch.data, 0, async_op=True))
             
-        attn_meta = self.block_mgr.pack_flash_attn_metadata(meta_c, meta_py)
+        attn_meta = self.block_mgr.pack_flash_attn_metadata(meta_c, batch)
 
-        if self._intra_group_tp_enabled:
+        if self._tp_enabled:
             self._wait_async_handles()
             
             # 3. broadcast attn_meta
             # [slot_mapping, block_table]
             max_num_blocks = attn_meta.block_tables.shape[-1]
-            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
+            num_tokens = batch.num_prefill_tokens + batch.num_decode_tokens
             num_elems = num_tokens + max_num_blocks * num_tokens
             
             bc_attn_meta = self.buffer_attn_meta[ : num_elems]
@@ -120,31 +122,53 @@ class AttentionEngineMixin:
         
         return attn_meta
     
-
     @nvtx_range("attn_engine.process_batch_attn")
     def process_batch_attn(self, 
-                           meta_c: AttentionBatchMetadata, 
-                           input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+                           meta_c: BatchMetadata, 
+                           input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
+        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+
         with self._timer.range("preprocess"):
-            meta_py = AttentionBatchMetadata.from_c(meta_c)
-            assert len(meta_py.seq_ids) > 0, "Scheduled batch is empty"
+            batch = AttentionForwardBatch.build(meta_c, input_tensor)
+            assert len(batch.req_ids) > 0, "Scheduled batch is empty"
+            
+            if batch.layer_id == 0:
+                for i in range(batch.num_prefill_tokens):
+                    self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
+                    
+            # NOTE: topk is aggregated in the c++ side now
+            # if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
+            #     assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
+            #         f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
+            #     input_topk_tensor = input_tensor.view(num_tokens, self.model_config.top_k, -1)
+            #     input_tensor = torch.sum(input_topk_tensor, dim=1)
+            #     meta_c.shrink_topk(self.model_config.top_k)
+            
+            # TODO: consider the position of this code piece
+            if batch.layer_id == self.model_total_num_layers:
+                # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
+                continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
+                new_meta = meta_c
+                continue_meta = new_meta.index_select(continue_ids)
+                continue_meta.init_prefill_lens = [-1] * len(continue_ids)
+                continue_meta.attn_dp_ranks = [self.attn_dp_rank] * len(continue_ids)
+                # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
+                self.release_seqs(finish_req_ids)
+                
+                new_meta.set_finish_signal(continue_ids)            
+                sampled_batch: TokenBatch = TokenBatch_C()
+                sampled_batch.data = input_tensor
+                sampled_batch.metadata = new_meta
+                self.attn_dispatcher.send_to_sampler(sampled_batch)
+                return input_tensor[continue_ids], continue_meta
 
-            num_tokens = meta_py.num_prefill_tokens + meta_py.num_decode_tokens
-
-            if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
-                assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
-                    f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-                input_topk_tensor = input_tensor.view(-1, self.model_config.top_k, num_tokens)
-                input_tensor = torch.sum(input_topk_tensor, dim=1)
-                meta_c.shrink_topk(self.model_config.top_k)
-
-            attn_meta = self._attn_driver_preprocess(meta_c, meta_py, input_tensor)
-            positions = meta_py.seq_lens_tensor.to(torch.int64)
+            attn_meta = self._attn_driver_preprocess(meta_c, batch)
+            positions = batch.seq_lens_tensor.to(torch.int64)
 
         with self._timer.range("execute"):
             assert input_tensor.shape[0] == positions.shape[0], f"input_tensor.shape[0] != positions.shape[0]: {input_tensor.shape[0]} != {positions.shape[0]}"
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(meta_py.layer_id, positions, input_tensor, attn_meta)
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta)
             
         with self._timer.range("postprocess"):
             # Deprecated optimization:
@@ -163,35 +187,34 @@ class AttentionEngineMixin:
                 # d2h_event.synchronize()
                 # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
                 # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-            new_meta_c = meta_c.to_metadata()
+            new_meta_c = meta_c
             if self.model_config.top_k > 1:
                 new_meta_c.duplicate_topk(self.model_config.top_k)
                 
             if self.model_config.top_k == 1:
                 expert_ids = expert_ids.view(-1).tolist()
             else:
-                assert self.model_config.top_k == 2, "top_k > 2 is not supported yet, need specialized kernel"
                 expert_ids = expert_ids.view(-1).tolist()
                 expert_weights = expert_weights.view(-1).tolist()
                 new_meta_c.topk_weights = expert_weights
                 
-            exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
+            new_meta_c.exp_ids = expert_ids
+            exp_mappings = new_meta_c.sort_by_expert()
+            new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
+            # exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
             hiddens = permute_tokens(hiddens, exp_mappings)
-            new_meta_c.update_exp_ids(expert_ids, exp_mappings)
 
             assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
+            
         return hiddens, new_meta_c
     
     def release_seqs(self, seq_ids: List[int]):
         # TODO(optimize): master should only send release request to the driver
         if not self.has_attn:
             return
-        if (not self.is_attn_driver) and (not self.model_config.tp_enable_inter_group):
-            # is a worker and enabled intra-group communication, no kv cache to be released.
+        if not self.is_attn_driver:
+            # is a worker, no kv cache to be released.
             return
-        # NOTE: due to DP, some seqs may not be in the decode_seq_lens
-        seq_ids = [i for i in seq_ids if i in self.decode_seq_lens]
-        
         self.block_mgr.release_seqs(seq_ids)
         
     def _create_attn_broadcast_buffers(self):
@@ -202,7 +225,6 @@ class AttentionEngineMixin:
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
         shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
-    
     
     @nvtx_range("attn_engine.attn_worker_preprocess")
     def _attn_worker_preprocess(self) -> Tuple[int, Tensor, FlashAttentionMetadata]:
@@ -300,7 +322,11 @@ class AttentionEngineMixin:
             self.attn_executor.execute(layer_id, positions, input_tensor, meta)
 
 class ExpertEngineMixin:
-    
+
+    _timer: Timer
+    stream: torch.cuda.Stream
+    _static_bs_cuda: Tensor
+    expert_max_batch_size: int
     expert_executor: ExpertsExecutor
     model_config: ModelConfig
     cache_config: CacheConfig
@@ -316,25 +342,30 @@ class ExpertEngineMixin:
         
     @nvtx_range("expert_engine.process_batch_expert")
     def process_batch_expert(self, 
-                             meta_c: Metadata, 
-                             input_tensor: Tensor) -> Tuple[Tensor, Metadata]:
+                             meta_c: BatchMetadata, 
+                             input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # NOTE: input_tensor is already permuted by expert_ids in scheduler
+        # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
         with self._timer.range("preprocess"):
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
             num_tokens = meta_c.num_tokens()
-            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-                meta_c.get_expert_batch_sizes_cuda(
-                    self.model_config.num_experts, self.inner_exp_rank,
-                    self._static_bs_cuda, self.stream.cuda_stream
-                )
-                batch_sizes = self._static_bs_cuda
+            if self.model_config.enable_grouped_gemm:
+                if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                    meta_c.get_expert_batch_sizes_cuda(
+                        self.model_config.num_experts, self.inner_exp_rank,
+                        self._static_bs_cuda, self.stream.cuda_stream
+                    )
+                    batch_sizes = self._static_bs_cuda
+                else:
+                    batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                    batch_sizes = torch.tensor(
+                        [batch_sizes[i] for i in self.inner_exp_rank],
+                        dtype=torch.int64, device="cuda"
+                    )
             else:
                 batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-                batch_sizes = torch.tensor(
-                    [batch_sizes[i] for i in self.inner_exp_rank],
-                    dtype=torch.int64, device="cuda"
-                )
+                batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
             range_pop()
         
         with self._timer.range("execute"):
@@ -344,8 +375,7 @@ class ExpertEngineMixin:
         # 2. permute tokens back to <prefill><decode> order
         with self._timer.range("postprocess"):
             h2d_event = torch.cuda.Event()
-            
-            new_mappings = list(meta_c.sort_by_prefill_order())
+            new_mappings = list(meta_c.sort_by_attention())
             
             with torch.cuda.stream(self.h2d_stream):
                 new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
@@ -361,11 +391,13 @@ class ExpertEngineMixin:
 
             h2d_event.wait(self.h2d_stream)
 
+            # TODO: might fuse weights apply and permute
             if self.model_config.top_k > 1:
                 output = output * topk_weights
             
             output = permute_tokens(output, new_mappings_gpu)
-            meta_c.update_exp_ids([], [])
+            meta_c.exp_ids = []
+            meta_c.topk_weights = []
             meta_c.step_layer()
 
         # get_logger().info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
@@ -389,18 +421,23 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.dispatcher: MuDispatcher = None
         self.attn_executor: AttnExecutor = None
         self.expert_executor: ExpertsExecutor = None
+        self.attn_dispatcher: MuDispatcher = None
+        self.expert_dispatcher: MuDispatcher = None
+        self.attn_pool: MuPool = None
+        self.expert_pool: MuPool = None
+        self.dummy_sampler: DummySampler = None
         
         self.end_flag = False
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
-        self.cache_config: CacheConfig = None    
+        self.cache_config: CacheConfig = None
+        
+        self.model_total_num_layers = 0
+            
         self.loop_thread = None
         
         self._process_batch: Callable = None
         
-        self.block_mgr: BlockManager = None
-        
-        self.decode_seq_lens = {}
         self.profiler = None
         self.inner_exp_rank = []
         self.device_group_ids = []
@@ -413,6 +450,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self._timer = Timer()
         self._queueing_timer = {} # placeholder, not used at the moment
         self._queueing_delays = []
+        
+        self.attn_dp_rank = None
+        self.expert_ep_rank = None
 
     @property
     def has_attn(self):
@@ -424,32 +464,28 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     @property
     def is_attn_driver(self):
-        return self.has_attn and (self._inter_group_tp_enabled or self.rank_in_group == 0)
+        return self.has_attn and self.rank_in_group == 0
     
     @property
     def is_attn_worker(self):
-        return self._intra_group_tp_enabled and self.rank_in_group > 0
+        return self.rank_in_group > 0
     
     @property
     def _tp_enabled(self):
         return self.has_attn and self.model_config.tp_size > 1
     
-    @property
-    def _inter_group_tp_enabled(self):
-        return self._tp_enabled and self.model_config.tp_enable_inter_group
-    
-    @property
-    def _intra_group_tp_enabled(self):
-        return self._tp_enabled and (not self.model_config.tp_enable_inter_group)
-    
     def _delegate_modules(self):
         if self.has_attn and self.has_expert:
-            return
+            assert False, "Hybrid engine is not supported yet"
         if self.has_attn:
+            self.scheduler = self.attn_scheduler
             self.executor = self.attn_executor
+            self.dispatcher = self.attn_dispatcher
             self._process_batch = self.process_batch_attn
         elif self.has_expert:
+            self.scheduler = self.expert_scheduler
             self.executor = self.expert_executor
+            self.dispatcher = self.expert_dispatcher
             self._process_batch = self.process_batch_expert
         else:
             assert False, "No engine type is set"
@@ -468,9 +504,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         """
         disagmoe_recorder_create()
         
-        self.device_group_ids = core_args.device_group_ids
+        self.attn_dp_rank = core_args.local_attn_dp_rank
         
-        assert not self.model_config.tp_enable_inter_group, "TP inter group is deprecated"
+        self.device_group_ids = core_args.device_group_ids
         
         self.model_config.layer_ids = core_args.layer_ids
             
@@ -489,74 +525,47 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
-        if self.engine_type == EngineType.HYBRID:
-            self.scheduler, self.dispatcher = init_engine(
-                self.device_id,
-                self.model_config.top_k,
-                self.has_attn,
-                self.has_expert,
-                ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
-                    self.model_config.ep_size,
-                    self.model_config.dp_size,
-                    self.model_config.num_experts_per_rank,
-                    core_args.expert_ranks,
-                ), # parallel config
-                core_args.layer_ids,
-                # P2P Channels
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                [info.to_c() for info in core_args.out_channel_infos],
-                # Group Channels
-                core_args.in_nccl_ids,
-                core_args.out_nccl_ids,
-                core_args.in_nccl_ids_ext,
-                core_args.out_nccl_ids_ext,
-                [], # device_grou_ids, now is actually deprecated
-                core_args.local_attn_dp_rank,
-            )
-        else:
-            self.scheduler, self.dispatcher = init_engine(
-                self.device_id,
-                self.model_config.top_k,
-                self.has_attn,
-                self.has_expert,
-                ParallelConfig.from_c(
-                    self.model_config.tp_size if self.model_config.tp_enable_inter_group else 1, # control the init of attn_scheduler
-                    self.model_config.ep_size,
-                    self.model_config.dp_size,
-                    self.model_config.num_experts_per_rank,
-                    core_args.expert_ranks,
-                ), # parallel config
-                core_args.layer_ids,
-                # P2P Channels
-                core_args.in_device_ids,
-                core_args.out_device_ids,
-                [info.to_c() for info in core_args.out_channel_infos],
-                # Group Channels
-                core_args.in_nccl_ids,
-                core_args.out_nccl_ids,
-                # Extra channels for future colocated mode
-                core_args.in_nccl_ids_ext,
-                core_args.out_nccl_ids_ext,
-                # core_args.device_group_ids,
-                core_args.local_attn_dp_rank,
-            )
+        assert self.engine_type != EngineType.HYBRID, "Hybrid engine is not supported yet"
+        self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
+            self.device_id,
+            self.model_config.top_k,
+            self.has_attn,
+            self.has_expert,
+            core_args.expert_wise_schedule,
+            ParallelConfig.from_c(
+                1, # control the init of attn_scheduler
+                self.model_config.ep_size,
+                self.model_config.dp_size,
+                self.model_config.num_experts_per_rank,
+                core_args.expert_ranks,
+            ), # parallel config
+            core_args.layer_ids,
+            # P2P Channels
+            core_args.in_device_ids,
+            core_args.out_device_ids,
+            [info.to_c() for info in core_args.out_channel_infos],
+            # Group Channels
+            core_args.in_nccl_ids,
+            core_args.out_nccl_ids,
+            # Extra channels for future colocated mode
+            # core_args.in_nccl_ids_ext,
+            # core_args.out_nccl_ids_ext,
+            # core_args.device_group_ids,
+            core_args.local_attn_dp_rank,
+        )
             
-        if self.model_config.tp_enable_inter_group:
-            set_tensor_model_parallel_channel(self.scheduler.get_attention_channel() if self.has_attn else None)
-        else:
-            if self.has_attn and self._intra_group_tp_enabled:
-                dist.init_process_group(backend="nccl", 
-                                        world_size=len(self.device_group_ids), 
-                                        rank=self.rank_in_group,
-                                        init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
+        if self.has_attn and self._tp_enabled:
+            dist.init_process_group(backend="nccl", 
+                                    world_size=len(self.device_group_ids), 
+                                    rank=self.rank_in_group,
+                                    init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
-            self.scheduler.set_attn_max_batch_size(self.attn_max_batch_size)
+            self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
+            self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
         
         if self.has_expert:
-            self.scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
+            self.expert_scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
             
         self.build_executor()
@@ -615,6 +624,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.model_config = model_config
         self.cache_config = cache_config
         
+        self.model_total_num_layers = model_config.num_layers
+        
         if self.has_attn:
             self.attn_max_batch_size = model_config.max_batch_size_attn 
             
@@ -635,20 +646,26 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.handles.append(handle)
 
     @nvtx_range("Engine.post_process")
-    def post_process(self, output: Tensor, meta: Metadata, dispatcher) -> None:
+    def post_process(self, output: Tensor, meta: BatchMetadata, dispatcher) -> None:
         assert not self.is_attn_worker
-        batch: TensorBatch = TensorBatch_C()
-        batch.data = output
-        batch.metadata = meta
-        
-        range_push("Engine.stream_sync")
-        
-        with self._timer.range("stream_sync"):
-            self.stream.synchronize()
-        range_pop()
-        dispatcher.put(batch, 0)
+        if self.has_attn and meta.layer_id == self.model_total_num_layers and meta.shape[0] > 0: # a hack for sampling check
+            assert self.dummy_sampler is not None
+            meta.layer_id = 0
+            batch: TokenBatch = TokenBatch_C()
+            batch.data = output
+            batch.metadata = meta
+            self.attn_pool.put_batch(batch)
+        else:
+            batch: TokenBatch = TokenBatch_C()
+            batch.data = output
+            batch.metadata = meta
+            range_push("Engine.stream_sync")
+            with self._timer.range("stream_sync"):
+                self.stream.synchronize()
+            range_pop()
+            dispatcher.put(batch, 0)
 
-    def stats_pre_process(self, batch: TensorBatch):
+    def stats_pre_process(self, batch: TokenBatch):
         # Explicitly select which pool's snapshot to fetch.
         if self.has_attn and not self.has_expert:
             self._pool_snapshot = self.scheduler.get_pool_snapshot()  # attention pool
@@ -671,7 +688,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                     {x: 0 for x in self.model_config.layer_ids})
         )
         
-    def stats_post_process(self, batch: TensorBatch):
+    def stats_post_process(self, batch: TokenBatch):
         step_end_timestamp_ms = time_ms()
         self._metric.update("t_step", step_end_timestamp_ms - self._step_start_timestamp_ms)
         
@@ -681,22 +698,29 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             pool_snapshot_dict = dict()
             queueing_tokens = 0
             queueing_batches = 0
+            num_groups = len(self._pool_snapshot) // len(self.model_config.layer_ids)
             for i, size in enumerate(self._pool_snapshot):
                 if size <= 0:
                     continue
-                layer = self.model_config.layer_ids[i]
-                pool_snapshot_dict[layer] = size
+                # layer = self.model_config.layer_ids[i]
+                pool_snapshot_dict[i] = size
                 queueing_tokens += size
                 queueing_batches += 1
                 
             executed_layer_id = batch.metadata.layer_id
+            
+            # !!! This code should be fixed for co-location
             if self.has_expert:
                 executed_layer_id -= 1
+                
+            if num_groups > 1:
+                executed_layer_id = executed_layer_id * num_groups + batch.metadata.get_expert_id() % num_groups
+            
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
                         step_end_timestamp_ms, 
                         real_batch_size, executed_layer_id,
-                        self.executor.layer_mappings[executed_layer_id],
+                        executed_layer_id,
                         pool_snapshot_dict)
             )
         else:
@@ -745,8 +769,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             
             self._timer.stop("schedule")
             
-            batch = TensorBatch.from_c(batch_info)
-            meta: Metadata = batch.metadata
+            batch = TokenBatch.from_c(batch_info)
+            meta: BatchMetadata = batch.metadata
             
             self.stats_pre_process(batch)
             output, meta = self._process_batch(meta, batch.data)
@@ -774,8 +798,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     #         # self._timer.stop("schedule")
     #         self._timer.start("preprocess")
             
-    #         batch = TensorBatch.from_c(batch_info)
-    #         meta: Metadata = batch.metadata
+    #         batch = TokenBatch.from_c(batch_info)
+    #         meta: BatchMetadata = batch.metadata
             
     #         # self.stats_pre_process(batch)
     #         output, meta = processor(meta, batch.data)
@@ -804,7 +828,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     def terminate(self):
         self.end_flag = True
-        if self._intra_group_tp_enabled and self.is_attn_driver:
+        if self._tp_enabled and self.is_attn_driver:
             # sending termination signal to TP workers
             get_logger().info("TP driver sending termination signal to TP workers")
             self.buffer_meta[0] = -1
@@ -846,7 +870,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self._step_stats.clear()
         self._queueing_timer.clear()
         self._queueing_delays.clear()
-        self.release_seqs(list(self.decode_seq_lens.keys()))
+        if self.has_attn:
+            self.block_mgr.reset_state()
+        
+    def record_max_output_lens(self, req_id: int, max_output_len: int):
+        assert self.has_attn
+        self.dummy_sampler.create_request(req_id, max_output_len)
         
     def set_schedule_policy(self, policy: str):
         if self.scheduler is not None:
@@ -854,25 +883,60 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         else:
             raise ValueError("Scheduler is not initialized")
     
-    def set_schedule_block(self, step: int):
-        if self.scheduler is not None:
-            self.scheduler.set_schedule_block(step)
-        else:
-            raise ValueError("Scheduler is not initialized")
+    # def set_schedule_block(self, step: int):
+    #     if self.has_attn:
+    #         self.attn_scheduler.set_schedule_block(step)
+    #     if self.has_expert:
+    #         self.expert_scheduler.set_schedule_block(step)
+
+class DummySampler:
+    
+    def __init__(self, min_output_len: int, max_output_len: int):
+        if max_output_len == min_output_len:
+            max_output_len += 1
+        self.min_output_len = min_output_len
+        self.max_output_len = max_output_len
+        self.req_max_output_len: Dict[int, int] = {}
+        self.output_len: Dict[int, int] = {}
         
+    def sample_once(self, req_ids: List[int]) -> Tuple[List[int], List[int]]:
+        continue_ids = []
+        finish_req_ids = []
+        for i, req in enumerate(req_ids):
+            assert req in self.output_len, f"req {req} not found in output_len"
+            self.output_len[req] += 1
+            if self.check_end(req):
+                # print(f"req {req} finished with length {self.output_len[req]}")
+                self.clean_request(req)
+                finish_req_ids.append(req)
+            else:
+                continue_ids.append(i)
+        return continue_ids, finish_req_ids
+    
+    def create_request(self, req_id: int, max_output_len: int = -1):
+        if max_output_len == -1:
+            max_output_len = random.randint(self.min_output_len, self.max_output_len)
+        self.req_max_output_len[req_id] = max_output_len
+        self.output_len[req_id] = 0
+
+    def clean_request(self, req_id: int):
+        if req_id in self.req_max_output_len:
+            del self.req_max_output_len[req_id]
+        if req_id in self.output_len:
+            del self.output_len[req_id]
+                    
+    def check_end(self, req_id) -> bool:
+        return self.output_len[req_id] >= self.req_max_output_len[req_id]
+
 class SamplerEngine(Engine):
     
     def __init__(self):
         super().__init__(None, None, None, SAMPLER_DEV_ID)
         self.sampler: Sampler = None
-        self.max_output_len = -1
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.sampler = init_sampler(
             self.device_id,
-            self.min_output_len,
-            self.max_output_len,
-            self.model_config.top_k,
             ParallelConfig.from_c(
                 1, 1, self.model_config.dp_size, 1, []
             ),
@@ -896,10 +960,6 @@ class SamplerEngine(Engine):
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
     
-    def set_sampling_params(self, min_output_len: int, max_output_len: int):
-        self.min_output_len = min_output_len
-        self.max_output_len = max_output_len
-        
     def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
         result = self.sampler.wait_slo_stats(n_request)
         while len(result) == 0:
@@ -920,27 +980,27 @@ class TokenizerEngine(Engine):
         self.tokenizer: Tokenizer = None
         self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         
-    def process_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
+    def process_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
         # req_id (or seq_id) must > 0
         assert req_id > 0
         tensor_shape = (1, self.model_config.hidden_size)
         # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.randn(tensor_shape).type(self.model_config.dtype)
-        get_logger().info(f"tokenizer put request {req_id}")
-        self.tokenizer.put_request(req_id, init_prefill_len, x, dp_rank)
+        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
+        # get_logger().info(f"tokenizer put request {req_id}")
+        self.tokenizer.put_request(req_id, init_prefill_len, max_output_len, x, dp_rank)
         self.t_submitted[req_id] = time.time()
         
-    def put_single_request(self, req_id: int, init_prefill_len: int, dp_rank: int):
-        self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_single_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
+        self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
-    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], dp_ranks: List[int]):
-        for req_id, init_prefill_len, dp_rank in zip(req_ids, init_prefill_lens, dp_ranks):
-            self.process_request(req_id, init_prefill_len, dp_rank)
+    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], max_output_lens: List[int], dp_ranks: List[int]):
+        for req_id, init_prefill_len, max_output_len, dp_rank in zip(req_ids, init_prefill_lens, max_output_lens, dp_ranks):
+            self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
         
     def fetch_submitted_time(self):
         return self.t_submitted
         
-    def init_core(self, core_args: InitCoreArgs,):
+    def init_core(self, core_args: InitCoreArgs):
         self.tokenizer = init_tokenizer(
             self.device_id,
             ParallelConfig.from_c(

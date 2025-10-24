@@ -21,10 +21,9 @@ class ModelConfig:
     layer_ids: Optional[List[int]] = None
     top_k: int = 1
     
-    tp_enable_inter_group: bool = True
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
-    enable_grouped_gemm: bool = True
+    enable_grouped_gemm: bool = False
     
     graph_stride: int = 8
     max_batch_size_attn: int = 160

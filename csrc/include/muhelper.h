@@ -9,6 +9,8 @@
 #include <memory>
 
 #include "datatypes.hpp"
+#include "metadata.hpp"
+#include "batch.hpp"
 #include "comm.h"
 #include "transport_factory.h"
 
@@ -49,7 +51,7 @@ protected:
 
     int peer_zmq_port_offset{0};
 
-    std::queue<std::pair<TensorBatch, int>> send_queue;
+    std::queue<std::pair<TokenBatch, int>> send_queue;
     std::mutex mtx;
     std::condition_variable cv;
 
@@ -58,9 +60,9 @@ protected:
 
     ParallelConfig cfg;
 
-    virtual void _send_once(TensorBatch batch) = 0;
+    virtual void _send_once(TokenBatch batch) = 0;
 
-    void _send_batch(int cid, uintptr_t buf, const Metadata& meta);
+    void _send_batch(int cid, uintptr_t buf, const BatchMetadata& meta);
 
     void run() override;
 
@@ -71,7 +73,9 @@ public:
                  ParallelConfig cfg, 
                  std::vector<Channel_t> channels);
 
-    void put(TensorBatch batch, int rank = 0);
+    void put(TokenBatch batch, int rank = 0);
+
+    virtual void send_to_sampler(TokenBatch batch) { ASSERT (false); }
 };
 
 
@@ -80,10 +84,11 @@ class MuAttnDispatcher: public MuDispatcher {
 protected:
     std::vector<int> exp_channels;
     int max_exp_id;
+    int sampler_channel_id;
 
     std::vector<std::vector<int>> _inner_expert_ranks;
 
-    void _send_once(TensorBatch batch) override;
+    void _send_once(TokenBatch batch) override;
 
     int _encode(int exp_layer_id, int exp_id) const;
 
@@ -95,15 +100,16 @@ public:
                      ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
+    
+    void send_to_sampler(TokenBatch batch) override;
 };
 
 class MuExpertDispatcher: public MuDispatcher {
 protected:
     std::vector<ChannelInfo> channel_infos;
     std::vector<std::vector<int>> attn_channel;
-    int sampler_channel_id;
 
-    void _send_once(TensorBatch batch) override;
+    void _send_once(TokenBatch batch) override;
     virtual int _get_attn_channel(int req_id, int layer_id);
 
 public:
@@ -113,7 +119,7 @@ public:
                        std::vector<Channel_t> channels={},
                        std::vector<ChannelInfo> channel_infos={});
     
-    void debug_put(TensorBatch batch);
+    void debug_put(TokenBatch batch);
 };
 
 enum LayerSchedulePolicy {
@@ -138,7 +144,7 @@ protected:
     int num_layers;
     int num_groups;
 
-    std::vector<std::vector<TensorBatch>> data_queue;
+    std::vector<std::vector<TokenBatch>> data_queue;
     std::vector<int> layer_id_P2V; // physical layer id to virtual layer id (within this worker)
     std::vector<int> layer_id_V2P; // virtual layer id (within this worker) to physical layer id
 
@@ -161,11 +167,11 @@ protected:
 
     std::shared_ptr<LayerScheduler> layer_scheduler;
 
-    void recv_metadata(int &peer_id, metadata_t &meta);
+    void recv_metadata(int &peer_id, batch_metadata_t &meta);
 
-    void recv_tensor(int peer_id, uintptr_t tensor_buf, metadata_t &meta);
+    void recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta);
 
-    virtual void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) = 0;
+    virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) = 0;
 
     void start_queueing_timer(const std::vector<int> &req_ids);
 
@@ -190,6 +196,10 @@ public:
     void wait_for_new_requests();
 
     void set_max_batch_size(int max_batch_size);
+
+    int get_num_layers() { return num_layers; }
+
+    int get_num_groups() { return num_groups; }
 
     /* 
 
@@ -222,6 +232,8 @@ public:
     // return average queueing delay    
     float remove_queueing_timer(const std::vector<int> &req_ids);
 
+    void put_batch(TokenBatch batch);
+
     // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
     void set_layer_scheduler(std::shared_ptr<LayerScheduler> scheduler) { this->layer_scheduler = scheduler; }
     std::shared_ptr<LayerScheduler> get_layer_scheduler() { return this->layer_scheduler; }
@@ -229,9 +241,9 @@ public:
 
 class MuExpertPool: public MuPool {
 protected:
-    std::vector<std::vector<TensorBatch>> data_queue;
+    std::vector<std::vector<TokenBatch>> data_queue;
 
-    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
 
 public:
     MuExpertPool(
@@ -242,23 +254,22 @@ public:
         int num_groups = 1
     );
 
-    std::vector<TensorBatch> get_batch_from_layer(int layer_id);
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
 };
 
-typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
-typedef std::shared_ptr<MuExpertPool> mu_pool_t;  // For backward compatibility
-typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
 
 class MuAttentionPool: public MuPool {
 
 private:
 
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
 
-    std::vector<std::vector<AttentionBatch>> attn_data_queue;
+protected:
 
-    AttentionBatch pack_attn_batch(torch::Tensor tensor, metadata_t meta);
+    std::vector<std::vector<TokenBatch>> attn_data_queue;
 
-    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+    TokenBatch pack_attn_batch(torch::Tensor tensor, batch_metadata_t meta);
 
 public:
 
@@ -269,15 +280,15 @@ public:
         LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
     );
 
-    virtual std::vector<AttentionBatch> get_batch_from_layer(int layer_id);
+    void put_batch_to_attn_queue(int layer_id, const TokenBatch &batch);
 
-    std::vector<AttentionBatch> fetch_batch_from(int layer_id, std::set<int> &seq_ids);
+    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id);
 
     void terminate() override;
 
     // for debug use only
     void __set_attn_data_queue(
-        std::vector<std::vector<AttentionBatch>> data_queue, 
+        std::vector<std::vector<TokenBatch>> data_queue, 
         std::vector<int> token_per_layer,
         int largest_batch_id) {
         this->attn_data_queue = data_queue;
@@ -286,7 +297,6 @@ public:
     }
 };
 
-typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
 
 class TokenTopKPool {
 
@@ -300,7 +310,7 @@ public:
 
     TokenTopKPool(int top_k): top_k(top_k) {}
 
-    void put_batch(TensorBatch batch);
+    void put_batch(TokenBatch batch);
 
     std::vector<TokenTopKInfo> fetch_ready_tokens();
 
@@ -309,6 +319,8 @@ public:
 };
 
 class MuAttentionTopKPool: public MuAttentionPool {
+
+private:
 
     int top_k;
 
@@ -319,7 +331,7 @@ class MuAttentionTopKPool: public MuAttentionPool {
 
     std::vector<TokenTopKInfo> schedule_with_limit();
 
-    void process_batch(torch::Tensor tensor, metadata_t &meta, bool send_from_zmq=true) override;
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
 
 public:
 
@@ -333,6 +345,17 @@ public:
 
     int tokens_in_layer(int lid) override;
 
-    std::vector<AttentionBatch> get_batch_from_layer(int layer_id) override;
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
 
 };
+
+typedef std::shared_ptr<MuPool> mu_pool_t;  // For backward compatibility
+typedef std::shared_ptr<MuDispatcher> mu_dispatcher_t;
+
+typedef std::shared_ptr<MuExpertPool> mu_expert_pool_t;
+typedef std::shared_ptr<MuExpertDispatcher> mu_expert_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionPool> mu_attn_pool_t;
+typedef std::shared_ptr<MuAttnDispatcher> mu_attn_dispatcher_t;
+
+typedef std::shared_ptr<MuAttentionTopKPool> mu_attn_topk_pool_t;

@@ -1,6 +1,6 @@
 import torch
 
-from disagmoe.frontend.datatypes import TensorBatch, AttentionBatchMetadata, SloStat
+from disagmoe.frontend.datatypes import TokenBatch, BatchMetadata, SloStat
 
 from typing import Tuple, List, Dict, Optional
 
@@ -9,7 +9,7 @@ class Scheduler:
     def wait_for_new_requests(self) -> None:
         ...
 
-    def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TensorBatch:
+    def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TokenBatch:
         ...
         
     def get_attention_channel(self) -> "NcclGroupChannel":
@@ -35,12 +35,20 @@ class Scheduler:
 
 class MuDispatcher:
         
-    def put(self, batch: TensorBatch, rank: int):
+    def put(self, batch: TokenBatch, rank: int):
+        ...
+        
+    def send_to_sampler(self, batch: TokenBatch):
+        ...
+
+class MuPool:
+    
+    def put_batch(self, batch: TokenBatch) -> None:
         ...
 
 class Tokenizer:
     
-    def put_request(self, req_id: int, init_prefill_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
+    def put_request(self, req_id: int, init_prefill_len: int, max_output_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
         ...
         
     def start(self):
@@ -89,10 +97,10 @@ class BlockManager:
     def allocate(self, seq_id: int, seq_len: int) -> None:
         ...
         
-    def update_block_table(self, meta_c: AttentionBatchMetadata, decode_seq_lens: List[int]) -> None:
+    def update_block_table(self, meta_c: BatchMetadata, decode_seq_lens: List[int]) -> None:
         ...
         
-    def prepare_block_table(self, meta_c: AttentionBatchMetadata, decode_seq_lens: List[int]) -> torch.Tensor:
+    def prepare_block_table(self, meta_c: BatchMetadata, decode_seq_lens: List[int]) -> torch.Tensor:
         ...
         
 class NcclGroupChannel:

@@ -7,9 +7,9 @@ from disagmoe.frontend.datatypes import ChannelInfo
 _placement_group: PlacementGroup = None
 
 def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
-    tmpdir_path = os.environ.get("RAY_TMPDIR", "/tmp/ray")
     if not ray.is_initialized():
         try:
+            tmpdir_path = os.environ.get("RAY_TMPDIR", "/tmp/ray")
             ray.init(address="auto", _temp_dir=tmpdir_path)
         except ConnectionError:
             print("ray not initialized, now initializing a default ray cluster")
@@ -21,7 +21,6 @@ def init_cluster(n_worker: int = 1, n_gpu_per_worker: int = 4):
     ray.get(pg.ready(), timeout=10)
     global _placement_group
     _placement_group = pg
-    print("workers", n_worker, "gpus", n_gpu_per_worker)
 
 def get_global_placement_group():
     global _placement_group
@@ -32,6 +31,8 @@ def get_global_placement_group():
 @dataclass
 class InitCoreArgs:
     layer_ids: List[int]
+    min_output_len: int
+    max_output_len: int
     
     # P2P Channels
     in_device_ids: List[int]
@@ -45,9 +46,13 @@ class InitCoreArgs:
     out_nccl_ids_ext: Dict[int, int]
     
     expert_ranks: List[Tuple[int, int, int]]
+    expert_wise_schedule: bool = False
     
     # Group Channels
     out_device_group_ids: Dict[int, List[int]] = None
     device_group_ids: List[int] = None
     group_nccl_ids: Tuple[str, str, str] = ("", "", "")
     local_attn_dp_rank: int = 0
+    
+
+    

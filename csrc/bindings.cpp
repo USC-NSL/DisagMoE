@@ -3,6 +3,7 @@
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/stl.h>
+#include <torch/extension.h>
 
 #include "tests.h"
 #include "engine.h"
@@ -32,7 +33,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
     //     .def("start", &MuAttnDispatcher::start)
     //     .def("terminate", &MuAttnDispatcher::terminate)
     //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
-
+    py::class_<MuPool, std::shared_ptr<MuPool>>(m, "MuPool")
+        .def("put_batch", &MuPool::put_batch);
+        
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
         .def("set_max_batch_size", &Scheduler::set_max_batch_size)
@@ -53,7 +56,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         });
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
-        .def("put", &MuDispatcher::put);
+        .def("put", &MuDispatcher::put)
+        .def("send_to_sampler", &MuDispatcher::send_to_sampler);
 
     py::class_<Tokenizer, std::shared_ptr<Tokenizer>>(m, "Tokenizer")
         .def("put_request", &Tokenizer::put_request)
@@ -65,17 +69,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats)
         .def("fetch_step_infos", &Sampler::fetch_step_infos)
         .def("reset", &Sampler::reset);
-
-    py::class_<TopKSampler, std::shared_ptr<TopKSampler>>(m, "TopKSampler")
-        .def("start", &TopKSampler::start)
-        .def("wait_slo_stats", &TopKSampler::wait_slo_stats)
-        .def("fetch_step_infos", &Sampler::fetch_step_infos)
-        .def("reset", &Sampler::reset)
-        .def("fetch_finished_slo_stats", &TopKSampler::fetch_finished_slo_stats);
-
-    REGISTER_STRUCT(TensorBatch)
-        .def_readwrite("data", &TensorBatch::data)
-        .def_readwrite("metadata", &TensorBatch::metadata);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())
@@ -95,10 +88,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
         .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
 
-    REGISTER_STRUCT(AttentionBatch)
-        .def_readwrite("data", &AttentionBatch::data)
-        .def_readwrite("metadata", &AttentionBatch::metadata);
-
     REGISTER_STRUCT(SloStat)
         .def_readwrite("req_id", &SloStat::req_id)
         .def_readwrite("t_prefill", &SloStat::t_prefill)
@@ -110,41 +99,81 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("num_tokens", &SamplerStepInfo::num_tokens)
         .def_readwrite("time_stamp", &SamplerStepInfo::time_stamp);
 
-    py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
+    py::class_<BatchMetadata, std::shared_ptr<BatchMetadata>>(m, "BatchMetadata")
         .def(py::init<>())
-        .def_readwrite("shape", &AttentionBatchMetadata::shape)
-        .def_readwrite("dtype", &AttentionBatchMetadata::dtype)
-        .def_readwrite("layer_id", &AttentionBatchMetadata::layer_id)
-        .def_readwrite("seq_ids", &AttentionBatchMetadata::seq_ids)
-        .def_readwrite("num_prefill_tokens", &AttentionBatchMetadata::num_prefill_tokens)
-        .def_readwrite("num_prefill_seqs", &AttentionBatchMetadata::num_prefill_seqs)
-        .def_readwrite("num_decode_tokens", &AttentionBatchMetadata::num_decode_tokens)
-        .def_readwrite("init_prefill_lens", &AttentionBatchMetadata::init_prefill_lens)
-        .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
-        .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
-        .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
-        .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
-        .def("to_metadata", &AttentionBatchMetadata::to_metadata);
+        .def_readwrite("shape", &BatchMetadata::shape)
+        .def_readwrite("dtype", &BatchMetadata::dtype)
+        .def_readwrite("layer_id", &BatchMetadata::layer_id)
+        .def_readwrite("req_ids", &BatchMetadata::req_ids)
+        .def_readwrite("exp_ids", &BatchMetadata::exp_ids)
+        .def_readwrite("topk_weights", &BatchMetadata::topk_weights)
+        .def_readwrite("attn_dp_ranks", &BatchMetadata::attn_dp_ranks)
+        .def_readwrite("init_prefill_lens", &BatchMetadata::init_prefill_lens)
+        .def_readwrite("max_output_lens", &BatchMetadata::max_output_lens)
+        .def_readwrite("num_prefill_seqs", &BatchMetadata::num_prefill_seqs)
+        .def_readwrite("num_prefill_tokens", &BatchMetadata::num_prefill_tokens)
+        .def_readwrite("num_decode_tokens", &BatchMetadata::num_decode_tokens)
+        .def("is_attention", &BatchMetadata::is_attention)
+        .def("is_expert", &BatchMetadata::is_expert)
+        .def("is_tokenizer", &BatchMetadata::is_tokenizer)
+        .def("num_tokens", &BatchMetadata::num_tokens)
+        .def("token_hidden_dim", &BatchMetadata::token_hidden_dim)
+        .def("step_layer", &BatchMetadata::step_layer)
+        .def("set_finish_signal", &BatchMetadata::set_finish_signal)
+        .def("get_expert_batch_sizes", &BatchMetadata::get_expert_batch_sizes)
+        .def("get_expert_batch_sizes_cuda", &BatchMetadata::get_expert_batch_sizes_cuda)
+        .def("get_finished_indices", &BatchMetadata::get_finished_indices)
+        .def("permute_token_infos", &BatchMetadata::permute_token_infos)
+        .def("duplicate_topk", &BatchMetadata::duplicate_topk)
+        .def("sort_by_attention", &BatchMetadata::sort_by_attention)
+        .def("sort_by_expert", &BatchMetadata::sort_by_expert)
+        .def("index_select", &BatchMetadata::index_select);
 
-    py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
-        .def(py::init<std::vector<size_t>>())
-        .def_readwrite("shape", &Metadata::shape)
-        .def_readwrite("dtype", &Metadata::dtype)
-        .def_readwrite("layer_id", &Metadata::layer_id)
-        .def_readwrite("req_ids", &Metadata::req_ids)
-        .def_readwrite("exp_ids", &Metadata::exp_ids)
-        .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
-        .def_readwrite("init_prefill_lens", &Metadata::init_prefill_lens)
-        .def_readwrite("topk_weights", &Metadata::topk_weights)
-        .def("num_tokens", &Metadata::num_tokens)
-        .def("step_layer", &Metadata::step_layer)
-        .def("update_exp_ids", &Metadata::update_exp_ids)
-        .def("permute_token_infos", &Metadata::permute_token_infos)
-        .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
-        .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
-        .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
-        .def("duplicate_topk", &Metadata::duplicate_topk)
-        .def("shrink_topk", &Metadata::shrink_topk);
+    py::class_<TokenBatch>(m, "TokenBatch")
+        .def(py::init<>())
+        .def_readwrite("data", &TokenBatch::data)
+        .def_readwrite("metadata", &TokenBatch::metadata);
+
+    // py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
+    //     .def(py::init<>())
+    //     .def_readwrite("shape", &AttentionBatchMetadata::shape)
+    //     .def_readwrite("dtype", &AttentionBatchMetadata::dtype)
+    //     .def_readwrite("layer_id", &AttentionBatchMetadata::layer_id)
+    //     .def_readwrite("seq_ids", &AttentionBatchMetadata::seq_ids)
+    //     .def_readwrite("num_prefill_tokens", &AttentionBatchMetadata::num_prefill_tokens)
+    //     .def_readwrite("num_prefill_seqs", &AttentionBatchMetadata::num_prefill_seqs)
+    //     .def_readwrite("num_decode_tokens", &AttentionBatchMetadata::num_decode_tokens)
+    //     .def_readwrite("init_prefill_lens", &AttentionBatchMetadata::init_prefill_lens)
+    //     .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
+    //     .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
+    //     .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
+    //     .def_readwrite("max_output_lens", &AttentionBatchMetadata::max_output_lens)
+    //     .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
+    //     .def("to_metadata", &AttentionBatchMetadata::to_metadata);
+
+    // py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
+    //     .def(py::init<>())
+    //     .def_readwrite("batch_tag", &Metadata::batch_tag)
+    //     .def_readwrite("shape", &Metadata::shape)
+    //     .def_readwrite("dtype", &Metadata::dtype)
+    //     .def_readwrite("layer_id", &Metadata::layer_id)
+    //     .def_readwrite("req_ids", &Metadata::req_ids)
+    //     .def_readwrite("exp_ids", &Metadata::exp_ids)
+    //     .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
+    //     .def_readwrite("init_prefill_lens", &Metadata::init_prefill_lens)
+    //     .def_readwrite("topk_weights", &Metadata::topk_weights)
+    //     .def("num_tokens", &Metadata::num_tokens)
+    //     .def("get_expert_id", &Metadata::get_expert_id)
+    //     .def("step_layer", &Metadata::step_layer)
+    //     .def("update_exp_ids", &Metadata::update_exp_ids)
+    //     .def("permute_token_infos", &Metadata::permute_token_infos)
+    //     .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
+    //     .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
+    //     .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
+    //     .def("set_finish_signal", &Metadata::set_finish_signal)
+    //     .def("select_indices", &Metadata::select_indices)
+    //     .def("duplicate_topk", &Metadata::duplicate_topk)
+    //     .def("shrink_topk", &Metadata::shrink_topk);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)
@@ -165,10 +194,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("update_block_table", &BlockManager::update_block_table)
         .def("prepare_block_table", &BlockManager::prepare_block_table);
 
-    m.def("prepare_batch_infos", &prepare_batch_infos);
+    REGISTER_FUNC(prepare_batch_infos);
 
     // custom ops
-    m.def("permute_tokens_cuda", &permute_tokens_cuda);
+    REGISTER_FUNC(permute_tokens_cuda);
 
     // profiler functions
     m.def("recorder_output", &Recorder::output);
@@ -190,12 +219,13 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("create_channel_py_single", [](int local, int peer, char* uid) {
         return create_channel(local, peer, (void*) uid);
     });
-    m.def("get_nccl_unique_id", &get_nccl_unique_id);
-    m.def("instantiate_channels", &instantiate_channels);
-    m.def("init_engine", &init_engine);
-    m.def("start_engine", &start_engine);
-    m.def("init_sampler", &init_sampler);
-    m.def("init_tokenizer", &init_tokenizer);
+
+    REGISTER_FUNC(get_nccl_unique_id);
+    REGISTER_FUNC(instantiate_channels);
+    REGISTER_FUNC(init_engine);
+    REGISTER_FUNC(start_engine);
+    REGISTER_FUNC(init_sampler);
+    REGISTER_FUNC(init_tokenizer);
     REGISTER_FUNC(set_hosts);
 
     // Transport selection from Python (required before engine init)
@@ -204,13 +234,5 @@ PYBIND11_MODULE(disagmoe_c, m) {
     /********
         Test functions
     ********/
-    m.def("test_nccl_p2p", &test_nccl_p2p);
-
-    REGISTER_FUNC(test_op_overlap);
-    // m.def("test_zmq_sub_pub", &test_zmq_sub_pub);
-    // m.def("test_attn_dispatcher", &test_attn_dispatcher);
-    // m.def("test_expert_dispatcher", &test_expert_dispatcher);
-    // m.def("test_scheduler", &test_scheduler);
-    // m.def("test_sampler_recv", &test_sampler_recv);
-    // m.def("test_sampler_send", &test_sampler_send);
+    REGISTER_FUNC(test_nccl_p2p);
 }

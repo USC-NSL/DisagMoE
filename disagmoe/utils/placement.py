@@ -74,6 +74,8 @@ class ModelPlacement:
             return self.attn_rank_at(device_id)
     
     def out_expert_ranks_at(self, device_id: int) -> List[Tuple[int, int, int]]:
+        if device_id not in self.out_device_ids:
+            return []
         result = []
         for dev_out in self.out_device_ids[device_id]:
             if dev_out in self.expert:
@@ -95,15 +97,15 @@ class ModelPlacement:
             self.attn.get(device_id, []) + [e[0] for e in self.expert.get(device_id, [])]
         )))
         
-    def add_edge(self, start, end):
-        # assert start != end
-        if end not in self.in_device_ids:
-            self.in_device_ids[end] = []
-        if start not in self.out_device_ids:
-            self.out_device_ids[start] = []
-        if start not in self.in_device_ids[end]:
-            self.in_device_ids[end].append(start)
-            self.out_device_ids[start].append(end)
+    def add_edge(self, src, dst):
+        # assert src != dst
+        if dst not in self.in_device_ids:
+            self.in_device_ids[dst] = []
+        if src not in self.out_device_ids:
+            self.out_device_ids[src] = []
+        if src not in self.in_device_ids[dst]:
+            self.in_device_ids[dst].append(src)
+            self.out_device_ids[src].append(dst)
             
     def is_worker_device(self, device_id: int) -> bool:
         return device_id in self.device_groups and self.device_groups[device_id][0] != device_id
@@ -111,12 +113,8 @@ class ModelPlacement:
     def has_attn(self, device_id: int) -> bool:
         return device_id in self.attn
     
-    def in_device_ids_at(self, device_id: int, tp_enable_inter_group: bool) -> List[int]:
-        if self.is_worker_device(device_id) and tp_enable_inter_group:
-            # return the driver's in_device_ids
-            return [w for w in self.in_device_ids.get(self.device_groups[device_id][0], []) if w not in [self.tokenizer, self.sampler]]
-        else:
-            return self.in_device_ids.get(device_id, [])
+    def in_device_ids_at(self, device_id: int) -> List[int]:
+        return self.in_device_ids.get(device_id, [])
 
 @dataclass
 class ClusterConfig:
@@ -168,26 +166,26 @@ class PlacementBase:
                 # tokenizer to the first layer
                 for dev in attn_devs[layer_id]:
                     place.add_edge(place.tokenizer, dev)
-                    
-                # add edges from sampler back to the first attn
-                for dev in attn_devs[layer_id]:
-                    if self.model_config.tp_size > 1 and place.is_worker_device(dev):
-                        # if TP is enabled, the sampler should only connect to driver attn
-                        continue
-                    place.add_edge(place.sampler, dev)
             else:
                 # last exp to current attn
                 for dev in attn_devs[layer_id]:
                     for prev_dev in exp_devs[layer_id - 1]:
                         place.add_edge(prev_dev, dev)
-            # the last layer to sampler
-            if layer_id == self.model_config.num_layers - 1:
-                for dev in exp_devs[layer_id]:
-                    place.add_edge(dev, place.sampler)
+                        
             # current attn to current exp
             for dev in attn_devs[layer_id]:
                 for exp_dev in exp_devs[layer_id]:
                     place.add_edge(dev, exp_dev)
+        
+        # connect first attn layer with last exp layer
+        for dev in attn_devs[0]:
+            for prev_dev in exp_devs[self.num_layers - 1]:
+                place.add_edge(prev_dev, dev)
+                
+        # connect first attention layer with sampler
+        for dev in attn_devs[0]:
+            place.add_edge(dev, place.sampler)
+                    
         return place
         
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:

@@ -2,6 +2,20 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 from disagmoe.utils.constants import CPS
 import torch
+from enum import Enum
+from disagmoe_c import (
+    BatchMetadata as BatchMetadata_C,
+    ChannelInfo as ChannelInfo_C,
+    TokenBatch as TokenBatch_C,
+    SloStat as SloStat_C,
+    TraceContext as TraceContext_C,
+    SamplerStepInfo as SamplerStepInfo_C,
+)
+
+class BatchTag(Enum):
+    ATTENTION = "ATTENTION"
+    EXPERT = "EXPERT"
+    TOKENIZER = "TOKENIZER"
 
 @dataclass
 class ChannelInfo:
@@ -13,7 +27,6 @@ class ChannelInfo:
         ...
         
     def to_c(self) -> "ChannelInfo_C":
-        from disagmoe_c import ChannelInfo as ChannelInfo_C
         return ChannelInfo_C(
             self.expert_ids,
             self.attn_layer_ids,
@@ -26,142 +39,171 @@ class TokenMetadata:
     exp_id: int
     attn_dp_rank: int
     init_prefill_len: int
+    topk_weight: float
 
 @dataclass
-class Metadata:
+class BatchMetadata:
     shape: List[int]
     dtype: str
     layer_id: int
     req_ids: List[int]
     exp_ids: List[int]
+    topk_weights: List[float]
     attn_dp_ranks: List[int]
     init_prefill_lens: List[int]
-    topk_weights: List[float]
-
+    max_output_lens: List[int]
+    
+    # Only used in attention batch - optional fields
+    num_prefill_seqs: Optional[int]
+    num_prefill_tokens: Optional[int]
+    num_decode_tokens: Optional[int]
+    
+    def is_attention(self) -> bool:
+        ...
+    
+    def is_expert(self) -> bool:
+        ...
+    
+    def is_tokenizer(self) -> bool:
+        ...
+    
     def num_tokens(self) -> int:
         ...
-
+    
+    def token_hidden_dim(self) -> int:
+        ...
+    
     def step_layer(self) -> None:
         ...
-
-    def update_exp_ids(self, 
-                       new_exp_ids: List[int], 
-                       exp_mappings: List[int]) -> None:
-        ...
-        
-    def get_expert_batch_sizes(self, n_epxert: int) -> List[int]:
+    
+    def set_finish_signal(self, continue_ids: List[int]) -> None:
         ...
     
-    def permute_token_infos(exp_mappings: List[int]) -> None:
-        ...
-
-    def sort_by_prefill_order(self) -> List[int]:
-        ...
-
-    def duplicate_topk(self, topk) -> None:
+    def get_expert_batch_sizes(self, n_expert: int) -> List[int]:
         ...
     
-    def shrink_topk(self, topk: int) -> None:
+    def get_expert_batch_sizes_cuda(self, n_expert: int, inner_exp_rank: List[int], tensor_cuda: torch.Tensor, stream_ptr: int) -> None:
         ...
         
+    def get_finished_indices(self) -> List[int]:
+        ...
+    
+    def permute_token_infos(self, positions: List[int]) -> None:
+        ...
+    
+    def duplicate_topk(self, topk: int) -> None:
+        ...
+    
+    def sort_by_attention(self) -> List[int]:
+        ...
+    
+    def sort_by_expert(self) -> List[int]:
+        ...
+        
+    def index_select(self, indices: List[int]) -> "BatchMetadata_C":
+        ...
+    
     @staticmethod
-    def from_c(meta_c: "Metadata_C") -> "Metadata":
-        return Metadata(
-            meta_c.shape,
-            meta_c.dtype,
-            meta_c.layer_id,
-            meta_c.req_ids,
-            meta_c.exp_ids,
-            meta_c.attn_dp_ranks,
-            meta_c.init_prefill_lens
+    def from_c(meta_c: "BatchMetadata_C") -> "BatchMetadata":
+        return BatchMetadata(
+            shape=meta_c.shape,
+            dtype=meta_c.dtype,
+            layer_id=meta_c.layer_id,
+            req_ids=meta_c.req_ids,
+            exp_ids=meta_c.exp_ids,
+            topk_weights=meta_c.topk_weights,
+            attn_dp_ranks=meta_c.attn_dp_ranks,
+            init_prefill_lens=meta_c.init_prefill_lens,
+            max_output_lens=meta_c.max_output_lens,
+            num_prefill_seqs=meta_c.num_prefill_seqs,
+            num_prefill_tokens=meta_c.num_prefill_tokens,
+            num_decode_tokens=meta_c.num_decode_tokens
         )
         
-    def to_c(self) -> "Metadata_C":
-        from disagmoe_c import Metadata as Metadata_C
-        meta_c = Metadata_C(self.shape)
+    def to_c(self) -> "BatchMetadata_C":
+        meta_c = BatchMetadata_C()
+        meta_c.shape = self.shape
         meta_c.dtype = self.dtype
         meta_c.layer_id = self.layer_id
         meta_c.req_ids = self.req_ids
         meta_c.exp_ids = self.exp_ids
+        meta_c.topk_weights = self.topk_weights
         meta_c.attn_dp_ranks = self.attn_dp_ranks
         meta_c.init_prefill_lens = self.init_prefill_lens
+        meta_c.max_output_lens = self.max_output_lens
+        meta_c.num_prefill_seqs = self.num_prefill_seqs
+        meta_c.num_prefill_tokens = self.num_prefill_tokens
+        meta_c.num_decode_tokens = self.num_decode_tokens
         return meta_c
     
-
 @dataclass
-class TensorBatch:
+class TokenBatch:
     data: torch.Tensor
-    metadata: Metadata
+    metadata: BatchMetadata
     
     @staticmethod
-    def from_c(batch_c: "TensorBatch_C") -> "TensorBatch":
-        return TensorBatch(
+    def from_c(batch_c: "TokenBatch_C") -> "TokenBatch":
+        return TokenBatch(
             batch_c.data,
             batch_c.metadata
         )
-
+        
 @dataclass
-class AttentionBatchMetadata:
-    layer_id: int
+class AttentionForwardBatch:
+    
     shape: List[int]
     dtype: str
+    layer_id: int
+    req_ids: List[int]
+    init_prefill_lens: List[int]
+    max_output_lens: List[int]
     
     num_prefill_seqs: int
     num_prefill_tokens: int
     num_decode_tokens: int
-    seq_ids: List[int]
-
-    init_prefill_lens: List[int]
     
-    expert_ids: List[int]   # NOTE(hogura|20241014): internally uint8
-
-    topk_weights: List[float]
-    attn_dp_ranks: List[int]
-
+    data: torch.Tensor
+    
     # used in engine and executor
     req_indices: Optional[List[int]] = None
     req_indices_tensor: Optional[torch.Tensor] = None
     seq_lens: Optional[List[int]] = None
     seq_lens_tensor: Optional[torch.Tensor] = None
     
-    def to_metadata(self) -> Metadata:  
-        ...
-        
-    def to_c(self) -> "AttentionBatchMetadata_C":
-        from disagmoe_c import AttentionBatchMetadata as AttentionBatchMetadata_C
-        attn_meta = AttentionBatchMetadata_C()
-        attn_meta.layer_id = self.layer_id
-        attn_meta.shape = self.shape
-        attn_meta.dtype = self.dtype
-        attn_meta.num_prefill_seqs = self.num_prefill_seqs
-        attn_meta.num_prefill_tokens = self.num_prefill_tokens
-        attn_meta.num_decode_tokens = self.num_decode_tokens
-        attn_meta.seq_ids = self.seq_ids
-        attn_meta.init_prefill_lens = self.init_prefill_lens
-        attn_meta.expert_ids = self.expert_ids
-        attn_meta.topk_weights = self.topk_weights
-        attn_meta.attn_dp_ranks = self.attn_dp_ranks
-        return attn_meta
-    
     @staticmethod
-    def from_c(meta_c: "AttentionBatchMetadata_C") -> "AttentionBatchMetadata":
-        return AttentionBatchMetadata(
-            meta_c.layer_id,
-            meta_c.shape,
-            meta_c.dtype,
-            meta_c.num_prefill_seqs,
-            meta_c.num_prefill_tokens,
-            meta_c.num_decode_tokens,
-            meta_c.seq_ids,
-            meta_c.init_prefill_lens,
-            meta_c.expert_ids,
-            meta_c.topk_weights,
-            meta_c.attn_dp_ranks
+    def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionForwardBatch":
+        return AttentionForwardBatch(
+            shape=meta.shape,
+            dtype=meta.dtype,
+            layer_id=meta.layer_id,
+            req_ids=meta.req_ids,
+            init_prefill_lens=meta.init_prefill_lens,
+            max_output_lens=meta.max_output_lens,
+            num_prefill_seqs=meta.num_prefill_seqs,
+            num_prefill_tokens=meta.num_prefill_tokens,
+            num_decode_tokens=meta.num_decode_tokens,
+            data=data
         )
-
-    def shrink_topk(self, topk: int) -> None:
-        ...
         
+    def to_metadata(self) -> BatchMetadata:
+        return BatchMetadata(
+            shape=self.shape,
+            dtype=self.dtype,
+            layer_id=self.layer_id,
+            req_ids=self.req_ids,
+            exp_ids=[],
+            topk_weights=[],
+            attn_dp_ranks=[],
+            init_prefill_lens=self.init_prefill_lens,
+            max_output_lens=self.max_output_lens,
+            num_prefill_seqs=self.num_prefill_seqs,
+            num_prefill_tokens=self.num_prefill_tokens,
+            num_decode_tokens=self.num_decode_tokens
+        )
+        
+    def to_metadata_c(self) -> "BatchMetadata_C":
+        return self.to_metadata().to_c()
+    
 @dataclass
 class SloStat:
     req_id: int
@@ -174,12 +216,13 @@ class SloStat:
     
     @staticmethod
     def from_c(stat_c: "SloStat_C") -> "SloStat":
+        ms_to_s = 1e-3
         return SloStat(
             stat_c.req_id,
-            stat_c.t_prefill / CPS,
-            stat_c.t_prefill_std / 1e3, # ms -> s
-            (stat_c.t_decode - stat_c.t_prefill) / CPS,
-            [(x - y) / CPS for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
+            stat_c.t_prefill * ms_to_s,
+            stat_c.t_prefill_std * ms_to_s,
+            (stat_c.t_decode - stat_c.t_prefill) * ms_to_s,
+            [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )
         
 @dataclass
@@ -201,7 +244,7 @@ class TraceContext:
 @dataclass
 class SamplerStepInfo:
     num_tokens: int
-    time_stamp: float
+    time_stamp: int
     
     @staticmethod
     def from_c(step_c: "SamplerStepInfo_C") -> "SamplerStepInfo":
@@ -210,6 +253,3 @@ class SamplerStepInfo:
             step_c.time_stamp
         )
         
-class ForwardBatch:
-    
-    pass
