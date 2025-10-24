@@ -16,7 +16,7 @@ ep_size=2
 top_k=1
 
 # transport backend: zmq | ucx
-TRANSPORT=zmq
+TRANSPORT=ucx
 
 REPORT_DIR=./reports
 
