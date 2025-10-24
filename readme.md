@@ -7,13 +7,14 @@ See `.gitmodules`.
 * libzmq
 * nvtx
 * grouped_gemm
+* ucx (not included as submodule)
 
 ## Install dependencies
 
 ### Install dependencies
 
 ```bash
-sudo apt-get install libzmq3-dev libcereal-dev
+sudo apt-get install libzmq3-dev libcereal-dev libucx-dev
 git submodule update --init --recursive
 pip install -r requirements.txt
 ```
