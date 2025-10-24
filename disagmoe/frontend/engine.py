@@ -468,7 +468,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     @property
     def is_attn_worker(self):
-        return self.rank_in_group > 0
+        return self.has_attn and self.rank_in_group > 0
     
     @property
     def _tp_enabled(self):
@@ -583,6 +583,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
+
+    def set_transport(self, name: str):
+        import disagmoe_c as c
+        c.select_transport(name)
 
     def set_device_id(self, device_id: int):
         self.device_id = device_id

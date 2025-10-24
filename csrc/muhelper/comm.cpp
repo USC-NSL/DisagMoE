@@ -7,6 +7,8 @@
 
 #include <iomanip>
 #include <mutex>
+#include <cstring>
+#include <cstdlib>
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream): 
     Channel::Channel(party_local, party_other), comm_id(comm_id) 
@@ -152,6 +154,7 @@ void ZmqChannel::instantiate() {
     // DMOE_LOG(WARNING) << "ZmqChannel instantiated, local: " << this->local << ", remote: " << this->other << ", addr: " << addr << LEND;
 }
 
+// Not used currently
 void* ZmqChannel::_tensor_copy(uintptr_t data, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst) {
     if (is_embedding_node(this->local))
         return (void*) data;
@@ -215,6 +218,43 @@ void ZmqChannel::recv(uintptr_t data, const BatchMetadata &metadata) {
     // DMOE_LOG(DEBUG) << "ZMQ Recved" << LEND;
 }
 
+UcxqChannel::UcxqChannel(int party_local, int party_other, bool is_sender, int rank)
+    : Channel(party_local, party_other),
+      is_sender(is_sender),
+      rank_offset(rank) {}
+
+void UcxqChannel::instantiate() {
+    try {
+        auto type = this->is_sender ? ucxq::socket_type::push : ucxq::socket_type::pull;
+        this->mq = std::make_unique<ucxq::socket_t>(type);
+
+        if (this->is_sender) {
+            const std::string endpoint = get_ucxq_addr(local, /*is_gpu=*/ true, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+            this->mq->bind(endpoint);
+        } else {
+            const std::string endpoint = get_ucxq_addr(other, /*is_gpu=*/ true, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
+            this->mq->connect(endpoint);
+        }
+    } catch (const std::exception& e) {
+        throw;
+    }
+}
+
+void UcxqChannel::send(uintptr_t data, const BatchMetadata& metadata) {
+    tx_range _{"UcxqChannel::send"};
+    // Mirror ZmqChannel's dummy behavior: ignore `data`, send only metadata-sized dummy payload
+    std::vector<int> token_ids(metadata.num_tokens(), 0);
+    size_t size = metadata.num_tokens() * sizeof(int);
+    this->mq->send(ucxq::buffer(token_ids.data(), size));
+}
+
+void UcxqChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
+    tx_range _{"UcxqChannel::recv"};
+    size_t size = metadata.num_tokens() * sizeof(int);
+    ucxq::message_t msg(size);
+    auto res = this->mq->recv(msg);
+}
+
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
     ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
     auto channel = std::make_shared<NcclChannel>(
@@ -231,6 +271,11 @@ Channel_t create_local_channel(int device_id) {
 
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank) {
     auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender, rank);
+    return channel;
+}
+
+Channel_t create_ucxq_channel(int party_local, int party_other, bool is_sender, int rank) {
+    auto channel = std::make_shared<UcxqChannel>(party_local, party_other, is_sender, rank);
     return channel;
 }
 

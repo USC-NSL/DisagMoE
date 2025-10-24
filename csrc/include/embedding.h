@@ -21,12 +21,8 @@ protected:
     // channels info
     std::vector<Channel_t> peer_channels, out_channels;
 
-    // zmq info
-    zmq::context_t ctx;
-    zmq::socket_t recv_mq;
-
-    std::vector<zmq::context_t> send_ctxs;
-    std::vector<zmq::socket_t> send_mqs;
+    // metadata/control mq (selected at runtime)
+    disagmoe::MqSocketPtr recv_mq;
 
     // batch processing info
     std::set<int> finished_seqs; // sequences that have reached EOS and ended another round of inference

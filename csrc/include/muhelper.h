@@ -6,12 +6,13 @@
 #include <condition_variable>
 #include <set>
 #include <unordered_map>
+#include <memory>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
 #include "batch.hpp"
 #include "comm.h"
-#include "zmq.hpp"
+#include "transport_factory.h"
 
 class MuHelper {
 
@@ -46,7 +47,7 @@ public:
 class MuDispatcher: public MuHelper {
     
 protected:
-    char device_id_str[3];
+    char device_id_str[16];
 
     int peer_zmq_port_offset{0};
 
@@ -54,9 +55,7 @@ protected:
     std::mutex mtx;
     std::condition_variable cv;
 
-    // ctx must be ahead of mq
-    std::vector<zmq::context_t> peer_ctx;
-    std::vector<zmq::socket_t> peer_mq;
+    std::vector<disagmoe::MqSocketPtr> peer_mq;
 
 
     ParallelConfig cfg;
@@ -140,9 +139,7 @@ protected:
     bool is_attn;
     std::vector<Channel_t> peer_channels;
 
-    // ctx must be ahead of mq
-    zmq::context_t ctx;
-    zmq::socket_t mq;
+    disagmoe::MqSocketPtr mq;
 
     int num_layers;
     int num_groups;

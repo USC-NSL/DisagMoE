@@ -241,6 +241,17 @@ class Controller:
                 )
         ])
         
+        # Broadcast transport selection to all workers before any C++ factory use.
+        # Re-parse the driver's CLI here to obtain the --transport value.
+        try:
+            from benchmark.utils import get_parser_base as _get_parser_base
+            import sys
+            _args = _get_parser_base().parse_args(sys.argv[1:])
+            transport_name = getattr(_args, 'transport', 'zmq')
+        except Exception:
+            transport_name = 'zmq'
+        ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
+        
         # ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
         
         # init core

@@ -10,6 +10,7 @@
 #include "zmq.hpp"
 #include "nccl.h"
 #include "zmq.h"
+#include "ucxq.hpp"
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -107,7 +108,7 @@ protected:
 
     std::string other_ip;
     bool is_sender;
-    char device_id_str[3];
+    char device_id_str[16];
 
     int rank_offset;
 
@@ -123,6 +124,22 @@ public:
     void recv(uintptr_t data, const BatchMetadata &metadata) override;
 };
 
+class UcxqChannel: public Channel {
+protected:
+    std::unique_ptr<ucxq::socket_t> mq;
+    bool is_sender;
+    int rank_offset;
+
+public:
+    UcxqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
+
+    void instantiate() override;
+
+    void send(uintptr_t data, const BatchMetadata& metadata) override;
+
+    void recv(uintptr_t data, const BatchMetadata& metadata) override;
+};
+
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
 
@@ -130,6 +147,7 @@ Channel_t create_local_channel(int device_id);
 
 Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 
+Channel_t create_ucxq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
 
 
 void* get_nccl_unique_id();

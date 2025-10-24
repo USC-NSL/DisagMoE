@@ -4,8 +4,7 @@
 #include "logging.h"
 #include "utils.hpp"
 
-#include "zmq.hpp"
-#include "zmq_addon.hpp"
+#include "transport_factory.h"
 
 #include <thread>
 #include <ctime>
@@ -24,8 +23,8 @@ Sampler::Sampler(int device_id,
         out_channel_infos
 ) {
     
-    ctx = zmq::context_t(in_channels.size());
-    recv_mq = zmq::socket_t(ctx, zmq::socket_type::pull);
+    // Create metadata/control receive MQ according to selected transport
+    recv_mq = disagmoe::mq_factory()(/*isPush=*/ false);
 
     // copied from MuPool
     int max_peer_id = 0;
@@ -41,9 +40,9 @@ Sampler::Sampler(int device_id,
 }
 
 void Sampler::run() {
-    this->recv_mq.bind(get_zmq_addr(device_id, true, -1, 0));
+    this->recv_mq->bind(disagmoe::mq_endpoint_factory()(device_id, true, -1, 0));
     // for (int i = 0; i < this->channels.size(); i ++)
-    //     this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, 1));
+    //     this->peer_mq[i]->connect(disagmoe::mq_endpoint_factory()(this->channels[i]->get_peer_id(), true, -1, 1));
 
     int token_processed = 0;
     int iter = 0;
@@ -51,14 +50,13 @@ void Sampler::run() {
 
     while (!this->end_flag) {
         // DMOE_LOG(WARNING) << "sampler receiving msg ..." << LEND;
-        std::vector<zmq::message_t> recv_msgs;
-        zmq::recv_result_t result =
-            zmq::recv_multipart(this->recv_mq, std::back_inserter(recv_msgs));
+        std::string f0; std::vector<uint8_t> f1;
+        bool ok = this->recv_mq->recv_multipart(f0, f1);
         
         // DMOE_LOG(WARNING) << "sampler got msg !!!" << LEND;
-        ASSERT(*result == 2);
-        int peer_id = std::stoi(recv_msgs[0].to_string());
-        auto metadata = decerealize<BatchMetadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
+        ASSERT(ok);
+        int peer_id = std::stoi(f0);
+        auto metadata = decerealize<BatchMetadata>((char*) f1.data(), f1.size());
         torch::Tensor tensor = torch::empty(
             {metadata->num_tokens(), metadata->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCPU)

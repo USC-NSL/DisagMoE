@@ -52,8 +52,8 @@ void init_all_channels(
             if (skip_embedding) {
                 continue;
             }
-            channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ false, 
-                // only attn needs to consider the DP
+            const auto &make_embed = disagmoe::embedding_channel_factory();
+            channel = make_embed(local_id, peer_id, /*is_sender=*/ false,
                 is_attn ? local_attn_dp_rank : 0);
         } else {
             if (peer_id == local_id) {
@@ -79,7 +79,8 @@ void init_all_channels(
             if (skip_embedding) {
                 continue;
             }
-            channel = create_zmq_channel(local_id, peer_id, /*is_sender=*/ true);
+            const auto &make_embed = disagmoe::embedding_channel_factory();
+            channel = make_embed(local_id, peer_id, /*is_sender=*/ true, /*rank=*/ 0);
         } else {
             if (peer_id == local_id) {
                 channel = local_channel;
@@ -112,7 +113,7 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_d
     const std::map<int, std::string> &out_nccl_ids,
     int local_attn_dp_rank) {
 
-    ASSERT (has_attn ^ has_expert == true);
+    ASSERT ((has_attn ^ has_expert) == true);
 
     std::vector<Channel_t> in_channels, out_channels;
 
@@ -193,13 +194,17 @@ Sampler_t init_sampler(
     std::vector<std::thread> threads;
 
     for (int i: in_device_ids)
-        in_channels.push_back(std::make_shared<ZmqChannel>(local, i, false));
-
+        in_channels.push_back(
+            disagmoe::embedding_channel_factory()(local, i, /*isSender=*/ false, /*rank=*/ 0)
+        );
+    
     ASSERT(out_device_ids.size() == out_channel_infos.size());
     for (int id = 0; id < out_device_ids.size(); id ++) {
         int i = out_device_ids[id];
         int rank = out_channel_infos[id].attn_dp_rank;
-        out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true, rank));
+        out_channels.push_back(
+            disagmoe::embedding_channel_factory()(local, i, /*isSender=*/ true, rank)
+        );
     }
     INSTANTIATE_CHANNELS(threads, in_channels);
     INSTANTIATE_CHANNELS(threads, out_channels);
@@ -228,7 +233,9 @@ Tokenizer_t init_tokenizer(
     for (int id = 0; id < out_device_ids.size(); id ++) {
         int i = out_device_ids[id];
         int rank = out_channel_infos[id].attn_dp_rank;
-        out_channels.push_back(std::make_shared<ZmqChannel>(local, i, true, rank));
+        out_channels.push_back(
+            disagmoe::embedding_channel_factory()(local, i, /*isSender=*/ true, rank)
+        );
     }
     INSTANTIATE_CHANNELS(threads, out_channels);
     

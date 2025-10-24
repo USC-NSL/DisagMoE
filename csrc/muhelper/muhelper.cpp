@@ -5,6 +5,7 @@
 #include <queue>
 #include <ctime>
 #include <utility>
+#include <atomic>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -17,8 +18,7 @@
 #include "profiler.hpp"
 #include "scheduler.h"
 
-#include "zmq.hpp"
-#include "zmq_addon.hpp"
+#include "transport_factory.h"
 
 #include <cereal/archives/binary.hpp>
 
@@ -62,14 +62,12 @@ void MuHelper::init_cuda_device() {
 
 MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id, 
                            ParallelConfig cfg, std::vector<Channel_t> channels): 
-    MuHelper(layer_ids, device_id, channels), 
-    peer_ctx(channels.size()),
-    peer_mq(channels.size()),
-    cfg(cfg) {
+    MuHelper(layer_ids, device_id, channels)
+    , cfg(cfg) {
     sprintf(this->device_id_str, "%d", this->device_id);
+    peer_mq.resize(channels.size());
     for (int i = 0; i < channels.size(); i ++) {
-        peer_ctx[i] = zmq::context_t(1);
-        peer_mq[i] = zmq::socket_t(peer_ctx[i], zmq::socket_type::push);
+        peer_mq[i] = disagmoe::mq_factory()(/*isPush=*/ true);
     }
 }
 
@@ -78,16 +76,16 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
     auto data = cerealize(std::make_shared<BatchMetadata>(meta));
-    this->peer_mq[cid].send(zmq::str_buffer(this->device_id_str), zmq::send_flags::sndmore);
-    this->peer_mq[cid].send(zmq::buffer(data.c_str(), data.size()));
+    this->peer_mq[cid]->send_multipart(this->device_id_str, data.c_str(), data.size());
     this->channels[cid]->send(buf, meta);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
+    const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
-        this->peer_mq[i].connect(get_zmq_addr(this->channels[i]->get_peer_id(), true, -1, this->peer_zmq_port_offset));
+        this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1, this->peer_zmq_port_offset));
     }
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
@@ -101,7 +99,6 @@ void MuDispatcher::run() {
             // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
             auto pr = this->send_queue.front();
             batch = pr.first;
-            // pr.second(i.e. rank) is not used for now
             this->send_queue.pop();
         }
         // Send the batch, no lock required, since send_queue won't be changed.
@@ -321,8 +318,7 @@ MuPool::MuPool(
     int local_zmq_port_offset): 
     MuHelper(layer_ids, device_id, channels),
     num_groups(num_groups), 
-    ctx(channels.size()),
-    mq(ctx, zmq::socket_type::pull),
+    mq(disagmoe::mq_factory()(/*isPush=*/ false)),
     max_batch_size(MAX_BATCH_SIZE),
     local_zmq_port_offset(local_zmq_port_offset) {
     int num_layers = layer_ids.size();
@@ -373,16 +369,11 @@ MuPool::~MuPool() {}
 
 void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
-        
-    std::vector<zmq::message_t> recv_msgs;
-    zmq::recv_result_t result =
-        zmq::recv_multipart(this->mq, std::back_inserter(recv_msgs));
-        
-    // DMOE_LOG(DEBUG) << "got a msg!" << LEND;
-    ASSERT(*result == 2);
-
-    peer_id = std::stoi(recv_msgs[0].to_string());
-    meta = decerealize<BatchMetadata>((char*) recv_msgs[1].data(), recv_msgs[1].size());
+    std::string f0; std::vector<uint8_t> f1;
+    bool ok = mq->recv_multipart(f0, f1);
+    ASSERT(ok);
+    peer_id = std::stoi(f0);
+    meta = decerealize<BatchMetadata>(reinterpret_cast<char*>(f1.data()), f1.size());
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
@@ -429,7 +420,8 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
             this->queueing_timers[req_id] = -1;
             continue;
         }
-        total_delay += 1.0 * (now - this->queueing_timers.at(req_id)) / CLOCKS_PER_SEC;
+        // t_now() now returns microseconds since an epoch; convert to seconds
+        total_delay += 1.0 * (now - this->queueing_timers.at(req_id)) / 1e6;
         this->queueing_timers.erase(req_id);
     }
     return total_delay / req_ids.size();
@@ -440,7 +432,7 @@ void MuPool::run() {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq.bind(get_zmq_addr(this->device_id, true, -1, this->local_zmq_port_offset));
+    this->mq->bind(disagmoe::mq_endpoint_factory()(this->device_id, true, -1, this->local_zmq_port_offset));
 
     auto last = t_now();
     auto start = last;
