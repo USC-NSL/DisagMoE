@@ -191,6 +191,8 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
 
     int n = batch.metadata->shape[0];
     int lid = batch.metadata->layer_id;
+
+    NCCLCHECK(ncclGroupStart());
     for (int i = 0; i < n;) {
         int j = i + 1;
         int ep_rank = _get_rank(lid, batch.metadata->exp_ids[i]);
@@ -205,7 +207,8 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t)batch.data.data_ptr(),
                 *batch.metadata
             );
-            break;
+            NCCLCHECK(ncclGroupEnd());
+            return;
         }
 
         auto sliced_meta = batch.metadata->slice(i, j);
@@ -219,6 +222,7 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
         i = j;
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
+    NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
 }
 
@@ -277,6 +281,8 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
     ASSERT(batch.data.sizes()[1] == meta->shape[1]);
 
     auto &channels = this->attn_channel[layer_id];
+
+    NCCLCHECK(ncclGroupStart());
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
         int rank = meta->attn_dp_ranks[i];
         auto channel_id = this->_get_attn_channel(layer_id, rank);
@@ -291,6 +297,8 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t) batch.data.data_ptr(),
                 *meta
             );
+            NCCLCHECK(ncclGroupEnd());
+            return;
         } else {
             auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
             this->_send_batch(
@@ -300,6 +308,7 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
             );
         }
     }
+    NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
