@@ -34,7 +34,7 @@ using MqFactory = std::function<MqSocketPtr(bool /*isPush*/)>;
 const MqFactory &mq_factory();
 
 // Endpoint address factory for the selected backend
-using EndpointFactory = std::function<std::string(int /*device_id*/, bool /*is_gpu*/, int /*manual_port*/, int /*offset*/)>;
+using EndpointFactory = std::function<std::string(int /*device_id*/, bool /*is_gpu*/, int /*manual_port*/)>;
 const EndpointFactory &mq_endpoint_factory();
 
 } // namespace disagmoe

@@ -85,7 +85,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
 void MuDispatcher::run() {
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
-        this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1, this->peer_zmq_port_offset));
+        this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1));
     }
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
@@ -124,7 +124,6 @@ MuAttnDispatcher::MuAttnDispatcher(
     std::vector<Channel_t> channels,
     const std::vector<ChannelInfo> &out_channel_infos): 
         MuDispatcher(layer_ids, device_id, cfg, channels) {
-    this->peer_zmq_port_offset = 0;
     int max_layer_id = 0;
     max_exp_id = 0;
     for (auto &info: out_channel_infos) {
@@ -235,7 +234,6 @@ MuExpertDispatcher::MuExpertDispatcher(
     std::vector<ChannelInfo> channel_infos): 
         MuDispatcher(layer_ids, device_id, cfg, channels),
         channel_infos(channel_infos) {
-    this->peer_zmq_port_offset = 1;
     int max_layer = -1;
     for (auto info: channel_infos)
         for (int i: info.attn_layer_ids)
@@ -314,13 +312,11 @@ MuPool::MuPool(
     int device_id,
     std::vector<Channel_t> channels,
     LayerSchedulePolicy policy,
-    int num_groups,
-    int local_zmq_port_offset): 
-    MuHelper(layer_ids, device_id, channels),
+    int num_groups
+):  MuHelper(layer_ids, device_id, channels),
     num_groups(num_groups), 
     mq(disagmoe::mq_factory()(/*isPush=*/ false)),
-    max_batch_size(MAX_BATCH_SIZE),
-    local_zmq_port_offset(local_zmq_port_offset) {
+    max_batch_size(MAX_BATCH_SIZE) {
     int num_layers = layer_ids.size();
     int max_layer_id = 0;
     for (auto id: layer_ids)
@@ -432,7 +428,7 @@ void MuPool::run() {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq->bind(disagmoe::mq_endpoint_factory()(this->device_id, true, -1, this->local_zmq_port_offset));
+    this->mq->bind(disagmoe::mq_endpoint_factory()(this->device_id, true, -1));
 
     auto last = t_now();
     auto start = last;
@@ -514,7 +510,7 @@ MuExpertPool::MuExpertPool(
     std::vector<Channel_t> channels,
     LayerSchedulePolicy policy,
     int num_groups):
-    MuPool(layer_ids, device_id, channels, policy, num_groups, 0) {
+    MuPool(layer_ids, device_id, channels, policy, num_groups) {
     int num_layers = layer_ids.size();
     this->data_queue = std::vector<std::vector<TokenBatch>>(num_layers * num_groups);
 }
@@ -600,7 +596,7 @@ MuAttentionPool::MuAttentionPool(
         layer_ids.emplace_back(layer_ids.back() + 1);
         return layer_ids;
     }(), device_id, channels, policy, 
-    /* num_groups */ 1,  /* local_zmq_port_offset */ 1) {
+    /* num_groups */ 1) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<TokenBatch>>(num_layers);
 }

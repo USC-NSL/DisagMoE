@@ -80,14 +80,14 @@ void select_transport(const std::string &name) {
     if (name == "ucx") {
         g_embed_factory = [](int l, int p, bool s, int r) { return create_ucxq_channel(l, p, s, r); };
         g_mq_factory = [](bool isPush) { return std::make_unique<UcxqSocketAdapter>(isPush); };
-        g_ep_factory = [](int device_id, bool is_gpu, int manual_port, int offset) {
-            return get_ucxq_addr(device_id, is_gpu, manual_port, offset);
+        g_ep_factory = [](int device_id, bool is_gpu, int manual_port) {
+            return get_ucxq_addr(device_id, is_gpu, manual_port);
         };
     } else if (name == "zmq") {
         g_embed_factory = [](int l, int p, bool s, int r) { return create_zmq_channel(l, p, s, r); };
         g_mq_factory = [](bool isPush) { return std::make_unique<ZmqSocketAdapter>(isPush); };
-        g_ep_factory = [](int device_id, bool is_gpu, int manual_port, int offset) {
-            return get_zmq_addr(device_id, is_gpu, manual_port, offset);
+        g_ep_factory = [](int device_id, bool is_gpu, int manual_port) {
+            return get_zmq_addr(device_id, is_gpu, manual_port);
         };
     } else {
         throw std::runtime_error("Unknown transport: " + name);

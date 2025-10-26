@@ -59,11 +59,5 @@ inline std::string get_zmq_addr(int device_id, bool is_gpu = true, int manual_po
 }
 
 inline std::string get_ucxq_addr(int device_id, bool is_gpu = true, int manual_port = -1, int offset = 0) {
-    // Mirror ZMQ port computation exactly, only scheme differs
-    int port = device_id * ZMQ_OFFSET_BASE + offset + \
-        (manual_port == -1 \
-            ? (is_gpu ? ZMQ_PORT_BASE : ZMQ_CPU_PORT_BASE)
-            : manual_port);
-    std::string ip = get_ip_of_device(device_id);
-    return "ucx://" + ip + ":" + std::to_string(port);
+    return get_zmq_addr(device_id, is_gpu, manual_port, offset);
 }

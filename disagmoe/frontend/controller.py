@@ -192,8 +192,6 @@ class Controller:
             self.max_output_len = sampling_config.max_output_len
             
         in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
-        in_nccl_ids_ext, out_nccl_ids_ext, group_nccl_ids_ext = self._get_nccl_ids(model_place)
-        
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
@@ -272,8 +270,6 @@ class Controller:
                     ],
                     in_nccl_ids=in_nccl_ids.get(device_id, {}),
                     out_nccl_ids=out_nccl_ids.get(device_id, {}),
-                    in_nccl_ids_ext=in_nccl_ids_ext.get(device_id, {}),
-                    out_nccl_ids_ext=out_nccl_ids_ext.get(device_id, {}),
                     out_device_group_ids={
                         j: [device_id] + model_place.device_groups.get(j, [])
                             for j in model_place.out_device_ids.get(device_id, [])
