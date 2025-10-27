@@ -24,7 +24,7 @@ public:
     virtual void bind(const std::string &endpoint) = 0;
     virtual void connect(const std::string &endpoint) = 0;
     virtual void send_multipart(const std::string &frame0, const void *data, size_t size) = 0;
-    virtual bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1) = 0;
+    virtual bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1, bool non_blocking = false) = 0;
 };
 
 using MqSocketPtr = std::unique_ptr<MqSocket>;

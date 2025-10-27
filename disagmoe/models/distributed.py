@@ -12,6 +12,9 @@ _logger = new_logger("dist")
 _tp_model_config: ModelConfig = None
 _channel: NcclGroupChannel = None
 
+'''
+Consider cleanup the unused tp code below
+'''
 def set_tensor_model_parallel_config(model_config: ModelConfig):
     global _tp_model_config
     _tp_model_config = model_config
