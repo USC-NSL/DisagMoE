@@ -108,7 +108,7 @@ protected:
     std::vector<std::vector<int>> attn_channel;
 
     void _send_once(TokenBatch batch) override;
-    virtual int _get_attn_channel(int req_id, int layer_id);
+    virtual int _get_attn_channel(int layer_id, int dp_rank);
 
 public:
     MuExpertDispatcher(std::vector<int> layer_ids, 

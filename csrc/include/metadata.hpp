@@ -174,6 +174,9 @@ struct BatchMetadata {
     }
 
     BatchMetadata slice(int l, int r) {
+        if (r - l == shape[0]) {
+            return *this;
+        }
         return BatchMetadata {
             batch_tag,
             std::vector<size_t> {r - l, shape[1]},
