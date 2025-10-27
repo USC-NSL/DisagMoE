@@ -17,6 +17,10 @@ struct TokenBatch {
     torch::Tensor data;
     batch_metadata_t metadata;
 
+    TokenBatch() = default;
+
+    TokenBatch(torch::Tensor data, const batch_metadata_t &metadata): data(data), metadata(metadata) {}
+
     std::vector<TokenBatch> split_by_expert() {
         auto chunk_sizes = metadata->get_chunk_sizes();
         auto metas = metadata->split_with_sizes(chunk_sizes);
