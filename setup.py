@@ -82,7 +82,7 @@ ext_modules = [
         define_macros=[
             ("D_ENABLE_RAY", "1"),
             ("D_ENABLE_NVTX", "1"),
-            ("D_GROUP_NCCL", "1"),
+            ("D_GROUP_NCCL_RECV", "0"),
             ("TEMP_DIR", f'"{TMPDIR}"'),
         ],
         language='c++',
