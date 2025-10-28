@@ -9,12 +9,31 @@
 #include "batch.hpp"
 #include "layer.h"
 
+class LayerSchedulerBase;
+
 class UnifiedPool: public MuPool {
 
 private:
 
-    std::vector<UnifiedLayer> layers;
+    unified_layer_scheduler_t layer_scheduler;
 
+    void process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta);
+    void process_expert_batch(torch::Tensor tensor, batch_metadata_t &meta);
+
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
+
+public:
+
+    UnifiedPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        int num_groups = 1
+    );
+
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+
+    std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
 };
 
 #endif

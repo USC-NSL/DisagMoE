@@ -17,6 +17,7 @@
 #include "cuda_utils.h"
 #include "profiler.hpp"
 #include "scheduler.h"
+#include "layer.h"
 
 #include "transport_factory.h"
 
@@ -311,7 +312,6 @@ MuPool::MuPool(
     std::vector<int> layer_ids, 
     int device_id,
     std::vector<Channel_t> channels,
-    LayerSchedulePolicy policy,
     int num_groups
 ):  MuHelper(layer_ids, device_id, channels),
     num_groups(num_groups), 
@@ -345,20 +345,6 @@ MuPool::MuPool(
     this->tokens_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
     this->num_batches_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
     this->queueing_timers = std::map<int, clock_t>();
-
-    if (policy != LayerSchedulePolicy::GROUP) {
-        ASSERT (num_groups == 1);
-    }
-
-    if (policy == LayerSchedulePolicy::BASE) {
-        this->layer_scheduler = std::make_shared<LayerScheduler>(num_layers, LayerScheduler::LayerScheduleType::MBFLFS);
-    } else if (policy == LayerSchedulePolicy::GROUP) {
-        this->layer_scheduler = std::make_shared<GroupLayerScheduler>(num_layers, num_groups, 10);
-    } else if (policy == LayerSchedulePolicy::ADVANCED) {
-        this->layer_scheduler = std::make_shared<AdvancedLayerScheduler>(num_layers, /*hold_steps*/ 0);
-    } else {
-        ASSERT(false);
-    }
 }
 
 MuPool::~MuPool() {}
@@ -386,7 +372,7 @@ void MuPool::put_batch(TokenBatch batch) {
     // CAREFUL USE:
     // This is only used by sampler to directly put a batch into the first attention layer.
     batch.data = batch.data.clone().detach();
-    this->process_batch(batch.data, batch.metadata, /*send_from_zmq=*/ false);
+    this->process_batch(batch.data, batch.metadata);
 }
 
 void MuPool::start_queueing_timer(const std::vector<int> &req_ids) {
@@ -450,7 +436,7 @@ void MuPool::run() {
         // NOTE(hogura|20250305): after receiving batch, start the queueing timer for each request
         // this->start_queueing_timer(meta->req_ids);
 
-        this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
+        this->process_batch(tensor, meta);
         this->peer_channels[peer_id]->sync();
     }
 }
@@ -508,14 +494,13 @@ MuExpertPool::MuExpertPool(
     std::vector<int> layer_ids,
     int device_id,
     std::vector<Channel_t> channels,
-    LayerSchedulePolicy policy,
     int num_groups):
-    MuPool(layer_ids, device_id, channels, policy, num_groups) {
+    MuPool(layer_ids, device_id, channels, num_groups) {
     int num_layers = layer_ids.size();
     this->data_queue = std::vector<std::vector<TokenBatch>>(num_layers * num_groups);
 }
 
-void MuExpertPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq) {
+void MuExpertPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     meta->batch_tag = BatchTag::EXPERT;
     int layer_id = this->layer_id_P2V[meta->layer_id];
 
@@ -589,14 +574,11 @@ void MuPool::set_max_batch_size(int max_batch_size) {
 MuAttentionPool::MuAttentionPool(
     std::vector<int> layer_ids, 
     int device_id,
-    std::vector<Channel_t> channels,
-    LayerSchedulePolicy policy
-):  
-    MuPool([&]() {
+    std::vector<Channel_t> channels
+):  MuPool([&]() {
         layer_ids.emplace_back(layer_ids.back() + 1);
         return layer_ids;
-    }(), device_id, channels, policy, 
-    /* num_groups */ 1) {
+    }(), device_id, channels, /* num_groups */ 1) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<TokenBatch>>(num_layers);
 }
@@ -641,7 +623,7 @@ void MuAttentionPool::put_batch_to_attn_queue(int layer_id, const TokenBatch &at
     this->attn_data_queue[layer_id].push_back(attn_batch);
 }
 
-void MuAttentionPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq) {
+void MuAttentionPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     // DMOE_LOG(INFO) << "AttnPool processing batch: " << *meta << LEND;
     meta->batch_tag = BatchTag::ATTENTION;
     int lid = this->layer_id_P2V[meta->layer_id];
@@ -709,9 +691,8 @@ MuAttentionTopKPool::MuAttentionTopKPool(
     std::vector<int> layer_ids, 
     int device_id,
     std::vector<Channel_t> channels,
-    int top_k,
-    LayerSchedulePolicy policy
-): MuAttentionPool(layer_ids, device_id, channels, policy), top_k(top_k) {
+    int top_k
+): MuAttentionPool(layer_ids, device_id, channels), top_k(top_k) {
     int num_layers = layer_ids.size();
     this->attn_token_queues = std::vector<std::vector<TokenTopKInfo>>(num_layers);
     this->topk_pools = std::vector<TokenTopKPool>{};
@@ -720,7 +701,7 @@ MuAttentionTopKPool::MuAttentionTopKPool(
     }
 }
 
-void MuAttentionTopKPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq) {
+void MuAttentionTopKPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     // DMOE_LOG(DEBUG) << "AttnTopKPool processing batch: " << *meta << LEND;
     meta->batch_tag = BatchTag::ATTENTION;
     int lid = this->layer_id_P2V[meta->layer_id];

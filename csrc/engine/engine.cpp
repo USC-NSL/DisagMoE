@@ -148,9 +148,9 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_d
 
     if (has_attn) {
         if (top_k == 1) {
-            attn_pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::ADVANCED);
+            attn_pool = std::make_shared<MuAttentionPool>(layer_ids, local_id, in_channels);
         } else {
-            attn_pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, top_k, LayerSchedulePolicy::ADVANCED);
+            attn_pool = std::make_shared<MuAttentionTopKPool>(layer_ids, local_id, in_channels, top_k);
         }
         attn_scheduler = std::make_shared<Scheduler>(attn_pool, mu_expert_pool_t{}, layer_ids, "mbfs");
     } 
@@ -158,11 +158,12 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t, mu_pool_t, scheduler_t, mu_d
         LayerSchedulePolicy policy = LayerSchedulePolicy::GROUP;
         int num_groups = 1;
         if (expert_wise_schedule) {
+            throw std::runtime_error("Expert wise schedule is not supported yet");
             policy = LayerSchedulePolicy::GROUP;
             num_groups = cfg.n_exp_per_rank;
             // DMOE_LOG(INFO) << local_id << " expert wise schedule, #experts per EP rank: " << num_groups << LEND;
         }
-        expert_pool = std::make_shared<MuExpertPool>(layer_ids, local_id, in_channels, LayerSchedulePolicy::GROUP, num_groups);
+        expert_pool = std::make_shared<MuExpertPool>(layer_ids, local_id, in_channels, num_groups);
         expert_scheduler = std::make_shared<Scheduler>(mu_attn_pool_t{}, expert_pool, layer_ids, "mbfs");
     }
 
