@@ -9,8 +9,6 @@
 #include "batch.hpp"
 #include "layer.h"
 
-class LayerSchedulerBase;
-
 class UnifiedPool: public MuPool {
 
 private:
@@ -35,5 +33,7 @@ public:
 
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
 };
+
+using unified_pool_t = std::shared_ptr<UnifiedPool>;
 
 #endif

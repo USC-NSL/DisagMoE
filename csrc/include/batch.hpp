@@ -134,6 +134,22 @@ struct TokenBatch {
         return TokenBatch {merged_tokens, merged_meta};
     }
 
+    inline static TokenBatch merge(const std::vector<TokenBatch>& batches) {
+        if (batches.empty()) {
+            return TokenBatch {};
+        }
+        if (batches.size() == 1) {
+            return batches[0];
+        }
+
+        if (batches[0].metadata->is_expert()) {
+            return TokenBatch::merge_by_expert(batches);
+        } else if (batches[0].metadata->is_attention()) {
+            return TokenBatch::merge_by_attention(batches);
+        }
+        throw std::runtime_error("Invalid batch metadata");
+    }
+
     inline static TokenBatch pack_topk_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
         std::sort(tokens.begin(), tokens.end(), 
             [](const TokenTopKInfo &a, const TokenTopKInfo &b) {

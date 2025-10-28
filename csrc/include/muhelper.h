@@ -146,8 +146,6 @@ protected:
     std::vector<int> tokens_per_layer_;
     std::vector<int> num_batches_per_layer_;
 
-    int max_batch_size;
-
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
@@ -176,10 +174,6 @@ public:
     virtual ~MuPool();
 
     void run() override;
-
-    void wait_for_new_requests();
-
-    void set_max_batch_size(int max_batch_size);
 
     int get_num_layers() { return num_layers; }
 
@@ -221,6 +215,8 @@ public:
     // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
     void set_layer_scheduler(std::shared_ptr<LayerSchedulerBase> scheduler) { this->layer_scheduler = scheduler; }
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler() { return this->layer_scheduler; }
+
+    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id) = 0;
 };
 
 class MuExpertPool: public MuPool {
@@ -237,7 +233,7 @@ public:
         int num_groups = 1
     );
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
 };
 
 
@@ -264,19 +260,7 @@ public:
 
     void put_batch_to_attn_queue(int layer_id, const TokenBatch &batch);
 
-    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id);
-
-    void terminate() override;
-
-    // for debug use only
-    void __set_attn_data_queue(
-        std::vector<std::vector<TokenBatch>> data_queue, 
-        std::vector<int> token_per_layer,
-        int largest_batch_id) {
-        this->attn_data_queue = data_queue;
-        this->tokens_per_layer_ = token_per_layer;
-        this->largest_batch_layer_id_ = largest_batch_id;
-    }
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
 };
 
 

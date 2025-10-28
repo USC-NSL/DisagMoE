@@ -13,6 +13,7 @@
 #include "cuda_utils.h"
 #include "utils.hpp"
 #include "layer.h"
+#include "pool.h"
 
 /*
     Unified Scheduler holds optional attention and expert pools and a LayerScheduler.
@@ -23,42 +24,37 @@
 // reason we still have something "virtual" is that we haven't cleanup
 // the TP-related classes.
 class Scheduler {
+
 protected:
     mu_attn_pool_t attn_pool;
     mu_expert_pool_t expert_pool;
-    std::vector<int> layer_ids;
+    unified_pool_t unified_pool;
+
     std::string policy;
-    float cur_queueing_delay{0};
-    int max_batch_size{0};
     std::vector<int> pool_snapshot_{};
     std::shared_ptr<LayerSchedulerBase> layer_scheduler;
 
 public:
-    // shared lock for accessing scheduling states from pools and scheduling logic.
-    std::mutex mutex;
-
     // unified constructor: one or both pools can be null
-    Scheduler(mu_attn_pool_t attn_pool, mu_expert_pool_t expert_pool, std::vector<int> layer_ids, std::string policy = "mbfs");
+    Scheduler(mu_attn_pool_t attn_pool, mu_expert_pool_t expert_pool, std::string policy = "mbfs");
+
+    Scheduler(unified_pool_t unified_pool);
 
     void start();
-    void wait_for_new_requests();
 
-    void set_max_batch_size(int max_batch_size);
-    void set_attn_max_batch_size(int max_batch_size);
-    void set_expert_max_batch_size(int max_batch_size);
     // General snapshot of current pool state
     std::vector<int> get_pool_snapshot();
-    float get_cur_queueing_delay() const { return cur_queueing_delay; }
     void set_schedule_policy(std::string type);
     void set_schedule_block(int step);
 
+    TokenBatch schedule();
     TokenBatch schedule_expert();
     TokenBatch schedule_attention();
-
-
-    bool has_attention() const { return attn_pool.get() != nullptr; }
-    bool has_expert() const { return expert_pool.get() != nullptr; }
+    TokenBatch schedule_unified();
+    
+    inline bool is_attention() const { return attn_pool.get() != nullptr; }
+    inline bool is_expert() const { return expert_pool.get() != nullptr; }
+    inline bool is_unified() const { return unified_pool.get() != nullptr; }
 };
 
-typedef std::shared_ptr<Scheduler> attn_scheduler_t; // for backward compatibility
 typedef std::shared_ptr<Scheduler> scheduler_t;

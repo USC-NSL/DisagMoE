@@ -315,8 +315,7 @@ MuPool::MuPool(
     int num_groups
 ):  MuHelper(layer_ids, device_id, channels),
     num_groups(num_groups), 
-    mq(disagmoe::mq_factory()(/*isPush=*/ false)),
-    max_batch_size(MAX_BATCH_SIZE) {
+    mq(disagmoe::mq_factory()(/*isPush=*/ false)) {
     int num_layers = layer_ids.size();
     int max_layer_id = 0;
     for (auto id: layer_ids)
@@ -441,18 +440,6 @@ void MuPool::run() {
     }
 }
 
-void MuPool::wait_for_new_requests() {
-    // DMOE_LOG(INFO) << "MuPool waiting for new requests" << LEND;
-    std::unique_lock<std::mutex> lock(this->request_mutex);
-    if (this->cur_request_count > 0) {
-        lock.unlock();
-        return;
-    }
-    this->request_cv.wait(lock, [&] { return this->cur_request_count > 0; });
-    lock.unlock();
-    // DMOE_LOG(INFO) << "MuPool got new requests." << LEND;
-}
-
 // the batch_mutex must be used outside this function
 int MuPool::tokens_in_layer(int lid) {
     return this->tokens_per_layer_[lid];
@@ -558,11 +545,6 @@ std::vector<TokenBatch> MuExpertPool::get_batch_from_layer(int layer_id) {
     return results;
 }
 
-void MuPool::set_max_batch_size(int max_batch_size) {
-    this->max_batch_size = max_batch_size;
-}
-
-
 // void MuPool::set_scheduler_block(int step) {
 //     this->layer_scheduler->set_block_step(step);
 // }
@@ -581,10 +563,6 @@ MuAttentionPool::MuAttentionPool(
     }(), device_id, channels, /* num_groups */ 1) {
     int num_layers = layer_ids.size();
     this->attn_data_queue = std::vector<std::vector<TokenBatch>>(num_layers);
-}
-
-void MuAttentionPool::terminate() {
-    MuPool::terminate();
 }
 
 TokenBatch MuAttentionPool::pack_attn_batch(torch::Tensor tensor, batch_metadata_t meta) {

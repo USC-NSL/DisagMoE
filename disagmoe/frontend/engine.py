@@ -6,7 +6,7 @@ import random
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer, BlockManager
+from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer
 from disagmoe.frontend.datatypes import (AttentionForwardBatch, BatchMetadata, TokenBatch,
                                          SloStat, TraceContext, SamplerStepInfo)
 from disagmoe.frontend.ray_helper import InitCoreArgs
@@ -30,9 +30,9 @@ from torch import Tensor
 
 import torch.distributed as dist
 
-from disagmoe_c import (init_engine, start_engine, init_sampler, init_tokenizer, set_hosts, prepare_batch_infos,
+from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
+                        start_engine, init_sampler, init_tokenizer, set_hosts,
                         TokenBatch as TokenBatch_C,
-                        BlockManager as BlockManager_C,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
 
@@ -53,7 +53,7 @@ class AttentionEngineMixin:
     device: str
     req_seq_lens: Tensor
     block_mgr: BaseBlockManager
-    attn_dispatcher: MuDispatcher
+    dispatcher: MuDispatcher
     buffer_meta: Tensor
     buffer_attn_meta: Tensor
     dummy_sampler: "DummySampler"
@@ -158,7 +158,7 @@ class AttentionEngineMixin:
                 sampled_batch: TokenBatch = TokenBatch_C()
                 sampled_batch.data = input_tensor
                 sampled_batch.metadata = new_meta
-                self.attn_dispatcher.send_to_sampler(sampled_batch)
+                self.dispatcher.send_to_sampler(sampled_batch)
                 return input_tensor[continue_ids], continue_meta
 
             attn_meta = self._attn_driver_preprocess(meta_c, batch)
@@ -411,15 +411,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
         
         self.device_id = device_id
+        self.pool: Optional[MuPool] = None
         self.scheduler: Optional[Scheduler] = None
-        self.executor: Executor = None
         self.dispatcher: MuDispatcher = None
-        self.attn_executor: AttnExecutor = None
-        self.expert_executor: ExpertsExecutor = None
-        self.attn_dispatcher: MuDispatcher = None
-        self.expert_dispatcher: MuDispatcher = None
-        self.attn_pool: MuPool = None
-        self.expert_pool: MuPool = None
         self.dummy_sampler: DummySampler = None
         
         self.end_flag = False
@@ -467,20 +461,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     def _tp_enabled(self):
         return self.has_attn and self.model_config.tp_size > 1
     
-    def _delegate_modules(self):
-        if self.has_attn and self.has_expert:
-            assert False, "Hybrid engine is not supported yet"
-        if self.has_attn:
-            self.scheduler = self.attn_scheduler
-            self.executor = self.attn_executor
-            self.dispatcher = self.attn_dispatcher
-        elif self.has_expert:
-            self.scheduler = self.expert_scheduler
-            self.executor = self.expert_executor
-            self.dispatcher = self.expert_dispatcher
-        else:
-            assert False, "No engine type is set"
-            
     def build_executor(self):
         if self.has_expert:
             self.build_expert_executor()
@@ -517,8 +497,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
         
         assert self.engine_type != EngineType.HYBRID, "Hybrid engine is not supported yet"
-        self.attn_pool, self.attn_scheduler, self.attn_dispatcher, self.expert_pool, self.expert_scheduler, self.expert_dispatcher = init_engine(
+        self.pool, self.scheduler, self.dispatcher = init_disaggregated_engine(
             self.device_id,
+            core_args.local_attn_dp_rank,
             self.model_config.top_k,
             self.has_attn,
             self.has_expert,
@@ -538,11 +519,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             # Group Channels
             core_args.in_nccl_ids,
             core_args.out_nccl_ids,
-            # Extra channels for future colocated mode
-            # core_args.in_nccl_ids_ext,
-            # core_args.out_nccl_ids_ext,
-            # core_args.device_group_ids,
-            core_args.local_attn_dp_rank,
         )
             
         if self.has_attn and self._tp_enabled:
@@ -552,17 +528,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                                     init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
-            self.attn_scheduler.set_max_batch_size(self.attn_max_batch_size)
             self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
         
         if self.has_expert:
-            self.expert_scheduler.set_expert_max_batch_size(self.expert_max_batch_size)
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
             
         self.build_executor()
-        
-        self._delegate_modules()
-        
         get_logger().info("core launched")
     
     def start(self):
@@ -637,15 +608,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.handles.append(handle)
 
     @nvtx_range("Engine.post_process")
-    def post_process(self, output: Tensor, meta: BatchMetadata, dispatcher) -> None:
+    def post_process(self, output: Tensor, meta: BatchMetadata) -> None:
         assert not self.is_attn_worker
-        if self.has_attn and meta.layer_id == self.model_total_num_layers and meta.shape[0] > 0: # a hack for sampling check
+        if meta.is_attention() and meta.layer_id == self.model_total_num_layers and meta.shape[0] > 0: # a hack for sampling check
             assert self.dummy_sampler is not None
             meta.layer_id = 0
             batch: TokenBatch = TokenBatch_C()
             batch.data = output
             batch.metadata = meta
-            self.attn_pool.put_batch(batch)
+            self.pool.put_batch(batch)
         else:
             batch: TokenBatch = TokenBatch_C()
             batch.data = output
@@ -654,17 +625,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             with self._timer.range("stream_sync"):
                 self.stream.synchronize()
             range_pop()
-            dispatcher.put(batch, 0)
+            self.dispatcher.put(batch, 0)
 
     def stats_pre_process(self, batch: TokenBatch):
-        # Explicitly select which pool's snapshot to fetch.
-        if self.has_attn and not self.has_expert:
-            self._pool_snapshot = self.scheduler.get_pool_snapshot()  # attention pool
-        elif self.has_expert and not self.has_attn:
-            self._pool_snapshot = self.scheduler.get_pool_snapshot()  # expert pool
+        if not self.engine_type == EngineType.HYBRID:
+            self._pool_snapshot = self.scheduler.get_pool_snapshot()
         else:
-            # This branch is for future colocated mode's implementation
-            pass
+            # TODO: support snapshot for hybrid engine
+            pass 
         self._step_start_timestamp_ms = time_ms()
         
     def record_empty_step(self):
@@ -700,12 +668,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 
             executed_layer_id = batch.metadata.layer_id
             
-            # !!! This code should be fixed for co-location
-            if self.has_expert:
+            if batch.metadata.is_expert():
                 executed_layer_id -= 1
-                
-            if num_groups > 1:
-                executed_layer_id = executed_layer_id * num_groups + batch.metadata.get_expert_id() % num_groups
+                if num_groups > 1:
+                    executed_layer_id = executed_layer_id * num_groups + batch.metadata.get_expert_id() % num_groups
             
             self._step_stats.append(
                 StepInfo(self._step_start_timestamp_ms, 
@@ -759,7 +725,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 self.record_empty_step()
                 prev_schedule_empty = False
             
-            self._queueing_delays.append(self.scheduler.get_cur_queueing_delay())
             self._metric.step()
             
             range_push("Engine.schedule_stream_sync")
@@ -773,7 +738,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             
             self.stats_pre_process(batch)
             output, meta = self.process_batch(meta, batch.data)
-            self.post_process(output, meta, self.dispatcher)
+            self.post_process(output, meta)
             self.stats_post_process(batch)
     
     # def dual_module_loop(self):
@@ -806,7 +771,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     #         # self.stats_post_process(batch)
             
     #     while not self.end_flag:
-    #         step(self.attn_scheduler, self.process_batch_attn, self.attn_dispatcher)
+    #         step(self.attn_scheduler, self.process_batch_attn, self.dispatcher)
     #         step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
             
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
