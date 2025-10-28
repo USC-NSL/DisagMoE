@@ -191,6 +191,10 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
 
     int n = batch.metadata->shape[0];
     int lid = batch.metadata->layer_id;
+
+    #if D_GROUP_NCCL
+    NCCLCHECK(ncclGroupStart());
+    #endif
     for (int i = 0; i < n;) {
         int j = i + 1;
         int ep_rank = _get_rank(lid, batch.metadata->exp_ids[i]);
@@ -205,7 +209,10 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t)batch.data.data_ptr(),
                 *batch.metadata
             );
-            break;
+            #if D_GROUP_NCCL
+            NCCLCHECK(ncclGroupEnd());
+            #endif
+            return;
         }
 
         auto sliced_meta = batch.metadata->slice(i, j);
@@ -219,6 +226,9 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
         i = j;
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
+    #if D_GROUP_NCCL
+    NCCLCHECK(ncclGroupEnd());
+    #endif
     // DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
 }
 
@@ -277,6 +287,10 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
     ASSERT(batch.data.sizes()[1] == meta->shape[1]);
 
     auto &channels = this->attn_channel[layer_id];
+
+    #if D_GROUP_NCCL
+    NCCLCHECK(ncclGroupStart());
+    #endif
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
         int rank = meta->attn_dp_ranks[i];
         auto channel_id = this->_get_attn_channel(layer_id, rank);
@@ -291,6 +305,10 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t) batch.data.data_ptr(),
                 *meta
             );
+            #if D_GROUP_NCCL
+            NCCLCHECK(ncclGroupEnd());
+            #endif
+            return;
         } else {
             auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
             this->_send_batch(
@@ -300,6 +318,9 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
             );
         }
     }
+    #if D_GROUP_NCCL
+    NCCLCHECK(ncclGroupEnd());
+    #endif
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
@@ -363,11 +384,14 @@ MuPool::MuPool(
 
 MuPool::~MuPool() {}
 
-void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta) {
+void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
     std::string f0; std::vector<uint8_t> f1;
-    bool ok = mq->recv_multipart(f0, f1);
-    ASSERT(ok);
+    bool ok = mq->recv_multipart(f0, f1, non_blocking);
+    if (!ok) {
+        meta = nullptr;
+        return;
+    }
     peer_id = std::stoi(f0);
     meta = decerealize<BatchMetadata>(reinterpret_cast<char*>(f1.data()), f1.size());
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
@@ -435,23 +459,55 @@ void MuPool::run() {
 
     // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
+        std::vector<MuPoolPendingRecv> pending;
+        pending.reserve(MU_POOL_GROUP_RECV_LIMIT);
+
+        // Block for the first metadata
         int peer_id;
         batch_metadata_t meta;
-
-        recv_metadata(peer_id, meta);
-
+        recv_metadata(peer_id, meta, /*non_blocking=*/ false);
+        ASSERT(meta.get() != nullptr);
+        
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+        pending.push_back(MuPoolPendingRecv{peer_id, meta, tensor});
 
-        recv_tensor(peer_id, (uintptr_t)tensor.data_ptr(), meta);
+        #if D_GROUP_NCCL
+        // Call non-blocking recvs to drain any simultaneous recvs
+        for (int k = 1; k < MU_POOL_GROUP_RECV_LIMIT; ++k) {
+            int pid;
+            batch_metadata_t m;
+            recv_metadata(pid, m, /*non_blocking=*/ true);
+            if (m.get() == nullptr) break; // nothing more to recv now
+            
+            torch::Tensor t = torch::empty(
+                {m->num_tokens(), m->token_hidden_dim()}, 
+                torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+            );
+            pending.push_back(MuPoolPendingRecv{pid, m, t});
+        }
+        #endif
 
-        // NOTE(hogura|20250305): after receiving batch, start the queueing timer for each request
-        // this->start_queueing_timer(meta->req_ids);
+        // Group NCCL recvs. (There can be TensorLocal channels, but they are not bothered)
+        #if D_GROUP_NCCL
+        NCCLCHECK(ncclGroupStart());
+        #endif
+        for (auto &p : pending) {
+            this->peer_channels[p.peer_id]->recv((uintptr_t)p.tensor.data_ptr(), *p.meta);
+        }
+        #if D_GROUP_NCCL
+        NCCLCHECK(ncclGroupEnd());
+        #endif
 
-        this->process_batch(tensor, meta,  /*send_from_zmq=*/ true);
-        this->peer_channels[peer_id]->sync();
+        // NOTE: "this->start_queueing_timer(meta->req_ids)" used to be done here
+
+        // process the incoming batch and sync the NCCL CUDA streams
+        for (auto &p : pending) {
+            this->process_batch(p.tensor, p.meta, /*send_from_zmq=*/ true);
+            this->peer_channels[p.peer_id]->sync();
+        }
     }
 }
 

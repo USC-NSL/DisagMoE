@@ -144,6 +144,7 @@ class AttentionEngineMixin:
             #     meta_c.shrink_topk(self.model_config.top_k)
             
             # TODO: consider the position of this code piece
+            # It's better if this is done in the final expert layer, rather than having an extra hop to the attn worker
             if batch.layer_id == self.model_total_num_layers:
                 # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
                 continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
@@ -455,6 +456,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     def has_expert(self):
         return self.engine_type == EngineType.EXPERT or self.engine_type == EngineType.HYBRID
     
+    # Consider clean-up these tp legacies
     @property
     def is_attn_driver(self):
         return self.has_attn and self.rank_in_group == 0

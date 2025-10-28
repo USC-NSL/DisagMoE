@@ -113,7 +113,7 @@ public:
     void start_server();
     // Add another remote sender endpoint to this receiver (fan-in)
     void add_remote(const std::string& ip, int tcp_port);
-    bool dequeue(Message& out);
+    bool dequeue(Message& out, bool is_non_blocking = false);
     size_t endpoint_count() const;
     void stop();
 
@@ -182,10 +182,10 @@ public:
     bool send(buffer_view buf, send_flags::type flags = send_flags::none);
 
     // Receive single frame (used for tensor data path)
-    recv_result_t recv(message_t& msg);
+    recv_result_t recv(message_t& msg, bool is_non_blocking = false);
 
     // Receive multipart (peer_id + metadata). Returns number of frames.
-    recv_result_t recv_multipart(std::vector<message_t>& out_frames);
+    recv_result_t recv_multipart(std::vector<message_t>& out_frames, bool is_non_blocking = false);
 
 private:
     // Internal helpers

@@ -301,13 +301,15 @@ void FanInQueueReceiver::onRecvCallback(void* request, ucs_status_t status, cons
     }
 }
 
-bool FanInQueueReceiver::dequeue(Message& out) {
+bool FanInQueueReceiver::dequeue(Message& out, bool is_non_blocking) {
+    if (is_non_blocking) {
+        return q_.try_dequeue(out);
+    }
     while (running_.load(std::memory_order_acquire)) {
         if (q_.try_dequeue(out)) {
             return true;
         }
     }
-    return q_.try_dequeue(out);
 }
 
 void FanInQueueReceiver::stop() {
@@ -678,12 +680,12 @@ bool socket_t::send(buffer_view buf, send_flags::type flags) {
     return true;
 }
 
-recv_result_t socket_t::recv(message_t& msg) {
+recv_result_t socket_t::recv(message_t& msg, bool is_non_blocking) {
     if (type_ != socket_type::pull || !receiver_) {
         throw std::logic_error("either wrong socket type or receiver queue not initialized");
     }
     ucxq::Message m;
-    if (!receiver_->dequeue(m)) return std::nullopt;
+    if (!receiver_->dequeue(m, is_non_blocking)) return std::nullopt;
 
     // Deliver payload as-is. Callers needing multipart semantics should use recv_multipart().
     const size_t bytes = m.data.size();
@@ -691,12 +693,12 @@ recv_result_t socket_t::recv(message_t& msg) {
     return recv_result_t{bytes};
 }
 
-recv_result_t socket_t::recv_multipart(std::vector<message_t>& out_frames) {
+recv_result_t socket_t::recv_multipart(std::vector<message_t>& out_frames, bool is_non_blocking) {
     if (type_ != socket_type::pull || !receiver_) {
         throw std::logic_error("either wrong socket type or receiver queue not initialized");
     }
     ucxq::Message m;
-    if (!receiver_->dequeue(m)) return std::nullopt;
+    if (!receiver_->dequeue(m, is_non_blocking)) return std::nullopt;
 
     std::vector<uint8_t> payload = std::move(m.data);
     if (payload.size() < sizeof(uint32_t) * 2) {

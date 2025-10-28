@@ -31,10 +31,11 @@ public:
         sock_.send(zmq::buffer(frame0.data(), frame0.size()), zmq::send_flags::sndmore);
         sock_.send(zmq::buffer(data, size));
     }
-    bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1) override {
+    bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1, bool non_blocking = false) override {
         zmq::message_t f0;
         zmq::message_t f1;
-        auto r0 = sock_.recv(f0, zmq::recv_flags::none);
+        auto flags = non_blocking ? zmq::recv_flags::dontwait : zmq::recv_flags::none;
+        auto r0 = sock_.recv(f0, flags);
         if (!r0.has_value()) return false;
         auto r1 = sock_.recv(f1, zmq::recv_flags::none);
         if (!r1.has_value()) return false;
@@ -60,9 +61,9 @@ public:
         sock_->send(ucxq::str_buffer(frame0.c_str()), ucxq::send_flags::sndmore);
         sock_->send(ucxq::buffer(data, size));
     }
-    bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1) override {
+    bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1, bool non_blocking = false) override {
         std::vector<ucxq::message_t> frames;
-        auto res = sock_->recv_multipart(frames);
+        auto res = sock_->recv_multipart(frames, non_blocking);
         if (!res.has_value() || *res != 2) return false;
         frame0 = frames[0].to_string();
         frame1.resize(frames[1].size());
