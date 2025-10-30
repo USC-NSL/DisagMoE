@@ -165,6 +165,8 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     int local_id,
     int global_rank,
     int top_k,
+    bool has_attn,
+    bool has_expert,
     bool expert_wise_schedule,
     ParallelConfig cfg,
     const std::vector<int> &layer_ids,

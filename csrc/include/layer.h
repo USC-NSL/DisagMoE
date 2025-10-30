@@ -25,7 +25,7 @@ private:
     int num_tokens;
     int num_batches;
 
-    std::vector<TokenBatch> batch_queue;
+    std::vector<TokenBatch> batch_queue{};
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);

@@ -455,7 +455,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
     
     @property
     def is_attn_worker(self):
-        return self.has_attn and self.rank_in_group > 0
+        return self._tp_enabled and self.rank_in_group > 0
     
     @property
     def _tp_enabled(self):
@@ -495,9 +495,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         )
         
         # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
-        
-        assert self.engine_type != EngineType.HYBRID, "Hybrid engine is not supported yet"
-        self.pool, self.scheduler, self.dispatcher = init_disaggregated_engine(
+        if self.engine_type == EngineType.HYBRID:
+            get_logger().info("launching unified engine")
+            init_engine = init_unified_engine
+        else:
+            get_logger().info("launching disaggregated engine")
+            init_engine = init_disaggregated_engine
+            
+        self.pool, self.scheduler, self.dispatcher = init_engine(
             self.device_id,
             core_args.local_attn_dp_rank,
             self.model_config.top_k,
@@ -632,7 +637,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self._pool_snapshot = self.scheduler.get_pool_snapshot()
         else:
             # TODO: support snapshot for hybrid engine
-            pass 
+            self._pool_snapshot = []
         self._step_start_timestamp_ms = time_ms()
         
     def record_empty_step(self):
@@ -736,10 +741,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             batch = TokenBatch.from_c(batch_info)
             meta: BatchMetadata = batch.metadata
             
-            self.stats_pre_process(batch)
+            # self.stats_pre_process(batch)
             output, meta = self.process_batch(meta, batch.data)
             self.post_process(output, meta)
-            self.stats_post_process(batch)
+            # self.stats_post_process(batch)
     
     # def dual_module_loop(self):
     #     get_logger().info("starting dual_module_loop")
@@ -965,6 +970,8 @@ class TokenizerEngine(Engine):
         return self.t_submitted
         
     def init_core(self, core_args: InitCoreArgs):
+        print(f"tokenizer init_core: {core_args}")
+        
         self.tokenizer = init_tokenizer(
             self.device_id,
             ParallelConfig.from_c(

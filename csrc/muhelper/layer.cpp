@@ -93,7 +93,7 @@ void UnifiedLayerScheduler::add_batch(const TokenBatch &batch) {
     } else if (batch.metadata->is_expert()) {
         this->expert_layers[batch.metadata->layer_id]->add_batch(batch);
     } else {
-        throw std::runtime_error("Invalid batch metadata");
+        ASSERT_MSG(false, "Invalid batch metadata");
     }
 }
 
@@ -103,7 +103,7 @@ void UnifiedLayerScheduler::add_batch(const torch::Tensor& tensor, const batch_m
     } else if (meta->is_expert()) {
         this->expert_layers[meta->layer_id]->add_batch(tensor, meta);
     } else {
-        throw std::runtime_error("Invalid batch metadata");
+        ASSERT_MSG(false, "Invalid batch metadata");
     }
 }
 

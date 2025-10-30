@@ -409,8 +409,6 @@ inline batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_m
         init_prefill_lens 
     });
 
-    DMOE_LOG(INFO) << "Merged expert metadata: " << *merged_meta << LEND;
-
     return merged_meta;
 }
 

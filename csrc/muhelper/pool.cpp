@@ -7,7 +7,7 @@ UnifiedPool::UnifiedPool(
     int num_groups
 ):
     MuPool(layer_ids, device_id, channels, num_groups) {
-    this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size());
+    this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size() + 1);
 }
 
 void UnifiedPool::process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta) {
@@ -48,12 +48,12 @@ void UnifiedPool::process_expert_batch(torch::Tensor tensor, batch_metadata_t &m
 }
 
 void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
-    if (meta->is_expert()) {
+    if (meta->is_expert() || meta->is_tokenizer()) {
         this->process_attn_batch(tensor, meta);
     } else if (meta->is_attention()) {
         this->process_expert_batch(tensor, meta);
     } else {
-        throw std::runtime_error("Invalid batch metadata");
+        ASSERT_MSG(false, "Invalid batch metadata");
     }
 }
 

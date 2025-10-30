@@ -147,7 +147,7 @@ struct TokenBatch {
         } else if (batches[0].metadata->is_attention()) {
             return TokenBatch::merge_by_attention(batches);
         }
-        throw std::runtime_error("Invalid batch metadata");
+        ASSERT_MSG(false, "Invalid batch metadata");
     }
 
     inline static TokenBatch pack_topk_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
