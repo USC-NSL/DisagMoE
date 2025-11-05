@@ -3,7 +3,7 @@ MAX_INPUT_LEN=11
 MIN_OUTPUT_LEN=50
 MAX_OUTPUT_LEN=51
 N_NODE=1
-N_GPU_PER_NODE=2
+N_GPU_PER_NODE=3
 NUM_LAYERS=16
 NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=160
@@ -12,8 +12,13 @@ GRAPH_STRIDE=8
 step_attn=1
 dp_size=1
 step_exp=1
-ep_size=1
+ep_size=2
 top_k=1
+
+# Optional: path to a gate profile file on the launching node. If set, it will be
+# uploaded to the cluster and delivered via Ray's object store.
+# When provided, the attention workers will use profile-driven gating.
+GATE_PROFILE_FILE=""
 
 # transport backend: zmq | ucx
 TRANSPORT=ucx
@@ -49,4 +54,5 @@ python benchmark/server.py \
     --ep-size $ep_size \
     --file $REPORT_TABLE \
     --analyze-throughput \
-    --trace
+    --trace \
+    --gate-profile-file "$GATE_PROFILE_FILE"

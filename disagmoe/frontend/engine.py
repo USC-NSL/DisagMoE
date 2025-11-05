@@ -60,7 +60,7 @@ class AttentionEngineMixin:
     attn_dp_rank: int
     
     def build_attn_executor(self):
-        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config, gate_profile_bytes=self.gate_profile_bytes)
         self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
         
         self.block_mgr = self.attn_executor.get_block_mgr()
@@ -167,7 +167,7 @@ class AttentionEngineMixin:
 
         with self._timer.range("execute"):
             assert input_tensor.shape[0] == positions.shape[0], f"input_tensor.shape[0] != positions.shape[0]: {input_tensor.shape[0]} != {positions.shape[0]}"
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta)
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta, request_ids=batch.req_ids)
             
         with self._timer.range("postprocess"):
             # Deprecated optimization:
@@ -447,6 +447,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.attn_dp_rank = None
         self.expert_ep_rank = None
+        self.gate_profile_bytes: Optional[bytes] = None
 
     @property
     def has_attn(self):
@@ -626,6 +627,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.expert_max_batch_size = model_config.max_batch_size_expert
         
         get_logger().info(f"engine setup. {self.engine_type, model_config}")
+
+    # Accepts bytes uploaded via Ray object store and retains them for later
+    # consumption by attention operators/gates.
+    def load_gate_profile_bytes(self, data: bytes):
+        if not isinstance(data, (bytes, bytearray)):
+            raise ValueError("gate profile must be bytes")
+        self.gate_profile_bytes = bytes(data)
+        get_logger().info(f"Loaded gate profile bytes: {len(self.gate_profile_bytes)} bytes")
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks

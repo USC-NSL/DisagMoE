@@ -19,6 +19,7 @@ def get_parser_base():
     parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
     parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
     parser.add_argument("--transport", type=str, default="zmq", choices=["zmq", "ucx"], help="inter-worker transport backend")
+    parser.add_argument("--gate-profile-file", type=str, default=None, help="path to gate profile file to upload and broadcast to workers")
     
     # model config
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
