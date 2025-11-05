@@ -746,39 +746,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.post_process(output, meta)
             # self.stats_post_process(batch)
     
-    # def dual_module_loop(self):
-    #     get_logger().info("starting dual_module_loop")
-    #     torch.set_default_dtype(torch.bfloat16)
-    #     torch.set_default_device("cuda:0")
-    #     torch.cuda.set_stream(self.stream)
-    #     disagmoe_recorder_create()
-        
-    #     def step(scheduler, processor, dispatcher):
-    #         # self._timer.start("schedule")
-    #         batch_info = scheduler.schedule()
-    #         if batch_info.data is None:
-    #             return
-    #         self._metric.step()
-        
-    #         range_push("Engine.schedule_stream_sync")
-    #         self.stream.synchronize()
-    #         range_pop()
-            
-    #         # self._timer.stop("schedule")
-    #         self._timer.start("preprocess")
-            
-    #         batch = TokenBatch.from_c(batch_info)
-    #         meta: BatchMetadata = batch.metadata
-            
-    #         # self.stats_pre_process(batch)
-    #         output, meta = processor(meta, batch.data)
-    #         self.post_process(output, meta, dispatcher)
-    #         # self.stats_post_process(batch)
-            
-    #     while not self.end_flag:
-    #         step(self.attn_scheduler, self.process_batch_attn, self.dispatcher)
-    #         step(self.expert_scheduler, self.process_batch_expert, self.expert_dispatcher)
-            
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
         """
             return: step_stats, profile_contexts, metric
