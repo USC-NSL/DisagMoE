@@ -46,6 +46,12 @@ const int UCXQ_OFFSET_BASE = 16;
 
 #endif
 
+// Limit for number of pending receives drained per MuPool::run() iteration
+// We need to have such a limit to prevent livelock
+#ifndef MU_POOL_GROUP_RECV_LIMIT
+#define MU_POOL_GROUP_RECV_LIMIT 16
+#endif
+
 #define ASSERT(condition) do {if (!(condition)) { \
     throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + " Assertion failed: " + std::string(#condition)); \
 }} while(0)

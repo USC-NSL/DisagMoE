@@ -151,7 +151,7 @@ protected:
 
     std::shared_ptr<LayerSchedulerBase> layer_scheduler;
 
-    void recv_metadata(int &peer_id, batch_metadata_t &meta);
+    void recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking = false);
 
     void recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta);
 
@@ -162,6 +162,12 @@ protected:
     inline int get_layer_group_id(int layer_id, int group_id) {
         return layer_id * num_groups + group_id;
     }
+
+    struct MuPoolPendingRecv {
+        int peer_id;
+        batch_metadata_t meta;
+        torch::Tensor tensor;
+    };
 
 public:
     MuPool(
