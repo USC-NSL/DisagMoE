@@ -3,17 +3,26 @@ MAX_INPUT_LEN=11
 MIN_OUTPUT_LEN=50
 MAX_OUTPUT_LEN=51
 N_NODE=1
-N_GPU_PER_NODE=3
+N_GPU_PER_NODE=2
 NUM_LAYERS=16
 NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=1
 step_exp=1
-ep_size=2
+dp_size=1
+ep_size=1
 top_k=1
+
+transport_backend=ucx
+
+placement="colocate"
+
+if [ $placement == "colocate" ]; then
+    dp_size=$((N_GPU_PER_NODE * N_NODE))
+    ep_size=$dp_size
+fi
 
 # Optional: path to a gate profile file on the launching node. If set, it will be
 # uploaded to the cluster and delivered via Ray's object store.
@@ -21,7 +30,6 @@ top_k=1
 GATE_PROFILE_FILE=""
 
 # transport backend: zmq | ucx
-TRANSPORT=ucx
 
 REPORT_DIR=./reports
 
@@ -32,7 +40,6 @@ fi
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
-    --transport $TRANSPORT \
     --min-input-len $MIN_INPUT_LEN \
     --max-input-len $MAX_INPUT_LEN \
     --min-output-len $MIN_OUTPUT_LEN \
@@ -50,8 +57,10 @@ python benchmark/server.py \
     --block-size 16 \
     --step-attn $step_attn \
     --step-exp $step_exp \
+    --placement $placement \
     --dp-size $dp_size \
     --ep-size $ep_size \
+    --transport $transport_backend \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \

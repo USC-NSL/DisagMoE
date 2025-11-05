@@ -1,0 +1,39 @@
+#pragma once
+
+#ifndef POOL_H_
+#define POOL_H_
+
+#include "muhelper.h"
+#include "datatypes.hpp"
+#include "metadata.hpp"
+#include "batch.hpp"
+#include "layer.h"
+
+class UnifiedPool: public MuPool {
+
+private:
+
+    unified_layer_scheduler_t layer_scheduler;
+
+    void process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta);
+    void process_expert_batch(torch::Tensor tensor, batch_metadata_t &meta);
+
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
+
+public:
+
+    UnifiedPool(
+        std::vector<int> layer_ids,
+        int device_id,
+        std::vector<Channel_t> channels,
+        int num_groups = 1
+    );
+
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+
+    std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
+};
+
+using unified_pool_t = std::shared_ptr<UnifiedPool>;
+
+#endif

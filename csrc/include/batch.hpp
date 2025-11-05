@@ -17,6 +17,10 @@ struct TokenBatch {
     torch::Tensor data;
     batch_metadata_t metadata;
 
+    TokenBatch() = default;
+
+    TokenBatch(torch::Tensor data, const batch_metadata_t &metadata): data(data), metadata(metadata) {}
+
     std::vector<TokenBatch> split_by_expert() {
         auto chunk_sizes = metadata->get_chunk_sizes();
         auto metas = metadata->split_with_sizes(chunk_sizes);
@@ -128,6 +132,22 @@ struct TokenBatch {
         gather_tokens_cuda(merged_tokens, src_ptrs.data(), merged_meta->num_tokens(), merged_meta->token_hidden_dim(), stream.stream());
 
         return TokenBatch {merged_tokens, merged_meta};
+    }
+
+    inline static TokenBatch merge(const std::vector<TokenBatch>& batches) {
+        if (batches.empty()) {
+            return TokenBatch {};
+        }
+        if (batches.size() == 1) {
+            return batches[0];
+        }
+
+        if (batches[0].metadata->is_expert()) {
+            return TokenBatch::merge_by_expert(batches);
+        } else if (batches[0].metadata->is_attention()) {
+            return TokenBatch::merge_by_attention(batches);
+        }
+        ASSERT_MSG(false, "Invalid batch metadata");
     }
 
     inline static TokenBatch pack_topk_tokens(int layer_id, std::vector<TokenTopKInfo>& tokens) {
