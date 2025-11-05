@@ -174,6 +174,9 @@ struct BatchMetadata {
     }
 
     BatchMetadata slice(int l, int r) {
+        if (r - l == shape[0]) {
+            return *this;
+        }
         return BatchMetadata {
             batch_tag,
             std::vector<size_t> {r - l, shape[1]},
@@ -405,8 +408,6 @@ inline batch_metadata_t BatchMetadata::merge_by_expert(const std::vector<batch_m
         attn_dp_ranks, 
         init_prefill_lens 
     });
-
-    DMOE_LOG(INFO) << "Merged expert metadata: " << *merged_meta << LEND;
 
     return merged_meta;
 }

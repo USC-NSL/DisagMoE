@@ -10,13 +10,21 @@ MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
 step_attn=1
-dp_size=1
 step_exp=1
+dp_size=1
 ep_size=1
 top_k=1
 
+transport_backend=ucx
+
+placement="colocate"
+
+if [ $placement == "colocate" ]; then
+    dp_size=$((N_GPU_PER_NODE * N_NODE))
+    ep_size=$dp_size
+fi
+
 # transport backend: zmq | ucx
-TRANSPORT=ucx
 
 REPORT_DIR=./reports
 
@@ -27,7 +35,6 @@ fi
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
-    --transport $TRANSPORT \
     --min-input-len $MIN_INPUT_LEN \
     --max-input-len $MAX_INPUT_LEN \
     --min-output-len $MIN_OUTPUT_LEN \
@@ -45,8 +52,10 @@ python benchmark/server.py \
     --block-size 16 \
     --step-attn $step_attn \
     --step-exp $step_exp \
+    --placement $placement \
     --dp-size $dp_size \
     --ep-size $ep_size \
+    --transport $transport_backend \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace

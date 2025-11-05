@@ -37,23 +37,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("put_batch", &MuPool::put_batch);
         
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
-        .def("wait_for_new_requests", &Scheduler::wait_for_new_requests)
-        .def("set_max_batch_size", &Scheduler::set_max_batch_size)
-        .def("set_attn_max_batch_size", &Scheduler::set_attn_max_batch_size)
-        .def("set_expert_max_batch_size", &Scheduler::set_expert_max_batch_size)
         .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
-        .def("get_cur_queueing_delay", &Scheduler::get_cur_queueing_delay)
         .def("set_schedule_policy", &Scheduler::set_schedule_policy)
         .def("set_schedule_block", &Scheduler::set_schedule_block)
-        .def("schedule", [](Scheduler &s) -> py::object {
-            if (s.has_attention()) {
-                auto batch = s.schedule_attention();
-                return py::cast(batch);
-            } else {
-                auto batch = s.schedule_expert();
-                return py::cast(batch);
-            }
-        });
+        .def("schedule", &Scheduler::schedule);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put)
@@ -222,7 +209,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     REGISTER_FUNC(get_nccl_unique_id);
     REGISTER_FUNC(instantiate_channels);
-    REGISTER_FUNC(init_engine);
+    REGISTER_FUNC(init_disaggregated_engine);
+    REGISTER_FUNC(init_unified_engine);
     REGISTER_FUNC(start_engine);
     REGISTER_FUNC(init_sampler);
     REGISTER_FUNC(init_tokenizer);

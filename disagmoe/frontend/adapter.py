@@ -6,27 +6,12 @@ from typing import Tuple, List, Dict, Optional
 
 class Scheduler:
 
-    def wait_for_new_requests(self) -> None:
-        ...
-
-    def schedule(self, stream: Optional[torch.cuda.Stream] = None) -> TokenBatch:
-        ...
-        
-    def get_attention_channel(self) -> "NcclGroupChannel":
-        ...
-        
-    def set_attn_max_batch_size(self, max_batch_size: int) -> None:
-        ...
-    
-    def set_expert_max_batch_size(self, max_batch_size: int) -> None:
+    def schedule(self) -> TokenBatch:
         ...
         
     def get_pool_snapshot(self) -> List[int]:
         ...
 
-    def get_cur_queueing_delay(self) -> List[float]:
-        ...
-        
     def set_schedule_policy(self, policy: str) -> None:
         ...
         

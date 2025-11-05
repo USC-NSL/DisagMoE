@@ -13,6 +13,7 @@
 #include "batch.hpp"
 #include "comm.h"
 #include "transport_factory.h"
+#include "layer.h"
 
 class MuHelper {
 
@@ -108,7 +109,7 @@ protected:
     std::vector<std::vector<int>> attn_channel;
 
     void _send_once(TokenBatch batch) override;
-    virtual int _get_attn_channel(int req_id, int layer_id);
+    virtual int _get_attn_channel(int layer_id, int dp_rank);
 
 public:
     MuExpertDispatcher(std::vector<int> layer_ids, 
@@ -119,18 +120,6 @@ public:
     
     void debug_put(TokenBatch batch);
 };
-
-enum LayerSchedulePolicy {
-    BASE,
-    ADVANCED,
-    GROUP,
-};
-
-class LayerScheduler;
-
-class AdvancedLayerScheduler;
-
-class GroupLayerScheduler;
 
 class MuPool: public MuHelper {
 protected:
@@ -157,18 +146,16 @@ protected:
     std::vector<int> tokens_per_layer_;
     std::vector<int> num_batches_per_layer_;
 
-    int max_batch_size;
-
     std::mutex timer_mutex;
     std::map<int, clock_t> queueing_timers;
 
-    std::shared_ptr<LayerScheduler> layer_scheduler;
+    std::shared_ptr<LayerSchedulerBase> layer_scheduler;
 
     void recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking = false);
 
     void recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta);
 
-    virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) = 0;
+    virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta) = 0;
 
     void start_queueing_timer(const std::vector<int> &req_ids);
 
@@ -187,17 +174,12 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
         int num_groups = 1
     );
 
     virtual ~MuPool();
 
     void run() override;
-
-    void wait_for_new_requests();
-
-    void set_max_batch_size(int max_batch_size);
 
     int get_num_layers() { return num_layers; }
 
@@ -237,26 +219,27 @@ public:
     void put_batch(TokenBatch batch);
 
     // Allow external owner (Scheduler) to share/manage layer-wise scheduler state
-    void set_layer_scheduler(std::shared_ptr<LayerScheduler> scheduler) { this->layer_scheduler = scheduler; }
-    std::shared_ptr<LayerScheduler> get_layer_scheduler() { return this->layer_scheduler; }
+    void set_layer_scheduler(std::shared_ptr<LayerSchedulerBase> scheduler) { this->layer_scheduler = scheduler; }
+    std::shared_ptr<LayerSchedulerBase> get_layer_scheduler() { return this->layer_scheduler; }
+
+    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id) = 0;
 };
 
 class MuExpertPool: public MuPool {
 protected:
     std::vector<std::vector<TokenBatch>> data_queue;
 
-    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
 
 public:
     MuExpertPool(
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED,
         int num_groups = 1
     );
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
 };
 
 
@@ -265,7 +248,7 @@ class MuAttentionPool: public MuPool {
 
 private:
 
-    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
 
 protected:
 
@@ -278,25 +261,12 @@ public:
     MuAttentionPool(
         std::vector<int> layer_ids,
         int device_id,
-        std::vector<Channel_t> channels,
-        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
+        std::vector<Channel_t> channels
     );
 
     void put_batch_to_attn_queue(int layer_id, const TokenBatch &batch);
 
-    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id);
-
-    void terminate() override;
-
-    // for debug use only
-    void __set_attn_data_queue(
-        std::vector<std::vector<TokenBatch>> data_queue, 
-        std::vector<int> token_per_layer,
-        int largest_batch_id) {
-        this->attn_data_queue = data_queue;
-        this->tokens_per_layer_ = token_per_layer;
-        this->largest_batch_layer_id_ = largest_batch_id;
-    }
+    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
 };
 
 
@@ -333,7 +303,7 @@ private:
 
     std::vector<TokenTopKInfo> schedule_with_limit();
 
-    void process_batch(torch::Tensor tensor, batch_metadata_t &meta, bool send_from_zmq=true) override;
+    void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
 
 public:
 
@@ -341,8 +311,7 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        int top_k = 1,
-        LayerSchedulePolicy policy = LayerSchedulePolicy::ADVANCED
+        int top_k = 1
     );
 
     int tokens_in_layer(int lid) override;
