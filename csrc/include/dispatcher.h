@@ -12,7 +12,6 @@
 class UnifiedDispatcher: public MuDispatcher {
 
 private:
-    int sampler_channel_id;
     std::vector<int> expert_to_rank;
     std::vector<int> rank_to_channel;
 
@@ -36,7 +35,6 @@ public:
         std::vector<ChannelInfo> channel_infos={}
     );
 
-    void send_to_sampler(TokenBatch batch) override;
 };
 
 #endif

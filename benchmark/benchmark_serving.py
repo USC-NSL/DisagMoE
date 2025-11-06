@@ -23,9 +23,6 @@ import pandas as pd
 import os
 import pickle
 
-tokenizer = TOKENIZER_DEV_ID
-sampler = SAMPLER_DEV_ID
-
 master: Controller = None
 logger = new_logger("Serving")
 
@@ -88,9 +85,7 @@ class BenchmarkMetrics:
 def launch(args):
     # Select transport in C++ backend (default from CLI is zmq)
     c.select_transport(args.transport)
-    cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus,
-                                id_tokenizer=tokenizer, 
-                                id_sampler=sampler)
+    cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus)
 
     model_config = mixtral_config
     model_config.num_layers = args.num_layers

@@ -29,10 +29,6 @@ UnifiedDispatcher::UnifiedDispatcher(
     }
 
     for (size_t i = 0; i < channels.size(); i ++) {
-        if (channel_infos[i].is_sampler_channel()) {
-            this->sampler_channel_id = i;
-            continue;
-        }
         int dp_rank = channel_infos[i].attn_dp_rank;
         this->rank_to_channel[dp_rank] = i;
     }
@@ -44,12 +40,6 @@ void UnifiedDispatcher::_send_once(TokenBatch batch) {
     } else if (batch.metadata->is_expert()) {
         this->_send_to_attn_once(batch);
     }
-}
-
-void UnifiedDispatcher::send_to_sampler(TokenBatch batch) {
-    tx_range _{"UnifiedDispatcher::send_to_sampler"};
-    this->_send_batch(this->sampler_channel_id, (uintptr_t) batch.data.data_ptr(), *batch.metadata);
-    // DMOE_LOG(INFO) << "attn " << this->device_id << " sent a batch to sampler" << LEND;
 }
 
 void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
