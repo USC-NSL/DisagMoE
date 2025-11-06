@@ -663,7 +663,8 @@ std::vector<TokenBatch> MuAttentionPool::get_batch_from_layer(int layer_id) {
 }
 
 std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
-    std::vector<TokenTopKInfo> result(std::move(this->ready_tokens));
+    std::vector<TokenTopKInfo> result{};
+    result.swap(this->ready_tokens);
     return result;
 }
 
