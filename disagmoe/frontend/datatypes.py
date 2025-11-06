@@ -54,9 +54,9 @@ class BatchMetadata:
     max_output_lens: List[int]
     
     # Only used in attention batch - optional fields
-    num_prefill_seqs: Optional[int]
-    num_prefill_tokens: Optional[int]
-    num_decode_tokens: Optional[int]
+    num_prefill_seqs: Optional[int] = None
+    num_prefill_tokens: Optional[int] = None
+    num_decode_tokens: Optional[int] = None
     
     def is_attention(self) -> bool:
         ...
@@ -225,6 +225,13 @@ class SloStat:
             [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
         )
         
+    def post_process(self) -> None:
+        ms_to_s = 1e-3
+        self.t_decode = (self.t_decode - self.t_prefill) * ms_to_s
+        self.t_prefill = self.t_prefill * ms_to_s
+        self.t_prefill_std = self.t_prefill_std * ms_to_s
+        self.t_tokens = [(x - y) * ms_to_s for x, y in zip(self.t_tokens[1:], self.t_tokens[:-1])]
+        
 @dataclass
 class TraceContext:
     msg: str
@@ -252,4 +259,18 @@ class SamplerStepInfo:
             step_c.num_tokens,
             step_c.time_stamp
         )
-        
+
+@dataclass
+class TokenizedRequest:
+    
+    req_id: int
+    init_prefill_len: int
+    max_output_len: int
+    token_ids: List[int]
+
+@dataclass
+class BatchDecodeResult:
+    
+    req_ids: List[int]
+    token_ids: List[int]
+    is_eos: List[bool]

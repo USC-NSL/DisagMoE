@@ -1,56 +1,49 @@
 import threading
 import time
-import torch
 import zmq
-import pickle
+import ray
 
 from typing import List, Dict, Set, Optional
-from dataclasses import dataclass
-from disagmoe.frontend.datatypes import SloStat, SamplerStepInfo
+from disagmoe.frontend.datatypes import SloStat, SamplerStepInfo, BatchDecodeResult, TokenizedRequest
+from disagmoe.utils.utils import get_ip
 
 def t_now_high_ms() -> int:
     """Get current timestamp in milliseconds (equivalent to t_now_high in C++)"""
     return int(time.time() * 1000)
-    
-@dataclass
-class BatchDecodeResult:
-    
-    req_ids: List[int]
-    token_ids: List[int]
-    is_eos: List[bool]
 
+@ray.remote(num_cpus=2, num_gpus=0)
 class Detokenizer:
     
-    def __init__(self, recv_addr: str):
+    def __init__(self):
         self.finished_seqs: Set[int] = set()
         self.active_num_requests = 0
         self.slo_stats: Dict[int, SloStat] = {}
         self.step_infos: List[SamplerStepInfo] = []
         
-        self.result_queue: zmq.Socket = zmq.Socket(zmq.PULL)
-        self.result_queue.bind(recv_addr)
-        
-        self.lock = threading.Lock()
-        self.working_thread = threading.Thread(target=self.run)
-        self.working_thread.start()
-        
         self.token_processed = 0
         self.iter = 0
-        self.start_timestamp_ms = t_now_high_ms()
         
+        self.lock = threading.Lock()
+        
+    def init_detokenizer_socket(self, detokenizer_port: str) -> str:
+        context = zmq.Context(2)
+        self.detokenizer_socket: zmq.Socket = context.socket(zmq.PULL)
+        self.detokenizer_socket.bind(f"tcp://*:{detokenizer_port}")
+        
+        local_ip = get_ip()
+        connect_addr = f"tcp://{local_ip}:{detokenizer_port}"
+        
+        self.thread = threading.Thread(target=self.run)
+        self.thread.start()
+        
+        return connect_addr
+    
     def run(self) -> None:
+        self.start_timestamp_ms = t_now_high_ms()
         while True:
-            batch = self.result_queue.recv_pyobj()
-            
+            batch = self.detokenizer_socket.recv_pyobj()
             with self.lock:
                 self.process_batch(batch)
-                
-            num_tokens = len(batch.req_ids)
-            self.token_processed += num_tokens
-            self.iter += 1
-            
-            if self.iter >= 500:
-                self.log_throughput()
                 
     def log_throughput(self) -> None:
         cur_time_ms = t_now_high_ms()
@@ -69,18 +62,16 @@ class Detokenizer:
             rid = batch.req_ids[i]
             
             if rid in self.slo_stats:
-                # Store timestamp in milliseconds (matching C++ behavior)
-                self.slo_stats[rid].t_tokens.append(cur_time_ms)
+                stat = self.slo_stats[rid]
+                stat.t_tokens.append(cur_time_ms)
             else:
-                # Initialize SLO stat for new request
-                # Store times in milliseconds initially (matching C++), convert to seconds for SloStat
                 self.active_num_requests += 1
                 self.slo_stats[rid] = SloStat(
                     req_id=rid,
-                    t_prefill=cur_time_ms / 1000.0,  # Convert to seconds
-                    t_prefill_std=cur_time_ms / 1000.0,  # Convert to seconds
+                    t_prefill=cur_time_ms,
+                    t_prefill_std=cur_time_ms,
                     t_decode=0.0,
-                    t_tokens=[cur_time_ms]  # Store in milliseconds initially
+                    t_tokens=[]
                 )
         
         self.step_infos.append(SamplerStepInfo(
@@ -93,12 +84,14 @@ class Detokenizer:
             if batch.is_eos[i]:
                 self.active_num_requests -= 1
                 assert rid in self.slo_stats, f"Request {rid} not found in slo_stats"
-                self.slo_stats[rid].t_decode = cur_time_ms / 1000.0  # Convert to seconds
+                stat = self.slo_stats[rid]
+                stat.t_decode = cur_time_ms
+                stat.post_process()
                 self.finished_seqs.add(rid)
         
         return num_tokens
     
-    def fetch_finished_slo_stats(self) -> List[SloStat]:
+    def fetch_finished_results(self) -> List[SloStat]:
         with self.lock:
             res = []
             for req_id in self.finished_seqs:
@@ -107,7 +100,7 @@ class Detokenizer:
             self.finished_seqs.clear()
             return res
     
-    def fetch_step_infos(self) -> List[SamplerStepInfo]:
+    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         with self.lock:
             infos = self.step_infos.copy()
             self.step_infos.clear()
@@ -119,32 +112,32 @@ class Detokenizer:
             self.slo_stats.clear()
             self.finished_seqs.clear()
             self.active_num_requests = 0
-
-@dataclass
-class TokenizedRequest:
     
-    req_id: int
-    init_prefill_len: int
-    max_output_len: int
-    token_ids: List[int]
-    
+@ray.remote(num_cpus=2, num_gpus=0)
 class Tokenizer:
     """
     Tokenizer for LLM serving.
     Tokenizes input text and sends it to the model.
     """
     
-    def __init__(self, attn_dp_size: int, attn_engine_addrs: List[str]):
+    def __init__(self, attn_dp_size: int):
         self.attn_dp_size = attn_dp_size
-        self.attn_engine_addrs = attn_engine_addrs
         self.worker_queues: List[zmq.Socket] = []
-        for addr in attn_engine_addrs:
-            ctx = zmq.Context()
-            socket = ctx.socket(zmq.PUSH)
-            socket.connect(addr)
+        self.t_submitted: Dict[int, float] = {}
+            
+    def init_tokenizer_sockets(self, tokenizer_ports: List[int]) -> List[str]:
+        local_ip = get_ip()
+        context = zmq.Context(self.attn_dp_size)
+        connect_addrs = []
+        for i in range(self.attn_dp_size):
+            addr = f"tcp://*:{tokenizer_ports[i]}"
+            connect_addrs.append(f"tcp://{local_ip}:{tokenizer_ports[i]}")
+            socket = context.socket(zmq.PUSH)
+            socket.bind(addr)
             self.worker_queues.append(socket)
+        return connect_addrs
     
-    def put_request(
+    def put_single_request(
         self,
         req_id: int,
         init_prefill_len: int,
@@ -163,3 +156,8 @@ class Tokenizer:
         """
         tokenized_req = TokenizedRequest(req_id, init_prefill_len, max_output_len, [0])
         self.worker_queues[dp_rank].send_pyobj(tokenized_req)
+        self.t_submitted[req_id] = time.time()
+        
+    def fetch_submitted_time(self) -> Dict[int, float]:
+        return self.t_submitted
+        

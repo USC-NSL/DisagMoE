@@ -3,12 +3,13 @@ import time
 import enum
 import os
 import random
+import zmq
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer
 from disagmoe.frontend.datatypes import (AttentionForwardBatch, BatchMetadata, TokenBatch,
-                                         SloStat, TraceContext, SamplerStepInfo)
+                                         SloStat, TraceContext, SamplerStepInfo, BatchDecodeResult, TokenizedRequest)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import initialize_logger, get_logger
@@ -148,18 +149,21 @@ class AttentionEngineMixin:
             if batch.layer_id == self.model_total_num_layers:
                 # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
                 continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
-                new_meta = meta_c
-                continue_meta = new_meta.index_select(continue_ids)
+                continue_meta = meta_c.index_select(continue_ids)
                 continue_meta.init_prefill_lens = [-1] * len(continue_ids)
                 continue_meta.attn_dp_ranks = [self.attn_dp_rank] * len(continue_ids)
                 # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
                 self.release_seqs(finish_req_ids)
                 
-                new_meta.set_finish_signal(continue_ids)            
-                sampled_batch: TokenBatch = TokenBatch_C()
-                sampled_batch.data = input_tensor
-                sampled_batch.metadata = new_meta
-                self.dispatcher.send_to_sampler(sampled_batch)
+                batch_res = BatchDecodeResult(
+                    req_ids=batch.req_ids,
+                    token_ids=[0] * len(batch.req_ids),
+                    is_eos=[True] * len(batch.req_ids)
+                )
+                for cont_id in continue_ids:
+                    batch_res.is_eos[cont_id] = False
+                self.detokenizer_socket.send_pyobj(batch_res)
+                
                 return input_tensor[continue_ids], continue_meta
 
             attn_meta = self._attn_driver_preprocess(meta_c, batch)
@@ -390,7 +394,6 @@ class ExpertEngineMixin:
 
             h2d_event.wait(self.h2d_stream)
             
-            # TODO: fuse permute and weights apply
             output = permute_tokens(output, new_mappings_gpu)
             meta_c.exp_ids = []
             meta_c.topk_weights = []
@@ -401,17 +404,9 @@ class ExpertEngineMixin:
     
 class Engine(AttentionEngineMixin, ExpertEngineMixin):
 
-    def __init__(self, 
-                 scheduler: Optional[Scheduler] = None, 
-                 executor: Optional[Executor] = None, 
-                 dispatcher: Optional[MuDispatcher] = None, 
-                 device_id: Optional[int] = None):
+    def __init__(self):
         
-        assert executor is None, "Executor is initialization should be done in setup_engine"
-        assert scheduler is None, "Scheduler is initialization should be done in setup_engine"
-        assert dispatcher is None, "Dispatcher is initialization should be done in setup_engine"
-        
-        self.device_id = device_id
+        self.device_id = None
         self.pool: Optional[MuPool] = None
         self.scheduler: Optional[Scheduler] = None
         self.dispatcher: MuDispatcher = None
@@ -441,6 +436,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.attn_dp_rank = None
         self.expert_ep_rank = None
+        
+        self.tokenizer_socket = None
+        self.detokenizer_socket = None
 
     @property
     def has_attn(self):
@@ -569,8 +567,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             engine_type: EngineType,
             model_config: ModelConfig,
             cache_config: CacheConfig = None,
-            rank: int = 0
+            rank: int = 0,
+            tokenizer_addr: str = None,
+            detokenizer_addr: str = None,
         ):
+        
         if self.device_id is not None:
             initialize_logger(f"engine{self.device_id}")
         else:
@@ -598,6 +599,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         if self.has_attn:
             self.attn_max_batch_size = model_config.max_batch_size_attn 
             
+            context = zmq.Context(2)
+            self.tokenizer_socket = context.socket(zmq.PULL)
+            self.tokenizer_socket.connect(tokenizer_addr)
+            
+            self.detokenizer_socket = context.socket(zmq.PUSH)
+            self.detokenizer_socket.connect(detokenizer_addr)
+        
         if self.has_expert:
             self.expert_max_batch_size = model_config.max_batch_size_expert
         
@@ -708,6 +716,27 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             return self.process_batch_expert(meta_c, input_tensor)
         else:
             assert False, "Invalid batch metadata"
+            
+    def recv_new_request(self):
+        try:
+            new_request: TokenizedRequest = self.tokenizer_socket.recv_pyobj(zmq.NOBLOCK)
+            meta = BatchMetadata(
+                shape=[1, self.model_config.hidden_size],
+                dtype="bfloat16",
+                layer_id=0,
+                req_ids=[new_request.req_id],
+                exp_ids=[0],
+                topk_weights=[1.0],
+                attn_dp_ranks=[self.attn_dp_rank],
+                init_prefill_lens=[new_request.init_prefill_len],
+                max_output_lens=[new_request.max_output_len],
+            )
+            batch: TokenBatch = TokenBatch_C()
+            batch.data = torch.rand((1, self.model_config.hidden_size), dtype=torch.bfloat16, device=self.device)
+            batch.metadata = meta.to_c()
+            self.pool.put_batch(batch)
+        except zmq.Again:
+            pass
 
     @torch.inference_mode()
     def single_module_loop(self):
@@ -721,6 +750,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self._step_start_timestamp_ms = time_ms()
         while not self.end_flag:
             self._timer.start("schedule")
+            self.recv_new_request()
             batch_info = self.scheduler.schedule()
             if batch_info.data is None:
                 if not prev_schedule_empty:
@@ -869,7 +899,7 @@ class DummySampler:
 class SamplerEngine(Engine):
     
     def __init__(self):
-        super().__init__(None, None, None, SAMPLER_DEV_ID)
+        super().__init__()
         self.sampler: Sampler = None
         
     def init_core(self, core_args: InitCoreArgs):
@@ -914,7 +944,7 @@ class SamplerEngine(Engine):
 class TokenizerEngine(Engine):
     
     def __init__(self):
-        super().__init__(None, None, None, TOKENIZER_DEV_ID)
+        super().__init__()
         self.tokenizer: Tokenizer = None
         self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
         

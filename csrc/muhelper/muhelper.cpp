@@ -384,6 +384,7 @@ void MuPool::put_batch(TokenBatch batch) {
     // CAREFUL USE:
     // This is only used by sampler to directly put a batch into the first attention layer.
     batch.data = batch.data.clone().detach();
+    batch.metadata->batch_tag = BatchTag::TOKENIZER;
     this->process_batch(batch.data, batch.metadata);
 }
 
