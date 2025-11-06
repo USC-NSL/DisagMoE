@@ -1,5 +1,4 @@
 from disagmoe.config import ModelConfig
-from disagmoe.frontend.adapter import NcclGroupChannel
 from disagmoe.utils.logger import new_logger
 
 import torch
@@ -10,7 +9,6 @@ from torch import Tensor
 _logger = new_logger("dist")
 
 _tp_model_config: ModelConfig = None
-_channel: NcclGroupChannel = None
 
 '''
 Consider cleanup the unused tp code below
@@ -18,10 +16,6 @@ Consider cleanup the unused tp code below
 def set_tensor_model_parallel_config(model_config: ModelConfig):
     global _tp_model_config
     _tp_model_config = model_config
-    
-def set_tensor_model_parallel_channel(channel: NcclGroupChannel):
-    global _channel
-    _channel = channel
 
 def get_tensor_model_parallel_rank() -> int:
     return _tp_model_config.rank

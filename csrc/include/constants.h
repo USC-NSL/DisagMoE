@@ -21,14 +21,6 @@ const int UCXQ_OFFSET_BASE = 16;
 #define EOS_TOKEN_ID 2
 #endif
 
-#ifndef TOKENIZER_DEV_ID
-#define TOKENIZER_DEV_ID 81
-#endif
-
-#ifndef SAMPLER_DEV_ID
-#define SAMPLER_DEV_ID 82
-#endif
-
 #ifndef TEMP_DIR
 #define TEMP_DIR "/tmp/disagmoe/"
 #endif

@@ -53,23 +53,14 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = in_device_ids[i];
         Channel_t channel{};
-        if (is_embedding_node(peer_id)) {
-            if (skip_embedding) {
-                continue;
-            }
-            const auto &make_embed = disagmoe::embedding_channel_factory();
-            channel = make_embed(local_id, peer_id, /*is_sender=*/ false,
-                is_attn ? local_attn_dp_rank : 0);
+        if (peer_id == local_id) {
+            channel = create_local_channel(local_id);
+            local_channel = channel;
         } else {
-            if (peer_id == local_id) {
-                channel = create_local_channel(local_id);
-                local_channel = channel;
-            } else {
-                auto nccl_id = in_nccl_ids.at(peer_id);
-                channel = create_channel(local_id, peer_id, 
-                    convert_to_nccl_uid((char*) nccl_id.c_str())
-                );
-            }
+            auto nccl_id = in_nccl_ids.at(peer_id);
+            channel = create_channel(local_id, peer_id, 
+                convert_to_nccl_uid((char*) nccl_id.c_str())
+            );
         }
         in_channels.push_back(channel);
         INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
@@ -80,21 +71,13 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     for (size_t i = 0; i < n_out; i ++) {
         auto peer_id = out_device_ids[i];
         Channel_t channel{};
-        if (is_embedding_node(peer_id)) {
-            if (skip_embedding) {
-                continue;
-            }
-            const auto &make_embed = disagmoe::embedding_channel_factory();
-            channel = make_embed(local_id, peer_id, /*is_sender=*/ true, /*rank=*/ 0);
+        if (peer_id == local_id) {
+            channel = local_channel;
         } else {
-            if (peer_id == local_id) {
-                channel = local_channel;
-            } else {
-                auto nccl_id = out_nccl_ids.at(peer_id);
-                channel = create_channel(local_id, peer_id, 
-                    convert_to_nccl_uid((char*) nccl_id.c_str())
-                );
-            }
+            auto nccl_id = out_nccl_ids.at(peer_id);
+            channel = create_channel(local_id, peer_id, 
+                convert_to_nccl_uid((char*) nccl_id.c_str())
+            );
         }
         out_channels.push_back(channel);
         INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
