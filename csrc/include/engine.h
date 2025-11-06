@@ -6,7 +6,6 @@
 #include "pool.h"
 #include "dispatcher.h"
 #include "scheduler.h"
-#include "embedding.h"
 #include "comm.h"
 
 using std::vector;
@@ -47,20 +46,5 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
 );
 
 void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher);
-
-Sampler_t init_sampler(
-    int device_id,
-    ParallelConfig cfg,
-    const vector<int> &in_device_ids,
-    const vector<int> &out_device_ids,
-    const vector<ChannelInfo> &out_channel_infos
-);
-
-Tokenizer_t init_tokenizer(
-    int device_id,
-    ParallelConfig cfg,
-    const vector<int> &out_device_ids,
-    const vector<ChannelInfo> &out_channel_infos
-);
 
 void set_hosts(int process_id, const std::map<int, std::string>& device_id_2_ip);

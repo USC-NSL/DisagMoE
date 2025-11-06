@@ -3,7 +3,6 @@
 #include "comm.h"
 #include "logging.h"
 #include "scheduler.h"
-#include "embedding.h"
 #include "constants.h"
 #include "utils.hpp"
 #include "datatypes.hpp"

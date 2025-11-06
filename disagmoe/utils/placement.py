@@ -33,8 +33,6 @@ class ModelPlacement:
     
     # device_id -> list(layer_id, expert_id)
     expert: Dict[int, List[Tuple[int, int]]]
-    tokenizer: int
-    sampler: int
     
     # for the devices in a TP group, only the driver's device_id is stored in the edges
     in_device_ids: Dict[int, List[int]]
@@ -121,8 +119,6 @@ class ClusterConfig:
     n_node: int
     n_gpu: int
     gpu_cap: float = 40 * GiB
-    id_tokenizer: int = -1
-    id_sampler: int = -1
 
 class PlacementBase:
     
@@ -162,11 +158,7 @@ class PlacementBase:
                 exp_devs[layer_id].append(dev)
         
         for layer_id in range(self.num_layers):
-            if layer_id == 0:
-                # tokenizer to the first layer
-                for dev in attn_devs[layer_id]:
-                    place.add_edge(place.tokenizer, dev)
-            else:
+            if layer_id > 0:
                 # last exp to current attn
                 for dev in attn_devs[layer_id]:
                     for prev_dev in exp_devs[layer_id - 1]:
@@ -181,10 +173,6 @@ class PlacementBase:
         for dev in attn_devs[0]:
             for prev_dev in exp_devs[self.num_layers - 1]:
                 place.add_edge(prev_dev, dev)
-                
-        # connect first attention layer with sampler
-        for dev in attn_devs[0]:
-            place.add_edge(dev, place.sampler)
                     
         return place
         
@@ -231,25 +219,19 @@ class SinglePlacement(PlacementBase):
     @override
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         # 1 attn, n_expert experts
-        # tokenizer and sampler do not use gpu.
         assert n_layer * (self.rep_attn + n_expert) <= n_node * n_gpu_per_node
         # not considering gpu_cap yet
         attn = {}
         expert = {}
         node_id = Counter()
-        i_tokenizer = self.cluster_config.id_tokenizer
-        i_sampler = self.cluster_config.id_sampler
         pg = ModelPlacement(
-            attn, expert, i_tokenizer, i_sampler, {}, {}
+            attn, expert, {}, {}
         )
-        i_last_experts = [i_tokenizer]
         for i in range(n_layer):
             attns = []
             for j in range(self.rep_attn):
                 i_attn = next(node_id)
                 attn[i_attn] = [i]
-                # for i_expert in i_last_experts:
-                #     pg.add_edge(i_expert, i_attn)
                 attns.append(i_attn)
             
             i_last_experts = []
@@ -257,10 +239,7 @@ class SinglePlacement(PlacementBase):
                 i_expert = next(node_id)
                 i_last_experts.append(i_expert)
                 expert[i_expert] = [(i, j)]
-                # for i_attn in attns:
-                #     pg.add_edge(i_attn, i_expert)
-                # if i == n_layer - 1:
-                #     pg.add_edge(i_expert, i_sampler)
+
         assert len(attn) == n_layer * self.rep_attn
         assert len(pg.in_device_ids) == n_layer * (self.rep_attn + n_expert) + 1
         assert len(pg.out_device_ids) == n_layer * (self.rep_attn + n_expert) + 1
@@ -271,11 +250,8 @@ class InterleavePlacement(PlacementBase):
     """
     The structure of the placement is as follows:
     ```
-    Tokenizer
     (Attn_0, Attn_{n_layer // n_group}, ...), (Expert_0, Expert_{n_layer // n_group}, ...)
     (Attn_1, Attn_{1 + n_layer // n_group}, ...), (Expert_1, Expert_{1 + n_layer // n_group}, ...)
-    ...
-    Embedding
     ```
     """
     
@@ -283,7 +259,6 @@ class InterleavePlacement(PlacementBase):
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         tp_size = self.model_config.tp_size
         
-        # tokenizer & sampler do not use GPU.
         assert n_node * n_gpu_per_node % (self.model_config.ep_size + tp_size) == 0
         n_group = n_node * n_gpu_per_node // (self.model_config.ep_size + tp_size)
 
@@ -302,8 +277,6 @@ class InterleavePlacement(PlacementBase):
                 exp_dev = next(node_iter)
                 layer_exp_devs.extend([exp_dev] * self.model_config.num_experts_per_rank)
             exp_devs.append(layer_exp_devs)
-        tokenizer = self.cluster_config.id_tokenizer
-        sampler = self.cluster_config.id_sampler
         
         attn = {attn_dev: [] for attn_dev in attn_devs}
         expert = {}
@@ -312,7 +285,7 @@ class InterleavePlacement(PlacementBase):
                 expert[exp_dev] = []
         
         pg = ModelPlacement(
-            attn, expert, tokenizer, sampler, {}, {}, device_groups
+            attn, expert, {}, {}, device_groups
         )
         
         for i in range(n_layer):
@@ -427,7 +400,7 @@ class PipelinePlacement(PlacementBase):
                     experts[dev_id].append((l, e))
         
         return ModelPlacement(
-            attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, {}, {},
+            attns, experts, {}, {},
             device_groups=device_groups
         )
     
@@ -486,7 +459,7 @@ class ColocatePlacement(PlacementBase):
         }
         
         return ModelPlacement(
-            attns, experts, self.cluster_config.id_tokenizer, self.cluster_config.id_sampler, 
+            attns, experts, 
             {}, {}, device_groups=device_groups, is_hybrid=True
         )
         

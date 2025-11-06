@@ -7,9 +7,9 @@ import zmq
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher, Sampler, Tokenizer
+from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher
 from disagmoe.frontend.datatypes import (AttentionForwardBatch, BatchMetadata, TokenBatch,
-                                         SloStat, TraceContext, SamplerStepInfo, BatchDecodeResult, TokenizedRequest)
+                                         TraceContext, BatchDecodeResult, TokenizedRequest)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import initialize_logger, get_logger
@@ -19,7 +19,7 @@ from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
-from disagmoe.models.distributed import set_tensor_model_parallel_config, set_tensor_model_parallel_channel, group_sync
+from disagmoe.models.distributed import set_tensor_model_parallel_config
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -32,7 +32,7 @@ from torch import Tensor
 import torch.distributed as dist
 
 from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
-                        start_engine, init_sampler, init_tokenizer, set_hosts,
+                        start_engine, set_hosts,
                         TokenBatch as TokenBatch_C,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
@@ -41,8 +41,6 @@ class EngineType(enum.Enum):
     ATTENTION = enum.auto()
     EXPERT = enum.auto()
     HYBRID = enum.auto()
-    TOKENIZER = enum.auto()
-    SAMPLER = enum.auto()
     
 class AttentionEngineMixin:
     
@@ -895,94 +893,3 @@ class DummySampler:
                     
     def check_end(self, req_id) -> bool:
         return self.output_len[req_id] >= self.req_max_output_len[req_id]
-
-class SamplerEngine(Engine):
-    
-    def __init__(self):
-        super().__init__()
-        self.sampler: Sampler = None
-        
-    def init_core(self, core_args: InitCoreArgs):
-        self.sampler = init_sampler(
-            self.device_id,
-            ParallelConfig.from_c(
-                1, 1, self.model_config.dp_size, 1, []
-            ),
-            core_args.in_device_ids,
-            core_args.out_device_ids,
-            [info.to_c() for info in core_args.out_channel_infos],
-        )
-        get_logger().info("inited sampler")
-        self._t_start = time.time()
-        
-    def start(self):
-        self.sampler.start()
-        
-    def fetch_finished_results(self) -> List[SloStat]:
-        # convert c++ vector to python list
-        results = self.sampler.fetch_finished_slo_stats()
-        # if len(results) > 0:
-        #     get_logger().info(f"Python sampler: fetch_finished_results: {len(results)}")
-        return [SloStat.from_c(r) for r in results]
-    
-    def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
-        return [SamplerStepInfo.from_c(info) for info in self.sampler.fetch_step_infos()]
-    
-    def wait_for_n_requests(self, n_request) -> Dict[int, SloStat]:
-        result = self.sampler.wait_slo_stats(n_request)
-        while len(result) == 0:
-            # NOTE(hogura|20241022): wait_slo_stats will return len=0 until #request==n_reqquest
-            result = self.sampler.wait_slo_stats(n_request)
-        new_res = {
-            req_id: SloStat.from_c(stat) for req_id, stat in result.items()
-        }
-        return new_res
-    
-    def reset(self):
-        self.sampler.reset()
-        
-class TokenizerEngine(Engine):
-    
-    def __init__(self):
-        super().__init__()
-        self.tokenizer: Tokenizer = None
-        self.t_submitted: Dict[int, int] = {}  # req_id -> timestamp when the request was submitted
-        
-    def process_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
-        # req_id (or seq_id) must > 0
-        assert req_id > 0
-        tensor_shape = (1, self.model_config.hidden_size)
-        # TODO(hogura|20241008): add a py-tokenizer here
-        x = torch.zeros(tensor_shape).type(self.model_config.dtype)
-        # get_logger().info(f"tokenizer put request {req_id}")
-        self.tokenizer.put_request(req_id, init_prefill_len, max_output_len, x, dp_rank)
-        self.t_submitted[req_id] = time.time()
-        
-    def put_single_request(self, req_id: int, init_prefill_len: int, max_output_len: int, dp_rank: int):
-        self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
-        
-    def put_requests(self, req_ids: List[int], init_prefill_lens: List[int], max_output_lens: List[int], dp_ranks: List[int]):
-        for req_id, init_prefill_len, max_output_len, dp_rank in zip(req_ids, init_prefill_lens, max_output_lens, dp_ranks):
-            self.process_request(req_id, init_prefill_len, max_output_len, dp_rank)
-        
-    def fetch_submitted_time(self):
-        return self.t_submitted
-        
-    def init_core(self, core_args: InitCoreArgs):
-        print(f"tokenizer init_core: {core_args}")
-        
-        self.tokenizer = init_tokenizer(
-            self.device_id,
-            ParallelConfig.from_c(
-                1, 1, self.model_config.dp_size, 1, []
-            ),
-            core_args.out_device_ids,
-            [info.to_c() for info in core_args.out_channel_infos],
-        )
-        get_logger().info("inited tokenizer")
-    
-    def start(self):
-        self.tokenizer.start()
-        
-    def reset(self):
-        self.t_submitted.clear()

@@ -152,7 +152,6 @@ MuAttnDispatcher::MuAttnDispatcher(
     // get expert channels
     for (int i = 0; i < channels.size(); i ++) {
         if (out_channel_infos[i].expert_ids.empty()) {
-            this->sampler_channel_id = i;
             continue;
         }
         for (auto exp_id: out_channel_infos[i].expert_ids) {
@@ -169,19 +168,6 @@ inline int MuAttnDispatcher::_get_rank(int exp_layer_id, int exp_id) const {
 
 inline int MuAttnDispatcher::_encode(int exp_layer_id, int exp_id) const {
     return exp_layer_id * this->max_exp_id + _get_rank(exp_layer_id, exp_id);
-}
-
-void MuAttnDispatcher::send_to_sampler(TokenBatch batch) {
-    tx_range _{"MuAttnDispatcher::send_to_sampler"};
-    // DMOE_LOG(INFO) << "attn " << this->device_id << " sending a batch to sampler: " << *batch.metadata << LEND;
-    ASSERT(batch.data.sizes()[0] == batch.metadata->shape[0]);
-    ASSERT(batch.data.sizes()[1] == batch.metadata->shape[1]);
-    // DMOE_LOG(WARNING) << "attn " << this->device_id << " sending a batch to sampler " << this->sampler_channel_id << LEND;
-    this->_send_batch(
-        this->sampler_channel_id,
-        (uintptr_t) batch.data.data_ptr(),
-        *batch.metadata
-    );
 }
 
 void MuAttnDispatcher::_send_once(TokenBatch batch) {
@@ -382,7 +368,7 @@ void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &me
 
 void MuPool::put_batch(TokenBatch batch) {
     // CAREFUL USE:
-    // This is only used by sampler to directly put a batch into the first attention layer.
+    // This is only used to directly put a batch into the first attention layer.
     batch.data = batch.data.clone().detach();
     batch.metadata->batch_tag = BatchTag::TOKENIZER;
     this->process_batch(batch.data, batch.metadata);

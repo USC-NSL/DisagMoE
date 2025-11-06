@@ -7,24 +7,14 @@ from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
     TokenBatch as TokenBatch_C,
-    SloStat as SloStat_C,
     TraceContext as TraceContext_C,
-    SamplerStepInfo as SamplerStepInfo_C,
 )
-
-class BatchTag(Enum):
-    ATTENTION = "ATTENTION"
-    EXPERT = "EXPERT"
-    TOKENIZER = "TOKENIZER"
 
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
     attn_dp_rank: int
-    
-    def is_sampler_channel(self) -> bool:
-        ...
         
     def to_c(self) -> "ChannelInfo_C":
         return ChannelInfo_C(
@@ -213,17 +203,6 @@ class SloStat:
     t_prefill_std: float
     t_decode: float
     t_tokens: List[float]
-    
-    @staticmethod
-    def from_c(stat_c: "SloStat_C") -> "SloStat":
-        ms_to_s = 1e-3
-        return SloStat(
-            stat_c.req_id,
-            stat_c.t_prefill * ms_to_s,
-            stat_c.t_prefill_std * ms_to_s,
-            (stat_c.t_decode - stat_c.t_prefill) * ms_to_s,
-            [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
-        )
         
     def post_process(self) -> None:
         ms_to_s = 1e-3

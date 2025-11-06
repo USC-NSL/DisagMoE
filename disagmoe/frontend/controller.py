@@ -7,7 +7,7 @@ import asyncio
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group, InitCoreArgs
-from disagmoe.frontend.engine import Engine, SamplerEngine, TokenizerEngine, EngineType
+from disagmoe.frontend.engine import Engine, EngineType
 from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, SamplerStepInfo
 from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
@@ -51,12 +51,11 @@ class Controller:
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
         self.n_gpu_per_worker = 1
+        self.n_cpu_per_worker = 3
         self.workers = []
         self.attn_workers = []
         self.device_ids = []
         self._logger = new_logger("controller")
-        self.sampler_worker = None
-        self.tokenizer_worker = None
         self._profile_enabled = False
         self.req_id_generator = Counter(start=1)
         self.in_flight_reqs = set()
@@ -68,7 +67,7 @@ class Controller:
         
         self.dp_scheduler: DPScheduler = None
         
-        init_cluster(self.n_worker, self.n_gpu_per_worker)
+        init_cluster(self.n_worker, self.n_cpu_per_worker, self.n_gpu_per_worker)
         self._create_engines()
         
     def init_tokenizer(self):
@@ -86,55 +85,28 @@ class Controller:
         device_count = {}
         node_ids = {}
         
-        embedding_ids = [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
-        
         for bundle_id, bundle in enumerate(pg.bundle_specs):
-            n_cpus, n_gpus = bundle.get("CPU"), bundle.get("GPU")
-            if n_gpus is None:
-                n_gpus = 0
-            if n_cpus is None:
-                n_cpus = 0
-                
-            n_gpus, n_cpus= int(n_gpus), int(n_cpus)
+            n_cpus, n_gpus = int(bundle.get("CPU")), int(bundle.get("GPU"))
             
             ray_scheduling_strategy = PlacementGroupSchedulingStrategy(
                 placement_group=pg,
                 placement_group_capture_child_tasks=True,
                 placement_group_bundle_index=bundle_id,
             )
-            worker_cls = Engine
-            if n_gpus == 0:
-                worker_cls = TokenizerEngine if self.tokenizer_worker is None else SamplerEngine
-                
+
             workers_env= {
                 "env_vars": ENV_VARS,
             }
+            
             if self.enable_nsys:
                 workers_env["nsight"] = "default"
             
-            if n_gpus > 0:
-                worker = ray.remote(
-                    num_cpus=n_cpus,
-                    num_gpus=n_gpus,
-                    scheduling_strategy=ray_scheduling_strategy,
-                    runtime_env=workers_env,
-                )(worker_cls).remote()
-            else:
-                worker = ray.remote(
-                    num_cpus=n_cpus,
-                    num_gpus=n_gpus,
-                    scheduling_strategy=ray_scheduling_strategy,
-                    runtime_env=workers_env,
-                )(worker_cls).remote()
-            
-            if n_gpus == 0:
-                if self.tokenizer_worker is None:
-                    self.tokenizer_worker = worker
-                    worker.set_device_id.remote(TOKENIZER_DEV_ID)
-                else:
-                    self.sampler_worker = worker
-                    worker.set_device_id.remote(SAMPLER_DEV_ID)
-                continue
+            worker = ray.remote(
+                num_cpus=n_cpus,
+                num_gpus=n_gpus,
+                scheduling_strategy=ray_scheduling_strategy,
+                runtime_env=workers_env,
+            )(Engine).remote()
             
             worker_ip = ray.get(worker.get_node_ip.remote())
             cur_device_on_worker = device_count.get(worker_ip, 0)
@@ -148,15 +120,16 @@ class Controller:
             
             self.workers.append(worker)
             self.device_ids.append(device_id)
+            
         self._logger.info(f"workers: {len(self.workers), self.device_ids, node_ids}")
     
     @property
     def all_workers(self):
-        return self.workers + [self.sampler_worker, self.tokenizer_worker]
+        return self.workers
     
     @property
     def all_device_ids(self):
-        return self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
+        return self.device_ids
     
     def _get_nccl_ids(
             self, model_place: ModelPlacement
@@ -166,11 +139,7 @@ class Controller:
         in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
         out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
         for i, js in model_place.out_device_ids.items():
-            if i in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
-                continue
             for j in js:
-                if j in [TOKENIZER_DEV_ID, SAMPLER_DEV_ID]:
-                    continue
                 uid = get_nccl_unique_id()
                 in_nccl_ids[j][i] = uid
                 out_nccl_ids[i][j] = uid
@@ -238,8 +207,6 @@ class Controller:
         ])
         
         def determine_worker_type(device_id: int) -> EngineType:
-            if device_id in [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]:
-                return EngineType.SAMPLER if device_id == SAMPLER_DEV_ID else EngineType.TOKENIZER
             if model_place.is_hybrid:
                 return EngineType.HYBRID
             return EngineType.ATTENTION if model_place.has_attn(device_id) else EngineType.EXPERT
@@ -268,17 +235,6 @@ class Controller:
             )
         ray.get(tasks)
         
-        # setup tokenizer & sampler
-        ray.get([
-            worker.setup_engine.remote(
-                worker_type,
-                model_config=model_config
-            )
-                for worker, worker_type in zip(
-                    [self.tokenizer_worker, self.sampler_worker],
-                    [EngineType.TOKENIZER, EngineType.SAMPLER]
-                )
-        ])
         
         # Broadcast transport selection to all workers before any C++ factory use.
         # Re-parse the driver's CLI here to obtain the --transport value.
@@ -291,7 +247,6 @@ class Controller:
             transport_name = 'zmq'
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
-        # ray.get(self.sampler_worker.set_sampling_params.remote(self.min_output_len, self.max_output_len))
         
         # init core
         tasks = [
@@ -322,10 +277,7 @@ class Controller:
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                     expert_wise_schedule=self.expert_wise_schedule,
                 )
-            ) for worker, device_id in zip(
-                self.workers + [self.sampler_worker, self.tokenizer_worker], 
-                self.device_ids + [SAMPLER_DEV_ID, TOKENIZER_DEV_ID]
-            )
+            ) for worker, device_id in zip(self.workers, self.device_ids)
         ]
         ray.get(tasks)
         self._logger.info("launched all tasks")
@@ -343,8 +295,7 @@ class Controller:
         ray.get(tasks)
         
     def start_engine(self, non_blocking: bool = False):
-        tasks = [worker.start.remote() for worker in self.workers + \
-                    [self.sampler_worker, self.tokenizer_worker]]
+        tasks = [worker.start.remote() for worker in self.workers]
         if not non_blocking:
             ray.get(tasks)
             print(f"all workers started")
@@ -418,7 +369,7 @@ class Controller:
     #     ])
     
     def reset_workers(self):
-        tasks = [worker.reset.remote() for worker in self.workers + [self.sampler_worker]]
+        tasks = [worker.reset.remote() for worker in self.workers] + [self.detokenizer.reset.remote()]
         ray.get(tasks)
     
     def stop_workers(self):
