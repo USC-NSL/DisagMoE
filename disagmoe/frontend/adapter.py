@@ -27,28 +27,6 @@ class MuPool:
     
     def put_batch(self, batch: TokenBatch) -> None:
         ...
-
-class Tokenizer:
-    
-    def put_request(self, req_id: int, init_prefill_len: int, max_output_len: int, tensor: torch.Tensor, dp_rank: int) -> None:
-        ...
-        
-    def start(self):
-        ...
-        
-class Sampler:
-    
-    def start(self):
-        ...
-        
-    def wait_slo_stats(self, n_request: int) -> Dict[int, SloStat]:
-        ...
-    
-    def fetch_finished_slo_stats(self) -> List[SloStat]:
-        ...
-        
-    def reset(self) -> None:
-        ...
         
 class BlockManager:
     
@@ -83,12 +61,4 @@ class BlockManager:
         ...
         
     def prepare_block_table(self, meta_c: BatchMetadata, decode_seq_lens: List[int]) -> torch.Tensor:
-        ...
-        
-class NcclGroupChannel:
-    
-    def all_reduce(self, tensor_buf: int, shape: List[int]) -> None:
-        ...
-        
-    def all_gather(self, tensor_buf: int, shape: List[int], dim: int = -1) -> None:
         ...
