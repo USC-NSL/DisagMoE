@@ -163,17 +163,17 @@ struct TokenBatch {
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
 
+        int n = tokens.size();
+        int topk = tokens[0].count();
+
         auto meta = BatchMetadata::pack_topk_tokens(layer_id, tokens);
 
         torch::Tensor gathered_topk_tensor = torch::empty(
-            {meta->num_tokens(), meta->token_hidden_dim()}, 
+            {n * topk, meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
         // NOTE: tensor memory layout: [num_tokens, topk] flattened as 1D tensor
-        std::vector<uintptr_t> src_ptrs(meta->num_tokens());
-
-        int n = tokens.size();
-        int topk = tokens[0].count();
+        std::vector<uintptr_t> src_ptrs(n * topk);
 
         for (int i = 0; i < n; i++) {
             for (int k = 0; k < topk; k++) {

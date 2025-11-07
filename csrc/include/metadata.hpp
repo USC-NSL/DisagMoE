@@ -236,8 +236,6 @@ struct BatchMetadata {
         std::sort(
             rank.begin(), rank.end(),
             [&](const int i, const int j) {
-                ASSERT (0 <= i && i < req_ids.size());
-                ASSERT (0 <= j && j < req_ids.size());
                 if (attn_dp_ranks[i] != attn_dp_ranks[j]) {
                     return attn_dp_ranks[i] < attn_dp_ranks[j];
                 }
@@ -479,6 +477,7 @@ inline batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std:
         attn_dp_ranks.emplace_back(token.attn_dp_rank);
         if (token.init_prefill_len == -1) {
             new_decode_tokens ++;
+            new_init_prefill_lens.emplace_back(-1);
         } else {
             new_prefill_tokens ++;
             new_prefill_seqs ++;

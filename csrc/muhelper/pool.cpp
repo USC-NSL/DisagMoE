@@ -10,7 +10,7 @@ UnifiedPool::UnifiedPool(
     MuPool(layer_ids, device_id, channels, num_groups), top_k(top_k) {
     this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size() + 1);
     if (top_k > 1) {
-        this->topk_pools = std::vector<TokenTopKPool>(layer_ids.size(), TokenTopKPool(top_k));
+        this->topk_pools = std::vector<TokenTopKPool>(layer_ids.size() + 1, TokenTopKPool(top_k));
     }
 }
 
@@ -64,7 +64,7 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     if (meta->is_tokenizer()) {
         this->process_attn_batch(tensor, meta);
     } else if (meta->is_expert()) {
-        if (this->top_k > 1) {
+        if (this->top_k > 1 && meta->layer_id > 0) {
             this->process_attn_batch_topk(tensor, meta);
         } else {
             this->process_attn_batch(tensor, meta);

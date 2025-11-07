@@ -670,6 +670,13 @@ std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
 
 void TokenTopKPool::put_batch(TokenBatch batch) {
     auto meta = batch.metadata;
+    ASSERT_MSG(meta.get() != nullptr, "Metadata is nullptr");
+    ASSERT_MSG(batch.data.sizes()[0] == meta->num_tokens(), "Batch data shape mismatch");
+    ASSERT_MSG(batch.data.sizes()[1] == meta->token_hidden_dim(), "Batch data shape mismatch");
+    ASSERT_MSG(meta->num_tokens() == meta->req_ids.size(), "Batch data shape mismatch");
+    ASSERT_MSG(meta->num_tokens() == meta->attn_dp_ranks.size(), "Batch data shape mismatch");
+    ASSERT_MSG(meta->num_tokens() == meta->init_prefill_lens.size(), "Batch data shape mismatch");
+
     int n = meta->num_tokens();
 
     // DMOE_LOG(INFO) << "TokenTopKPool putting batch: " << *meta << LEND;
