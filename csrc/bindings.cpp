@@ -43,19 +43,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("schedule", &Scheduler::schedule);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
-        .def("put", &MuDispatcher::put)
-        .def("send_to_sampler", &MuDispatcher::send_to_sampler);
-
-    py::class_<Tokenizer, std::shared_ptr<Tokenizer>>(m, "Tokenizer")
-        .def("put_request", &Tokenizer::put_request)
-        .def("start", &Tokenizer::start);
-
-    py::class_<Sampler, std::shared_ptr<Sampler>>(m, "Sampler")
-        .def("start", &Sampler::start)
-        .def("wait_slo_stats", &Sampler::wait_slo_stats)
-        .def("fetch_finished_slo_stats", &Sampler::fetch_finished_slo_stats)
-        .def("fetch_step_infos", &Sampler::fetch_step_infos)
-        .def("reset", &Sampler::reset);
+        .def("put", &MuDispatcher::put);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())
@@ -74,18 +62,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("dp", &ParallelConfig::dp)
         .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
         .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
-
-    REGISTER_STRUCT(SloStat)
-        .def_readwrite("req_id", &SloStat::req_id)
-        .def_readwrite("t_prefill", &SloStat::t_prefill)
-        .def_readwrite("t_prefill_std", &SloStat::t_prefill_std)
-        .def_readwrite("t_decode", &SloStat::t_decode)
-        .def_readwrite("t_tokens", &SloStat::t_tokens);
-
-    REGISTER_STRUCT(SamplerStepInfo)
-        .def_readwrite("num_tokens", &SamplerStepInfo::num_tokens)
-        .def_readwrite("time_stamp", &SamplerStepInfo::time_stamp);
-
+        
     py::class_<BatchMetadata, std::shared_ptr<BatchMetadata>>(m, "BatchMetadata")
         .def(py::init<>())
         .def_readwrite("shape", &BatchMetadata::shape)
@@ -120,47 +97,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def(py::init<>())
         .def_readwrite("data", &TokenBatch::data)
         .def_readwrite("metadata", &TokenBatch::metadata);
-
-    // py::class_<AttentionBatchMetadata, std::shared_ptr<AttentionBatchMetadata>>(m, "AttentionBatchMetadata")
-    //     .def(py::init<>())
-    //     .def_readwrite("shape", &AttentionBatchMetadata::shape)
-    //     .def_readwrite("dtype", &AttentionBatchMetadata::dtype)
-    //     .def_readwrite("layer_id", &AttentionBatchMetadata::layer_id)
-    //     .def_readwrite("seq_ids", &AttentionBatchMetadata::seq_ids)
-    //     .def_readwrite("num_prefill_tokens", &AttentionBatchMetadata::num_prefill_tokens)
-    //     .def_readwrite("num_prefill_seqs", &AttentionBatchMetadata::num_prefill_seqs)
-    //     .def_readwrite("num_decode_tokens", &AttentionBatchMetadata::num_decode_tokens)
-    //     .def_readwrite("init_prefill_lens", &AttentionBatchMetadata::init_prefill_lens)
-    //     .def_readwrite("expert_ids", &AttentionBatchMetadata::expert_ids)
-    //     .def_readwrite("attn_dp_ranks", &AttentionBatchMetadata::attn_dp_ranks)
-    //     .def_readwrite("topk_weights", &AttentionBatchMetadata::topk_weights)
-    //     .def_readwrite("max_output_lens", &AttentionBatchMetadata::max_output_lens)
-    //     .def("shrink_topk", &AttentionBatchMetadata::shrink_topk)
-    //     .def("to_metadata", &AttentionBatchMetadata::to_metadata);
-
-    // py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
-    //     .def(py::init<>())
-    //     .def_readwrite("batch_tag", &Metadata::batch_tag)
-    //     .def_readwrite("shape", &Metadata::shape)
-    //     .def_readwrite("dtype", &Metadata::dtype)
-    //     .def_readwrite("layer_id", &Metadata::layer_id)
-    //     .def_readwrite("req_ids", &Metadata::req_ids)
-    //     .def_readwrite("exp_ids", &Metadata::exp_ids)
-    //     .def_readwrite("attn_dp_ranks", &Metadata::attn_dp_ranks)
-    //     .def_readwrite("init_prefill_lens", &Metadata::init_prefill_lens)
-    //     .def_readwrite("topk_weights", &Metadata::topk_weights)
-    //     .def("num_tokens", &Metadata::num_tokens)
-    //     .def("get_expert_id", &Metadata::get_expert_id)
-    //     .def("step_layer", &Metadata::step_layer)
-    //     .def("update_exp_ids", &Metadata::update_exp_ids)
-    //     .def("permute_token_infos", &Metadata::permute_token_infos)
-    //     .def("get_expert_batch_sizes", &Metadata::get_expert_batch_sizes)
-    //     .def("get_expert_batch_sizes_cuda", &Metadata::get_expert_batch_sizes_cuda)
-    //     .def("sort_by_prefill_order", &Metadata::sort_by_prefill_order)
-    //     .def("set_finish_signal", &Metadata::set_finish_signal)
-    //     .def("select_indices", &Metadata::select_indices)
-    //     .def("duplicate_topk", &Metadata::duplicate_topk)
-    //     .def("shrink_topk", &Metadata::shrink_topk);
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)
@@ -212,8 +148,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_FUNC(init_disaggregated_engine);
     REGISTER_FUNC(init_unified_engine);
     REGISTER_FUNC(start_engine);
-    REGISTER_FUNC(init_sampler);
-    REGISTER_FUNC(init_tokenizer);
     REGISTER_FUNC(set_hosts);
 
     // Transport selection from Python (required before engine init)

@@ -22,9 +22,6 @@ class MuDispatcher:
         
     def put(self, batch: TokenBatch, rank: int):
         ...
-        
-    def send_to_sampler(self, batch: TokenBatch):
-        ...
 
 class MuPool:
     

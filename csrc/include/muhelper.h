@@ -74,7 +74,6 @@ public:
 
     void put(TokenBatch batch, int rank = 0);
 
-    virtual void send_to_sampler(TokenBatch batch) { ASSERT (false); }
 };
 
 
@@ -83,7 +82,6 @@ class MuAttnDispatcher: public MuDispatcher {
 protected:
     std::vector<int> exp_channels;
     int max_exp_id;
-    int sampler_channel_id;
 
     std::vector<std::vector<int>> _inner_expert_ranks;
 
@@ -99,8 +97,6 @@ public:
                      ParallelConfig cfg,
                      std::vector<Channel_t> channels={},
                      const std::vector<ChannelInfo> &out_channel_infos={});
-    
-    void send_to_sampler(TokenBatch batch) override;
 };
 
 class MuExpertDispatcher: public MuDispatcher {

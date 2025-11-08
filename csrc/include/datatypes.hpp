@@ -37,10 +37,6 @@ struct ChannelInfo {
                 int attn_dp_rank):
                 expert_ids(expert_ids), attn_layer_ids(attn_layer_ids), attn_dp_rank(attn_dp_rank)
     {}
-
-    inline bool is_sampler_channel() {
-        return expert_ids.empty() && attn_layer_ids.empty();
-    }
 };
 
 struct TokenMetadata {
@@ -93,15 +89,6 @@ struct TokenTopKInfo {
             << "init_prefill_len=" << token.init_prefill_len << "}";
         return out;
     }
-};
-
-struct SloStat {
-    int req_id;
-    clock_t t_prefill;  // time to all finished prefill tokens, in us
-    clock_t t_prefill_std; // the same as t_prefill, but use chrono instead of clock(), in miliseconds
-    clock_t t_decode;   // time to all finished decode tokens, in us
-
-    std::vector<clock_t> t_tokens;
 };
 
 struct ParallelConfig {

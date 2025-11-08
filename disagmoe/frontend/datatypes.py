@@ -7,24 +7,14 @@ from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
     TokenBatch as TokenBatch_C,
-    SloStat as SloStat_C,
     TraceContext as TraceContext_C,
-    SamplerStepInfo as SamplerStepInfo_C,
 )
-
-class BatchTag(Enum):
-    ATTENTION = "ATTENTION"
-    EXPERT = "EXPERT"
-    TOKENIZER = "TOKENIZER"
 
 @dataclass
 class ChannelInfo:
     expert_ids: List[Tuple[int, int]]
     attn_layer_ids: List[int]
     attn_dp_rank: int
-    
-    def is_sampler_channel(self) -> bool:
-        ...
         
     def to_c(self) -> "ChannelInfo_C":
         return ChannelInfo_C(
@@ -54,9 +44,9 @@ class BatchMetadata:
     max_output_lens: List[int]
     
     # Only used in attention batch - optional fields
-    num_prefill_seqs: Optional[int]
-    num_prefill_tokens: Optional[int]
-    num_decode_tokens: Optional[int]
+    num_prefill_seqs: Optional[int] = None
+    num_prefill_tokens: Optional[int] = None
+    num_decode_tokens: Optional[int] = None
     
     def is_attention(self) -> bool:
         ...
@@ -213,17 +203,13 @@ class SloStat:
     t_prefill_std: float
     t_decode: float
     t_tokens: List[float]
-    
-    @staticmethod
-    def from_c(stat_c: "SloStat_C") -> "SloStat":
+        
+    def post_process(self) -> None:
         ms_to_s = 1e-3
-        return SloStat(
-            stat_c.req_id,
-            stat_c.t_prefill * ms_to_s,
-            stat_c.t_prefill_std * ms_to_s,
-            (stat_c.t_decode - stat_c.t_prefill) * ms_to_s,
-            [(x - y) * ms_to_s for x, y in zip(stat_c.t_tokens[1:], stat_c.t_tokens[:-1])]
-        )
+        self.t_decode = (self.t_decode - self.t_prefill) * ms_to_s
+        self.t_prefill = self.t_prefill * ms_to_s
+        self.t_prefill_std = self.t_prefill_std * ms_to_s
+        self.t_tokens = [(x - y) * ms_to_s for x, y in zip(self.t_tokens[1:], self.t_tokens[:-1])]
         
 @dataclass
 class TraceContext:
@@ -252,4 +238,18 @@ class SamplerStepInfo:
             step_c.num_tokens,
             step_c.time_stamp
         )
-        
+
+@dataclass
+class TokenizedRequest:
+    
+    req_id: int
+    init_prefill_len: int
+    max_output_len: int
+    token_ids: List[int]
+
+@dataclass
+class BatchDecodeResult:
+    
+    req_ids: List[int]
+    token_ids: List[int]
+    is_eos: List[bool]
