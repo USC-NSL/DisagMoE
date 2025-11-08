@@ -10,6 +10,7 @@ from vllm.distributed import get_tensor_model_parallel_world_size
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
+from disagmoe.models.gate import ProfileDrivenGate
 from disagmoe.ops.memory import permute_tokens_cuda
 
 from vllm.model_executor.layers.quantization.base_config import (
@@ -91,8 +92,10 @@ class MoEAttention(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         params_dtype: Optional[torch.dtype] = None,
         prefix: str = "",
+        gate_profile_bytes: Optional[bytes] = None,
     ) -> None:
         super().__init__()
+        self.layer_id = layer_id
         self.hidden_size = hidden_size
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
@@ -155,14 +158,24 @@ class MoEAttention(nn.Module):
                               quant_config=quant_config,
                               use_direct_call=True,)
         
-        # Gate always runs at half / full precision for now.
-
-        self.gate = ReplicatedLinear(hidden_size,
-                                     num_experts,
-                                     bias=False,
-                                     params_dtype=params_dtype,
-                                     quant_config=None,
-                                     prefix=f"{prefix}.gate")
+        # Choose gating implementation based on whether a profile file is provided.
+        if gate_profile_bytes is None or len(gate_profile_bytes) == 0:
+            # Random gating
+            self.gate = ReplicatedLinear(hidden_size,
+                                         num_experts,
+                                         bias=False,
+                                         params_dtype=params_dtype,
+                                         quant_config=None,
+                                         prefix=f"{prefix}.gate")
+        else:
+            # Profile-driven gating
+            self.gate = ProfileDrivenGate(hidden_size,
+                                          num_experts,
+                                          bias=False,
+                                          params_dtype=params_dtype,
+                                          quant_config=None,
+                                          prefix=f"{prefix}.gate",
+                                          profile_bytes=gate_profile_bytes)
         
         self.pre_attention_layernorm = RMSNorm(hidden_size)
         self.post_attention_layernorm = RMSNorm(hidden_size)
@@ -207,6 +220,7 @@ class MoEAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
         residual: torch.Tensor = None,
+        request_ids: Optional[List[int]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
@@ -220,7 +234,11 @@ class MoEAttention(nn.Module):
         attn_output = self.attn(q, k, v, kv_cache=kv_cache, attn_metadata=attn_metadata)
         output, _ = self.o_proj(attn_output)
         output, residual = self.post_attention_layernorm(output, residual)
-        router_logits, _ = self.gate(output)
+        if isinstance(self.gate, ProfileDrivenGate):
+            assert request_ids is not None, "Profile-driven gating requires request_ids"
+            router_logits, _ = self.gate(output, request_ids, self.layer_id)
+        else:
+            router_logits, _ = self.gate(output)
         
         if self.weighted_router is not None:
             topk_weights, topk_ids = self._random_routing_with_weights(router_logits)

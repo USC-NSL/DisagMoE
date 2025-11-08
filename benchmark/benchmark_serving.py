@@ -122,7 +122,8 @@ def launch(args):
 
     sampling_config = SamplingConfig(min_output_len=args.min_output_len, max_output_len=args.max_output_len)
     
-    master.init_engine(mp, model_config, cache_config, sampling_config)
+    master.init_engine(mp, model_config, cache_config, sampling_config,
+                      gate_profile_file=args.gate_profile_file)
     
     master.start_engine()
     
