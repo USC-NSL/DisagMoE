@@ -241,7 +241,9 @@ class AttnExecutor(Executor):
             positions = torch.ones(batch_size, dtype=torch.long, device=self.device)
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
-            operator.forward(positions, hidden_states, kv_cache, attn_metadata)
+            # Use dummy request IDs to satisfy profile-driven gating during profiling.
+            dummy_request_ids = list(range(batch_size))
+            operator.forward(positions, hidden_states, kv_cache, attn_metadata, request_ids=dummy_request_ids)
             
     def determine_kv_cache_blocks(self) -> int:
         torch.cuda.empty_cache()
@@ -277,7 +279,8 @@ class AttnExecutor(Executor):
         for layer_id in self.model_config.layer_ids:
             # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
-                self.execute_eager(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
+                # Pass batch.req_ids so profile-driven gating receives request IDs.
+                self.execute_eager(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta, request_ids=batch.req_ids)
             # get_logger().info(f"Attention warmup layer {layer_id} done")
                 
         get_logger().info("Attention warmup done")
@@ -363,9 +366,11 @@ class CUDAGraphAttnExecutor:
                 self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
+                    # Provide dummy request IDs from the synthetic batch to satisfy profile-driven gating.
                     return self.attn_executor.execute(
                         layer_id, self.static_positions[ : graph_batch_size], 
-                        self.static_input[ : graph_batch_size], attn_meta
+                        self.static_input[ : graph_batch_size], attn_meta,
+                        request_ids=batch.req_ids
                     )
 
                 for _ in range(2):
