@@ -147,18 +147,6 @@ inline void* convert_to_nccl_uid(char* bytes) {
     return (void*) buf;
 }
 
-inline bool is_embedding_node(int device_id) {
-    return device_id == TOKENIZER_DEV_ID || device_id == SAMPLER_DEV_ID;
-}
-
-inline bool is_tokenizer(int device_id) {
-    return device_id == TOKENIZER_DEV_ID;
-}
-
-inline bool is_sampler(int device_id) {
-    return device_id == SAMPLER_DEV_ID;
-}
-
 template<class type>
 std::string static cerealize(std::shared_ptr<type> metadata) {
     // use cereal to serialize metadata

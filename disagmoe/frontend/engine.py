@@ -124,7 +124,7 @@ class AttentionEngineMixin:
     @nvtx_range("attn_engine.process_batch_attn")
     def process_batch_attn(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
         # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}, input_tensor.shape {input_tensor.shape}")
 
         with self._timer.range("preprocess"):
             batch = AttentionForwardBatch.build(meta_c, input_tensor)
@@ -133,14 +133,6 @@ class AttentionEngineMixin:
             if batch.layer_id == 0:
                 for i in range(batch.num_prefill_tokens):
                     self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
-                    
-            # NOTE: topk is aggregated in the c++ side now
-            # if self.model_config.top_k > 1 and input_tensor.shape[0] > num_tokens:
-            #     assert input_tensor.shape[0] == self.model_config.top_k * num_tokens, \
-            #         f"received {num_tokens} semantic tokens, in total{input_tensor.shape[0]} topk tokens"
-            #     input_topk_tensor = input_tensor.view(num_tokens, self.model_config.top_k, -1)
-            #     input_tensor = torch.sum(input_topk_tensor, dim=1)
-            #     meta_c.shrink_topk(self.model_config.top_k)
             
             # TODO: consider the position of this code piece
             # It's better if this is done in the final expert layer, rather than having an extra hop to the attn worker
@@ -168,8 +160,7 @@ class AttentionEngineMixin:
             positions = batch.seq_lens_tensor.to(torch.int64)
 
         with self._timer.range("execute"):
-            assert input_tensor.shape[0] == positions.shape[0], f"input_tensor.shape[0] != positions.shape[0]: {input_tensor.shape[0]} != {positions.shape[0]}"
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta, request_ids=batch.req_ids)
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta)
             
         with self._timer.range("postprocess"):
             # Deprecated optimization:

@@ -53,23 +53,14 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = in_device_ids[i];
         Channel_t channel{};
-        if (is_embedding_node(peer_id)) {
-            if (skip_embedding) {
-                continue;
-            }
-            const auto &make_embed = disagmoe::embedding_channel_factory();
-            channel = make_embed(local_id, peer_id, /*is_sender=*/ false,
-                is_attn ? local_attn_dp_rank : 0);
+        if (peer_id == local_id) {
+            channel = create_local_channel(local_id);
+            local_channel = channel;
         } else {
-            if (peer_id == local_id) {
-                channel = create_local_channel(local_id);
-                local_channel = channel;
-            } else {
-                auto nccl_id = in_nccl_ids.at(peer_id);
-                channel = create_channel(local_id, peer_id, 
-                    convert_to_nccl_uid((char*) nccl_id.c_str())
-                );
-            }
+            auto nccl_id = in_nccl_ids.at(peer_id);
+            channel = create_channel(local_id, peer_id, 
+                convert_to_nccl_uid((char*) nccl_id.c_str())
+            );
         }
         in_channels.push_back(channel);
         INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
@@ -80,21 +71,13 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     for (size_t i = 0; i < n_out; i ++) {
         auto peer_id = out_device_ids[i];
         Channel_t channel{};
-        if (is_embedding_node(peer_id)) {
-            if (skip_embedding) {
-                continue;
-            }
-            const auto &make_embed = disagmoe::embedding_channel_factory();
-            channel = make_embed(local_id, peer_id, /*is_sender=*/ true, /*rank=*/ 0);
+        if (peer_id == local_id) {
+            channel = local_channel;
         } else {
-            if (peer_id == local_id) {
-                channel = local_channel;
-            } else {
-                auto nccl_id = out_nccl_ids.at(peer_id);
-                channel = create_channel(local_id, peer_id, 
-                    convert_to_nccl_uid((char*) nccl_id.c_str())
-                );
-            }
+            auto nccl_id = out_nccl_ids.at(peer_id);
+            channel = create_channel(local_id, peer_id, 
+                convert_to_nccl_uid((char*) nccl_id.c_str())
+            );
         }
         out_channels.push_back(channel);
         INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
@@ -176,13 +159,14 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     const std::map<int, std::string> &in_nccl_ids,
     const std::map<int, std::string> &out_nccl_ids
 ) {
-    // TODO: support topk and expert wise schedule
+    // TODO: support expert wise schedule
+    int num_groups = 1;
     int num_layers = layer_ids.size();
 
     auto [in_channels, out_channels] = init_all_channels(local_id, true, in_device_ids, in_nccl_ids, out_device_ids, out_nccl_ids, global_rank);
 
     auto unified_dispatcher = std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
-    auto unified_pool = std::make_shared<UnifiedPool>(layer_ids, local_id, in_channels);
+    auto unified_pool = std::make_shared<UnifiedPool>(layer_ids, local_id, in_channels, num_groups, top_k);
     auto scheduler = std::make_shared<Scheduler>(unified_pool);
 
     auto casted_pool = std::static_pointer_cast<MuPool>(unified_pool);

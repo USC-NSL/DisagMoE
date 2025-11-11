@@ -13,9 +13,16 @@ class UnifiedPool: public MuPool {
 
 private:
 
+    int top_k;
+
+    std::vector<TokenTopKPool> topk_pools;
+
     unified_layer_scheduler_t layer_scheduler;
 
+    void process_attn_batch_topk(torch::Tensor tensor, batch_metadata_t &meta);
+
     void process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta);
+    
     void process_expert_batch(torch::Tensor tensor, batch_metadata_t &meta);
 
     void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
@@ -26,7 +33,8 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        int num_groups = 1
+        int num_groups = 1,
+        int top_k = 1
     );
 
     std::vector<TokenBatch> get_batch_from_layer(int layer_id);

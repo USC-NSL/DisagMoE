@@ -229,15 +229,9 @@ class TraceContext:
         
 @dataclass
 class SamplerStepInfo:
+    
     num_tokens: int
     time_stamp: int
-    
-    @staticmethod
-    def from_c(step_c: "SamplerStepInfo_C") -> "SamplerStepInfo":
-        return SamplerStepInfo(
-            step_c.num_tokens,
-            step_c.time_stamp
-        )
 
 @dataclass
 class TokenizedRequest:

@@ -17,13 +17,11 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id,
         #ifndef D_ENABLE_RAY
         CUDACHECK(cudaSetDevice(this->local));
         #endif
-        if (!is_embedding_node(party_local)) {
-            if (stream == nullptr) {
-                CUDACHECK(cudaStreamCreate(&this->stream));
-                // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
-            } else {
-                this->stream = stream;
-            }
+        if (stream == nullptr) {
+            CUDACHECK(cudaStreamCreate(&this->stream));
+            // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
+        } else {
+            this->stream = stream;
         }
     }
 
@@ -126,12 +124,8 @@ void TensorLocalChannel::sync() {
 ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):
     Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
         sprintf(device_id_str, "%d", party_local);
-        if (!is_embedding_node(party_local)) {
-            CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
-        } else {
-            this->stream = 0;
-        }
-    }
+        CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
+}
 
 std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
@@ -156,8 +150,6 @@ void ZmqChannel::instantiate() {
 
 // Not used currently
 void* ZmqChannel::_tensor_copy(uintptr_t data, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst) {
-    if (is_embedding_node(this->local))
-        return (void*) data;
     tx_range _{"ZmqChannel::_tensor_copy"};
     uintptr_t buf;
     cudaMemcpyKind flag;
