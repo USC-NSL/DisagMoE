@@ -3,7 +3,7 @@ import torch
 from torch import Tensor
 import numpy as np
 
-from typing import override, Tuple, List, Union, Dict
+from typing import override, Tuple, List, Union, Dict, Optional
 from enum import Enum
 
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -162,7 +162,7 @@ class Executor:
 
 class AttnExecutor(Executor):
 
-    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
+    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None):
         super().__init__(model_config)
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
@@ -176,6 +176,7 @@ class AttnExecutor(Executor):
         self.cuda_graph_executor = None
         self.device = "cuda"
         self.block_mgr: BaseBlockManager = None
+        self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
         
         self.init_model_and_cache()
         
@@ -193,6 +194,7 @@ class AttnExecutor(Executor):
                 self.model_config.num_experts,
                 self.model_config.top_k,
                 cache_config=self.vllm_cache_config,
+                gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
         _log_memory_usage("After allocate parameters")
@@ -239,7 +241,9 @@ class AttnExecutor(Executor):
             positions = torch.ones(batch_size, dtype=torch.long, device=self.device)
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
-            operator.forward(positions, hidden_states, kv_cache, attn_metadata)
+            # Use dummy request IDs to satisfy profile-driven gating during profiling.
+            dummy_request_ids = list(range(batch_size))
+            operator.forward(positions, hidden_states, kv_cache, attn_metadata, request_ids=dummy_request_ids)
             
     def determine_kv_cache_blocks(self) -> int:
         torch.cuda.empty_cache()
@@ -275,7 +279,8 @@ class AttnExecutor(Executor):
         for layer_id in self.model_config.layer_ids:
             # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
-                self.execute_eager(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
+                # Pass batch.req_ids so profile-driven gating receives request IDs.
+                self.execute_eager(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta, request_ids=batch.req_ids)
             # get_logger().info(f"Attention warmup layer {layer_id} done")
                 
         get_logger().info("Attention warmup done")
@@ -284,13 +289,15 @@ class AttnExecutor(Executor):
                 layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+                attn_metadata: FlashAttentionMetadata,
+                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         outputs, topk_weights, topk_ids = self.operators[vid].forward(
             positions, 
             hidden_states, 
             self.kv_cache.get_kv_buffer(vid), 
-            attn_metadata
+            attn_metadata,
+            request_ids=request_ids,
         )
         return outputs, topk_weights, topk_ids
     
@@ -298,18 +305,19 @@ class AttnExecutor(Executor):
     def execute(self, layer_id: int,
                 positions: torch.Tensor,
                 hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+                attn_metadata: FlashAttentionMetadata,
+                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
         if self.enable_cuda_graph and attn_metadata.use_cuda_graph and attn_metadata.num_decode_tokens <= self.attn_max_batch_size:
             return self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
         else:
-            return self.execute_eager(layer_id, positions, hidden_states, attn_metadata)
+            return self.execute_eager(layer_id, positions, hidden_states, attn_metadata, request_ids=request_ids)
     
     @staticmethod
-    def build(model_config: ModelConfig, cache_config: DmoeCacheConfig) -> "Executor":
+    def build(model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None) -> "Executor":
         if model_config.tp_size > 1:
-            return ParallelAttnExecutor(model_config, cache_config)
+            return ParallelAttnExecutor(model_config, cache_config, gate_profile_bytes=gate_profile_bytes)
         else:
-            return AttnExecutor(model_config, cache_config)
+            return AttnExecutor(model_config, cache_config, gate_profile_bytes=gate_profile_bytes)
         
 class CUDAGraphAttnExecutor:
     
@@ -358,9 +366,11 @@ class CUDAGraphAttnExecutor:
                 self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
+                    # Provide dummy request IDs from the synthetic batch to satisfy profile-driven gating.
                     return self.attn_executor.execute(
                         layer_id, self.static_positions[ : graph_batch_size], 
-                        self.static_input[ : graph_batch_size], attn_meta
+                        self.static_input[ : graph_batch_size], attn_meta,
+                        request_ids=batch.req_ids
                     )
 
                 for _ in range(2):
@@ -493,10 +503,11 @@ class ExpertsExecutor(Executor):
     
 class ParallelAttnExecutor(AttnExecutor):
     
-    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig):
+    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None):
         Executor.__init__(self, model_config)
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
+        self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -506,6 +517,7 @@ class ParallelAttnExecutor(AttnExecutor):
                 self.model_config.num_experts,
                 tp_size=model_config.tp_size,
                 tp_rank=model_config.rank,
+                gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16

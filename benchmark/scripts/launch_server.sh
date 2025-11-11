@@ -24,6 +24,11 @@ if [ $placement == "colocate" ]; then
     ep_size=$dp_size
 fi
 
+# Optional: path to a gate profile file on the launching node. If set, it will be
+# uploaded to the cluster and delivered via Ray's object store.
+# When provided, the attention workers will use profile-driven gating.
+GATE_PROFILE_FILE=""
+
 # transport backend: zmq | ucx
 
 REPORT_DIR=./reports
@@ -58,4 +63,5 @@ python benchmark/server.py \
     --transport $transport_backend \
     --file $REPORT_TABLE \
     --analyze-throughput \
-    --trace
+    --trace \
+    --gate-profile-file "$GATE_PROFILE_FILE"

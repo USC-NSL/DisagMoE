@@ -160,7 +160,8 @@ class Controller:
                     model_place: ModelPlacement, 
                     model_config: Optional[ModelConfig] = None,
                     cache_config: Optional[CacheConfig] = None,
-                    sampling_config: Optional[SamplingConfig] = None):
+                    sampling_config: Optional[SamplingConfig] = None,
+                    gate_profile_file: Optional[str] = None):
         
         if not model_config:
             # TODO: replace default model config
@@ -234,6 +235,19 @@ class Controller:
                 )
             )
         ray.get(tasks)
+        
+        # Optionally upload and broadcast gate profile bytes to workers.
+        if gate_profile_file is not None and len(gate_profile_file) > 0:
+            with open(gate_profile_file, "rb") as f:
+                _gate_profile_bytes = f.read()
+            data_ref = ray.put(_gate_profile_bytes)
+            # send only to attention-capable workers
+            ray.get([
+                worker.load_gate_profile_bytes.remote(data_ref)
+                    for worker, device_id in zip(self.workers, self.device_ids)
+                    if model_place.has_attn(device_id)
+            ])
+            self._logger.info(f"Uploaded gate profile and broadcast to attention workers: {len(_gate_profile_bytes)} bytes")
         
         
         # Broadcast transport selection to all workers before any C++ factory use.

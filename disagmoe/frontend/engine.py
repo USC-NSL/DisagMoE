@@ -59,7 +59,7 @@ class AttentionEngineMixin:
     attn_dp_rank: int
     
     def build_attn_executor(self):
-        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config)
+        self.attn_executor = AttnExecutor.build(self.model_config, self.cache_config, gate_profile_bytes=self.gate_profile_bytes)
         self.cache_config.num_gpu_blocks = self.attn_executor.get_num_cache_blocks()
         
         self.block_mgr = self.attn_executor.get_block_mgr()
@@ -425,7 +425,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.attn_dp_rank = None
         self.expert_ep_rank = None
-        
+        self.gate_profile_bytes: Optional[bytes] = None
         self.tokenizer_socket = None
         self.detokenizer_socket = None
 
@@ -599,6 +599,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             self.expert_max_batch_size = model_config.max_batch_size_expert
         
         get_logger().info(f"engine setup. {self.engine_type, model_config}")
+
+    # Accepts bytes uploaded via Ray object store and retains them for later
+    # consumption by attention operators/gates.
+    def load_gate_profile_bytes(self, data: bytes):
+        if not isinstance(data, (bytes, bytearray)):
+            raise ValueError("gate profile must be bytes")
+        self.gate_profile_bytes = bytes(data)
+        get_logger().info(f"Loaded gate profile bytes: {len(self.gate_profile_bytes)} bytes")
     
     def get_configured_kv_cache_blocks(self) -> int:
         return self.cache_config.num_gpu_blocks
