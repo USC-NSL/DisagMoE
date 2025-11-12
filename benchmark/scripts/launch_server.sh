@@ -27,7 +27,7 @@ fi
 # Optional: path to a gate profile file on the launching node. If set, it will be
 # uploaded to the cluster and delivered via Ray's object store.
 # When provided, the attention workers will use profile-driven gating.
-GATE_PROFILE_FILE=""
+# GATE_PROFILE_FILE="./gating_profiles/gating_sharegptv3_155.parquet"
 
 # transport backend: zmq | ucx
 
