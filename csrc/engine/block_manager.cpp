@@ -278,7 +278,6 @@ void BlockManager::prepare_seq_info_gdr(batch_metadata_t meta, const std::vector
     seq_lens_gdr_->copy_from_host(decode_seq_lens.data(), num_seqs * sizeof(int));
     context_lens_gdr_->copy_from_host(context_lens.data(), num_seqs * sizeof(int));
     seq_start_loc_gdr_->copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
-    
 }
 
 void rebind_batch_info_tensor(

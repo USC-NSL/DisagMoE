@@ -2,7 +2,6 @@ from typing import Iterable, List, Optional, Tuple
 
 import torch
 from torch import nn
-from transformers import MixtralConfig
 from vllm.attention import Attention, AttentionMetadata
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.config import CacheConfig

@@ -5,6 +5,8 @@ import triton
 import triton.language as tl
 import numpy as np
 from typing import List
+from dataclasses import dataclass
+from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.utils.utils import nvtx_range
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.datatypes import AttentionForwardBatch
@@ -12,6 +14,56 @@ from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
+
+@dataclass
+class BatchTensorBuffer:
+    
+    block_table: torch.Tensor
+    slot_mapping: torch.Tensor
+    seq_lens: torch.Tensor
+    context_lens: torch.Tensor
+    seq_start_loc: torch.Tensor
+    query_start_loc: torch.Tensor
+    
+    block_table_view: torch.Tensor
+    slot_mapping_view: torch.Tensor
+    seq_lens_view: torch.Tensor
+    context_lens_view: torch.Tensor
+    seq_start_loc_view: torch.Tensor
+    query_start_loc_view: torch.Tensor
+    
+    def __init__(self, max_batch_size: int, max_num_pages: int, device: str = "cuda"):
+        self.block_table = get_cuda_aligned_tensor(max_batch_size * max_num_pages, torch.int32, device=device)
+        self.slot_mapping = get_cuda_aligned_tensor(max_batch_size, torch.int64, device=device)
+        self.seq_lens = get_cuda_aligned_tensor(max_batch_size, torch.int32, device=device)
+        self.context_lens = get_cuda_aligned_tensor(max_batch_size, torch.int32, device=device)
+        self.seq_start_loc = get_cuda_aligned_tensor(max_batch_size + 1, torch.int32, device=device)
+        self.query_start_loc = torch.arange(max_batch_size + 1, dtype=torch.int32, device=device)
+        
+        self.block_table_view = torch.empty(0, dtype=torch.int32, device=device)
+        self.slot_mapping_view = torch.empty(0, dtype=torch.int64, device=device)
+        self.seq_lens_view = torch.empty(0, dtype=torch.int32, device=device)
+        self.context_lens_view = torch.empty(0, dtype=torch.int32, device=device)
+        self.seq_start_loc_view = torch.empty(0, dtype=torch.int32, device=device)
+        self.query_start_loc_view = torch.empty(0, dtype=torch.int32, device=device)
+        
+    def create_view(self, num_tokens: int, num_pages: int):
+        rebind_batch_info_tensor(
+            num_tokens,
+            num_pages,
+            self.block_table_view,
+            self.slot_mapping_view,
+            self.seq_lens_view,
+            self.context_lens_view,
+            self.seq_start_loc_view,
+            self.query_start_loc_view,
+            self.block_table,
+            self.slot_mapping,
+            self.seq_lens,
+            self.context_lens,
+            self.seq_start_loc,
+            self.query_start_loc
+        )
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -35,75 +87,34 @@ class BaseBlockManager:
     
     def release_seqs(self, req_ids: List[int]):
         pass
-    
-
-GPU_PAGE_SIZE = 1 << 16
-
-def get_cuda_aligned_tensor(numel: int, dtype, alignment: int = GPU_PAGE_SIZE):
-    """
-    Allocate a CUDA tensor with a 64KB-aligned data pointer.
-    Returns (aligned_tensor, base_tensor).
-    
-    Args:
-        numel (int): Number of elements (not bytes).
-        dtype (torch.dtype): Tensor dtype (e.g. torch.int32, torch.int64, torch.float32).
-        alignment (int): Alignment in bytes (default 64KB).
-    """
-    # Element size in bytes
-    elem_size = torch.tensor([], dtype=dtype).element_size()
-    size_bytes = numel * elem_size
-
-    # 1. Overallocate to ensure we have alignment slack
-    buf = torch.empty(size_bytes + alignment, dtype=torch.uint8, device="cuda")
-
-    # 2. Compute aligned start address
-    base_addr = buf.data_ptr()
-    aligned_addr = (base_addr + alignment - 1) & ~(alignment - 1)
-    offset = aligned_addr - base_addr
-
-    # 3. Slice the overallocated buffer to create an aligned view
-    aligned_buf = buf[offset:offset + size_bytes]
-
-    # 4. Reinterpret as the requested dtype
-    aligned_tensor = aligned_buf.view(dtype)
-    
-    # 5. Sanity check
-    assert aligned_tensor.data_ptr() % alignment == 0, "Alignment failed!"
-
-    return aligned_tensor
 
 class CPUBlockManager(BaseBlockManager):
     """CPU-based block manager for comparison - follows original implementation"""
-    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig, max_running_reqs: int, device: str = "cuda"):
+    def __init__(
+        self, 
+        model_config: ModelConfig, 
+        cache_config: CacheConfig, 
+        max_running_reqs: int, 
+        device: str = "cuda",
+        use_gdr_copy: bool = True,
+        use_rebind: bool = True
+    ):
         super().__init__(model_config, cache_config, max_running_reqs, device)
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
         
-        self.use_gdr_copy = True
-        self.use_rebind = True
+        self.use_gdr_copy = use_gdr_copy
+        self.use_rebind = use_rebind
         
         max_forward_batch_size = 256
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
-
-        self.block_table_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size * max_pages_per_req, torch.int32)
-        self.slot_mapping_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.long)
         
-        self.seq_lens_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
-        self.context_lens_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
-        self.seq_start_loc_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size + 1, torch.int32)
+        self.batch_tensor_buffer = BatchTensorBuffer(max_forward_batch_size, max_pages_per_req)
         
-        if self.use_gdr_copy:
-            self._block_mgr.register_gdr_context(self.block_table_cuda_buffer, self.slot_mapping_cuda_buffer)
-            self._block_mgr.register_seq_info_gdr(self.seq_lens_cuda_buffer, self.context_lens_cuda_buffer, self.seq_start_loc_cuda_buffer)
-        
-        self.block_table_view = torch.empty(0, dtype=torch.int32, device=self.device)
-        self.slot_mapping_view = torch.empty(0, dtype=torch.int64, device=self.device)
-        self.seq_lens_view = torch.empty(0, dtype=torch.int32, device=self.device)
-        self.context_lens_view = torch.empty(0, dtype=torch.int32, device=self.device)
-        self.seq_start_loc_view = torch.empty(0, dtype=torch.int32, device=self.device)
-        self.query_start_loc_view = torch.empty(0, dtype=torch.int32, device=self.device)
-
+        self._block_mgr.register_gdr_context(self.batch_tensor_buffer.block_table, self.batch_tensor_buffer.slot_mapping)
+        self._block_mgr.register_seq_info_gdr(self.batch_tensor_buffer.seq_lens, self.batch_tensor_buffer.context_lens, self.batch_tensor_buffer.seq_start_loc)
+    
     def reset_state(self):
         self.release_seqs(list(self.decode_seq_lens.keys()))
         self.decode_seq_lens = {}
@@ -158,50 +169,26 @@ class CPUBlockManager(BaseBlockManager):
         
         num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
         self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
-        
-        rebind_batch_info_tensor(
-            num_tokens,
-            num_pages,
-            self.block_table_view,
-            self.slot_mapping_view,
-            self.seq_lens_view,
-            self.context_lens_view,
-            self.seq_start_loc_view,
-            self.query_start_loc_view,
-            self.block_table_cuda_buffer,
-            self.slot_mapping_cuda_buffer,
-            self.seq_lens_cuda_buffer,
-            self.context_lens_cuda_buffer,
-            self.seq_start_loc_cuda_buffer,
-            self.query_start_loc_cuda_buffer
-        )
-        
-        block_table_cuda = self.block_table_view
-        slot_mapping_cuda = self.slot_mapping_view
-        seq_lens_cuda = self.seq_lens_view
-        context_lens_cuda = self.context_lens_view
-        seq_start_loc_cuda = self.seq_start_loc_view
-        query_start_loc = self.query_start_loc_view
+        self.batch_tensor_buffer.create_view(num_tokens, num_pages)
 
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
-        
-        batch.seq_lens_tensor = seq_lens_cuda
+        batch.seq_lens_tensor = self.batch_tensor_buffer.seq_lens_view
         
         return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
-            seq_lens=batch.seq_lens,
-            seq_lens_tensor=seq_lens_cuda,
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decode_tokens=num_tokens,
             max_query_len=0,
             max_prefill_seq_len=0,
             max_decode_seq_len=max_decode_seq_len,
             max_decode_query_len=1,
-            query_start_loc=query_start_loc,
-            seq_start_loc=seq_start_loc_cuda,
-            context_lens_tensor=context_lens_cuda,
-            block_tables=block_table_cuda,
+            seq_lens=batch.seq_lens,
+            block_tables=self.batch_tensor_buffer.block_table_view,
+            slot_mapping=self.batch_tensor_buffer.slot_mapping_view,
+            seq_lens_tensor=self.batch_tensor_buffer.seq_lens_view,
+            context_lens_tensor=self.batch_tensor_buffer.context_lens_view,
+            seq_start_loc=self.batch_tensor_buffer.seq_start_loc_view,
+            query_start_loc=self.batch_tensor_buffer.query_start_loc_view,
             use_cuda_graph=False,
             multi_modal_placeholder_index_maps=None,
             enable_kv_scales_calculation=True,
