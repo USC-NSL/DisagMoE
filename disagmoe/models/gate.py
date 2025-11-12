@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Any, Dict, List
+from typing import Optional, Tuple, Dict, List
 
 import torch
 import numpy as np
@@ -116,11 +116,12 @@ class ProfileDrivenRouter:
         end_time = time.perf_counter()
         print(f"Time used to load and process the profile: {end_time - start_time:.3f} seconds")
 
-    def route(self, request_ids: List[int], token_indices: List[int], layer_id: int, top_k: int, device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
+    def route(self, request_ids: List[int], token_indices: torch.Tensor, layer_id: int, top_k: int, device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
         # Validate inputs
         if layer_id > self.num_layers:
             raise ValueError(f"Requested layer_id {layer_id} exceeds profiled max layer {self.num_layers}. Profile/model mismatch.")
-        assert len(request_ids) == len(token_indices), "request_ids and token_indices must have the same length"
+        token_indicies_np = token_indices.detach().to(dtype=torch.int64, device="cpu").numpy()
+        assert len(request_ids) == len(token_indicies_np), "request_ids and token_indices must have the same length"
         
         # Ensure top_k matches the profile's K dimension
         if top_k != self.top_k:
@@ -128,7 +129,7 @@ class ProfileDrivenRouter:
         
         # Build list of expert ids for each (rid, token_index) after wraparound
         gathered_ids: List[np.ndarray] = []
-        for rid_in, tok_idx_in in zip(request_ids, token_indices):
+        for rid_in, tok_idx_in in zip(request_ids, token_indicies_np):
             mapped_rid = int(rid_in) % int(self.num_profiled_requests)
             num_tokens_for_rid = self.profiled_tokens_per_request[mapped_rid]
             if num_tokens_for_rid <= 0:

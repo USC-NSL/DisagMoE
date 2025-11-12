@@ -233,7 +233,7 @@ class MoEAttention(nn.Module):
             assert request_ids is not None, "Profile-driven routing requires request_ids"
             topk_weights, topk_ids = self.profile_driven_router.route(
                 request_ids=request_ids,
-                token_indices=positions.tolist(),
+                token_indices=positions,
                 layer_id=self.layer_id,
                 top_k=self.top_k,
                 device=hidden_states.device,
