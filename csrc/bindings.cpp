@@ -105,6 +105,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<BlockManager, std::shared_ptr<BlockManager>>(m, "BlockManager")
         .def(py::init<int, int, int>())
+        .def("close", &BlockManager::close)
         .def("can_allocate", &BlockManager::can_allocate)
         .def("allocate", &BlockManager::allocate)
         .def("release", &BlockManager::release)
@@ -115,9 +116,12 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("has_seq_block_list", &BlockManager::has_seq_block_list)
         .def("append_tokens", &BlockManager::append_tokens)
         .def("update_block_table", &BlockManager::update_block_table)
-        .def("prepare_block_table", &BlockManager::prepare_block_table);
-
-    REGISTER_FUNC(prepare_batch_infos);
+        .def("prepare_block_table", &BlockManager::prepare_block_table)
+        .def("register_gdr_context", &BlockManager::register_gdr_context)
+        .def("prepare_block_table_gdr", &BlockManager::prepare_block_table_gdr)
+        .def("prepare_seq_info", &BlockManager::prepare_seq_info)
+        .def("register_seq_info_gdr", &BlockManager::register_seq_info_gdr)
+        .def("prepare_seq_info_gdr", &BlockManager::prepare_seq_info_gdr);
 
     // custom ops
     REGISTER_FUNC(permute_tokens_cuda);

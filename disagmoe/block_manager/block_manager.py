@@ -11,7 +11,7 @@ from disagmoe.frontend.datatypes import AttentionForwardBatch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
-from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, prepare_batch_infos
+from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -35,6 +35,42 @@ class BaseBlockManager:
     
     def release_seqs(self, req_ids: List[int]):
         pass
+    
+
+GPU_PAGE_SIZE = 1 << 16
+
+def get_cuda_aligned_tensor(numel: int, dtype, alignment: int = GPU_PAGE_SIZE):
+    """
+    Allocate a CUDA tensor with a 64KB-aligned data pointer.
+    Returns (aligned_tensor, base_tensor).
+    
+    Args:
+        numel (int): Number of elements (not bytes).
+        dtype (torch.dtype): Tensor dtype (e.g. torch.int32, torch.int64, torch.float32).
+        alignment (int): Alignment in bytes (default 64KB).
+    """
+    # Element size in bytes
+    elem_size = torch.tensor([], dtype=dtype).element_size()
+    size_bytes = numel * elem_size
+
+    # 1. Overallocate to ensure we have alignment slack
+    buf = torch.empty(size_bytes + alignment, dtype=torch.uint8, device="cuda")
+
+    # 2. Compute aligned start address
+    base_addr = buf.data_ptr()
+    aligned_addr = (base_addr + alignment - 1) & ~(alignment - 1)
+    offset = aligned_addr - base_addr
+
+    # 3. Slice the overallocated buffer to create an aligned view
+    aligned_buf = buf[offset:offset + size_bytes]
+
+    # 4. Reinterpret as the requested dtype
+    aligned_tensor = aligned_buf.view(dtype)
+
+    # 5. Sanity check
+    assert aligned_tensor.data_ptr() % alignment == 0, "Alignment failed!"
+
+    return aligned_tensor, buf  # keep buf alive!
 
 class CPUBlockManager(BaseBlockManager):
     """CPU-based block manager for comparison - follows original implementation"""
@@ -43,6 +79,46 @@ class CPUBlockManager(BaseBlockManager):
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
+        
+        self.use_gdr_copy = True
+        
+        max_forward_batch_size = 256
+        max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
+
+        self.block_table_cuda_buffer, self.block_table_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size * max_pages_per_req, torch.int32)
+        self.slot_mapping_cuda_buffer, self.slot_mapping_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.long)
+        
+        self.seq_lens_cuda_buffer, self.seq_lens_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
+        self.context_lens_cuda_buffer, self.context_lens_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
+        self.seq_start_loc_cuda_buffer, self.seq_start_loc_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size + 1, torch.int32)
+        
+        if self.use_gdr_copy:
+            self._block_mgr.register_gdr_context(self.block_table_cuda_buffer, self.slot_mapping_cuda_buffer)
+            self._block_mgr.register_seq_info_gdr(self.seq_lens_cuda_buffer, self.context_lens_cuda_buffer, self.seq_start_loc_cuda_buffer)
+
+    def __del__(self):
+        """Ensure C++ BlockManager is destroyed before Python tensor buffers.
+        
+        This is critical because the BlockManager's destructor cleans up GDR contexts
+        that map the tensor buffers. If tensors are destroyed first, they may reference
+        unmapped BAR1 memory, causing a segfault.
+        
+        By explicitly closing and deleting _block_mgr here, we ensure the C++ destructor
+        runs before Python's garbage collector destroys the tensor buffers.
+        """
+        # Explicitly close and delete _block_mgr first to ensure C++ cleanup happens
+        # before Python destroys the tensor buffers. This triggers the C++ destructor
+        # which will clean up GDR contexts properly.
+        try:
+            if hasattr(self, '_block_mgr') and self._block_mgr is not None:
+                # Delete the reference to trigger pybind11 cleanup immediately
+                # This ensures the C++ destructor runs before tensor buffers are destroyed
+                del self._block_mgr
+        except (AttributeError, RuntimeError, Exception):
+            # Ignore exceptions during shutdown - things may already be torn down
+            # AttributeError: attribute might not exist
+            # RuntimeError: Python interpreter might be shutting down
+            pass
 
     def reset_state(self):
         self.release_seqs(list(self.decode_seq_lens.keys()))
@@ -93,23 +169,37 @@ class CPUBlockManager(BaseBlockManager):
         # 1. prepare block table
         if dummy_cache:
             # dummy_cache is True when _warmup_attn
-            block_table_1d = torch.zeros(
-                (num_tokens + num_seqs * self.model_config.max_seq_len // self.block_size, ), 
-                dtype=torch.int32, device=self.device)
+            block_table_cuda = torch.zeros(
+                (num_tokens, num_seqs * self.model_config.max_seq_len // self.block_size), 
+                dtype=torch.int32, device=self.device
+            )
+            slot_mapping_cuda = torch.zeros(
+                (num_tokens, ), 
+                dtype=torch.int64, device=self.device
+            )
         else:
-            block_table_1d = self._block_mgr.prepare_block_table(meta_c, batch.seq_lens)
-
-        slot_mapping_cuda = block_table_1d[-num_tokens:].to(torch.int64)
-        block_table_cuda = block_table_1d[:-num_tokens].view(num_tokens, -1)
+            if self.use_gdr_copy:
+                num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
+                block_table_cuda = self.block_table_cuda_buffer[ : num_pages].view(num_tokens, -1)
+                slot_mapping_cuda = self.slot_mapping_cuda_buffer[ : num_tokens]
+            else:
+                block_table_1d = self._block_mgr.prepare_block_table(meta_c, batch.seq_lens)
+                slot_mapping_cuda = block_table_1d[-num_tokens:].to(torch.int64)
+                block_table_cuda = block_table_1d[:-num_tokens].view(num_tokens, -1)
 
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
-        batch_infos_cuda = prepare_batch_infos(meta_c, batch.seq_lens)
-        
-        seq_lens_cuda = batch_infos_cuda[ : num_seqs]
-        context_lens_cuda = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
-        seq_start_loc_cuda = batch_infos_cuda[num_seqs + num_seqs : ]
-            
+        if self.use_gdr_copy:
+            self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
+            seq_lens_cuda = self.seq_lens_cuda_buffer[:num_seqs]
+            context_lens_cuda = self.context_lens_cuda_buffer[:num_seqs]
+            seq_start_loc_cuda = self.seq_start_loc_cuda_buffer[:num_seqs + 1]
+        else:
+            batch_infos_cuda = self._block_mgr.prepare_seq_info(meta_c, batch.seq_lens)
+            seq_lens_cuda = batch_infos_cuda[ : num_seqs]
+            context_lens_cuda = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
+            seq_start_loc_cuda = batch_infos_cuda[num_seqs + num_seqs : ]
+                
         query_start_loc = self.query_start_loc[ : num_tokens + 1]
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
         

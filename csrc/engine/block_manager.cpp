@@ -18,6 +18,35 @@ BlockManager::BlockManager(int block_size, int num_blocks, int reserved_blocks) 
     }
 }
 
+BlockManager::~BlockManager() {
+    close();
+}
+
+void BlockManager::close() {
+    if (block_table_gdr_) {
+        block_table_gdr_.reset();
+        block_table_tensor_.reset();
+    }
+    if (slot_mapping_gdr_) {
+        slot_mapping_gdr_.reset();
+        slot_mapping_tensor_.reset();
+    }
+    if (seq_lens_gdr_) {
+        seq_lens_gdr_.reset();
+        seq_lens_tensor_.reset();
+    }
+    if (context_lens_gdr_) {
+        context_lens_gdr_.reset();
+        context_lens_tensor_.reset();
+    }
+    if (seq_start_loc_gdr_) {
+        seq_start_loc_gdr_.reset();
+        seq_start_loc_tensor_.reset();
+    }
+    std::cout << "BlockManager closed, all gdr contexts are cleaned up" << std::endl;
+    GdrContext::ensure_gdr_closed();
+    std::cout << "GDR closed" << std::endl;
+}
 int BlockManager::get_one_free_block() {
     std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (free_blocks_.size() > 0);
@@ -138,7 +167,7 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
     AUTO_TX_RANGE;
     // It should be ensured that every seq in batch has been alocated cache blocks
     // For simple case, we allocate cache block in this function, which means every sequence is forcely accepted
-    int n = meta->req_ids.size(); // decode seqs are already allocated in previous steps
+    int n = meta->num_tokens(); // decode seqs are already allocated in previous steps
     size_t m = 0;
     for (int i = 0; i < n; i++) {
         int id = meta->req_ids[i];
@@ -155,10 +184,8 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
         }
     }
 
-    int tokens_in_batch = meta->num_tokens();
-
     int slot_idx = n * m;
-    for (int i = 0; i < tokens_in_batch; i++) {
+    for (int i = 0; i < n; i++) {
         int last_idx = decode_seq_lens[i] - 1; // decode_index should be decode_lens - 1
         int block_id = last_idx / block_size_;
         int id_in_block = last_idx % block_size_;
@@ -170,7 +197,49 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
     return block_table_1d_pinned.to(torch::kCUDA, true);
 }
 
-torch::Tensor prepare_batch_infos(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+void BlockManager::register_gdr_context(const torch::Tensor &block_table, const torch::Tensor &slot_mapping) {
+    block_table_tensor_.emplace(block_table);
+    slot_mapping_tensor_.emplace(slot_mapping);
+    block_table_gdr_.emplace(block_table);
+    slot_mapping_gdr_.emplace(slot_mapping);
+}
+
+int BlockManager::prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+    if (!block_table_gdr_ || !slot_mapping_gdr_) {
+        throw std::runtime_error("block_table_gdr_ or slot_mapping_gdr_ is not registered");
+    }
+    int n = meta->num_tokens(); // decode seqs are already allocated in previous steps
+    size_t m = 0;
+    for (int i = 0; i < n; i++) {
+        int id = meta->req_ids[i];
+        ASSERT (has_seq_block_list(id));
+        block_list_t list = get_seq_block_list(id);
+        m = std::max(m, list->size());
+    }
+    std::vector<int> block_table(n * m, -1);
+    for (int i = 0; i < n; i++) {
+        int id = meta->req_ids[i];
+        block_list_t list = get_seq_block_list(id);
+        for (int j = 0; j < list->size(); j++) {
+            block_table[i * m + j] = (*list)[j];
+        }
+    }
+
+    block_table_gdr_->copy_from_host(block_table.data(), n * m * sizeof(int));
+
+    std::vector<int64_t> slot_mapping(n);
+    for (int i = 0; i < n; i++) {
+        int last_idx = decode_seq_lens[i] - 1; // decode_index should be decode_lens - 1
+        int block_id = last_idx / block_size_;
+        int id_in_block = last_idx % block_size_;
+        slot_mapping[i] = static_cast<int64_t>(block_table[i * m + block_id] * block_size_ + id_in_block);
+    }
+    slot_mapping_gdr_->copy_from_host(slot_mapping.data(), n * sizeof(int64_t));
+
+    return n * m;
+}
+
+torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
     int num_tokens = meta->num_tokens();
     int num_seqs = num_tokens;
 
@@ -190,4 +259,36 @@ torch::Tensor prepare_batch_infos(batch_metadata_t meta, const std::vector<int> 
     }
 
     return torch::tensor(batch_infos, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
+}
+
+void BlockManager::register_seq_info_gdr(const torch::Tensor &seq_lens, const torch::Tensor &context_lens, const torch::Tensor &seq_start_loc) {
+    seq_lens_tensor_.emplace(seq_lens);
+    context_lens_tensor_.emplace(context_lens);
+    seq_start_loc_tensor_.emplace(seq_start_loc);
+    seq_lens_gdr_.emplace(seq_lens);
+    context_lens_gdr_.emplace(context_lens);
+    seq_start_loc_gdr_.emplace(seq_start_loc);
+}
+
+void BlockManager::prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
+    if (!seq_lens_gdr_ || !context_lens_gdr_ || !seq_start_loc_gdr_) {
+        throw std::runtime_error("seq_lens_gdr_ or context_lens_gdr_ or seq_start_loc_gdr_ is not registered");
+    }
+    int num_tokens = meta->num_tokens();
+    int num_seqs = num_tokens;
+
+    std::vector<int> context_lens(num_seqs);
+    for (int i = 0; i < num_seqs; i++) {
+        context_lens[i] = decode_seq_lens[i] - 1;
+    }
+
+    std::vector<int> seq_start_loc(num_seqs + 1, 0);
+    for (int i = 1; i <= num_seqs; i++) {
+        seq_start_loc[i] = seq_start_loc[i - 1] + decode_seq_lens[i - 1];
+    }
+
+    seq_lens_gdr_->copy_from_host(decode_seq_lens.data(), num_seqs * sizeof(int));
+    context_lens_gdr_->copy_from_host(context_lens.data(), num_seqs * sizeof(int));
+    seq_start_loc_gdr_->copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
+    
 }
