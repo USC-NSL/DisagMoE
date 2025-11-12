@@ -219,8 +219,8 @@ class CPUBlockManager(BaseBlockManager):
         else:
             if self.use_gdr_copy:
                 num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
-                block_table_cuda = self.block_table_cuda_buffer[ : num_pages].view(num_tokens, -1)
-                slot_mapping_cuda = self.slot_mapping_cuda_buffer[ : num_tokens]
+                block_table_cuda = self.batch_tensor_buffer.block_table[ : num_pages].view(num_tokens, -1)
+                slot_mapping_cuda = self.batch_tensor_buffer.slot_mapping[ : num_tokens]
             else:
                 block_table_1d = self._block_mgr.prepare_block_table(meta_c, batch.seq_lens)
                 slot_mapping_cuda = block_table_1d[-num_tokens:].to(torch.int64)
@@ -230,16 +230,16 @@ class CPUBlockManager(BaseBlockManager):
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         if self.use_gdr_copy:
             self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
-            seq_lens_cuda = self.seq_lens_cuda_buffer[:num_seqs]
-            context_lens_cuda = self.context_lens_cuda_buffer[:num_seqs]
-            seq_start_loc_cuda = self.seq_start_loc_cuda_buffer[:num_seqs + 1]
+            seq_lens_cuda = self.batch_tensor_buffer.seq_lens[:num_seqs]
+            context_lens_cuda = self.batch_tensor_buffer.context_lens[:num_seqs]
+            seq_start_loc_cuda = self.batch_tensor_buffer.seq_start_loc[:num_seqs + 1]
         else:
             batch_infos_cuda = self._block_mgr.prepare_seq_info(meta_c, batch.seq_lens)
             seq_lens_cuda = batch_infos_cuda[ : num_seqs]
             context_lens_cuda = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
             seq_start_loc_cuda = batch_infos_cuda[num_seqs + num_seqs : ]
                 
-        query_start_loc = self.query_start_loc_cuda_buffer[ : num_tokens + 1]
+        query_start_loc = self.batch_tensor_buffer.query_start_loc[ : num_tokens + 1]
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
         
         batch.seq_lens_tensor = seq_lens_cuda

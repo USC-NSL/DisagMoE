@@ -263,14 +263,15 @@ def benchmark_decode_only_update_block_table(cpu_mgr: CPUBlockManager, gpu_mgr: 
             decode_cpu_setup_layer1_iter(cpu_mgr, batch_size, seq_len)
             _, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
             batch.layer_id = 1
-            torch.cuda.synchronize()
             cpu_mgr.update_block_table(meta_c, batch)
+            
         for _ in range(warmup_iters):
             decode_gpu_setup_layer1_iter(gpu_mgr, batch_size, seq_len)
             _, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
             batch.layer_id = 1
-            torch.cuda.synchronize()
             gpu_mgr.update_block_table(meta_c, batch)
+
+        torch.cuda.synchronize()
 
         # CPU version
         cpu_total_time = 0.0
@@ -283,6 +284,9 @@ def benchmark_decode_only_update_block_table(cpu_mgr: CPUBlockManager, gpu_mgr: 
             
             cpu_total_time += decode_cpu_update_block_table_iter_layer1(cpu_mgr, meta_c, batch)
         cpu_time = cpu_total_time / num_iterations * 1000
+        
+        
+        torch.cuda.synchronize()
         
         # GPU version
         gpu_total_time = 0.0
@@ -322,69 +326,63 @@ def benchmark_decode_only_pack_flash_attn_metadata(cpu_mgr: CPUBlockManager, gpu
     print("\n" + "="*60)
     print("BENCHMARK 3: Decode-only pack_flash_attn_metadata")
     print("="*60)
-    print(f"{'Batch Size':<12} {'CPU (ms)':<12} {'GPU (ms)':<12} {'Speedup':<10}")
+    print(f"{'Batch Size':<12} {'CPU (ms)':<12} {'gdrcopy (ms)':<12} {'gdrcopy+rebind (ms)':<12} {'GPU (ms)':<12} {'Speedup':<10}")
     print("-"*50)
     
     for batch_size in batch_sizes:
         # Create decode-only metadata at layer 1
-        meta_c, _ = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
-        meta_c.layer_id = 1
+        meta_c, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
+        _ = pack_cpu_setup_iter(cpu_mgr, batch_size, seq_len)
         
-        # CPU version - benchmark with proper cleanup between iterations
-        cpu_total_time = 0.0
-        # Warmup (not timed)
+        gpu_total_time = 0.0
         warmup_iters = 2
+        
         for _ in range(warmup_iters):
-            decode_seq_lens = pack_cpu_setup_iter(cpu_mgr, batch_size, seq_len)
-            _, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
-            batch.layer_id = 1
-            torch.cuda.synchronize()
             _ = cpu_mgr.pack_flash_attn_metadata(meta_c, batch)
-        for _ in range(num_iterations):
-            # Reset state and allocate (not timed)
-            with torch_profiler.record_function("setup/pack_metadata/cpu_reset_and_alloc"):
-                cpu_mgr.reset_state()
-                # Pre-populate decode_seq_lens and allocate block tables (not timed)
-                for i in range(batch_size):
-                    cpu_mgr.decode_seq_lens[i] = seq_len
-                    cpu_mgr._block_mgr.allocate(i, seq_len)
             
-            # Recreate batch for clean state
-            _, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
-            batch.layer_id = 1
-            
-            # Pack flash attention metadata (timed)
-            cpu_total_time += decode_cpu_pack_flash_attn_iter(cpu_mgr, meta_c, batch, [])
-        cpu_time = cpu_total_time / num_iterations * 1000
+        torch.cuda.synchronize()
         
-        # GPU version - setup once, then benchmark only metadata packing
-        # Reset state and setup for decode-only (not timed)
+        def cpu_timed_func():
+            
+            cpu_total_time = 0.0
+        
+            for _ in range(num_iterations):
+                cpu_total_time += decode_cpu_pack_flash_attn_iter(cpu_mgr, meta_c, batch, [])
+                
+            cpu_time = cpu_total_time / num_iterations * 1000
+            
+            return cpu_time
+        
+        cpu_mgr.use_gdr_copy = False
+        cpu_mgr.use_rebind = False
+        cpu_time = cpu_timed_func()
+        
+        cpu_mgr.use_gdr_copy = True
+        gdrcopy_time = cpu_timed_func()
+        
+        cpu_mgr.use_rebind = True
+        rebind_time = cpu_timed_func()
+        
         _, batch = create_test_metadata(batch_size, 0, seq_len, layer_id=1)
-        batch.layer_id = 1
         pack_gpu_setup_once(gpu_mgr, batch, batch_size, seq_len)
-        # Warmup (not timed)
-        warmup_iters = 2
         for _ in range(warmup_iters):
             _ = gpu_mgr.pack_flash_attn_metadata(meta_c, batch)
         
-        # Now benchmark only the metadata packing
         torch.cuda.synchronize()
-        start_time = time.time()
         
         for _ in range(num_iterations):
-            # Pack flash attention metadata using GPU approach (timed)
-            _ = decode_gpu_pack_flash_attn_iter(gpu_mgr, meta_c, batch)
+            gpu_total_time += decode_gpu_pack_flash_attn_iter(gpu_mgr, meta_c, batch)
         
         torch.cuda.synchronize()
-        gpu_time = (time.time() - start_time) / num_iterations * 1000
+        gpu_time = gpu_total_time / num_iterations * 1000
         
         speedup = cpu_time / gpu_time if gpu_time > 0 else 0
         
-        results['cpu_times'].append(cpu_time)
+        results['cpu_times'].append(rebind_time)
         results['gpu_times'].append(gpu_time)
         results['speedups'].append(speedup)
         
-        print(f"{batch_size:<12} {cpu_time:<12.3f} {gpu_time:<12.3f} {speedup:<10.2f}")
+        print(f"{batch_size:<12} {cpu_time:<12.3f} {gdrcopy_time:<12.3f} {rebind_time:<12.3f} {gpu_time:<12.3f} {speedup:<10.2f}")
     
     return results
 
