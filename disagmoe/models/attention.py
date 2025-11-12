@@ -10,7 +10,7 @@ from vllm.distributed import get_tensor_model_parallel_world_size
 from disagmoe.models.linear import (QKVParallelLinear,
                                                ReplicatedLinear,
                                                RowParallelLinear)
-from disagmoe.models.gate import ProfileDrivenGate
+from disagmoe.models.gate import ProfileDrivenRouter
 from disagmoe.ops.memory import permute_tokens_cuda
 
 from vllm.model_executor.layers.quantization.base_config import (
@@ -158,24 +158,17 @@ class MoEAttention(nn.Module):
                               quant_config=quant_config,
                               use_direct_call=True,)
         
-        # Choose gating implementation based on whether a profile file is provided.
-        if gate_profile_bytes is None or len(gate_profile_bytes) == 0:
-            # Random gating
-            self.gate = ReplicatedLinear(hidden_size,
-                                         num_experts,
-                                         bias=False,
-                                         params_dtype=params_dtype,
-                                         quant_config=None,
-                                         prefix=f"{prefix}.gate")
+        self.gate = ReplicatedLinear(hidden_size,
+                                     num_experts,
+                                     bias=False,
+                                     params_dtype=params_dtype,
+                                     quant_config=None,
+                                     prefix=f"{prefix}.gate")
+        
+        if gate_profile_bytes is not None and len(gate_profile_bytes) > 0:
+            self.profile_driven_router = ProfileDrivenRouter(gate_profile_bytes, num_experts, top_k)
         else:
-            # Profile-driven gating
-            self.gate = ProfileDrivenGate(hidden_size,
-                                          num_experts,
-                                          bias=False,
-                                          params_dtype=params_dtype,
-                                          quant_config=None,
-                                          prefix=f"{prefix}.gate",
-                                          profile_bytes=gate_profile_bytes)
+            self.profile_driven_router = None
         
         self.pre_attention_layernorm = RMSNorm(hidden_size)
         self.post_attention_layernorm = RMSNorm(hidden_size)
@@ -234,13 +227,19 @@ class MoEAttention(nn.Module):
         attn_output = self.attn(q, k, v, kv_cache=kv_cache, attn_metadata=attn_metadata)
         output, _ = self.o_proj(attn_output)
         output, residual = self.post_attention_layernorm(output, residual)
-        if isinstance(self.gate, ProfileDrivenGate):
-            assert request_ids is not None, "Profile-driven gating requires request_ids"
-            router_logits, _ = self.gate(output, request_ids, self.layer_id)
-        else:
-            router_logits, _ = self.gate(output)
+        router_logits, _ = self.gate(output)
         
-        if self.weighted_router is not None:
+        if self.profile_driven_router is not None:
+            assert request_ids is not None, "Profile-driven routing requires request_ids"
+            topk_weights, topk_ids = self.profile_driven_router.route(
+                request_ids=request_ids,
+                token_indices=positions,
+                layer_id=self.layer_id,
+                top_k=self.top_k,
+                device=hidden_states.device,
+                dtype=hidden_states.dtype,
+            )
+        elif self.weighted_router is not None:
             topk_weights, topk_ids = self._random_routing_with_weights(router_logits)
         else:
             router_logits = torch.rand_like(router_logits)

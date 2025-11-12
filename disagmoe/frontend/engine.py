@@ -160,7 +160,7 @@ class AttentionEngineMixin:
             positions = batch.seq_lens_tensor.to(torch.int64)
 
         with self._timer.range("execute"):
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta)
+            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta, request_ids=batch.req_ids)
             
         with self._timer.range("postprocess"):
             # Deprecated optimization:
