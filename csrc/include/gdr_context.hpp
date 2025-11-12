@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 #include <torch/torch.h>
 
+#include <iostream>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -24,20 +25,10 @@ public:
     // Constructors
     // ============================================================
 
-    /// Construct from raw CUDA pointer and size (in bytes)
-    GdrContext(uint64_t dev_ptr_u64, size_t size)
-        : mh_{}, bar_ptr_{nullptr}, cpu_ptr_{nullptr},
-          size_{size}, dev_ptr_{static_cast<uintptr_t>(dev_ptr_u64)} {
-        if (size_ == 0)
-            throw std::runtime_error("GdrContext: size must be > 0");
-        initialize(dev_ptr_u64, size_);
-    }
-
     /// Construct directly from a torch::Tensor
     explicit GdrContext(const torch::Tensor& tensor)
-        : mh_{}, bar_ptr_{nullptr}, cpu_ptr_{nullptr},
-          size_{tensor.nbytes()},
-          dev_ptr_{reinterpret_cast<uintptr_t>(tensor.data_ptr())} {
+        : tensor_(tensor), mh_{}, bar_ptr_{nullptr}, cpu_ptr_{nullptr}, 
+          size_{tensor.nbytes()}, dev_ptr_{reinterpret_cast<uintptr_t>(tensor.data_ptr())} {
 
         if (!tensor.is_cuda())
             throw std::runtime_error("GdrContext: tensor must be CUDA tensor");
@@ -146,13 +137,7 @@ private:
         if (gdr_handle_) {
             if (bar_ptr_) {
                 // Get the mapped size from info before unmapping
-                gdr_info_t info{};
-                if (gdr_get_info(gdr_handle_, mh_, &info) == 0 && info.mapped_size > 0) {
-                    gdr_unmap(gdr_handle_, mh_, bar_ptr_, info.mapped_size);
-                } else {
-                    // Fallback: use original size
-                    gdr_unmap(gdr_handle_, mh_, bar_ptr_, size_);
-                }
+                gdr_unmap(gdr_handle_, mh_, bar_ptr_, size_);
                 bar_ptr_ = nullptr;
             }
             if (mh_.h) {
@@ -181,4 +166,6 @@ private:
     void* cpu_ptr_;
     size_t size_;
     uintptr_t dev_ptr_;
+
+    torch::Tensor tensor_;
 };

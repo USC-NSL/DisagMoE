@@ -12,6 +12,7 @@ from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C
+import gc
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -66,11 +67,11 @@ def get_cuda_aligned_tensor(numel: int, dtype, alignment: int = GPU_PAGE_SIZE):
 
     # 4. Reinterpret as the requested dtype
     aligned_tensor = aligned_buf.view(dtype)
-
+    
     # 5. Sanity check
     assert aligned_tensor.data_ptr() % alignment == 0, "Alignment failed!"
 
-    return aligned_tensor, buf  # keep buf alive!
+    return aligned_tensor
 
 class CPUBlockManager(BaseBlockManager):
     """CPU-based block manager for comparison - follows original implementation"""
@@ -85,40 +86,16 @@ class CPUBlockManager(BaseBlockManager):
         max_forward_batch_size = 256
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
 
-        self.block_table_cuda_buffer, self.block_table_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size * max_pages_per_req, torch.int32)
-        self.slot_mapping_cuda_buffer, self.slot_mapping_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.long)
+        self.block_table_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size * max_pages_per_req, torch.int32)
+        self.slot_mapping_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.long)
         
-        self.seq_lens_cuda_buffer, self.seq_lens_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
-        self.context_lens_cuda_buffer, self.context_lens_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
-        self.seq_start_loc_cuda_buffer, self.seq_start_loc_base_buffer = get_cuda_aligned_tensor(max_forward_batch_size + 1, torch.int32)
+        self.seq_lens_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
+        self.context_lens_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size, torch.int32)
+        self.seq_start_loc_cuda_buffer = get_cuda_aligned_tensor(max_forward_batch_size + 1, torch.int32)
         
         if self.use_gdr_copy:
             self._block_mgr.register_gdr_context(self.block_table_cuda_buffer, self.slot_mapping_cuda_buffer)
             self._block_mgr.register_seq_info_gdr(self.seq_lens_cuda_buffer, self.context_lens_cuda_buffer, self.seq_start_loc_cuda_buffer)
-
-    def __del__(self):
-        """Ensure C++ BlockManager is destroyed before Python tensor buffers.
-        
-        This is critical because the BlockManager's destructor cleans up GDR contexts
-        that map the tensor buffers. If tensors are destroyed first, they may reference
-        unmapped BAR1 memory, causing a segfault.
-        
-        By explicitly closing and deleting _block_mgr here, we ensure the C++ destructor
-        runs before Python's garbage collector destroys the tensor buffers.
-        """
-        # Explicitly close and delete _block_mgr first to ensure C++ cleanup happens
-        # before Python destroys the tensor buffers. This triggers the C++ destructor
-        # which will clean up GDR contexts properly.
-        try:
-            if hasattr(self, '_block_mgr') and self._block_mgr is not None:
-                # Delete the reference to trigger pybind11 cleanup immediately
-                # This ensures the C++ destructor runs before tensor buffers are destroyed
-                del self._block_mgr
-        except (AttributeError, RuntimeError, Exception):
-            # Ignore exceptions during shutdown - things may already be torn down
-            # AttributeError: attribute might not exist
-            # RuntimeError: Python interpreter might be shutting down
-            pass
 
     def reset_state(self):
         self.release_seqs(list(self.decode_seq_lens.keys()))

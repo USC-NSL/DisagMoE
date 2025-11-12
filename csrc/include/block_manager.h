@@ -34,12 +34,6 @@ private:
     std::optional<GdrContext> seq_lens_gdr_;
     std::optional<GdrContext> context_lens_gdr_;
     std::optional<GdrContext> seq_start_loc_gdr_;
-    
-    std::optional<torch::Tensor> block_table_tensor_;
-    std::optional<torch::Tensor> slot_mapping_tensor_;
-    std::optional<torch::Tensor> seq_lens_tensor_;
-    std::optional<torch::Tensor> context_lens_tensor_;
-    std::optional<torch::Tensor> seq_start_loc_tensor_;
 
     int get_one_free_block(); 
 

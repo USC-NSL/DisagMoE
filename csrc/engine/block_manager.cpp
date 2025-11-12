@@ -25,27 +25,20 @@ BlockManager::~BlockManager() {
 void BlockManager::close() {
     if (block_table_gdr_) {
         block_table_gdr_.reset();
-        block_table_tensor_.reset();
     }
     if (slot_mapping_gdr_) {
         slot_mapping_gdr_.reset();
-        slot_mapping_tensor_.reset();
     }
     if (seq_lens_gdr_) {
         seq_lens_gdr_.reset();
-        seq_lens_tensor_.reset();
     }
     if (context_lens_gdr_) {
         context_lens_gdr_.reset();
-        context_lens_tensor_.reset();
     }
     if (seq_start_loc_gdr_) {
         seq_start_loc_gdr_.reset();
-        seq_start_loc_tensor_.reset();
     }
-    std::cout << "BlockManager closed, all gdr contexts are cleaned up" << std::endl;
     GdrContext::ensure_gdr_closed();
-    std::cout << "GDR closed" << std::endl;
 }
 int BlockManager::get_one_free_block() {
     std::lock_guard<std::mutex> lock(free_blocks_lock_);
@@ -198,8 +191,6 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
 }
 
 void BlockManager::register_gdr_context(const torch::Tensor &block_table, const torch::Tensor &slot_mapping) {
-    block_table_tensor_.emplace(block_table);
-    slot_mapping_tensor_.emplace(slot_mapping);
     block_table_gdr_.emplace(block_table);
     slot_mapping_gdr_.emplace(slot_mapping);
 }
@@ -262,9 +253,6 @@ torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::v
 }
 
 void BlockManager::register_seq_info_gdr(const torch::Tensor &seq_lens, const torch::Tensor &context_lens, const torch::Tensor &seq_start_loc) {
-    seq_lens_tensor_.emplace(seq_lens);
-    context_lens_tensor_.emplace(context_lens);
-    seq_start_loc_tensor_.emplace(seq_start_loc);
     seq_lens_gdr_.emplace(seq_lens);
     context_lens_gdr_.emplace(context_lens);
     seq_start_loc_gdr_.emplace(seq_start_loc);
