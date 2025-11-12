@@ -11,8 +11,7 @@ from disagmoe.frontend.datatypes import AttentionForwardBatch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
-from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C
-import gc
+from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -23,7 +22,7 @@ class BaseBlockManager:
         self.max_running_reqs = max_running_reqs
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self.decode_seq_lens = {}  # Track sequence lengths for each request
-        self.query_start_loc = torch.arange(self.model_config.max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
+        self.query_start_loc_cuda_buffer = torch.arange(self.model_config.max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
         
     def reset_state(self):
         pass
@@ -82,6 +81,7 @@ class CPUBlockManager(BaseBlockManager):
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
         
         self.use_gdr_copy = True
+        self.use_rebind = True
         
         max_forward_batch_size = 256
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
@@ -96,6 +96,13 @@ class CPUBlockManager(BaseBlockManager):
         if self.use_gdr_copy:
             self._block_mgr.register_gdr_context(self.block_table_cuda_buffer, self.slot_mapping_cuda_buffer)
             self._block_mgr.register_seq_info_gdr(self.seq_lens_cuda_buffer, self.context_lens_cuda_buffer, self.seq_start_loc_cuda_buffer)
+        
+        self.block_table_view = torch.empty(0, dtype=torch.int32, device=self.device)
+        self.slot_mapping_view = torch.empty(0, dtype=torch.int64, device=self.device)
+        self.seq_lens_view = torch.empty(0, dtype=torch.int32, device=self.device)
+        self.context_lens_view = torch.empty(0, dtype=torch.int32, device=self.device)
+        self.seq_start_loc_view = torch.empty(0, dtype=torch.int32, device=self.device)
+        self.query_start_loc_view = torch.empty(0, dtype=torch.int32, device=self.device)
 
     def reset_state(self):
         self.release_seqs(list(self.decode_seq_lens.keys()))
@@ -133,7 +140,75 @@ class CPUBlockManager(BaseBlockManager):
         batch.seq_lens = decode_seq_lens
         
     @nvtx_range("CPUBlockManager.pack_flash_attn_metadata")
-    def pack_flash_attn_metadata(
+    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
+        if self.use_rebind and self.use_gdr_copy and not dummy_cache:
+            return self.pack_flash_attn_metadata_opt(meta_c, batch)
+        else:
+            return self.pack_flash_attn_metadata_naive(meta_c, batch, dummy_cache)
+    
+    @nvtx_range("CPUBlockManager.pack_flash_attn_metadata_opt")
+    def pack_flash_attn_metadata_opt(
+        self, 
+        meta_c: BatchMetadata_C, 
+        batch: AttentionForwardBatch
+    ) -> FlashAttentionMetadata:
+        """Pack FlashAttention metadata using CPU approach - follows original implementation"""
+        num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
+        num_seqs = batch.num_prefill_seqs + batch.num_decode_tokens
+        
+        num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
+        self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
+        
+        rebind_batch_info_tensor(
+            num_tokens,
+            num_pages,
+            self.block_table_view,
+            self.slot_mapping_view,
+            self.seq_lens_view,
+            self.context_lens_view,
+            self.seq_start_loc_view,
+            self.query_start_loc_view,
+            self.block_table_cuda_buffer,
+            self.slot_mapping_cuda_buffer,
+            self.seq_lens_cuda_buffer,
+            self.context_lens_cuda_buffer,
+            self.seq_start_loc_cuda_buffer,
+            self.query_start_loc_cuda_buffer
+        )
+        
+        block_table_cuda = self.block_table_view
+        slot_mapping_cuda = self.slot_mapping_view
+        seq_lens_cuda = self.seq_lens_view
+        context_lens_cuda = self.context_lens_view
+        seq_start_loc_cuda = self.seq_start_loc_view
+        query_start_loc = self.query_start_loc_view
+
+        max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
+        
+        batch.seq_lens_tensor = seq_lens_cuda
+        
+        return FlashAttentionMetadata(
+            0,
+            0,
+            num_tokens,
+            slot_mapping_cuda,
+            seq_lens=batch.seq_lens,
+            seq_lens_tensor=seq_lens_cuda,
+            max_query_len=0,
+            max_prefill_seq_len=0,
+            max_decode_seq_len=max_decode_seq_len,
+            max_decode_query_len=1,
+            query_start_loc=query_start_loc,
+            seq_start_loc=seq_start_loc_cuda,
+            context_lens_tensor=context_lens_cuda,
+            block_tables=block_table_cuda,
+            use_cuda_graph=False,
+            multi_modal_placeholder_index_maps=None,
+            enable_kv_scales_calculation=True,
+        )
+        
+    @nvtx_range("CPUBlockManager.pack_flash_attn_metadata_naive")
+    def pack_flash_attn_metadata_naive(
         self, 
         meta_c: BatchMetadata_C, 
         batch: AttentionForwardBatch, 
@@ -177,7 +252,7 @@ class CPUBlockManager(BaseBlockManager):
             context_lens_cuda = batch_infos_cuda[num_seqs : num_seqs + num_seqs]
             seq_start_loc_cuda = batch_infos_cuda[num_seqs + num_seqs : ]
                 
-        query_start_loc = self.query_start_loc[ : num_tokens + 1]
+        query_start_loc = self.query_start_loc_cuda_buffer[ : num_tokens + 1]
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
         
         batch.seq_lens_tensor = seq_lens_cuda
@@ -322,7 +397,7 @@ class GPUBlockManager(BaseBlockManager):
         context_lens_cuda = seq_lens_cuda - 1
         torch.cumsum(seq_lens_cuda, dim=0, out=self.seq_start_loc[1 : num_tokens + 1])
         seq_start_loc_cuda = self.seq_start_loc[ : num_tokens + 1]
-        query_start_loc = self.query_start_loc[ : num_tokens + 1]
+        query_start_loc = self.query_start_loc_cuda_buffer[ : num_tokens + 1]
         seq_lens = batch.seq_lens
         max_decode_seq_len = max(seq_lens) if len(seq_lens) > 0 else 0
         

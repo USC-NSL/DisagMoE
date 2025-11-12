@@ -15,6 +15,7 @@
 #include "binding_tests.hpp"
 #include "profiler.hpp"
 #include "transport_factory.h"
+#include "tensor_utils.hpp"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
@@ -125,7 +126,10 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     // custom ops
     REGISTER_FUNC(permute_tokens_cuda);
-
+    REGISTER_FUNC(rebind_1d_tensor);
+    REGISTER_FUNC(rebind_2d_tensor);
+    REGISTER_FUNC(rebind_batch_info_tensor);
+    
     // profiler functions
     m.def("recorder_output", &Recorder::output);
     m.def("recorder_create", &Recorder::create);

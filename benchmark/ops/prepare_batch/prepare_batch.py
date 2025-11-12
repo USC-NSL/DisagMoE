@@ -449,11 +449,6 @@ def run_benchmark(batch_sizes: List[int], seq_len: int, num_iterations: int = 10
     
     torch.cuda.synchronize()
     
-    del cpu_mgr
-    print("cpu_mgr deleted")
-    del gpu_mgr
-    print("gpu_mgr deleted")
-    
     # Summary statistics
     print("\n" + "=" * 80)
     print("SUMMARY STATISTICS")

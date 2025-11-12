@@ -280,3 +280,27 @@ void BlockManager::prepare_seq_info_gdr(batch_metadata_t meta, const std::vector
     seq_start_loc_gdr_->copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
     
 }
+
+void rebind_batch_info_tensor(
+    int num_tokens,
+    int num_pages,
+    torch::Tensor &block_table_view,
+    torch::Tensor &slot_mapping_view,
+    torch::Tensor &seq_lens_view,
+    torch::Tensor &context_lens_view,
+    torch::Tensor &seq_start_loc_view,
+    torch::Tensor &query_start_loc_view,
+    const torch::Tensor &block_table_cuda_buffer,
+    const torch::Tensor &slot_mapping_cuda_buffer,
+    const torch::Tensor &seq_lens_cuda_buffer,
+    const torch::Tensor &context_lens_cuda_buffer,
+    const torch::Tensor &seq_start_loc_cuda_buffer,
+    const torch::Tensor &query_start_loc_cuda_buffer
+) {
+    rebind_2d_tensor(block_table_view, block_table_cuda_buffer, 0, num_tokens, num_pages, num_pages, 1);
+    rebind_1d_tensor(slot_mapping_view, slot_mapping_cuda_buffer, 0, num_tokens);
+    rebind_1d_tensor(seq_lens_view, seq_lens_cuda_buffer, 0, num_tokens);
+    rebind_1d_tensor(context_lens_view, context_lens_cuda_buffer, 0, num_tokens);
+    rebind_1d_tensor(seq_start_loc_view, seq_start_loc_cuda_buffer, 0, num_tokens + 1);
+    rebind_1d_tensor(query_start_loc_view, query_start_loc_cuda_buffer, 0, num_tokens + 1);
+}

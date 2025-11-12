@@ -85,3 +85,20 @@ typedef std::shared_ptr<BlockManager> block_manager_t;
 
 typedef std::vector<block_list_t> block_table_t;
 
+void rebind_batch_info_tensor(
+    int num_tokens,
+    int num_pages,
+    torch::Tensor &block_table_view,
+    torch::Tensor &slot_mapping_view,
+    torch::Tensor &seq_lens_view,
+    torch::Tensor &context_lens_view,
+    torch::Tensor &seq_start_loc_view,
+    torch::Tensor &query_start_loc_view,
+    const torch::Tensor &block_table_cuda_buffer,
+    const torch::Tensor &slot_mapping_cuda_buffer,
+    const torch::Tensor &seq_lens_cuda_buffer,
+    const torch::Tensor &context_lens_cuda_buffer,
+    const torch::Tensor &seq_start_loc_cuda_buffer,
+    const torch::Tensor &query_start_loc_cuda_buffer
+);
+
