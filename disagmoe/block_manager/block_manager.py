@@ -1,5 +1,3 @@
-# @copyright SGLang
-# copied and adapted from sglang/srt/mem_cache/mem_pool.py and sglang/srt/mem_cache/allocator.py
 import torch
 import triton
 import triton.language as tl
@@ -64,6 +62,69 @@ class BatchTensorBuffer:
             self.seq_start_loc,
             self.query_start_loc
         )
+        
+class ReqManager:
+    
+    def __init__(self, max_running_reqs: int, use_list: bool = False):
+        self.max_running_reqs = max_running_reqs
+        self.use_list = use_list
+        self.decode_seq_lens = {}
+        self.decode_seq_lens_list = [0] * max_running_reqs
+        
+    def update_decode_seq_lens_dict(self, req_id: int, seq_len: int):
+        self.decode_seq_lens[req_id] = seq_len
+        
+    def get_decode_seq_lens_dict(self, req_id: int) -> int:
+        return self.decode_seq_lens[req_id]
+    
+    def get_active_req_ids_dict(self) -> List[int]:
+        return list(self.decode_seq_lens.keys())
+    
+    def release_reqs_dict(self, req_ids: List[int]):
+        for req_id in req_ids:
+            self.decode_seq_lens.pop(req_id)
+    
+    def update_decode_seq_lens_list(self, req_id: int, seq_len: int):
+        self.decode_seq_lens_list[req_id] = seq_len
+
+    def get_decode_seq_lens_list(self, req_id: int) -> int:
+        return self.decode_seq_lens_list[req_id]
+    
+    def get_active_req_ids_list(self) -> List[int]:
+        req_ids = [i for i in range(self.max_running_reqs) if self.decode_seq_lens_list[i] > 0]
+        return req_ids
+    
+    def release_reqs_list(self, req_ids: List[int]):
+        for req_id in req_ids:
+            self.decode_seq_lens_list[req_id] = 0
+            
+    def get_decode_seq_lens(self, req_id: int) -> int:
+        if self.use_list:
+            return self.get_decode_seq_lens_list(req_id)
+        else:
+            return self.get_decode_seq_lens_dict(req_id)
+    
+    def update_decode_seq_lens(self, req_id: int, seq_len: int):
+        if self.use_list:
+            self.update_decode_seq_lens_list(req_id, seq_len)
+        else:
+            self.update_decode_seq_lens_dict(req_id, seq_len)
+            
+    def get_active_req_ids(self) -> List[int]:
+        if self.use_list:
+            return self.get_active_req_ids_list()
+        else:
+            return self.get_active_req_ids_dict()
+            
+    def release_reqs(self, req_ids: List[int]):
+        if self.use_list:
+            self.release_reqs_list(req_ids)
+        else:
+            self.release_reqs_dict(req_ids)
+            
+    def reset(self):
+        self.decode_seq_lens = {}
+        self.decode_seq_lens_list = [0] * self.max_running_reqs
 
 class BaseBlockManager:
     """Base class for block managers"""
@@ -107,6 +168,8 @@ class CPUBlockManager(BaseBlockManager):
         self.use_gdr_copy = use_gdr_copy
         self.use_rebind = use_rebind
         
+        self.req_manager = ReqManager(max_running_reqs)
+        
         max_forward_batch_size = 256
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
         
@@ -116,14 +179,12 @@ class CPUBlockManager(BaseBlockManager):
         self._block_mgr.register_seq_info_gdr(self.batch_tensor_buffer.seq_lens, self.batch_tensor_buffer.context_lens, self.batch_tensor_buffer.seq_start_loc)
     
     def reset_state(self):
-        self.release_seqs(list(self.decode_seq_lens.keys()))
-        self.decode_seq_lens = {}
+        self.release_seqs(list(self.req_manager.get_active_req_ids()))
+        self.req_manager.reset()
     
     def release_seqs(self, req_ids: List[int]):
-        req_ids = [req_id for req_id in req_ids if req_id in self.decode_seq_lens]
         self._block_mgr.batch_release(req_ids)
-        for req_id in req_ids:
-            self.decode_seq_lens.pop(req_id)
+        self.req_manager.release_reqs(req_ids)
     
     @nvtx_range("CPUBlockManager.update_block_table")
     def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
@@ -134,9 +195,9 @@ class CPUBlockManager(BaseBlockManager):
         if batch.layer_id == self.model_config.layer_ids[0]:
             # Allocate kv blocks for init seqs, update for all decoding seqs
             for i, req_id in enumerate(init_req_ids):
-                self.decode_seq_lens[req_id] = batch.init_prefill_lens[i]
+                self.req_manager.update_decode_seq_lens(req_id, batch.init_prefill_lens[i])
             
-            decode_seq_lens = [self.decode_seq_lens.get(req_id) for req_id in decode_req_ids]
+            decode_seq_lens = [self.req_manager.get_decode_seq_lens(req_id) for req_id in decode_req_ids]
             
             # Update block table
             self._block_mgr.update_block_table(meta_c, decode_seq_lens)
@@ -144,9 +205,9 @@ class CPUBlockManager(BaseBlockManager):
             # Increment sequence lengths for all sequences
             for i, req_id in enumerate(decode_req_ids):
                 decode_seq_lens[i] += 1
-                self.decode_seq_lens[req_id] += 1
+                self.req_manager.update_decode_seq_lens(req_id, decode_seq_lens[i])
         else:
-            decode_seq_lens = [self.decode_seq_lens.get(req_id) for req_id in decode_req_ids]
+            decode_seq_lens = [self.req_manager.get_decode_seq_lens(req_id) for req_id in decode_req_ids]
             
         batch.seq_lens = decode_seq_lens
         

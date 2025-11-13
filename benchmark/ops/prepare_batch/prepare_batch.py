@@ -17,18 +17,16 @@ from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMet
 
 def prefill_cpu_update_block_table_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
     torch.cuda.synchronize()
-    with torch_profiler.record_function("CPU/update_block_table/prefill_iter"):
-        t0 = time.time()
-        cpu_mgr.update_block_table(meta_c, batch)
-        torch.cuda.synchronize()
+    t0 = time.time()
+    cpu_mgr.update_block_table(meta_c, batch)
+    torch.cuda.synchronize()
     return time.time() - t0
 
 def prefill_gpu_update_block_table_iter(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
     torch.cuda.synchronize()
-    with torch_profiler.record_function("GPU/update_block_table/prefill_iter"):
-        t0 = time.time()
-        gpu_mgr.update_block_table(meta_c, batch)
-        torch.cuda.synchronize()
+    t0 = time.time()
+    gpu_mgr.update_block_table(meta_c, batch)
+    torch.cuda.synchronize()
     return time.time() - t0
 
 def decode_cpu_update_block_table_iter_layer1(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
@@ -75,7 +73,7 @@ def decode_cpu_setup_layer1_iter(cpu_mgr: CPUBlockManager, batch_size: int, seq_
     with torch_profiler.record_function("setup/decode_layer1/cpu_reset_and_alloc_iter"):
         cpu_mgr.reset_state()
         for i in range(batch_size):
-            cpu_mgr.decode_seq_lens[i] = seq_len
+            cpu_mgr.req_manager.update_decode_seq_lens(i, seq_len)
         for i in range(batch_size):
             cpu_mgr._block_mgr.allocate(i, seq_len)
 
@@ -97,12 +95,9 @@ def decode_gpu_setup_layer1_iter(gpu_mgr: GPUBlockManager, batch_size: int, seq_
 def pack_cpu_setup_iter(cpu_mgr: CPUBlockManager, batch_size: int, seq_len: int) -> List[int]:
     with torch_profiler.record_function("setup/pack_metadata/cpu_reset_and_alloc_iter"):
         cpu_mgr.reset_state()
-        decode_seq_lens: List[int] = []
         for i in range(batch_size):
-            cpu_mgr.decode_seq_lens[i] = seq_len
+            cpu_mgr.req_manager.update_decode_seq_lens(i, seq_len)
             cpu_mgr._block_mgr.allocate(i, seq_len)
-            decode_seq_lens.append(seq_len)
-    return decode_seq_lens
 
 def pack_gpu_setup_once(gpu_mgr: GPUBlockManager, batch: AttentionForwardBatch, batch_size: int, seq_len: int):
     with torch_profiler.record_function("setup/pack_metadata/gpu_reset_and_alloc_once"):
