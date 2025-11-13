@@ -35,10 +35,6 @@ ZMQ_INCLUDE_PATH = os.path.join(ZMQ_HOME, "include")
 ZMQ_LIBRARY_PATH = os.path.join(ZMQ_HOME, "lib")
 TMPDIR=os.environ.get("TMPDIR", "/tmp/disagmoe/")
 
-GDRCOPY_HOME = os.environ.get("GDRCOPY_HOME", "/usr/local/gdrcopy")
-GDRCOPY_INCLUDE_DIR = os.path.join(GDRCOPY_HOME, "include")
-GDRCOPY_LIBRARY_DIR = os.path.join(GDRCOPY_HOME, "lib")
-
 def find_all_c_targets(path):
     res = []
     for root, dirs, files in os.walk(path):
@@ -70,7 +66,6 @@ ext_modules = [
             *TORCH_INCLUDES,
             C_INCLUDE_PATH,
             CPP_INCLUDE_PATH,
-            GDRCOPY_INCLUDE_DIR,
         ],
         library_dirs=[
             CUDA_LIBRARY_DIR,
@@ -79,11 +74,10 @@ ext_modules = [
             NCCL_LIBRARY_DIR,
             ZMQ_LIBRARY_PATH,
             LD_LIBRARY_PATH,
-            GDRCOPY_LIBRARY_DIR,
             "/usr/local/lib",
             "/usr/lib",
         ], 
-        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
+        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu"],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),
