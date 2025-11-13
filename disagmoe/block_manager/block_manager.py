@@ -158,7 +158,7 @@ class CPUBlockManager(BaseBlockManager):
         max_running_reqs: int, 
         device: str = "cuda",
         use_gdr_copy: bool = True,
-        use_rebind: bool = True
+        use_rebind: bool = True,
     ):
         super().__init__(model_config, cache_config, max_running_reqs, device)
         self.block_size = cache_config.block_size
@@ -228,9 +228,9 @@ class CPUBlockManager(BaseBlockManager):
         num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
         num_seqs = batch.num_prefill_seqs + batch.num_decode_tokens
         
-        num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
+        num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
         self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
-        self.batch_tensor_buffer.create_view(num_tokens, num_pages)
+        self.batch_tensor_buffer.create_view(num_tokens, num_pages_per_token)
 
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
         batch.seq_lens_tensor = self.batch_tensor_buffer.seq_lens_view
@@ -279,8 +279,8 @@ class CPUBlockManager(BaseBlockManager):
             )
         else:
             if self.use_gdr_copy:
-                num_pages = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
-                block_table_cuda = self.batch_tensor_buffer.block_table[ : num_pages].view(num_tokens, -1)
+                num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
+                block_table_cuda = self.batch_tensor_buffer.block_table[ : num_pages_per_token * num_tokens].view(num_tokens, -1)
                 slot_mapping_cuda = self.batch_tensor_buffer.slot_mapping[ : num_tokens]
             else:
                 block_table_1d = self._block_mgr.prepare_block_table(meta_c, batch.seq_lens)

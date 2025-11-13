@@ -227,7 +227,7 @@ int BlockManager::prepare_block_table_gdr(batch_metadata_t meta, const std::vect
     }
     slot_mapping_gdr_->copy_from_host(slot_mapping.data(), n * sizeof(int64_t));
 
-    return n * m;
+    return m;
 }
 
 torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
