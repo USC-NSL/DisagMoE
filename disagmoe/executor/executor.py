@@ -20,8 +20,6 @@ from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManage
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
-from disagmoe_c import prepare_batch_infos
-
 import triton.language as tl
 import triton
 

@@ -5,9 +5,11 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
+#include "gdr_context.hpp"
 
 typedef std::shared_ptr<std::vector<int>> block_list_t;
 
@@ -27,13 +29,23 @@ private:
 
     std::unordered_map<int , block_list_t> block_tables_{};
 
+    std::optional<GdrContext> block_table_gdr_;
+    std::optional<GdrContext> slot_mapping_gdr_;
+    std::optional<GdrContext> seq_lens_gdr_;
+    std::optional<GdrContext> context_lens_gdr_;
+    std::optional<GdrContext> seq_start_loc_gdr_;
+
     int get_one_free_block(); 
 
 public:
 
     BlockManager(int block_size, int num_blocks, int reserved_blocks);
 
+    ~BlockManager();
+
     bool can_allocate(int seq_len);
+
+    void close();
 
     void release(int seq_ids);
 
@@ -56,11 +68,37 @@ public:
     void update_block_table(batch_metadata_t meta, const std::vector<int> &context_lens);
 
     torch::Tensor prepare_block_table(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
+
+    void register_gdr_context(const torch::Tensor &block_table, const torch::Tensor &slot_mapping);
+
+    int prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
+
+    // this function is not related to block manager, but we just put it here for convenience
+    torch::Tensor prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
+
+    void register_seq_info_gdr(const torch::Tensor &seq_lens, const torch::Tensor &context_lens, const torch::Tensor &seq_start_loc);
+
+    void prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;
 
 typedef std::vector<block_list_t> block_table_t;
 
+void rebind_batch_info_tensor(
+    int num_tokens,
+    int num_pages,
+    torch::Tensor &block_table_view,
+    torch::Tensor &slot_mapping_view,
+    torch::Tensor &seq_lens_view,
+    torch::Tensor &context_lens_view,
+    torch::Tensor &seq_start_loc_view,
+    torch::Tensor &query_start_loc_view,
+    const torch::Tensor &block_table_cuda_buffer,
+    const torch::Tensor &slot_mapping_cuda_buffer,
+    const torch::Tensor &seq_lens_cuda_buffer,
+    const torch::Tensor &context_lens_cuda_buffer,
+    const torch::Tensor &seq_start_loc_cuda_buffer,
+    const torch::Tensor &query_start_loc_cuda_buffer
+);
 
-torch::Tensor prepare_batch_infos(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
