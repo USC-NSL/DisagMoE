@@ -89,6 +89,7 @@ class ProfileDrivenRouter:
 
         self.routing_outcomes = df[expert_columns].to_numpy(dtype=np.int32, copy=False)
         # If projection is required, map profiled expert ids to expected expert ids
+        
         if project_group_size is not None:
             # Only project non-negative expert ids; keep negative placeholders intact
             mask = self.routing_outcomes >= 0
