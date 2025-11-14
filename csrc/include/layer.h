@@ -92,7 +92,7 @@ public:
 
     void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta);
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+    TokenBatch get_batch_from_layer(int layer_id);
 };
 
 using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerScheduler>;

@@ -76,7 +76,7 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     }
 }
 
-std::vector<TokenBatch> UnifiedPool::get_batch_from_layer(int layer_id) {
+TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
     return this->layer_scheduler->get_batch_from_layer(layer_id);
 }

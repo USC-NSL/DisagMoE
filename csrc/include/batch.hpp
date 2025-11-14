@@ -13,7 +13,7 @@
 #include <memory>
 
 // TODO: have a dedicated CUDA stream to deal with GPU memory copy.
-struct TokenBatch {
+struct TokenBatch: ScheduleUnit {
     torch::Tensor data;
     batch_metadata_t metadata;
 
