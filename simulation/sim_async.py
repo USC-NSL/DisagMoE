@@ -26,8 +26,8 @@ EP_GROUP_SIZE      = 16      # "n": number of expert workers globally
 TOTAL_EXPERT_COUNT = 128     # total experts per layer
 MAX_BATCH_SIZE     = 512
 NUM_LAYERS         = 48      # number of expert layers
-TOTAL_REQUESTS     = 1024
-TOKENS_PER_REQUEST = 512
+TOTAL_REQUESTS     = 8192
+TOKENS_PER_REQUEST = 256
 TOTAL_TOKENS       = TOTAL_REQUESTS * TOKENS_PER_REQUEST
 GLOBAL_REQUEST_MAX_BATCH_SIZE = EP_GROUP_SIZE * 256  # max concurrent active requests
 
@@ -35,6 +35,7 @@ ARRIVAL_RATE       = 50.0   # lambda for Poisson arrivals (requests / tick)
 # try for each attention worker, devide the arrival rate by the number of attention workers
 
 ATTN_SERVICE_T     = 2    # time (ticks) per token at attention worker
+ATTN_DP_GROUP_SIZE = EP_GROUP_SIZE  # number of parallel attention workers globally
 TICKS_PER_MILLISECOND = 10  # 0.1 ms per tick
 
 NET_T_EXPERT_TO_ATTN  = 0.1  # fixed network delay expert -> attention in #ticks, 10us
@@ -196,7 +197,7 @@ class FinalCompletionTracker:
 class ProgressTracker:
     """Simple stdout progress bar with ETA estimation."""
 
-    def __init__(self, total_tokens: int, bar_width: int = 30, min_interval: float = 0.5):
+    def __init__(self, total_tokens: int, bar_width: int = 30, min_interval: float = 1.0):
         self.total = max(0, int(total_tokens))
         self.bar_width = bar_width
         self.min_interval = min_interval
@@ -305,7 +306,8 @@ class ExpertWorker:
                  max_batch_size, compute_time_lookup,
                  net_t_expert_to_attn,
                  attention_layers,
-                 final_completion_tracker: FinalCompletionTracker):
+                 final_completion_tracker: FinalCompletionTracker,
+                 batch_stats=None):
         self.env = env
         self.worker_idx = worker_idx
         self.num_layers = num_layers
@@ -315,6 +317,8 @@ class ExpertWorker:
         self.net_t_expert_to_attn = net_t_expert_to_attn
         self.attention_layers = attention_layers
         self.final_completion_tracker = final_completion_tracker
+        self._batch_stats = batch_stats
+        self._total_queue_length = 0
 
         # Per-layer, per-expert queues:
         # queues[layer_idx][local_queue_idx]
@@ -331,19 +335,20 @@ class ExpertWorker:
 
     @property
     def total_queue_length(self):
-        return sum(len(q) for layer_queues in self.queues for q in layer_queues)
+        return self._total_queue_length
 
     def enqueue(self, layer_idx: int, local_queue_idx: int, token: Token):
         q = self.queues[layer_idx][local_queue_idx]
-        was_empty = (self.total_queue_length == 0)
+        was_empty = (self._total_queue_length == 0)
         q.append(token)
+        self._total_queue_length += 1
         # Wake the worker if it was idle
         if was_empty and not self.has_work.triggered:
             self.has_work.succeed()
 
     def run(self):
         while True:
-            if self.total_queue_length == 0:
+            if self._total_queue_length == 0:
                 # No work: go to sleep
                 self.has_work = self.env.event()
                 yield self.has_work
@@ -369,6 +374,12 @@ class ExpertWorker:
             batch = []
             while max_q and len(batch) < self.max_batch_size:
                 batch.append(max_q.popleft())
+                self._total_queue_length -= 1
+
+            # Track batch size statistics if requested.
+            if self._batch_stats is not None:
+                self._batch_stats["total_batch_size"] += len(batch)
+                self._batch_stats["total_batches"] += 1
 
             # Expert compute
             compute_t = self._compute_time_lookup[len(batch)]
@@ -394,16 +405,22 @@ class ExpertWorker:
 
 class AttentionWorker:
     """
-    Maintains a single FIFO queue of ready tokens plus a pending list of
-    partial expert completions. For layer 0, the source injects tokens directly
-    into the ready queue. For deeper layers, each token is released to the ready
-    queue only after all K expert replicas from the previous layer return.
+    Maintains a pending list of partial expert completions for this layer and
+    hands fully-ready tokens to a *global* attention queue that is shared
+    across all layers.
 
-    Once a token is ready:
-      - it receives ATTN_SERVICE_T time for attention/gating
-      - it is routed to all top-k experts from the profile-driven router
-      - a fixed NET_T_ATTN_TO_EXPERT delay is paid before enqueuing the token
-        into every selected expert worker for this layer.
+    Semantics:
+      - Tokens "arrive" to the attention system either from the request source
+        (layer 0) or when all top-k experts in the previous layer finish.
+      - The global attention queue is first-come-first-served across all layers.
+      - There are ATTN_DP_GROUP_SIZE attention workers that run in parallel.
+        In each ATTN_SERVICE_T interval, at most ATTN_DP_GROUP_SIZE tokens can
+        complete attention, regardless of which layer they belong to.
+      - After attention/gating:
+          * the token is routed to all top-k experts from the profile-driven
+            router for this layer;
+          * a fixed NET_T_ATTN_TO_EXPERT delay is paid before enqueuing the
+            token into every selected expert worker for this layer.
     """
     def __init__(self, env, layer_idx,
                  total_expert_count,
@@ -411,7 +428,8 @@ class AttentionWorker:
                  attn_service_t,
                  net_t_attn_to_expert,
                  expert_workers,
-                 profile_router: ProfileDrivenRouter):
+                 profile_router: ProfileDrivenRouter,
+                 attention_resource: simpy.Resource):
         self.env = env
         self.layer_idx = layer_idx
         self.total_expert_count = total_expert_count
@@ -420,9 +438,10 @@ class AttentionWorker:
         self.net_t_attn_to_expert = net_t_attn_to_expert
         self.expert_workers = expert_workers
         self.profile_router = profile_router
+        # Shared across *all* layers to model a global FCFS attention queue
+        # with ATTN_DP_GROUP_SIZE parallel workers.
+        self.attention_resource = attention_resource
 
-        self.queue = deque()
-        self.has_work = env.event()
         self.pending_tokens: Dict[int, Token] = {}
         self.pending_counts = defaultdict(int)
 
@@ -431,16 +450,15 @@ class AttentionWorker:
             "total_expert_count must be divisible by ep_group_size"
         self.queues_per_worker = total_expert_count // ep_group_size
 
-        self.proc = env.process(self.run())
-
         self._router_device = torch.device("cpu")
         self._router_dtype = torch.float32
 
     def enqueue(self, token: Token):
-        was_empty = (len(self.queue) == 0)
-        self.queue.append(token)
-        if was_empty and not self.has_work.triggered:
-            self.has_work.succeed()
+        """
+        Schedule attention + routing for a single token by enqueuing it into
+        the global FCFS attention queue shared across all layers.
+        """
+        self.env.process(self._process_token(token))
 
     def notify_expert_completion(self, token: Token):
         """
@@ -475,33 +493,32 @@ class AttentionWorker:
             f"but only {expected} were expected."
         )
 
-    def run(self):
-        while True:
-            if len(self.queue) == 0:
-                self.has_work = self.env.event()
-                yield self.has_work
-
-            token = self.queue.popleft()
-
-            # Attention/gating compute
+    def _process_token(self, token: Token):
+        # First-come-first-served attention/gating with limited parallelism.
+        # All layers share the same attention_resource so tokens of different
+        # layers compete in a single global queue.
+        with self.attention_resource.request() as req:
+            # Wait for an attention slot.
+            yield req
+            # Attention/gating compute for this token.
             yield self.env.timeout(self.attn_service_t)
 
-            # Decide routing for all top-k experts
-            global_expert_ids = self._route_token(token)
-            fanout = len(global_expert_ids)
-            if fanout == 0:
-                raise RuntimeError(f"Router returned no experts for token {token.tid}")
-            token.layer_fanout[self.layer_idx] = fanout
+        # Decide routing for all top-k experts
+        global_expert_ids = self._route_token(token)
+        fanout = len(global_expert_ids)
+        if fanout == 0:
+            raise RuntimeError(f"Router returned no experts for token {token.tid}")
+        token.layer_fanout[self.layer_idx] = fanout
 
-            # Network delay to expert queues (modeled as a single hop before dispatch)
-            yield self.env.timeout(self.net_t_attn_to_expert)
+        # Network delay to expert queues (modeled as a single hop before dispatch)
+        yield self.env.timeout(self.net_t_attn_to_expert)
 
-            # Send token copies into each chosen expert queue in THIS layer
-            for global_expert_id in global_expert_ids:
-                worker_idx = global_expert_id // self.queues_per_worker
-                local_queue_idx = global_expert_id % self.queues_per_worker
-                expert_worker = self.expert_workers[worker_idx]
-                expert_worker.enqueue(self.layer_idx, local_queue_idx, token)
+        # Send token copies into each chosen expert queue in THIS layer
+        for global_expert_id in global_expert_ids:
+            worker_idx = global_expert_id // self.queues_per_worker
+            local_queue_idx = global_expert_id % self.queues_per_worker
+            expert_worker = self.expert_workers[worker_idx]
+            expert_worker.enqueue(self.layer_idx, local_queue_idx, token)
 
     def _route_token(self, token: Token) -> List[int]:
         """Return the list of expert ids selected by the profile-driven router."""
@@ -565,6 +582,7 @@ def run_simulation(
     profile_routing_path=PROFILE_ROUTING_PATH,
     routing_top_k=ROUTING_TOP_K,
     global_request_max_batch_size=GLOBAL_REQUEST_MAX_BATCH_SIZE,
+    attn_dp_group_size=ATTN_DP_GROUP_SIZE,
 ):
     random.seed(RNG_SEED)
     env = simpy.Environment()
@@ -597,11 +615,22 @@ def run_simulation(
         completion_callback=request_manager.handle_token_completion,
     )
 
+    # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
+    # expected to set this explicitly; we still clamp it to a positive int.
+    attn_dp_group_size = max(1, int(attn_dp_group_size))
+    attention_resource = simpy.Resource(env, capacity=attn_dp_group_size)
+
     # Build expert workers (shared across all layers) and per-layer attention workers.
     expert_workers = []
     attention_layers = []
 
     queues_per_worker_per_layer = total_expert_count // ep_group_size
+
+    # Aggregate statistics for per-expert batch sizes.
+    batch_stats = {
+        "total_batch_size": 0.0,
+        "total_batches": 0,
+    }
 
     # Load compute profile into a lookup table and validate coverage
     compute_time_lookup = expert_compute_time_lookup_table_from_profile(
@@ -631,6 +660,7 @@ def run_simulation(
             net_t_expert_to_attn=NET_T_EXPERT_TO_ATTN,
             attention_layers=None,  # temp, will fix after we create them
             final_completion_tracker=final_completion_tracker,
+            batch_stats=batch_stats,
         )
         expert_workers.append(worker)
 
@@ -645,6 +675,7 @@ def run_simulation(
             net_t_attn_to_expert=NET_T_ATTN_TO_EXPERT,
             expert_workers=expert_workers,
             profile_router=profile_router,
+            attention_resource=attention_resource,
         )
         attention_layers.append(attn)
 
@@ -692,12 +723,21 @@ def run_simulation(
         total_requests / makespan_sec if makespan_sec > 0 else 0.0
     )
 
+    # Average per-expert batch size across all expert compute invocations.
+    if batch_stats["total_batches"] > 0:
+        avg_per_expert_batch_size = (
+            batch_stats["total_batch_size"] / batch_stats["total_batches"]
+        )
+    else:
+        avg_per_expert_batch_size = 0.0
+
     print(f"Simulation finished at time {makespan:.3f}")
     print(f"Average completion time over {len(latencies)} tokens: {avg_latency:.3f}")
     print(f"Average throughput: {avg_throughput_req_per_sec:.3f} requests/sec")
     print(f"Average request latency: {avg_request_latency_ms:.3f} ms")
     print(f"P90 request latency: {p90_request_latency_ms:.3f} ms")
     print(f"P99 request latency: {p99_request_latency_ms:.3f} ms")
+    print(f"Average per-expert batch size: {avg_per_expert_batch_size:.3f}")
 
     return {
         "completion_times": completion_times,
@@ -707,6 +747,7 @@ def run_simulation(
         "avg_request_latency_ms": avg_request_latency_ms,
         "p90_request_latency_ms": p90_request_latency_ms,
         "p99_request_latency_ms": p99_request_latency_ms,
+        "avg_per_expert_batch_size": avg_per_expert_batch_size,
     }
 
 

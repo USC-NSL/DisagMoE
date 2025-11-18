@@ -26,8 +26,8 @@ EP_GROUP_SIZE      = 16      # "n": number of expert workers globally
 TOTAL_EXPERT_COUNT = 128     # total experts per layer
 MAX_BATCH_SIZE     = 512
 NUM_LAYERS         = 48      # number of expert layers
-TOTAL_REQUESTS     = 1024
-TOKENS_PER_REQUEST = 512
+TOTAL_REQUESTS     = 8192
+TOKENS_PER_REQUEST = 256
 TOTAL_TOKENS       = TOTAL_REQUESTS * TOKENS_PER_REQUEST
 GLOBAL_REQUEST_MAX_BATCH_SIZE = EP_GROUP_SIZE * 256  # ??????? max concurrent active requests
 
@@ -35,6 +35,7 @@ ARRIVAL_RATE       = 50.0   # lambda for Poisson arrivals (requests / tick)
 # try for each attention worker, devide the arrival rate by the number of attention workers
 
 ATTN_SERVICE_T     = 2    # time (ticks) per token at attention worker
+ATTN_DP_GROUP_SIZE = EP_GROUP_SIZE  # number of parallel attention workers globally
 TICKS_PER_MILLISECOND = 10  # 0.1 ms per tick
 
 NET_T_EXPERT_TO_ATTN  = 0.1  # fixed network delay expert -> attention in #ticks, 10us
@@ -86,7 +87,7 @@ class RequestState:
 class ProgressTracker:
     """Simple stdout progress bar with ETA estimation."""
 
-    def __init__(self, total_tokens: int, bar_width: int = 30, min_interval: float = 0.5):
+    def __init__(self, total_tokens: int, bar_width: int = 30, min_interval: float = 1.0):
         self.total = max(0, int(total_tokens))
         self.bar_width = bar_width
         self.min_interval = min_interval
@@ -207,6 +208,7 @@ class SyncMoESimulator:
         ep_group_size: int,
         max_batch_size: int,
         attn_service_t: float,
+        attn_dp_group_size: int,
         net_t_attn_to_expert: float,
         net_t_expert_to_attn: float,
         compute_time_lookup: Dict[int, float],
@@ -223,6 +225,7 @@ class SyncMoESimulator:
         self.ep_group_size = ep_group_size
         self.max_batch_size = max_batch_size
         self.attn_service_t = attn_service_t
+        self.attn_dp_group_size = max(1, int(attn_dp_group_size))
         self.net_t_attn_to_expert = net_t_attn_to_expert
         self.net_t_expert_to_attn = net_t_expert_to_attn
         self.compute_time_lookup = compute_time_lookup
@@ -260,6 +263,11 @@ class SyncMoESimulator:
         # Per-layer metrics for imbalance analysis
         self.layer_expert_runtimes: List[float] = []
         self.layer_wait_imbalances: List[float] = []
+        self.worker_queue_stddevs: List[float] = []
+
+        # Batch size statistics (per expert compute invocation)
+        self.total_expert_batch_size: float = 0.0
+        self.total_expert_batch_count: int = 0
 
     def run(self):
         while self.completed_tokens < self.expected_total_tokens:
@@ -286,11 +294,11 @@ class SyncMoESimulator:
 
         # Aggregate per-layer metrics across all layers and iterations.
         if self.layer_expert_runtimes:
-            avg_layer_expert_runtime = (
+            avg_layer_runtime = (
                 sum(self.layer_expert_runtimes) / len(self.layer_expert_runtimes)
             )
         else:
-            avg_layer_expert_runtime = 0.0
+            avg_layer_runtime = 0.0
 
         if self.layer_wait_imbalances:
             avg_layer_wait_imbalance = (
@@ -299,13 +307,29 @@ class SyncMoESimulator:
         else:
             avg_layer_wait_imbalance = 0.0
 
+        if self.worker_queue_stddevs:
+            avg_layer_worker_queue_stddev = (
+                sum(self.worker_queue_stddevs) / len(self.worker_queue_stddevs)
+            )
+        else:
+            avg_layer_worker_queue_stddev = 0.0
+
+        if self.total_expert_batch_count > 0:
+            avg_per_expert_batch_size = (
+                self.total_expert_batch_size / self.total_expert_batch_count
+            )
+        else:
+            avg_per_expert_batch_size = 0.0
+
         return {
             "completion_times": self.completion_times,
             "token_latencies": self.token_latencies,
             "request_latency_values": self.request_latency_values,
             "makespan": self.current_time,
-            "avg_layer_expert_runtime": avg_layer_expert_runtime,
+            "avg_layer_runtime": avg_layer_runtime,
             "avg_layer_wait_imbalance": avg_layer_wait_imbalance,
+            "avg_layer_worker_queue_stddev": avg_layer_worker_queue_stddev,
+            "avg_per_expert_batch_size": avg_per_expert_batch_size,
         }
 
     # ------------------------------
@@ -365,10 +389,28 @@ class SyncMoESimulator:
         if token_count == 0:
             return 0.0
 
-        attention_time = token_count * self.attn_service_t
-        dispatch_time = token_count * self.net_t_attn_to_expert
+        # Model attention/gating with a shared pool of ATTN_DP_GROUP_SIZE
+        # workers. In each ATTN_SERVICE_T interval, at most that many tokens
+        # can complete attention. Within a layer, this reduces to:
+        #   ceil(token_count / ATTN_DP_GROUP_SIZE) * ATTN_SERVICE_T
+        # We keep the attention pool global conceptually, but because this
+        # synchronous simulator processes layers sequentially per iteration,
+        # the effect is captured via per-layer throughput.
+        batches = math.ceil(token_count / float(self.attn_dp_group_size))
+        attention_time = batches * self.attn_service_t
+        dispatch_time = self.net_t_attn_to_expert
 
         worker_loads = self._route_layer(layer_idx, tokens)
+
+        # Record per-worker queue imbalance (stddev over that worker's expert queues).
+        for queues in worker_loads:
+            if not queues:
+                continue
+            mean = sum(queues) / float(len(queues))
+            variance = sum((q - mean) ** 2 for q in queues) / float(len(queues))
+            stddev = math.sqrt(variance)
+            self.worker_queue_stddevs.append(stddev)
+
         worker_times = [
             self._simulate_worker_time(loads) for loads in worker_loads
         ]
@@ -445,6 +487,8 @@ class SyncMoESimulator:
             queues[queue_idx] -= batch
             total_tokens -= batch
             compute_t = self.compute_time_lookup[batch]
+            self.total_expert_batch_size += batch
+            self.total_expert_batch_count += 1
             elapsed += compute_t + self.net_t_expert_to_attn
         return elapsed
 
@@ -483,6 +527,7 @@ def run_simulation(
     tokens_per_request=TOKENS_PER_REQUEST,
     arrival_rate=ARRIVAL_RATE,
     attn_service_t=ATTN_SERVICE_T,
+    attn_dp_group_size=ATTN_DP_GROUP_SIZE,
     net_t_attn_to_expert=NET_T_ATTN_TO_EXPERT,
     net_t_expert_to_attn=NET_T_EXPERT_TO_ATTN,
     ticks_per_millisecond=TICKS_PER_MILLISECOND,
@@ -514,6 +559,10 @@ def run_simulation(
         top_k=routing_top_k,
     )
 
+    # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
+    # expected to set this explicitly; we still clamp it to a positive int.
+    attn_dp_group_size = max(1, int(attn_dp_group_size))
+
     request_arrivals = generate_request_arrivals(
         total_requests=total_requests,
         arrival_rate=arrival_rate,
@@ -528,6 +577,7 @@ def run_simulation(
         ep_group_size=ep_group_size,
         max_batch_size=max_batch_size,
         attn_service_t=attn_service_t,
+        attn_dp_group_size=attn_dp_group_size,
         net_t_attn_to_expert=net_t_attn_to_expert,
         net_t_expert_to_attn=net_t_expert_to_attn,
         compute_time_lookup=compute_time_lookup,
@@ -541,8 +591,10 @@ def run_simulation(
     token_latencies = results["token_latencies"]
     request_latency_values = results["request_latency_values"]
     makespan = results["makespan"]
-    avg_layer_expert_runtime = results["avg_layer_expert_runtime"]
+    avg_layer_runtime = results["avg_layer_runtime"]
     avg_layer_wait_imbalance = results["avg_layer_wait_imbalance"]
+    avg_layer_worker_queue_stddev = results["avg_layer_worker_queue_stddev"]
+    avg_per_expert_batch_size = results["avg_per_expert_batch_size"]
 
     if len(completion_times) != total_tokens_expected:
         print(
@@ -579,7 +631,7 @@ def run_simulation(
         else 0.0
     )
 
-    avg_layer_expert_runtime_ms = avg_layer_expert_runtime / ticks_per_millisecond
+    avg_layer_runtime_ms = avg_layer_runtime / ticks_per_millisecond
     avg_layer_wait_imbalance_ms = avg_layer_wait_imbalance / ticks_per_millisecond
 
     print(f"Simulation finished at time {makespan:.3f}")
@@ -588,19 +640,25 @@ def run_simulation(
     print(f"Average request latency: {avg_request_latency_ms:.3f} ms")
     print(f"P90 request latency: {p90_request_latency_ms:.3f} ms")
     print(f"P99 request latency: {p99_request_latency_ms:.3f} ms")
-    print(f"Average per-layer expert runtime: {avg_layer_expert_runtime_ms:.3f} ms")
+    print(f"Average per-layer runtime: {avg_layer_runtime_ms:.3f} ms")
     print(f"Average per-layer longest wait: {avg_layer_wait_imbalance_ms:.3f} ms")
+    print(f"Average per-expert batch size: {avg_per_expert_batch_size:.3f}")
+    print(
+        f"Average per-layer worker queue stddev: {avg_layer_worker_queue_stddev:.3f}"
+    )
 
     return {
         "completion_times": completion_times,
         "avg_latency": avg_latency,
         "makespan": makespan,
-        "avg_layer_expert_runtime": avg_layer_expert_runtime,
+        "avg_layer_runtime": avg_layer_runtime,
         "avg_layer_wait_imbalance": avg_layer_wait_imbalance,
         "avg_throughput_req_per_sec": avg_throughput_req_per_sec,
         "avg_request_latency_ms": avg_request_latency_ms,
         "p90_request_latency_ms": p90_request_latency_ms,
         "p99_request_latency_ms": p99_request_latency_ms,
+        "avg_layer_worker_queue_stddev": avg_layer_worker_queue_stddev,
+        "avg_per_expert_batch_size": avg_per_expert_batch_size,
     }
 
 
