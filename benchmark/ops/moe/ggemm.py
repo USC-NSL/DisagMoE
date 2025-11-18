@@ -14,7 +14,24 @@ print("Using device:", device)
 
 torch.cuda.set_device(device)
 torch.set_default_device(device)
-torch.set_default_dtype(torch.bfloat16)
+# Dtype configuration: bf16 (default), fp16, or fp8 (storage with bf16 compute)
+_DTYPE_STR = os.environ.get("GGEMM_DTYPE", "bf16").lower()
+if _DTYPE_STR == "fp16":
+    COMPUTE_DTYPE = torch.float16
+    STORAGE_DTYPE = None
+elif _DTYPE_STR == "bf16":
+    COMPUTE_DTYPE = torch.bfloat16
+    STORAGE_DTYPE = None
+elif _DTYPE_STR == "fp8":
+    # Use FP8 (e4m3fn) for storage; computations are performed in bf16
+    # Note: torch.matmul/gmm do not operate directly on FP8; we dequantize to COMPUTE_DTYPE when used.
+    COMPUTE_DTYPE = torch.bfloat16
+    STORAGE_DTYPE = torch.float8_e4m3fn
+else:
+    raise ValueError(f"Unsupported GGEMM_DTYPE '{_DTYPE_STR}'. Use one of: bf16, fp16, fp8.")
+
+torch.set_default_dtype(COMPUTE_DTYPE)
+print(f"GGEMM dtypes -> compute: {COMPUTE_DTYPE}, storage: {STORAGE_DTYPE}")
 
 # Minimal Perfetto trace enablement via env var PERFETTO_TRACE
 trace_path = os.environ.get("PERFETTO_TRACE")
@@ -26,10 +43,24 @@ if trace_path:
     _prof.start()
 
 @torch.inference_mode()
-def alloc_expert_weights(hidden_size, intermediate_size, num_experts,
-                         device, dtype=torch.bfloat16):
-    BCs = torch.randn(num_experts, hidden_size, intermediate_size * 2, device=device, dtype=dtype).contiguous()
-    Ds = torch.randn(num_experts, intermediate_size, hidden_size, device=device, dtype=dtype).contiguous()
+def alloc_expert_weights(
+    hidden_size,
+    intermediate_size,
+    num_experts,
+    device,
+    compute_dtype=COMPUTE_DTYPE,
+    storage_dtype=STORAGE_DTYPE,
+):
+    # Allocate in compute dtype; optionally cast to storage dtype (e.g., FP8)
+    BCs = torch.randn(
+        num_experts, hidden_size, intermediate_size * 2, device=device, dtype=compute_dtype
+    ).contiguous()
+    Ds = torch.randn(
+        num_experts, intermediate_size, hidden_size, device=device, dtype=compute_dtype
+    ).contiguous()
+    if storage_dtype is not None:
+        BCs = BCs.to(storage_dtype).contiguous()
+        Ds = Ds.to(storage_dtype).contiguous()
     return BCs, Ds
 
  
@@ -43,10 +74,14 @@ def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
 
     num_repeats = 5
 
-    # BC = torch.randn(hidden_size, intermediate_size * 2, device=device)
-    # D = torch.randn(intermediate_size, hidden_size, device=device)
-
-    BCs, Ds = alloc_expert_weights(hidden_size, intermediate_size, num_experts, device)
+    BCs, Ds = alloc_expert_weights(
+        hidden_size, intermediate_size, num_experts, device, compute_dtype=COMPUTE_DTYPE, storage_dtype=STORAGE_DTYPE
+    )
+    # Dequantize to compute dtype if stored in FP8
+    if BCs.dtype != COMPUTE_DTYPE:
+        BCs = BCs.to(COMPUTE_DTYPE).contiguous()
+    if Ds.dtype != COMPUTE_DTYPE:
+        Ds = Ds.to(COMPUTE_DTYPE).contiguous()
 
     # --- Sequntial CUDA graph case ---
 
@@ -65,9 +100,9 @@ def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
         # per-expert variable batch sizes
         ratios_local = expert_batch_size_ratios if len(expert_batch_size_ratios) == num_experts else [1.0] * num_experts
         batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
-        As_list = [torch.randn(bs, hidden_size, device=device).contiguous() for bs in batch_sizes_i]
-        up_bufs = [torch.empty((bs, intermediate_size * 2), device=device).contiguous() for bs in batch_sizes_i]
-        down_bufs = [torch.empty((bs, hidden_size), device=device).contiguous() for bs in batch_sizes_i]
+        As_list = [torch.randn(bs, hidden_size, device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
+        up_bufs = [torch.empty((bs, intermediate_size * 2), device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
+        down_bufs = [torch.empty((bs, hidden_size), device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
 
         # warm-up
         for _ in range(2):
@@ -107,9 +142,9 @@ def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
         results_this_batch_size = []
         ratios_local = expert_batch_size_ratios if len(expert_batch_size_ratios) == num_experts else [1.0] * num_experts
         batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
-        As_list = [torch.randn(bs, hidden_size, device=device).contiguous() for bs in batch_sizes_i]
-        up_bufs = [torch.empty((bs, intermediate_size * 2), device=device).contiguous() for bs in batch_sizes_i]
-        down_bufs = [torch.empty((bs, hidden_size), device=device).contiguous() for bs in batch_sizes_i]
+        As_list = [torch.randn(bs, hidden_size, device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
+        up_bufs = [torch.empty((bs, intermediate_size * 2), device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
+        down_bufs = [torch.empty((bs, hidden_size), device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
         
         # warm-up
         for _ in range(2):
@@ -151,11 +186,11 @@ def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
 
         ratios_local = expert_batch_size_ratios if len(expert_batch_size_ratios) == num_experts else [1.0] * num_experts
         batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
-        As_list = [torch.randn(bs, hidden_size, device=device).contiguous() for bs in batch_sizes_i]
+        As_list = [torch.randn(bs, hidden_size, device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
         total_rows = int(sum(batch_sizes_i))
         # torch.empty gives contiguous buffers by default
-        up_buf = torch.empty((total_rows, intermediate_size * 2), device=device)
-        down_buf = torch.empty((total_rows, hidden_size), device=device)
+        up_buf = torch.empty((total_rows, intermediate_size * 2), device=device, dtype=COMPUTE_DTYPE)
+        down_buf = torch.empty((total_rows, hidden_size), device=device, dtype=COMPUTE_DTYPE)
         batch_sizes = torch.tensor(batch_sizes_i, device=device, dtype=torch.int64)
 
         # warm-up
@@ -203,7 +238,14 @@ def benchmark_triton_fused_moe(hidden_size, intermediate_size, num_experts, labe
     # Expert weights in the layout expected by the Triton demo helpers
     # BCs: (E, H, 2I)  -> transpose to (E, 2I, H) for GEMM-1
     # Ds:  (E, I, H)   -> transpose to (E, H, I)  for GEMM-2 (pre-transpose)
-    BCs, Ds = alloc_expert_weights(hidden_size, intermediate_size, num_experts, device)
+    BCs, Ds = alloc_expert_weights(
+        hidden_size, intermediate_size, num_experts, device, compute_dtype=COMPUTE_DTYPE, storage_dtype=STORAGE_DTYPE
+    )
+    # Dequantize to compute dtype if stored in FP8
+    if BCs.dtype != COMPUTE_DTYPE:
+        BCs = BCs.to(COMPUTE_DTYPE).contiguous()
+    if Ds.dtype != COMPUTE_DTYPE:
+        Ds = Ds.to(COMPUTE_DTYPE).contiguous()
     B1 = BCs.transpose(1, 2).contiguous()                 # (E, 2I, H)
     w2 = Ds.transpose(1, 2).contiguous()                  # (E, H, I)
 
@@ -215,7 +257,7 @@ def benchmark_triton_fused_moe(hidden_size, intermediate_size, num_experts, labe
         # Inputs: per-expert tokens with variable sizes, then flattened to (M, H)
         ratios_local = expert_batch_size_ratios if len(expert_batch_size_ratios) == num_experts else [1.0] * num_experts
         batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
-        As_list = [torch.randn(bs, hidden_size, device=device).contiguous() for bs in batch_sizes_i]
+        As_list = [torch.randn(bs, hidden_size, device=device, dtype=COMPUTE_DTYPE).contiguous() for bs in batch_sizes_i]
         A_flat = torch.cat(As_list, dim=0).contiguous()   # (M, H)
 
         # Top-1 routing mapping each token to its expert deterministically
@@ -228,7 +270,7 @@ def benchmark_triton_fused_moe(hidden_size, intermediate_size, num_experts, labe
             end = start + int(bs)
             topk_ids[start:end, 0] = int(e)
             start = end
-        topk_weights = torch.ones((m, top_k), device=device, dtype=torch.bfloat16)
+        topk_weights = torch.ones((m, top_k), device=device, dtype=COMPUTE_DTYPE)
 
         # Align tokens into kernel-friendly blocks
         BLOCK_SIZE_M = 64
@@ -241,9 +283,9 @@ def benchmark_triton_fused_moe(hidden_size, intermediate_size, num_experts, labe
             continue
 
         # Output buffers; for GEMM-2, use B as (E, N=k, K=d_ff) = w2
-        c1 = torch.empty((EM, 2 * intermediate_size), device=device, dtype=torch.bfloat16)
-        inter_buf = torch.empty((EM, intermediate_size), device=device, dtype=torch.bfloat16)
-        c2 = torch.empty((EM, hidden_size), device=device, dtype=torch.bfloat16)
+        c1 = torch.empty((EM, 2 * intermediate_size), device=device, dtype=COMPUTE_DTYPE)
+        inter_buf = torch.empty((EM, intermediate_size), device=device, dtype=COMPUTE_DTYPE)
+        c2 = torch.empty((EM, hidden_size), device=device, dtype=COMPUTE_DTYPE)
 
         # Warm-up to trigger JIT compilation and stabilize runtime
         def run_once():
@@ -372,8 +414,11 @@ for ax in axes[len(models):]:
     ax.set_visible(False)
 
 plt.tight_layout()
-plt.savefig("ggemm_comparison.png", dpi=300)
-print("Saved combined plot to ggemm_comparison.png")
+# Suffix output filenames with dtype
+_fname_suffix = f"_{_DTYPE_STR}"
+_cmp_path = f"ggemm_comparison{_fname_suffix}.png"
+plt.savefig(_cmp_path, dpi=300)
+print(f"Saved combined plot to {_cmp_path}")
 
 # Create FLOPs vs Time line plot (all methods on one figure)
 fig2, ax2 = plt.subplots(figsize=(9, 6))
@@ -395,8 +440,9 @@ ax2.set_title("Time vs Estimated FLOPs (Grouped GEMM vs Separate Kernels)")
 ax2.legend(ncol=2, fontsize=9)
 ax2.grid(True, linestyle='--', alpha=0.3)
 fig2.tight_layout()
-fig2.savefig("ggemm_flops_vs_time.png", dpi=300)
-print("Saved FLOPs vs time plot to ggemm_flops_vs_time.png")
+_flops_path = f"ggemm_flops_vs_time{_fname_suffix}.png"
+fig2.savefig(_flops_path, dpi=300)
+print(f"Saved FLOPs vs time plot to {_flops_path}")
 
 if _prof is not None:
     _prof.stop()
