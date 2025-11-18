@@ -44,15 +44,21 @@ def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     sim_async.ATTN_SERVICE_T = cfg["attn_service_t"]
     sim_async.NET_T_ATTN_TO_EXPERT = cfg["net_delay"]
     sim_async.NET_T_EXPERT_TO_ATTN = cfg["net_delay"]
-
     result = sim_async.run_simulation(
         ep_group_size=cfg["ep_group_size"],
         global_request_max_batch_size=cfg["global_request_max_batch_size"],
+        attn_dp_group_size=cfg["ep_group_size"],
     )
 
     ticks_per_ms = sim_async.TICKS_PER_MILLISECOND
-    avg_latency_ms = result["avg_latency"] / ticks_per_ms if result["avg_latency"] else 0.0
-    makespan_ms = result["makespan"] / ticks_per_ms if result["makespan"] else 0.0
+    avg_latency_ms = (
+        result["avg_latency"] / ticks_per_ms if result["avg_latency"] else 0.0
+    )
+    makespan_ms = (
+        result["makespan"] / ticks_per_ms if result["makespan"] else 0.0
+    )
+
+    avg_per_expert_batch_size = result.get("avg_per_expert_batch_size", 0.0)
 
     summary: Dict[str, Any] = {
         "mode": "async",
@@ -67,8 +73,10 @@ def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "p90_request_latency_ms": result.get("p90_request_latency_ms", 0.0),
         "p99_request_latency_ms": result.get("p99_request_latency_ms", 0.0),
         # Not applicable for async simulator; keep for uniform schema.
-        "avg_layer_expert_runtime_ms": float("nan"),
+        "avg_layer_runtime_ms": float("nan"),
         "avg_layer_wait_imbalance_ms": float("nan"),
+        "avg_per_expert_batch_size": avg_per_expert_batch_size,
+        "avg_layer_worker_queue_stddev": float("nan"),
     }
     return summary
 
@@ -77,20 +85,28 @@ def _run_sync_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     result = sim_sync.run_simulation(
         ep_group_size=cfg["ep_group_size"],
         attn_service_t=cfg["attn_service_t"],
+        attn_dp_group_size=cfg["ep_group_size"],
         net_t_attn_to_expert=cfg["net_delay"],
         net_t_expert_to_attn=cfg["net_delay"],
         global_request_max_batch_size=cfg["global_request_max_batch_size"],
     )
 
     ticks_per_ms = sim_sync.TICKS_PER_MILLISECOND
-    avg_latency_ms = result["avg_latency"] / ticks_per_ms if result["avg_latency"] else 0.0
-    makespan_ms = result["makespan"] / ticks_per_ms if result["makespan"] else 0.0
-
-    avg_layer_expert_runtime_ms = (
-        result.get("avg_layer_expert_runtime", 0.0) / ticks_per_ms
+    avg_latency_ms = (
+        result["avg_latency"] / ticks_per_ms if result["avg_latency"] else 0.0
     )
+    makespan_ms = (
+        result["makespan"] / ticks_per_ms if result["makespan"] else 0.0
+    )
+
+    avg_layer_runtime_ms = result.get("avg_layer_runtime", 0.0) / ticks_per_ms
     avg_layer_wait_imbalance_ms = (
         result.get("avg_layer_wait_imbalance", 0.0) / ticks_per_ms
+    )
+
+    avg_per_expert_batch_size = result.get("avg_per_expert_batch_size", 0.0)
+    avg_layer_worker_queue_stddev = result.get(
+        "avg_layer_worker_queue_stddev", 0.0
     )
 
     avg_throughput_req_per_sec = result.get("avg_throughput_req_per_sec", 0.0)
@@ -110,8 +126,10 @@ def _run_sync_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "avg_request_latency_ms": avg_request_latency_ms,
         "p90_request_latency_ms": p90_request_latency_ms,
         "p99_request_latency_ms": p99_request_latency_ms,
-        "avg_layer_expert_runtime_ms": avg_layer_expert_runtime_ms,
+        "avg_layer_runtime_ms": avg_layer_runtime_ms,
         "avg_layer_wait_imbalance_ms": avg_layer_wait_imbalance_ms,
+        "avg_per_expert_batch_size": avg_per_expert_batch_size,
+        "avg_layer_worker_queue_stddev": avg_layer_worker_queue_stddev,
     }
     return summary
 
@@ -125,7 +143,8 @@ def _write_results(mode: str, results: List[Dict[str, Any]]) -> None:
         "attn_service_t,net_delay,"
         "avg_token_latency_ms,makespan_ms,avg_throughput_req_per_sec,"
         "avg_request_latency_ms,p90_request_latency_ms,p99_request_latency_ms,"
-        "avg_layer_expert_runtime_ms,avg_layer_wait_imbalance_ms\n"
+        "avg_layer_runtime_ms,avg_layer_wait_imbalance_ms,"
+        "avg_per_expert_batch_size,avg_layer_worker_queue_stddev\n"
     )
 
     # Sort results for reproducible ordering.
@@ -154,8 +173,10 @@ def _write_results(mode: str, results: List[Dict[str, Any]]) -> None:
                 f"{r['avg_request_latency_ms']:.6f},"
                 f"{r['p90_request_latency_ms']:.6f},"
                 f"{r['p99_request_latency_ms']:.6f},"
-                f"{r['avg_layer_expert_runtime_ms']:.6f},"
-                f"{r['avg_layer_wait_imbalance_ms']:.6f}\n"
+                f"{r['avg_layer_runtime_ms']:.6f},"
+                f"{r['avg_layer_wait_imbalance_ms']:.6f},"
+                f"{r['avg_per_expert_batch_size']:.6f},"
+                f"{r['avg_layer_worker_queue_stddev']:.6f}\n"
             )
             f.write(line)
 
@@ -173,10 +194,45 @@ def main(argv: List[str]) -> None:
 
     worker_fn = _run_async_config if mode == "async" else _run_sync_config
 
-    with mp.Pool(processes=num_workers) as pool:
-        results = pool.map(worker_fn, configs)
+    results_dir = os.path.dirname(os.path.abspath(__file__))
+    out_path = os.path.join(results_dir, f"experiment_results_{mode}.txt")
 
-    _write_results(mode, results)
+    header = (
+        "mode,ep_group_size,global_request_max_batch_size,"
+        "attn_service_t,net_delay,"
+        "avg_token_latency_ms,makespan_ms,avg_throughput_req_per_sec,"
+        "avg_request_latency_ms,p90_request_latency_ms,p99_request_latency_ms,"
+        "avg_layer_runtime_ms,avg_layer_wait_imbalance_ms,"
+        "avg_per_expert_batch_size,avg_layer_worker_queue_stddev\n"
+    )
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(header)
+        f.flush()
+
+        with mp.Pool(processes=num_workers) as pool:
+            for summary in pool.imap_unordered(worker_fn, configs):
+                line = (
+                    f"{summary['mode']},"
+                    f"{summary['ep_group_size']},"
+                    f"{summary['global_request_max_batch_size']},"
+                    f"{summary['attn_service_t']},"
+                    f"{summary['net_delay']},"
+                    f"{summary['avg_token_latency_ms']:.6f},"
+                    f"{summary['makespan_ms']:.6f},"
+                    f"{summary['avg_throughput_req_per_sec']:.6f},"
+                    f"{summary['avg_request_latency_ms']:.6f},"
+                    f"{summary['p90_request_latency_ms']:.6f},"
+                    f"{summary['p99_request_latency_ms']:.6f},"
+                    f"{summary['avg_layer_runtime_ms']:.6f},"
+                    f"{summary['avg_layer_wait_imbalance_ms']:.6f},"
+                    f"{summary['avg_per_expert_batch_size']:.6f},"
+                    f"{summary['avg_layer_worker_queue_stddev']:.6f}\n"
+                )
+                f.write(line)
+                f.flush()
+
+    print(f"Wrote results for mode='{mode}' to {out_path}")
 
 
 if __name__ == "__main__":
