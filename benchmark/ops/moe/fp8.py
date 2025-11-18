@@ -40,6 +40,10 @@ def alloc_expert_weights(
     ).contiguous()
     BCs_fp8 = BCs_bf16.to(DTYPE_FP8).contiguous()
     Ds_fp8 = Ds_bf16.to(DTYPE_FP8).contiguous()
+    # Ensure per-expert weight matrices are column-major in memory for SGL kernel
+    # This preserves logical shapes: BCs: (H, 2I), Ds: (I, H)
+    BCs_fp8 = BCs_fp8.permute(0, 2, 1).contiguous().permute(0, 2, 1)
+    Ds_fp8 = Ds_fp8.permute(0, 2, 1).contiguous().permute(0, 2, 1)
     return BCs_fp8, Ds_fp8
 
  
