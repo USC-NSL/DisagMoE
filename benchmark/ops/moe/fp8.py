@@ -146,6 +146,8 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
         batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
         As_list_bf16 = [torch.randn(bs, hidden_size, device=device, dtype=ACCUM_DTYPE).contiguous() for bs in batch_sizes_i]
         As_list_fp8 = [a.to(DTYPE_FP8).contiguous() for a in As_list_bf16]
+        # Per-row activation scales for mat_a (length = batch size per expert)
+        scales_a = [torch.ones(As_list_fp8[i].shape[0], device=device, dtype=torch.float32) for i in range(num_experts)]
 
         # Warm-up to trigger JIT compilation and stabilize runtime
         def run_once():
@@ -154,7 +156,7 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
                 up = fp8_scaled_mm(
                     As_list_fp8[i],
                     BCs_fp8[i],
-                    one_scale,
+                    scales_a[i],
                     scales_b_up[i],
                     ACCUM_DTYPE,
                     None,
@@ -167,7 +169,7 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
                 _ = fp8_scaled_mm(
                     glu_fp8,
                     Ds_fp8[i],
-                    one_scale,
+                    scales_a[i],
                     scales_b_down[i],
                     ACCUM_DTYPE,
                     None,
