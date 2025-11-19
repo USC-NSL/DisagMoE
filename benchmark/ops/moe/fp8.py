@@ -129,6 +129,11 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
 
     # Expert weights in FP8
     BCs_fp8, Ds_fp8 = alloc_expert_weights(hidden_size, intermediate_size, num_experts, device, dtype=DTYPE_FP8)
+    # Scales: use per-column scales for mat_b as required by SGL kernel
+    # For BCs: (H, 2I) -> scales_b size = 2I; For Ds: (I, H) -> scales_b size = H
+    scales_b_up = [torch.ones(BCs_fp8[i].shape[1], device=device, dtype=torch.float32) for i in range(num_experts)]
+    scales_b_down = [torch.ones(Ds_fp8[i].shape[1], device=device, dtype=torch.float32) for i in range(num_experts)]
+    # Keep mat_a scale as scalar 1.0 (allowed by kernel)
     one_scale = torch.tensor(1.0, device=device, dtype=torch.float32)
 
     results_sgl = []
@@ -150,7 +155,7 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
                     As_list_fp8[i],
                     BCs_fp8[i],
                     one_scale,
-                    one_scale,
+                    scales_b_up[i],
                     ACCUM_DTYPE,
                     None,
                 )
@@ -163,7 +168,7 @@ def benchmark_sgl_fp8_kernel(hidden_size, intermediate_size, num_experts, label)
                     glu_fp8,
                     Ds_fp8[i],
                     one_scale,
-                    one_scale,
+                    scales_b_down[i],
                     ACCUM_DTYPE,
                     None,
                 )
