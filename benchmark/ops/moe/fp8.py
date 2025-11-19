@@ -206,7 +206,7 @@ hidden_sizes_k = np.array([2, 4])
 hidden_sizes = hidden_sizes_k * 1024
 intermediate_sizes = [768, 1536]
 models = ["Qwen3-30B", "Qwen3-235B"]
-labels = [f"{model}: hidden={h}k, intermediate={i}k" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes_k)]
+labels = [f"{model}: hidden={h}k, intermediate={i}" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes)]
 num_experts_list = [8, 8]
 # expert_batch_size_ratios = [1, 0.5, 0.1, 0.2, 0.8, 1.5, 1.9, 0.7] # this must equals to num_experts
 expert_batch_size_ratios = [1] * 8
