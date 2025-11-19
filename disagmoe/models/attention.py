@@ -12,6 +12,7 @@ from disagmoe.models.linear import (QKVParallelLinear,
 from disagmoe.models.gate import ProfileDrivenRouter
 from disagmoe.ops.memory import permute_tokens_cuda
 
+from vllm.model_executor.layers.quantization import get_quantization_config
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -120,6 +121,13 @@ class MoEAttention(nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         
+
+        quant_config_cls = get_quantization_config("fp8")
+        quant_config_override = quant_config_cls.from_config({
+            "quant_method": "fbgemm_fp8",
+            "activation_scheme": "dynamic",
+        })
+
         # NOTE(shaoyuw): must invoke initialize_model_parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -128,7 +136,7 @@ class MoEAttention(nn.Module):
             self.total_num_kv_heads,
             tp_size=tp_size,
             bias=False,
-            quant_config=quant_config,
+            quant_config=quant_config_override,
             prefix=f"{prefix}.qkv_proj",
             params_dtype=params_dtype,
         )
