@@ -19,6 +19,7 @@ from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
 
 import triton.language as tl
 import triton
@@ -196,6 +197,20 @@ class AttnExecutor(Executor):
             ) for layer_id in range(self.num_layers)
         ]
         _log_memory_usage("After allocate parameters")
+
+        # Post-process weights for quantized methods (e.g., FBGEMM FP8) to
+        # match runtime GEMM layout, mirroring vLLM loader behavior.
+        for operator in self.operators:
+            for _, module in operator.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if isinstance(quant_method, QuantizeMethodBase) and hasattr(
+                        quant_method, "process_weights_after_loading"):
+                    try:
+                        quant_method.process_weights_after_loading(module)
+                    except Exception as e:
+                        get_logger().warning(
+                            f"process_weights_after_loading failed on {module.__class__.__name__}: {e}"
+                        )
         
         assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         if self.cache_config.num_gpu_blocks is None:
