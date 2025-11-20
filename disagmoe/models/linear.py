@@ -160,13 +160,21 @@ class LinearBase(VLLMLinearBase):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
-        # Delegate to vLLM's LinearBase so vLLM quantization configs recognize this layer.
-        super().__init__(input_size=input_size,
-                         output_size=output_size,
-                         skip_bias_add=skip_bias_add,
-                         params_dtype=params_dtype,
-                         quant_config=quant_config,
-                         prefix=prefix)
+        super().__init__()
+
+        # Keep input parameters
+        self.input_size = input_size
+        self.output_size = output_size
+        self.skip_bias_add = skip_bias_add
+        if params_dtype is None:
+            params_dtype = torch.get_default_dtype()
+        self.params_dtype = params_dtype
+        if quant_config is None:
+            self.quant_method: Optional[
+                QuantizeMethodBase] = UnquantizedLinearMethod()
+        else:
+            self.quant_method = quant_config.get_quant_method(self,
+                                                              prefix=prefix)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -672,12 +680,22 @@ class QKVParallelLinear(ColumnParallelLinear):
             self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
             self.num_kv_head_replicas = 1
         input_size = self.hidden_size
-        output_size = (self.num_heads +
-                       2 * self.num_kv_heads) * tp_size * self.head_size
+        # Compute global output sizes so that ColumnParallelLinear divides them
+        # into correct per-partition sizes even when KV heads are replicated.
+        replicate_kv = tp_size >= self.total_num_kv_heads
+        q_global = self.total_num_heads * self.head_size
+        if replicate_kv:
+            # Replicate KV across TP: each partition should see TKVH * head_size
+            # so the global size is scaled by tp_size to make per-part size correct.
+            kv_global = self.total_num_kv_heads * self.head_size * tp_size
+        else:
+            # Partition KV across TP.
+            kv_global = self.total_num_kv_heads * self.head_size
+        output_size = q_global + 2 * kv_global
         self.output_sizes = [
-            self.num_heads * self.head_size * tp_size,  # q_proj
-            self.num_kv_heads * self.head_size * tp_size,  # k_proj
-            self.num_kv_heads * self.head_size * tp_size,  # v_proj 
+            q_global,   # q_proj (global)
+            kv_global,  # k_proj (global; replicates handled by division)
+            kv_global,  # v_proj
         ]
 
         super().__init__(input_size=input_size,
