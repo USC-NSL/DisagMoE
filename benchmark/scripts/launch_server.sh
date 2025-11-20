@@ -14,6 +14,7 @@ step_exp=1
 dp_size=1
 ep_size=1
 top_k=1
+ATTN_QKV_QUANT="fbgemm_fp8" # options: none | fbgemm_fp8
 
 transport_backend=ucx
 
@@ -61,6 +62,7 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
+    --attn-qkv-quant $ATTN_QKV_QUANT \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \
