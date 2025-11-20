@@ -20,6 +20,9 @@ class ModelConfig:
     rank: int = 0
     layer_ids: Optional[List[int]] = None
     top_k: int = 1
+    # Attention-specific quantization option for QKV projection
+    # e.g., "fbgemm_fp8" or None
+    attn_qkv_quant: Optional[str] = None
     
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False

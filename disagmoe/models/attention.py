@@ -12,7 +12,6 @@ from disagmoe.models.linear import (QKVParallelLinear,
 from disagmoe.models.gate import ProfileDrivenRouter
 from disagmoe.ops.memory import permute_tokens_cuda
 
-from vllm.model_executor.layers.quantization import get_quantization_config
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -90,6 +89,7 @@ class MoEAttention(nn.Module):
         rope_theta: float = 10000,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        quant_config_qkv: Optional[QuantizationConfig] = None,
         params_dtype: Optional[torch.dtype] = None,
         prefix: str = "",
         gate_profile_bytes: Optional[bytes] = None,
@@ -121,13 +121,6 @@ class MoEAttention(nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         
-        # TODO: below is a temp test for fp8, should make this an option
-        quant_config_cls = get_quantization_config("fbgemm_fp8")
-        quant_config_override = quant_config_cls.from_config({
-            "modules_to_not_convert": [],
-            "activation_scale_ub": 1.0
-        })
-
         # NOTE(shaoyuw): must invoke initialize_model_parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -136,7 +129,7 @@ class MoEAttention(nn.Module):
             self.total_num_kv_heads,
             tp_size=tp_size,
             bias=False,
-            quant_config=quant_config_override,
+            quant_config=quant_config_qkv,
             prefix=f"{prefix}.qkv_proj",
             params_dtype=params_dtype,
         )

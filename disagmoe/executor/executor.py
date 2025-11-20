@@ -20,6 +20,7 @@ from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManage
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+from vllm.model_executor.layers.quantization import get_quantization_config
 
 import triton.language as tl
 import triton
@@ -184,6 +185,16 @@ class AttnExecutor(Executor):
         free_memory, _ = torch.cuda.mem_get_info()
         self.init_gpu_memory = free_memory
         
+        # Build quantization config for attention QKV if requested
+        qkv_quant_config = None
+        try:
+            if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
+                qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
+                qkv_quant_config = qkv_cls.from_config({})
+        except Exception as e:
+            get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
+            qkv_quant_config = None
+        
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -193,6 +204,7 @@ class AttnExecutor(Executor):
                 self.model_config.num_experts,
                 self.model_config.top_k,
                 cache_config=self.vllm_cache_config,
+                quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
@@ -546,6 +558,14 @@ class ParallelAttnExecutor(AttnExecutor):
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
+        qkv_quant_config = None
+        try:
+            if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
+                qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
+                qkv_quant_config = qkv_cls.from_config({})
+        except Exception as e:
+            get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
+            qkv_quant_config = None
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -555,6 +575,7 @@ class ParallelAttnExecutor(AttnExecutor):
                 self.model_config.num_experts,
                 tp_size=model_config.tp_size,
                 tp_rank=model_config.rank,
+                quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
