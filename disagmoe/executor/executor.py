@@ -198,11 +198,36 @@ class AttnExecutor(Executor):
         ]
         _log_memory_usage("After allocate parameters")
 
-        # Post-process weights for quantized methods (e.g., FBGEMM FP8) to
-        # match runtime GEMM layout, mirroring vLLM loader behavior.
+        # DisagMoE hacks:
+        # 1. for fbgemm_fp8, use randn dummy weights rather than empty weights
+        # 2. call process_weights_after_loading to match quantization kernel layouts
         for operator in self.operators:
             for _, module in operator.named_modules():
                 quant_method = getattr(module, "quant_method", None)
+                if quant_method is None:
+                    continue
+                # Dummy init for FBGEMM FP8 if no checkpoint populated them.
+                if quant_method.__class__.__name__ == "FBGEMMFp8LinearMethod":
+                    weight = getattr(module, "weight", None)
+                    weight_scale = getattr(module, "weight_scale", None)
+                    input_k = getattr(module, "input_size_per_partition", None)
+                    output_n = getattr(module, "output_size_per_partition", None)
+                    if weight is not None and weight_scale is not None and \
+                            input_k is not None and output_n is not None:
+                        try:
+                            if torch.all(weight_scale == torch.finfo(torch.float32).min):
+                                with torch.no_grad():
+                                    # weight currently has shape [N, K] prior to post-load processing
+                                    rand_w = torch.randn((output_n, input_k),
+                                                         dtype=torch.float32,
+                                                         device=weight.device)
+                                    rand_w.clamp_(-2.0, 2.0)
+                                    weight.copy_(rand_w.to(weight.dtype))
+                                    weight_scale.fill_(1.0)
+                        except Exception as e:
+                            get_logger().warning(
+                                f"FBGEMM FP8 dummy init failed for {module.__class__.__name__}: {e}"
+                            )
                 if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                         quant_method, "process_weights_after_loading"):
                     try:
