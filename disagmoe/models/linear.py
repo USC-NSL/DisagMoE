@@ -680,22 +680,12 @@ class QKVParallelLinear(ColumnParallelLinear):
             self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
             self.num_kv_head_replicas = 1
         input_size = self.hidden_size
-        # Compute global output sizes so that ColumnParallelLinear divides them
-        # into correct per-partition sizes even when KV heads are replicated.
-        replicate_kv = tp_size >= self.total_num_kv_heads
-        q_global = self.total_num_heads * self.head_size
-        if replicate_kv:
-            # Replicate KV across TP: each partition should see TKVH * head_size
-            # so the global size is scaled by tp_size to make per-part size correct.
-            kv_global = self.total_num_kv_heads * self.head_size * tp_size
-        else:
-            # Partition KV across TP.
-            kv_global = self.total_num_kv_heads * self.head_size
-        output_size = q_global + 2 * kv_global
+        output_size = (self.num_heads +
+                       2 * self.num_kv_heads) * tp_size * self.head_size
         self.output_sizes = [
-            q_global,   # q_proj (global)
-            kv_global,  # k_proj (global; replicates handled by division)
-            kv_global,  # v_proj
+            self.num_heads * self.head_size * tp_size,  # q_proj
+            self.num_kv_heads * self.head_size * tp_size,  # k_proj
+            self.num_kv_heads * self.head_size * tp_size,  # v_proj 
         ]
 
         super().__init__(input_size=input_size,
