@@ -218,7 +218,7 @@ public:
     void set_layer_scheduler(std::shared_ptr<LayerSchedulerBase> scheduler) { this->layer_scheduler = scheduler; }
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler() { return this->layer_scheduler; }
 
-    virtual std::vector<TokenBatch> get_batch_from_layer(int layer_id) = 0;
+    virtual TokenBatch get_batch_from_layer(int layer_id) = 0;
 };
 
 class MuExpertPool: public MuPool {
@@ -235,7 +235,7 @@ public:
         int num_groups = 1
     );
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
+    TokenBatch get_batch_from_layer(int layer_id) override;
 };
 
 
@@ -262,7 +262,7 @@ public:
 
     void put_batch_to_attn_queue(int layer_id, const TokenBatch &batch);
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
+    TokenBatch get_batch_from_layer(int layer_id) override;
 };
 
 
@@ -312,7 +312,7 @@ public:
 
     int tokens_in_layer(int lid) override;
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id) override;
+    TokenBatch get_batch_from_layer(int layer_id) override;
 
 };
 

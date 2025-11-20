@@ -72,15 +72,13 @@ int UnifiedLayerScheduler::schedule() {
     return -1;
 }
 
-std::vector<TokenBatch> UnifiedLayerScheduler::get_batch_from_layer(int layer_id) {
+TokenBatch UnifiedLayerScheduler::get_batch_from_layer(int layer_id) {
     if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
-        return {};
+        return TokenBatch {};
     }
-    if (layer_id < this->num_attn_layers) {
-        return this->attn_layers[layer_id]->get_all_batches();
-    } else {
-        return this->expert_layers[layer_id - this->num_attn_layers]->get_all_batches();
-    }
+    auto batches = this->layers[layer_id]->get_all_batches();
+    auto batch = TokenBatch::merge(batches);
+    return batch;
 }
 
 void UnifiedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {

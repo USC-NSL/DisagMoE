@@ -37,7 +37,7 @@ public:
         int top_k = 1
     );
 
-    std::vector<TokenBatch> get_batch_from_layer(int layer_id);
+    TokenBatch get_batch_from_layer(int layer_id);
 
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
 };

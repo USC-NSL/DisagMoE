@@ -552,29 +552,29 @@ void MuExpertPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     }
 }
 
-std::vector<TokenBatch> MuExpertPool::get_batch_from_layer(int layer_id) {
+TokenBatch MuExpertPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
-        return {};
+        return TokenBatch {};
     }
 
     if (layer_id < 0 || layer_id >= (int)this->data_queue.size()) {
-        return {};
+        return TokenBatch {};
     }
 
     if (this->tokens_per_layer_[layer_id] == 0 || this->data_queue[layer_id].empty()) {
-        return {};
+        return TokenBatch {};
     }
 
     this->tokens_per_layer_[layer_id] = 0;
     this->num_batches_per_layer_[layer_id] = 0;
 
     maintain_largest_batch();
-
-    auto results(std::move(this->data_queue[layer_id]));
-    this->data_queue[layer_id].clear();
-    return results;
+    
+    std::vector<TokenBatch> batches {};
+    batches.swap(this->data_queue[layer_id]);
+    return TokenBatch::merge(batches);
 }
 
 // void MuPool::set_scheduler_block(int step) {
@@ -641,7 +641,7 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta
     this->put_batch_to_attn_queue(lid, attn_batch);
 }
 
-std::vector<TokenBatch> MuAttentionPool::get_batch_from_layer(int layer_id) {
+TokenBatch MuAttentionPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
@@ -657,9 +657,9 @@ std::vector<TokenBatch> MuAttentionPool::get_batch_from_layer(int layer_id) {
 
     maintain_largest_batch();
 
-    auto results(std::move(this->attn_data_queue[layer_id]));
-    this->attn_data_queue[layer_id].clear();
-    return results;
+    std::vector<TokenBatch> batches {};
+    batches.swap(this->attn_data_queue[layer_id]);
+    return TokenBatch::merge(batches);
 }
 
 std::vector<TokenTopKInfo> TokenTopKPool::fetch_ready_tokens() {
@@ -763,15 +763,15 @@ int MuAttentionTopKPool::tokens_in_layer(int lid) {
 }
 
 
-std::vector<TokenBatch> MuAttentionTopKPool::get_batch_from_layer(int layer_id) {
+TokenBatch MuAttentionTopKPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
     if (this->largest_batch_size_ == 0) {
-        return {};
+        return TokenBatch {};
     }
 
     if (layer_id < 0 || layer_id >= (int)this->attn_token_queues.size()) {
-        return {};
+        return TokenBatch {};
     }
 
     this->tokens_per_layer_[layer_id] = 0;
@@ -781,7 +781,7 @@ std::vector<TokenBatch> MuAttentionTopKPool::get_batch_from_layer(int layer_id) 
 
     auto batch = TokenBatch::pack_topk_tokens(this->layer_id_V2P[layer_id], this->attn_token_queues[layer_id]);
     this->attn_token_queues[layer_id].clear();
-    return {batch};
+    return batch;
 }
 
 #include <profiler.hpp>

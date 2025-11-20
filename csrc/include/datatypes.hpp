@@ -39,7 +39,9 @@ struct ChannelInfo {
     {}
 };
 
-struct TokenMetadata {
+struct ScheduleUnit { };
+
+struct TokenMetadata: ScheduleUnit {
     int req_id;
     int exp_id;
     int attn_dp_rank;
