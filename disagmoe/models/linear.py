@@ -942,7 +942,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         param_data.copy_(loaded_weight)
 
 
-class RowParallelLinear(LinearBase):
+class RowParallelLinear(VLLMLinearBase):
     """Linear layer with row parallelism.
 
     The linear layer is defined as Y = XA + b. A is parallelized along
