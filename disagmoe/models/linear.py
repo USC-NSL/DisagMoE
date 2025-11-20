@@ -9,6 +9,9 @@ from vllm.distributed import (divide, split_tensor_along_last_dim,)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
+from vllm.model_executor.layers.linear import (
+    LinearBase as VLLMLinearBase,
+)
 from vllm.model_executor.parameter import (BasevLLMParameter,
                                            PackedColumnParameter,
                                            PackedvLLMParameter,
@@ -136,7 +139,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
         return F.linear(x, layer.weight, bias)
 
 
-class LinearBase(torch.nn.Module):
+class LinearBase(VLLMLinearBase):
     """Base linear layer.
 
     Args:
@@ -157,21 +160,13 @@ class LinearBase(torch.nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ):
-        super().__init__()
-
-        # Keep input parameters
-        self.input_size = input_size
-        self.output_size = output_size
-        self.skip_bias_add = skip_bias_add
-        if params_dtype is None:
-            params_dtype = torch.get_default_dtype()
-        self.params_dtype = params_dtype
-        if quant_config is None:
-            self.quant_method: Optional[
-                QuantizeMethodBase] = UnquantizedLinearMethod()
-        else:
-            self.quant_method = quant_config.get_quant_method(self,
-                                                              prefix=prefix)
+        # Delegate to vLLM's LinearBase so vLLM quantization configs recognize this layer.
+        super().__init__(input_size=input_size,
+                         output_size=output_size,
+                         skip_bias_add=skip_bias_add,
+                         params_dtype=params_dtype,
+                         quant_config=quant_config,
+                         prefix=prefix)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError

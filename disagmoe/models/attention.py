@@ -121,11 +121,11 @@ class MoEAttention(nn.Module):
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         
-
-        quant_config_cls = get_quantization_config("fp8")
+        # TODO: below is a temp test for fp8, should make this an option
+        quant_config_cls = get_quantization_config("fbgemm_fp8")
         quant_config_override = quant_config_cls.from_config({
-            "quant_method": "fbgemm_fp8",
-            "activation_scheme": "dynamic",
+            "modules_to_not_convert": [],
+            "activation_scale_ub": 1.0
         })
 
         # NOTE(shaoyuw): must invoke initialize_model_parallel
