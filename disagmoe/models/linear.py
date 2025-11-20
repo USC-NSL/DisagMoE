@@ -370,6 +370,32 @@ class ColumnParallelLinear(VLLMLinearBase):
 
         # Matrix multiply.
         assert self.quant_method is not None
+        # Debug once per instance to diagnose FP8 GEMM shapes
+        if not hasattr(self, "_dmoe_fbgemm_debug_logged"):
+            try:
+                qm_name = self.quant_method.__class__.__name__
+                weight = getattr(self, "weight", None)
+                weight_scale = getattr(self, "weight_scale", None)
+                logical_widths = getattr(self, "logical_widths", None)
+                logger.info(
+                    f"<ColumnParallelLinear>: qm={qm_name}, "
+                    f"input_shape={tuple(input_.shape)}, "
+                    f"input_size={self.input_size}, "
+                    f"input_size_per_partition={getattr(self, 'input_size_per_partition', None)}, "
+                    f"output_size={self.output_size}, "
+                    f"output_size_per_partition={getattr(self, 'output_size_per_partition', None)}, "
+                    f"output_partition_sizes={getattr(self, 'output_partition_sizes', None)}, "
+                    f"logical_widths={logical_widths}"
+                )
+                if weight is not None:
+                    logger.info(
+                        f"<ColumnParallelLinear>: weight_shape={tuple(weight.shape)}, "
+                        f"weight_stride={weight.stride()}, "
+                        f"weight_scale_shape={tuple(weight_scale.shape) if weight_scale is not None else None}"
+                    )
+            except Exception as e:
+                logger.warning(f"<ColumnParallelLinear>: debug log failed: {e}")
+            self._dmoe_fbgemm_debug_logged = True
         output_parallel = self.quant_method.apply(self, input_, bias)
         if self.gather_output:
             # All-gather across the partitions.
