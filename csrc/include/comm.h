@@ -97,58 +97,9 @@ class TensorLocalChannel: public Channel {
         void sync() override;
 };
 
-typedef std::shared_ptr<zmq::socket_t> mq_t;
-
-class ZmqChannel: public Channel {
-protected:
-    static std::map<int, mq_t> global_mq;
-    zmq::context_t ctx;
-    mq_t mq;
-    cudaStream_t stream;
-
-    std::string other_ip;
-    bool is_sender;
-    char device_id_str[16];
-
-    int rank_offset;
-
-    void* _tensor_copy(uintptr_t src, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst = 0);
-
-public:
-    ZmqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
-
-    void instantiate() override;
-
-    void send(uintptr_t data, const BatchMetadata& metadata) override;
-
-    void recv(uintptr_t data, const BatchMetadata &metadata) override;
-};
-
-class UcxqChannel: public Channel {
-protected:
-    std::unique_ptr<ucxq::socket_t> mq;
-    bool is_sender;
-    int rank_offset;
-
-public:
-    UcxqChannel(int party_local, int party_other, bool is_sender, int rank = 0);
-
-    void instantiate() override;
-
-    void send(uintptr_t data, const BatchMetadata& metadata) override;
-
-    void recv(uintptr_t data, const BatchMetadata& metadata) override;
-};
-
-
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
 
 Channel_t create_local_channel(int device_id);
-
-Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
-
-Channel_t create_ucxq_channel(int party_local, int party_other, bool is_sender, int rank = 0);
-
 
 void* get_nccl_unique_id();
 

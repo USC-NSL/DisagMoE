@@ -12,7 +12,6 @@
 
 namespace disagmoe {
 
-static EmbeddingChannelFactory g_embed_factory;
 static MqFactory g_mq_factory;
 static EndpointFactory g_ep_factory;
 static std::once_flag g_selected_once;
@@ -79,13 +78,11 @@ private:
 
 void select_transport(const std::string &name) {
     if (name == "ucx") {
-        g_embed_factory = [](int l, int p, bool s, int r) { return create_ucxq_channel(l, p, s, r); };
         g_mq_factory = [](bool isPush) { return std::make_unique<UcxqSocketAdapter>(isPush); };
         g_ep_factory = [](int device_id, bool is_gpu, int manual_port) {
             return get_ucxq_addr(device_id, is_gpu, manual_port);
         };
     } else if (name == "zmq") {
-        g_embed_factory = [](int l, int p, bool s, int r) { return create_zmq_channel(l, p, s, r); };
         g_mq_factory = [](bool isPush) { return std::make_unique<ZmqSocketAdapter>(isPush); };
         g_ep_factory = [](int device_id, bool is_gpu, int manual_port) {
             return get_zmq_addr(device_id, is_gpu, manual_port);
@@ -94,13 +91,6 @@ void select_transport(const std::string &name) {
         throw std::runtime_error("Unknown transport: " + name);
     }
     g_selected = true;
-}
-
-const EmbeddingChannelFactory &embedding_channel_factory() {
-    if (!g_selected) {
-        throw std::logic_error("select_transport(name) must be called before using factories");
-    }
-    return g_embed_factory;
 }
 
 const MqFactory &mq_factory() {

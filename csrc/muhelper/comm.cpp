@@ -121,131 +121,7 @@ void TensorLocalChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
-ZmqChannel::ZmqChannel(int party_local, int party_other, bool is_sender, int rank):
-    Channel(party_local, party_other), is_sender(is_sender), rank_offset(rank) {
-        sprintf(device_id_str, "%d", party_local);
-        CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 10));
-}
-
-std::map<int, mq_t> ZmqChannel::global_mq = {};
 std::mutex global_mutex;
-
-void ZmqChannel::instantiate() {
-    // DMOE_LOG(INFO) << "initiating zmq channel: " << local << " " << other << " " << is_sender << " " << this->rank_offset << LEND;
-    this->ctx = zmq::context_t(1);
-    this->mq = std::make_shared<zmq::socket_t>(
-        this->ctx, 
-        this->is_sender ? zmq::socket_type::push : zmq::socket_type::pull
-    );
-    std::string addr;
-    if (is_sender) {
-        addr = get_zmq_addr(local, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
-        this->mq->bind(addr);
-    } else {
-        addr = get_zmq_addr(other, /*is_gpu=*/ false, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
-        this->mq->connect(addr);
-    }
-    // DMOE_LOG(WARNING) << "ZmqChannel instantiated, local: " << this->local << ", remote: " << this->other << ", addr: " << addr << LEND;
-}
-
-// Not used currently
-void* ZmqChannel::_tensor_copy(uintptr_t data, const BatchMetadata& metadata, bool to_gpu, uintptr_t dst) {
-    tx_range _{"ZmqChannel::_tensor_copy"};
-    uintptr_t buf;
-    cudaMemcpyKind flag;
-    if (!to_gpu) {
-        size_t size = metadata.num_element() * metadata.get_datatype_size();
-        buf = !dst ? (uintptr_t) std::malloc(size) : dst;
-        flag = cudaMemcpyKind::cudaMemcpyDeviceToHost;
-    } else {
-        buf = dst;
-        flag = cudaMemcpyKind::cudaMemcpyHostToDevice;
-    }
-
-    {
-        tx_range __{"ZmqChannel::_tensor_copy_memcpy_submit"};
-        const size_t step = 4;
-        const size_t dim_stride = metadata.get_datatype_size() * metadata.token_hidden_dim();
-        size_t num_tokens = metadata.shape[0];
-        for (size_t i = 0; i < metadata.shape[0]; i += step) {
-            size_t cur_step = std::min(step, metadata.shape[0] - i);
-            CUDACHECK(cudaMemcpyAsync(
-                (void*) (buf + i * dim_stride),
-                (void*) (data + i * dim_stride),
-                cur_step * dim_stride,
-                flag,
-                this->stream
-            ));
-        }
-    }
-    CUDACHECK(cudaStreamSynchronize(this->stream));
-
-    return (void*) buf;
-}
-
-void ZmqChannel::send(uintptr_t data, const BatchMetadata& metadata) {
-    tx_range _{"ZmqChannel::send"};
-
-    // DMOE_LOG(DEBUG) << "ZmqChannel Sending to " << get_peer_id() << LEND;
-    std::vector<int> token_ids(metadata.num_tokens(), 0);
-    size_t size = metadata.num_tokens() * sizeof(int);
-    // DMOE_LOG(DEBUG) << "send size: " << size << " rank: " << this->rank_offset << LEND;
-    this->mq->send(zmq::buffer(token_ids.data(), size));
-    
-    // if (data != (uintptr_t) buf)
-    //     std::free(buf);
-
-    // DMOE_LOG(DEBUG) << "ZMQ Sent." << LEND;
-}
-
-void ZmqChannel::recv(uintptr_t data, const BatchMetadata &metadata) {
-    tx_range _{"ZmqChannel::recv"};
-
-    // DMOE_LOG(DEBUG) << "ZMQ Recving from " << get_peer_id() << LEND;
-
-    size_t size = metadata.num_tokens() * sizeof(int);
-    zmq::message_t msg(size);
-    // DMOE_LOG(DEBUG) << "recv size: " << size << " rank: " << this->rank_offset << LEND;
-    auto err = this->mq->recv(msg, zmq::recv_flags::none);
-    // DMOE_LOG(DEBUG) << "ZMQ Recved" << LEND;
-}
-
-UcxqChannel::UcxqChannel(int party_local, int party_other, bool is_sender, int rank)
-    : Channel(party_local, party_other),
-      is_sender(is_sender),
-      rank_offset(rank) {}
-
-void UcxqChannel::instantiate() {
-    try {
-        auto type = this->is_sender ? ucxq::socket_type::push : ucxq::socket_type::pull;
-        this->mq = std::make_unique<ucxq::socket_t>(type);
-
-        if (this->is_sender) {
-            const std::string endpoint = get_ucxq_addr(local, /*is_gpu=*/ true, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
-            this->mq->bind(endpoint);
-        } else {
-            const std::string endpoint = get_ucxq_addr(other, /*is_gpu=*/ true, /*manual_port=*/ -1, /*offset=*/ this->rank_offset);
-            this->mq->connect(endpoint);
-        }
-    } catch (const std::exception& e) {
-        throw;
-    }
-}
-
-void UcxqChannel::send(uintptr_t data, const BatchMetadata& metadata) {
-    tx_range _{"UcxqChannel::send"};
-    // Mirror ZmqChannel's dummy behavior: ignore `data`, send only metadata-sized dummy payload
-    std::vector<int> token_ids(metadata.num_tokens(), 0);
-    size_t size = metadata.num_tokens() * sizeof(int);
-    this->mq->send(ucxq::buffer(token_ids.data(), size));
-}
-
-void UcxqChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
-    tx_range _{"UcxqChannel::recv"};
-    size_t size = metadata.num_tokens() * sizeof(int);
-    ucxq::message_t msg(size);
-    auto res = this->mq->recv(msg);
-}
 
 Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
     ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
@@ -258,16 +134,6 @@ Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
 
 Channel_t create_local_channel(int device_id) {
     auto channel = std::make_shared<TensorLocalChannel>(device_id);
-    return channel;
-}
-
-Channel_t create_zmq_channel(int party_local, int party_other, bool is_sender, int rank) {
-    auto channel = std::make_shared<ZmqChannel>(party_local, party_other, is_sender, rank);
-    return channel;
-}
-
-Channel_t create_ucxq_channel(int party_local, int party_other, bool is_sender, int rank) {
-    auto channel = std::make_shared<UcxqChannel>(party_local, party_other, is_sender, rank);
     return channel;
 }
 

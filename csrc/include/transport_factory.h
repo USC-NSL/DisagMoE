@@ -13,10 +13,6 @@ namespace disagmoe {
 // name: "ucx" or "zmq"
 void select_transport(const std::string &name);
 
-// ----- 1. Embedding/data channel factory (wraps UcxqChannel/ZmqChannel) -----
-using EmbeddingChannelFactory = std::function<Channel_t(int /*local*/, int /*peer*/, bool /*isSender*/, int /*rank*/)>;
-const EmbeddingChannelFactory &embedding_channel_factory();
-
 // ----- 2. MQ socket abstraction (wraps ucxq::socket_t/zmq::socket_t) -----
 class MqSocket {
 public:
