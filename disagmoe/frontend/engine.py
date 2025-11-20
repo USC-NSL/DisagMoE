@@ -492,6 +492,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             init_engine = init_disaggregated_engine
             
         self.pool, self.scheduler, self.dispatcher = init_engine(
+            core_args.world_size,
             self.device_id,
             core_args.local_attn_dp_rank,
             self.model_config.top_k,
@@ -509,10 +510,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             # P2P Channels
             core_args.in_device_ids,
             core_args.out_device_ids,
+            core_args.nccl_comm_id,
             [info.to_c() for info in core_args.out_channel_infos],
-            # Group Channels
-            core_args.in_nccl_ids,
-            core_args.out_nccl_ids,
         )
             
         if self.has_attn and self._tp_enabled:

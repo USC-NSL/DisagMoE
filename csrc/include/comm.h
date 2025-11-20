@@ -33,7 +33,6 @@ protected:
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
-    virtual void instantiate() = 0;
     virtual void send(uintptr_t data, const BatchMetadata& metadata) = 0;
     virtual void recv(uintptr_t data, const BatchMetadata& metadata) = 0;
 
@@ -58,16 +57,11 @@ struct cmp_channel_t {
 
 class NcclChannel: public Channel {
 protected:
-    ncclUniqueId comm_id;
     ncclComm_t comm;
     cudaStream_t stream;
 
 public:
-    NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream = nullptr);
-
-    ~NcclChannel();
-
-    void instantiate() override;
+    NcclChannel(int party_local, int party_other, ncclComm_t comm, cudaStream_t stream = nullptr);
 
     void send(uintptr_t data, const BatchMetadata& metadata) override;
 
@@ -86,10 +80,6 @@ class TensorLocalChannel: public Channel {
     public:
         TensorLocalChannel(int device_id, cudaStream_t stream = nullptr);
     
-        ~TensorLocalChannel();
-    
-        void instantiate() override;
-    
         void send(uintptr_t data, const BatchMetadata& metadata) override;
     
         void recv(uintptr_t data, const BatchMetadata& metadata) override;
@@ -97,10 +87,8 @@ class TensorLocalChannel: public Channel {
         void sync() override;
 };
 
-Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw);
+Channel_t create_nccl_channel(int party_local, int party_other, ncclComm_t comm);
 
 Channel_t create_local_channel(int device_id);
 
 void* get_nccl_unique_id();
-
-void instantiate_channels(std::vector<Channel_t> channels);

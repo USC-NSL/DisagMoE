@@ -138,13 +138,20 @@ inline uintptr_t tensor_at(uintptr_t buf, batch_metadata_t metadata, int i) {
 //     return results;
 // }
 
-inline void* convert_to_nccl_uid(char* bytes) {
-    // FIXME(hogura|20241003): the buf here never recycled actually
-    size_t n = sizeof(ncclUniqueId::internal);
+#ifndef NCCL_UNIQUE_ID_BYTES
+#define NCCL_UNIQUE_ID_BYTES 128
+#endif
 
-    char* buf = (char*) std::malloc(n);
-    memcpy(buf, bytes, n);
-    return (void*) buf;
+inline ncclUniqueId string_to_nccl_unique_id(const std::string& s) {
+    // Validate the size (NCCL unique ID is always 128 bytes)
+    if (s.size() != NCCL_UNIQUE_ID_BYTES) {
+        throw std::runtime_error(
+            "Invalid NCCL unique ID size: expected 128 bytes, got " + std::to_string(s.size()));
+    }
+
+    ncclUniqueId id;
+    std::memcpy(id.internal, s.data(), NCCL_UNIQUE_ID_BYTES);
+    return id;
 }
 
 template<class type>

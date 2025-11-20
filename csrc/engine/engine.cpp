@@ -15,40 +15,29 @@
 #include <map>
 
 std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
+    int world_size,
     int local_id,
     bool is_attn,
     // Inter-group Channels
+    std::string nccl_comm_id,
     const std::vector<int> &in_device_ids,
-    const std::map<int, std::string> &in_nccl_ids,
     const std::vector<int> &out_device_ids,
-    const std::map<int, std::string> &out_nccl_ids,
     int local_attn_dp_rank,
     bool skip_embedding = false
 ) {
 
-    std::vector<std::thread> threads;
+    ncclComm_t comm;
+    ncclUniqueId nccl_unique_id = string_to_nccl_unique_id(nccl_comm_id);
+    NCCLCHECK(ncclCommInitRank(&comm, world_size, nccl_unique_id, local_id));
+
+    DMOE_LOG(INFO) << "NCCL comm initialized with world size " << world_size << " and rank " << local_id << LEND;
 
     auto n_in = in_device_ids.size();
     auto n_out = out_device_ids.size();
 
-    #define INST(channel, msg) {                                                                 \
-        threads.emplace_back(std::thread(                                                   \
-            [local_id, peer_id](Channel_t channel) {                                                        \
-                channel->instantiate();                                                     \
-            },                                                                              \
-            channel                                                                         \
-        ));                                                                                 \
-    }
-
     std::vector<Channel_t> in_channels;
     std::vector<Channel_t> out_channels;
     Channel_t local_channel = nullptr;
-
-    // print all in_device_ids
-    std::cout << local_id << " in_device_ids: ";
-    for (auto id: in_device_ids)
-        std::cout << id << " ";
-    std::cout << std::endl;
 
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = in_device_ids[i];
@@ -57,13 +46,9 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
             channel = create_local_channel(local_id);
             local_channel = channel;
         } else {
-            auto nccl_id = in_nccl_ids.at(peer_id);
-            channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_id.c_str())
-            );
+            channel = create_nccl_channel(local_id, peer_id, comm);
         }
         in_channels.push_back(channel);
-        INST(channel, std::string("in channel=== ") + std::to_string(local_id) + "<-" + std::to_string(peer_id));
     }
 
     // DMOE_LOG(DEBUG) << local_id << " " << "in channel initialized" << LEND;
@@ -74,23 +59,16 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
         if (peer_id == local_id) {
             channel = local_channel;
         } else {
-            auto nccl_id = out_nccl_ids.at(peer_id);
-            channel = create_channel(local_id, peer_id, 
-                convert_to_nccl_uid((char*) nccl_id.c_str())
-            );
+            channel = create_nccl_channel(local_id, peer_id, comm);
         }
         out_channels.push_back(channel);
-        INST(channel, std::string("out channel=== ") + std::to_string(local_id) + "->" + std::to_string(peer_id));
     }
-
-    for (auto &t: threads)
-        t.join();
-
     // DMOE_LOG(INFO) << local_id << " " << "all channels initialized" << LEND;
     return std::make_tuple(in_channels, out_channels);
 }
 
 std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
+    int world_size,
     int local_id, 
     int local_attn_dp_rank,
     int top_k,
@@ -101,13 +79,12 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, std::string> &in_nccl_ids,
-    const std::map<int, std::string> &out_nccl_ids
+    std::string nccl_comm_id,
+    const std::vector<ChannelInfo> &out_channel_infos
 ) {
     ASSERT ((has_attn ^ has_expert) == true);
 
-    auto [in_channels, out_channels] = init_all_channels(local_id, has_attn, in_device_ids, in_nccl_ids, out_device_ids, out_nccl_ids, local_attn_dp_rank);
+    auto [in_channels, out_channels] = init_all_channels(world_size, local_id, has_attn, nccl_comm_id, in_device_ids, out_device_ids, local_attn_dp_rank);
 
     mu_dispatcher_t dispatcher{};
     scheduler_t scheduler{};
@@ -145,6 +122,7 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
 }
 
 std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
+    int world_size,
     int local_id,
     int global_rank,
     int top_k,
@@ -155,15 +133,14 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, std::string> &in_nccl_ids,
-    const std::map<int, std::string> &out_nccl_ids
+    std::string nccl_comm_id,
+    const std::vector<ChannelInfo> &out_channel_infos
 ) {
     // TODO: support expert wise schedule
     int num_groups = 1;
     int num_layers = layer_ids.size();
 
-    auto [in_channels, out_channels] = init_all_channels(local_id, true, in_device_ids, in_nccl_ids, out_device_ids, out_nccl_ids, global_rank);
+    auto [in_channels, out_channels] = init_all_channels(world_size, local_id, true, nccl_comm_id, in_device_ids, out_device_ids, global_rank);
 
     auto unified_dispatcher = std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
     auto unified_pool = std::make_shared<UnifiedPool>(layer_ids, local_id, in_channels, num_groups, top_k);
@@ -173,15 +150,6 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     auto casted_dispatcher = std::static_pointer_cast<MuDispatcher>(unified_dispatcher);
 
     return std::make_tuple(casted_pool, scheduler, casted_dispatcher);
-}
-
-#define INSTANTIATE_CHANNELS(threads, _channels) {  \
-    for (auto &chan: _channels)                     \
-        threads.push_back(std::thread(              \
-            [&](Channel_t c) {                      \
-                c->instantiate();                   \
-            }, chan                                 \
-        ));                                         \
 }
 
 void set_hosts(int local_id, const std::map<int, std::string>& device_id_2_ip) {

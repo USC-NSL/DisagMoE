@@ -21,10 +21,6 @@ class PyChannel: Channel {
 public:
     using Channel::Channel;
 
-    void instantiate() override {
-        PYBIND11_OVERRIDE_PURE(void, Channel, instantiate);
-    }
-
     void send(uintptr_t data, const BatchMetadata& metadata) override {
         PYBIND11_OVERRIDE_PURE(void, Channel, send);
     }

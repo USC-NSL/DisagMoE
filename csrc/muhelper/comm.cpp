@@ -10,24 +10,18 @@
 #include <cstring>
 #include <cstdlib>
 
-NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId comm_id, cudaStream_t stream): 
-    Channel::Channel(party_local, party_other), comm_id(comm_id) 
-    {
-        // TODO(hogura|20240927): convert the party_local to local gpu rank (0<local<num_gpu)
-        #ifndef D_ENABLE_RAY
-        CUDACHECK(cudaSetDevice(this->local));
-        #endif
-        if (stream == nullptr) {
-            CUDACHECK(cudaStreamCreate(&this->stream));
-            // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
-        } else {
-            this->stream = stream;
-        }
+NcclChannel::NcclChannel(int party_local, int party_other, ncclComm_t comm, cudaStream_t stream): 
+    Channel::Channel(party_local, party_other), comm(comm) {
+    // TODO(hogura|20240927): convert the party_local to local gpu rank (0<local<num_gpu)
+    #ifndef D_ENABLE_RAY
+    CUDACHECK(cudaSetDevice(this->local));
+    #endif
+    if (stream == nullptr) {
+        CUDACHECK(cudaStreamCreate(&this->stream));
+        // CUDACHECK(cudaStreamCreateWithPriority(&this->stream, cudaStreamNonBlocking, 1));
+    } else {
+        this->stream = stream;
     }
-
-NcclChannel::~NcclChannel() {
-    // NCCLCHECK(ncclCommFinalize(this->comm));
-    // NCCLCHECK(ncclCommDestroy(this->comm));
 }
 
 extern char** _environ;
@@ -36,18 +30,6 @@ void debug_print_environ() {
     for (char** s = _environ; *s; s++) {
         printf("%s\n", *s);
     }
-}
-
-void NcclChannel::instantiate() {
-    #ifndef D_ENABLE_RAY
-    CUDACHECK(cudaSetDevice(this->local));
-    #endif
-    NCCLCHECK(ncclCommInitRank(
-        &this->comm,
-        /*nranks=*/ 2,
-        this->comm_id,
-        /*rank=*/ this->m_rank()
-    ));
 }
 
 void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
@@ -93,14 +75,6 @@ TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
     } 
 }
 
-TensorLocalChannel::~TensorLocalChannel() {
-    // CUDACHECK(cudaStreamDestroy(this->stream));
-}
-
-void TensorLocalChannel::instantiate() {
-    // do nothing
-}
-
 void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
     std::lock_guard<std::mutex> lock(m);
     data_buffer.push(data);
@@ -123,12 +97,8 @@ void TensorLocalChannel::sync() {
 
 std::mutex global_mutex;
 
-Channel_t create_channel(int party_local, int party_other, void *nccl_id_raw) {
-    ncclUniqueId& id = *((ncclUniqueId*)(nccl_id_raw));
-    auto channel = std::make_shared<NcclChannel>(
-        party_local, party_other, id
-    );
-    // TODO(hogura|20240927): recycle the ncclUniqueId (raw).
+Channel_t create_nccl_channel(int party_local, int party_other, ncclComm_t comm) {
+    auto channel = std::make_shared<NcclChannel>(party_local, party_other, comm);
     return channel;
 }
 
@@ -141,17 +111,4 @@ void* get_nccl_unique_id() {
     void* _data = std::malloc(sizeof(ncclUniqueId));
     ncclGetUniqueId((ncclUniqueId*)_data);
     return _data;
-}
-
-void instantiate_channels(std::vector<Channel_t> channels) {
-    std::vector<std::thread> threads;
-    puts("creating channels");
-    for (auto c: channels) {
-        c->_debug_print();
-        threads.push_back(std::thread([=](auto channel) {channel->instantiate();}, c));
-    }
-    for (auto &t: threads) {
-        t.join();
-    }
-    puts("threads inited");
 }
