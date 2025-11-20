@@ -180,7 +180,7 @@ class LinearBase(VLLMLinearBase):
         raise NotImplementedError
 
 
-class ReplicatedLinear(LinearBase):
+class ReplicatedLinear(VLLMLinearBase):
     """Replicated linear layer.
 
     Args:
@@ -251,7 +251,7 @@ class ReplicatedLinear(LinearBase):
         return s
 
 
-class ColumnParallelLinear(LinearBase):
+class ColumnParallelLinear(VLLMLinearBase):
     """Linear layer with column parallelism.
 
     The linear layer is defined as Y = XA + b. A is parallelized along
@@ -294,6 +294,7 @@ class ColumnParallelLinear(LinearBase):
         tp_size = get_tensor_model_parallel_world_size()
         self.tp_size = tp_size
         assert self.quant_method is not None
+        self.input_size_per_partition = divide(self.input_size, tp_size)
         self.output_size_per_partition = divide(self.output_size, tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
         # If QKV or MergedColumn, use output size of each partition.
