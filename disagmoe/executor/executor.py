@@ -191,7 +191,12 @@ class AttnExecutor(Executor):
             if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
                 print(f"trying to build qkv quant config: {self.model_config.attn_qkv_quant}")
                 qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
-                qkv_quant_config = qkv_cls.from_config({})
+                # vLLM's from_config expects a model config dict with a quantization_config.quant_method key for some quantizers (e.g., fp8)
+                qkv_quant_config = qkv_cls.from_config({
+                    "quantization_config": {
+                        "quant_method": self.model_config.attn_qkv_quant
+                    }
+                })
         except Exception as e:
             get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
             qkv_quant_config = None
@@ -563,7 +568,11 @@ class ParallelAttnExecutor(AttnExecutor):
         try:
             if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
                 qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
-                qkv_quant_config = qkv_cls.from_config({})
+                qkv_quant_config = qkv_cls.from_config({
+                    "quantization_config": {
+                        "quant_method": self.model_config.attn_qkv_quant
+                    }
+                })
         except Exception as e:
             get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
             qkv_quant_config = None
