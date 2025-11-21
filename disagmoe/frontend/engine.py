@@ -773,6 +773,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             # self.stats_pre_process(batch)
             output, meta = self.process_batch(meta, batch.data)
             self.post_process(output, meta)
+            if self.profiler is not None:
+                self.profiler.step()
             # self.stats_post_process(batch)
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
@@ -817,6 +819,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
+                schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=0),
                 # with_stack=True,
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     dir_name=profile_dir, 

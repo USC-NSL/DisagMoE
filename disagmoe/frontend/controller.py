@@ -393,6 +393,8 @@ class Controller:
         self.stop_profile()
         
     def start_profile(self, profile_dir=None):
+        if self._profile_enabled:
+            return
         self._profile_enabled = True
         tasks = [worker.start_profile.remote(profile_dir) for worker in self.workers]
         ray.get(tasks)
