@@ -370,6 +370,7 @@ class ColumnParallelLinear(VLLMLinearBase):
 
         # Matrix multiply.
         assert self.quant_method is not None
+        print(f"quant_method: {self.quant_method.__class__.__name__}")
         output_parallel = self.quant_method.apply(self, input_, bias)
         if self.gather_output:
             # All-gather across the partitions.
