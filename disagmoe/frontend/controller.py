@@ -131,13 +131,15 @@ class Controller:
     def all_device_ids(self):
         return self.device_ids
     
-    def init_engine(self, 
-                    model_place: ModelPlacement, 
-                    model_config: Optional[ModelConfig] = None,
-                    cache_config: Optional[CacheConfig] = None,
-                    sampling_config: Optional[SamplingConfig] = None,
-                    gate_profile_file: Optional[str] = None):
-        
+    def init_engine(
+        self, 
+        transport_name: str,
+        model_place: ModelPlacement, 
+        model_config: Optional[ModelConfig] = None,
+        cache_config: Optional[CacheConfig] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        gate_profile_file: Optional[str] = None
+    ):
         if not model_config:
             # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
@@ -222,16 +224,6 @@ class Controller:
             ])
             self._logger.info(f"Uploaded gate profile and broadcast to attention workers: {len(_gate_profile_bytes)} bytes")
         
-        
-        # Broadcast transport selection to all workers before any C++ factory use.
-        # Re-parse the driver's CLI here to obtain the --transport value.
-        try:
-            from benchmark.utils import get_parser_base as _get_parser_base
-            import sys
-            _args = _get_parser_base().parse_args(sys.argv[1:])
-            transport_name = getattr(_args, 'transport', 'zmq')
-        except Exception:
-            transport_name = 'zmq'
         print(f"transport_name: {transport_name}")
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
