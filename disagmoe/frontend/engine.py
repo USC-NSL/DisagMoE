@@ -828,7 +828,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
-                with_stack=True,
+                # with_stack=True,
             )
         self.profiler.start()
     
