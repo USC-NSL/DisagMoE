@@ -411,6 +411,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.loop_thread = None
         
         self.profiler = None
+        self.profile_dir = None
         self.inner_exp_rank = []
         self.device_group_ids = []
         self.handles = []
@@ -820,19 +821,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             os.makedirs(profile_dir, exist_ok=True)
         
         get_logger().info(f"enable profiler, results stored at {profile_dir}")
+        self.profile_dir = profile_dir
     
         self.profiler = torch.profiler.profile(
                 activities=[
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
-                # Keep running until explicitly stopped; step() will flush periodically.
-                schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=100000000),
                 with_stack=True,
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                    dir_name=profile_dir, 
-                    worker_name=f"engine-{self.device_id}",
-                    use_gzip=True,))
+            )
         self.profiler.start()
     
     def stop_profile(self):
@@ -840,6 +837,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             return
         try:
             self.profiler.stop()
+            ts = int(time.time())
+            out_file = os.path.join(self.profile_dir or ".", f"engine-{self.device_id}.{ts}.pt.trace.json.gz")
+            try:
+                self.profiler.export_chrome_trace(out_file)
+                get_logger().info(f"exported chrome trace to {out_file}")
+            except Exception as ee:
+                get_logger().warning(f"failed to export chrome trace: {ee}")
         except RuntimeError as e:
             # Profiler may already be stopped if the schedule ended; make stop idempotent.
             get_logger().warning(f"profiler.stop() ignored: {e}")
