@@ -826,7 +826,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
-                schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=0),
+                # Keep running until explicitly stopped; step() will flush periodically.
+                schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=100000000),
                 # with_stack=True,
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     dir_name=profile_dir, 
@@ -835,8 +836,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.profiler.start()
     
     def stop_profile(self):
-        assert self.profiler is not None, "torch rofiler is not enabled"
-        self.profiler.stop()
+        if self.profiler is None:
+            return
+        try:
+            self.profiler.stop()
+        except RuntimeError as e:
+            # Profiler may already be stopped if the schedule ended; make stop idempotent.
+            get_logger().warning(f"profiler.stop() ignored: {e}")
+        finally:
+            self.profiler = None
         
     def reset(self):
         # for stats usage
