@@ -189,6 +189,7 @@ class AttnExecutor(Executor):
         qkv_quant_config = None
         try:
             if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
+                print(f"trying to build qkv quant config: {self.model_config.attn_qkv_quant}")
                 qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
                 qkv_quant_config = qkv_cls.from_config({})
         except Exception as e:
