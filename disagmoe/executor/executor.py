@@ -21,6 +21,7 @@ from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
 from vllm.model_executor.layers.quantization import get_quantization_config
+from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 import triton.language as tl
 import triton
