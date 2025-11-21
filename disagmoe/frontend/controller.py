@@ -234,6 +234,8 @@ class Controller:
             transport_name = 'zmq'
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
+        # All ranks should use the same nccl comm id
+        nccl_comm_id = get_nccl_unique_id()
         
         # init core
         tasks = [
@@ -245,7 +247,7 @@ class Controller:
                     min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
-                    nccl_comm_id=get_nccl_unique_id(),
+                    nccl_comm_id=nccl_comm_id,
                     out_channel_infos=[
                         ChannelInfo(
                             model_place.expert_ids_at(out),
