@@ -828,7 +828,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                 ],
                 # Keep running until explicitly stopped; step() will flush periodically.
                 schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=100000000),
-                # with_stack=True,
+                with_stack=True,
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     dir_name=profile_dir, 
                     worker_name=f"engine-{self.device_id}",
