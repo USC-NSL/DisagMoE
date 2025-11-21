@@ -396,7 +396,13 @@ class Controller:
         if self._profile_enabled:
             return
         self._profile_enabled = True
-        tasks = [worker.start_profile.remote(profile_dir) for worker in self.workers]
+        resolved_dir = None
+        if profile_dir is not None:
+            try:
+                resolved_dir = os.path.abspath(profile_dir)
+            except Exception:
+                resolved_dir = profile_dir
+        tasks = [worker.start_profile.remote(resolved_dir) for worker in self.workers]
         ray.get(tasks)
         
     def stop_profile(self):

@@ -812,6 +812,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             get_logger().info("profiling directory not specified, using default")
             profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+        except Exception as e:
+            get_logger().warning(f"failed to create profile dir '{profile_dir}': {e}, falling back to 'torch_profile'")
+            profile_dir = "torch_profile"
+            os.makedirs(profile_dir, exist_ok=True)
+        
         get_logger().info(f"enable profiler, results stored at {profile_dir}")
     
         self.profiler = torch.profiler.profile(
