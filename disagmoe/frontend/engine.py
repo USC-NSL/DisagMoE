@@ -838,7 +838,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         try:
             self.profiler.stop()
             ts = int(time.time())
-            out_file = os.path.join(self.profile_dir or ".", f"engine-{self.device_id}.{ts}.pt.trace.json.gz")
+            out_file = os.path.join(self.profile_dir or ".", f"engine-{self.device_id}.{ts}.pt.trace.json")
             try:
                 self.profiler.export_chrome_trace(out_file)
                 get_logger().info(f"exported chrome trace to {out_file}")
