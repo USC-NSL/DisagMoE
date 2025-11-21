@@ -188,17 +188,19 @@ class AttnExecutor(Executor):
         # Build quantization config for attention QKV if requested
         qkv_quant_config = None
         try:
-            if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
-                print(f"trying to build qkv quant config: {self.model_config.attn_qkv_quant}")
-                qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
-                # vLLM's from_config expects a model config dict with a quantization_config.quant_method key for some quantizers (e.g., fp8)
-                qkv_quant_config = qkv_cls.from_config({
-                    "quantization_config": {
-                        "quant_method": self.model_config.attn_qkv_quant
-                    }
-                })
+            method = getattr(self.model_config, "attn_qkv_quant", None)
+            if method and method != "none":
+                print(f"trying to build qkv quant config: {method}")
+                if method == "fp8":
+                    # Use defaults; requires activation_scheme at construction time
+                    qkv_quant_config = Fp8Config(activation_scheme="dynamic")
+                else:
+                    # Handle other methods as needed
+                    qkv_quant_config = None
         except Exception as e:
-            get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
+            get_logger().warning(
+                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}"
+            )
             qkv_quant_config = None
         
         self.operators = [
