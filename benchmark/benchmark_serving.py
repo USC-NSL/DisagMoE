@@ -103,6 +103,7 @@ def launch(args):
     model_config.enable_trace = args.trace
     model_config.num_kv_heads = args.num_kv_heads
     model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant
+    model_config.moe_linear_quant = None if getattr(args, "moe_linear_quant", None) in (None, "", "none") else args.moe_linear_quant
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 

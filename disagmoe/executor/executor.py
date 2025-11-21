@@ -550,14 +550,94 @@ class ExpertsExecutor(Executor):
         super().__init__(model_config)
         expert_cls = MoEExperts if model_config.enable_grouped_gemm else MoEExpertsSerial
         self.type = ExecutorType.EXPERTS_EXEC
-        self.operators = [
-            expert_cls(
-                self.model_config.hidden_size,
-                self.model_config.intermediate_size,
-                self.model_config.num_experts_per_rank,
-                max_batch_size=self.model_config.max_batch_size_expert
-            ) for _ in range(self.num_layers)
-        ]
+        # Build quantization config for MoE experts (Serial only) if requested
+        moe_quant_config = None
+        if expert_cls is MoEExpertsSerial:
+            try:
+                method = getattr(self.model_config, "moe_linear_quant", None)
+                if method and method != "none":
+                    if method == "fp8":
+                        moe_quant_config = Fp8Config(activation_scheme="dynamic")
+                        get_logger().info(f"Successfully built FP8 quant config for MoE experts.")
+                    else:
+                        moe_quant_config = None
+            except Exception as e:
+                get_logger().warning(
+                    f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
+                )
+                moe_quant_config = None
+        # Create operators
+        self.operators = []
+        for _ in range(self.num_layers):
+            if expert_cls is MoEExpertsSerial:
+                self.operators.append(
+                    expert_cls(
+                        self.model_config.hidden_size,
+                        self.model_config.intermediate_size,
+                        self.model_config.num_experts_per_rank,
+                        max_batch_size=self.model_config.max_batch_size_expert,
+                        quant_config=moe_quant_config,
+                    )
+                )
+            else:
+                self.operators.append(
+                    expert_cls(
+                        self.model_config.hidden_size,
+                        self.model_config.intermediate_size,
+                        self.model_config.num_experts_per_rank,
+                        max_batch_size=self.model_config.max_batch_size_expert
+                    )
+                )
+        # For FP8 linears, perform dummy init and post-load processing like attention path
+        if moe_quant_config is not None:
+            for operator in self.operators:
+                for _, module in operator.named_modules():
+                    quant_method = getattr(module, "quant_method", None)
+                    if quant_method is None:
+                        continue
+                    if quant_method.__class__.__name__ in (
+                            "Fp8LinearMethod",
+                            "PTPCFp8LinearMethod",
+                            "ModelOptFp8LinearMethod",
+                    ):
+                        weight = getattr(module, "weight", None)
+                        weight_scale = getattr(module, "weight_scale",
+                                               getattr(module, "weight_scale_inv", None))
+                        input_k = getattr(module, "input_size_per_partition", None)
+                        output_n = getattr(module, "output_size_per_partition", None)
+                        if weight is not None and input_k is not None and output_n is not None:
+                            try:
+                                with torch.no_grad():
+                                    need_init = False
+                                    if weight_scale is None:
+                                        need_init = True
+                                    else:
+                                        try:
+                                            need_init = torch.all(
+                                                weight_scale == torch.finfo(torch.float32).min
+                                            ).item()
+                                        except Exception:
+                                            need_init = False
+                                    if need_init:
+                                        rand_w = torch.randn((output_n, input_k),
+                                                             dtype=torch.float32,
+                                                             device=weight.device)
+                                        rand_w.clamp_(-2.0, 2.0)
+                                        weight.copy_(rand_w.to(weight.dtype))
+                                        if weight_scale is not None:
+                                            weight_scale.fill_(1.0)
+                            except Exception as e:
+                                get_logger().warning(
+                                    f"FP8 dummy init failed for {module.__class__.__name__}: {e}"
+                                )
+                    if isinstance(quant_method, QuantizeMethodBase) and hasattr(
+                            quant_method, "process_weights_after_loading"):
+                        try:
+                            quant_method.process_weights_after_loading(module)
+                        except Exception as e:
+                            get_logger().warning(
+                                f"process_weights_after_loading failed on {module.__class__.__name__}: {e}"
+                            )
         
     
     def warmup(self, batch_size: int):

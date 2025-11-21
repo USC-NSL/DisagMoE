@@ -14,7 +14,9 @@ step_exp=1
 dp_size=1
 ep_size=1
 top_k=1
+
 ATTN_QKV_QUANT="fp8" # options: none | fp8
+MOE_LINEAR_QUANT="fp8" # options: none | fp8
 
 transport_backend=ucx
 
@@ -35,7 +37,6 @@ fi
 REPORT_DIR=./reports
 # Set to 1 to enable PyTorch profiler; 0 to disable
 ENABLE_TORCH_PROFILE=0
-# Override to change default profile output dir (used only when enabled)
 PROFILE_DIR=$REPORT_DIR/torch_profile
 
 if [ ! -d $REPORT_DIR ]; then
@@ -77,6 +78,7 @@ python benchmark/server.py \
     --ep-size $ep_size \
     --transport $transport_backend \
     --attn-qkv-quant $ATTN_QKV_QUANT \
+    --moe-linear-quant $MOE_LINEAR_QUANT \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \
