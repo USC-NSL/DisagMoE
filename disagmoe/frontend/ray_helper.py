@@ -37,7 +37,8 @@ class InitCoreArgs:
     out_device_ids: List[int]
     out_channel_infos: List[ChannelInfo]
     
-    nccl_comm_id: str
+    nccl_comm_id_low_to_high: str
+    nccl_comm_id_high_to_low: str
     
     expert_ranks: List[Tuple[int, int, int]]
     expert_wise_schedule: bool = False

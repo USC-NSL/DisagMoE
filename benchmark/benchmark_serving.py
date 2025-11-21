@@ -5,8 +5,8 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
-from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
-from benchmark.utils import get_parser_base
+from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
+from utils import get_parser_base
 import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
 from typing import List, Dict, Tuple
