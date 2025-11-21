@@ -14,7 +14,7 @@ step_exp=1
 dp_size=1
 ep_size=1
 top_k=1
-ATTN_QKV_QUANT="fp8" # options: none | fbgemm_fp8 | fp8
+ATTN_QKV_QUANT="fp8" # options: none | fp8
 
 transport_backend=ucx
 

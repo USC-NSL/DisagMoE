@@ -191,16 +191,16 @@ class AttnExecutor(Executor):
         try:
             method = getattr(self.model_config, "attn_qkv_quant", None)
             if method and method != "none":
-                print(f"trying to build qkv quant config: {method}")
                 if method == "fp8":
                     # Use defaults; requires activation_scheme at construction time
                     qkv_quant_config = Fp8Config(activation_scheme="dynamic")
+                    get_logger().info(f"Successfully built FP8 quant config for QKV.")
                 else:
                     # Handle other methods as needed
                     qkv_quant_config = None
         except Exception as e:
             get_logger().warning(
-                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}"
+                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}. Falling back to unquantized."
             )
             qkv_quant_config = None
         
@@ -220,34 +220,53 @@ class AttnExecutor(Executor):
         _log_memory_usage("After allocate parameters")
 
         # DisagMoE hacks:
-        # 1. for fbgemm_fp8, use randn dummy weights rather than empty weights
+        # 1. for vllm's fp8, use randn dummy weights rather than empty weights
         # 2. call process_weights_after_loading to match quantization kernel layouts
         for operator in self.operators:
             for _, module in operator.named_modules():
                 quant_method = getattr(module, "quant_method", None)
                 if quant_method is None:
                     continue
-                # Dummy init for FBGEMM FP8 if no checkpoint populated them.
-                if quant_method.__class__.__name__ == "FBGEMMFp8LinearMethod":
+                # Dummy init for original FP8 methods if no checkpoint populated them.
+                if quant_method.__class__.__name__ in (
+                        "Fp8LinearMethod",
+                        "PTPCFp8LinearMethod",
+                        "ModelOptFp8LinearMethod",
+                ):
                     weight = getattr(module, "weight", None)
-                    weight_scale = getattr(module, "weight_scale", None)
+                    # Scales may be per-tensor or block-wise (inv). Either might be present.
+                    weight_scale = getattr(module, "weight_scale",
+                                           getattr(module, "weight_scale_inv", None))
                     input_k = getattr(module, "input_size_per_partition", None)
                     output_n = getattr(module, "output_size_per_partition", None)
-                    if weight is not None and weight_scale is not None and \
-                            input_k is not None and output_n is not None:
+                    if weight is not None and input_k is not None and output_n is not None:
                         try:
-                            if torch.all(weight_scale == torch.finfo(torch.float32).min):
-                                with torch.no_grad():
+                            with torch.no_grad():
+                                # If scales exist and are still sentinel-min, or if scales don't exist,
+                                # initialize weights with a stable random tensor instead of empty memory.
+                                need_init = False
+                                if weight_scale is None:
+                                    need_init = True
+                                else:
+                                    try:
+                                        need_init = torch.all(
+                                            weight_scale == torch.finfo(torch.float32).min
+                                        ).item()
+                                    except Exception:
+                                        # If comparison fails for any reason, be conservative and skip
+                                        need_init = False
+                                if need_init:
                                     # weight currently has shape [N, K] prior to post-load processing
                                     rand_w = torch.randn((output_n, input_k),
                                                          dtype=torch.float32,
                                                          device=weight.device)
                                     rand_w.clamp_(-2.0, 2.0)
                                     weight.copy_(rand_w.to(weight.dtype))
-                                    weight_scale.fill_(1.0)
+                                    if weight_scale is not None:
+                                        weight_scale.fill_(1.0)
                         except Exception as e:
                             get_logger().warning(
-                                f"FBGEMM FP8 dummy init failed for {module.__class__.__name__}: {e}"
+                                f"FP8 dummy init failed for {module.__class__.__name__}: {e}"
                             )
                 if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                         quant_method, "process_weights_after_loading"):
@@ -567,17 +586,22 @@ class ParallelAttnExecutor(AttnExecutor):
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
+        # Build quantization config for attention QKV if requested
         qkv_quant_config = None
         try:
-            if self.model_config.attn_qkv_quant and self.model_config.attn_qkv_quant != "none":
-                qkv_cls = get_quantization_config(self.model_config.attn_qkv_quant)
-                qkv_quant_config = qkv_cls.from_config({
-                    "quantization_config": {
-                        "quant_method": self.model_config.attn_qkv_quant
-                    }
-                })
+            method = getattr(self.model_config, "attn_qkv_quant", None)
+            if method and method != "none":
+                if method == "fp8":
+                    # Use defaults; requires activation_scheme at construction time
+                    qkv_quant_config = Fp8Config(activation_scheme="dynamic")
+                    get_logger().info(f"Successfully built FP8 quant config for QKV.")
+                else:
+                    # Handle other methods as needed
+                    qkv_quant_config = None
         except Exception as e:
-            get_logger().warning(f"Failed to build QKV quantization config '{self.model_config.attn_qkv_quant}': {e}")
+            get_logger().warning(
+                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}. Falling back to unquantized."
+            )
             qkv_quant_config = None
         self.operators = [
             MoEAttention(
