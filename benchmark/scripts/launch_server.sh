@@ -33,9 +33,22 @@ fi
 # transport backend: zmq | ucx
 
 REPORT_DIR=./reports
+# Set to 1 to enable PyTorch profiler; 0 to disable
+ENABLE_TORCH_PROFILE=0
+# Override to change default profile output dir (used only when enabled)
+PROFILE_DIR=$REPORT_DIR/torch_profile
 
 if [ ! -d $REPORT_DIR ]; then
     mkdir -p $REPORT_DIR
+fi
+
+# Conditionally enable profiler
+PROFILE_ARGS=""
+if [ "$ENABLE_TORCH_PROFILE" -eq 1 ]; then
+    if [ ! -d $PROFILE_DIR ]; then
+        mkdir -p $PROFILE_DIR
+    fi
+    PROFILE_ARGS="-p $PROFILE_DIR"
 fi
 
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
@@ -45,6 +58,7 @@ python benchmark/server.py \
     --max-input-len $MAX_INPUT_LEN \
     --min-output-len $MIN_OUTPUT_LEN \
     --max-output-len $MAX_OUTPUT_LEN \
+    $PROFILE_ARGS \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
     -K $top_k \
