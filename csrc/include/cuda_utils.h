@@ -113,5 +113,3 @@ using tx_range = std::string;
 #define AUTO_TX_RANGE
 
 #endif
-
-// TODO(hogura|20241001): add allocAsync

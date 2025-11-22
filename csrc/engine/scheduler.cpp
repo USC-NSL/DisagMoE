@@ -82,8 +82,7 @@ TokenBatch Scheduler::schedule_expert() {
     tx_range _{"Scheduler::schedule_expert"};
     this->pool_snapshot_ = expert_pool->get_pool_snapshot();
     int id = this->layer_scheduler->schedule();
-    auto batches = expert_pool->get_batch_from_layer(id);
-    auto batch = TokenBatch::merge_by_expert(batches);
+    auto batch = expert_pool->get_batch_from_layer(id);
     return batch;
 }
 
@@ -91,8 +90,7 @@ TokenBatch Scheduler::schedule_attention() {
     tx_range _{"Scheduler::schedule_attention"};
     this->pool_snapshot_ = attn_pool->get_pool_snapshot();
     int id = this->layer_scheduler->schedule();
-    auto batches = attn_pool->get_batch_from_layer(id);
-    auto batch = TokenBatch::merge_by_attention(batches);
+    auto batch = attn_pool->get_batch_from_layer(id);
     return batch;
 }
 
@@ -100,7 +98,6 @@ TokenBatch Scheduler::schedule_unified() {
     tx_range _{"Scheduler::schedule_unified"};
     this->pool_snapshot_ = {};
     int id = this->layer_scheduler->schedule();
-    auto batches = unified_pool->get_batch_from_layer(id);
-    auto batch = TokenBatch::merge(batches);
+    auto batch = unified_pool->get_batch_from_layer(id);
     return batch;
 }
