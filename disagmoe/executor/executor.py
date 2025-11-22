@@ -270,12 +270,7 @@ class AttnExecutor(Executor):
                             )
                 if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                         quant_method, "process_weights_after_loading"):
-                    try:
-                        quant_method.process_weights_after_loading(module)
-                    except Exception as e:
-                        get_logger().warning(
-                            f"process_weights_after_loading failed on {module.__class__.__name__}: {e}"
-                        )
+                    quant_method.process_weights_after_loading(module)
         
         assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         if self.cache_config.num_gpu_blocks is None:
@@ -588,7 +583,9 @@ class ExpertsExecutor(Executor):
                         max_batch_size=self.model_config.max_batch_size_expert
                     )
                 )
-        # For FP8 linears, perform dummy init and post-load processing like attention path
+        # DisagMoE hacks:
+        # 1. for vllm's fp8, use randn dummy weights rather than empty weights
+        # 2. call process_weights_after_loading to match quantization kernel layouts
         if moe_quant_config is not None:
             for operator in self.operators:
                 for _, module in operator.named_modules():
@@ -606,38 +603,28 @@ class ExpertsExecutor(Executor):
                         input_k = getattr(module, "input_size_per_partition", None)
                         output_n = getattr(module, "output_size_per_partition", None)
                         if weight is not None and input_k is not None and output_n is not None:
-                            try:
-                                with torch.no_grad():
-                                    need_init = False
-                                    if weight_scale is None:
-                                        need_init = True
-                                    else:
-                                        try:
-                                            need_init = torch.all(
-                                                weight_scale == torch.finfo(torch.float32).min
-                                            ).item()
-                                        except Exception:
-                                            need_init = False
-                                    if need_init:
-                                        rand_w = torch.randn((output_n, input_k),
-                                                             dtype=torch.float32,
-                                                             device=weight.device)
-                                        rand_w.clamp_(-2.0, 2.0)
-                                        weight.copy_(rand_w.to(weight.dtype))
-                                        if weight_scale is not None:
-                                            weight_scale.fill_(1.0)
-                            except Exception as e:
-                                get_logger().warning(
-                                    f"FP8 dummy init failed for {module.__class__.__name__}: {e}"
-                                )
+                            with torch.no_grad():
+                                need_init = False
+                                if weight_scale is None:
+                                    need_init = True
+                                else:
+                                    try:
+                                        need_init = torch.all(
+                                            weight_scale == torch.finfo(torch.float32).min
+                                        ).item()
+                                    except Exception:
+                                        need_init = False
+                                if need_init:
+                                    rand_w = torch.randn((output_n, input_k),
+                                                            dtype=torch.float32,
+                                                            device=weight.device)
+                                    rand_w.clamp_(-2.0, 2.0)
+                                    weight.copy_(rand_w.to(weight.dtype))
+                                    if weight_scale is not None:
+                                        weight_scale.fill_(1.0)
                     if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                             quant_method, "process_weights_after_loading"):
-                        try:
-                            quant_method.process_weights_after_loading(module)
-                        except Exception as e:
-                            get_logger().warning(
-                                f"process_weights_after_loading failed on {module.__class__.__name__}: {e}"
-                            )
+                        quant_method.process_weights_after_loading(module)
         
     
     def warmup(self, batch_size: int):

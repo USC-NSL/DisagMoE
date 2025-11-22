@@ -89,10 +89,11 @@ class MoEExpertsSerial(MoEExperts):
     
     @override
     def create_weights(self, params_dtype: torch.dtype):
-        # If a quantization config is provided, build per-expert Linear modules
-        if getattr(self, "_moe_quant_config", None) is not None:
+        # Only override if we want to quantize MoE layers
+        if getattr(self, "_moe_quant_config", None) is None:
+            return super().create_weights(params_dtype)
+        else:
             self.act_fn = torch.nn.SiLU(inplace=True)
-            # Two per-expert linears: up (2*intermediate) and down (hidden)
             self.up_linears = torch.nn.ModuleList([
                 ReplicatedLinear(
                     input_size=self.hidden_size,
@@ -112,8 +113,6 @@ class MoEExpertsSerial(MoEExperts):
                 ).cuda() for _ in range(self.num_experts)
             ])
             return
-        # Fallback to default unquantized parameter layout
-        return super().create_weights(params_dtype)
         
     @override
     def forward(self, num_tokens: int, hiddens: torch.Tensor, batch_sizes: List[int]):
@@ -125,7 +124,6 @@ class MoEExpertsSerial(MoEExperts):
                 up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
                 down, _ = self.down_linears[local_expert_id](up)
                 return down
-            # Unquantized fallback
             else:
                 up = torch.matmul(input, self.w13_weight[local_expert_id])
                 up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
