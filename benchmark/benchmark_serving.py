@@ -5,8 +5,8 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
-from benchmark.workload import PoissonGenerator, Workload, UniformGenerator, get_generator
-from benchmark.utils import get_parser_base
+from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
+from utils import get_parser_base
 import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
 from typing import List, Dict, Tuple
@@ -122,7 +122,7 @@ def launch(args):
 
     sampling_config = SamplingConfig(min_output_len=args.min_output_len, max_output_len=args.max_output_len)
     
-    master.init_engine(mp, model_config, cache_config, sampling_config,
+    master.init_engine(args.transport, mp, model_config, cache_config, sampling_config,
                       gate_profile_file=args.gate_profile_file)
     
     master.start_engine()

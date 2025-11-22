@@ -362,7 +362,6 @@ class PagedTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
     This class has the same interface as `TokenToKVPoolAllocator` but the output
     of one request is always page-aligned.
 
-    TODO: fuse last_loc into the kernel.
     """
 
     def __init__(

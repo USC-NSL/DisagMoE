@@ -12,7 +12,6 @@
 #include "block_manager.h"
 #include "permute.h"
 #include "binding_helper.h"
-#include "binding_tests.hpp"
 #include "profiler.hpp"
 #include "transport_factory.h"
 #include "tensor_utils.hpp"
@@ -101,8 +100,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
         .def("send", &NcclChannel::send)
-        .def("recv", &NcclChannel::recv)
-        .def("instantiate", &NcclChannel::instantiate);
+        .def("recv", &NcclChannel::recv);
 
     py::class_<BlockManager, std::shared_ptr<BlockManager>>(m, "BlockManager")
         .def(py::init<int, int, int>())
@@ -142,17 +140,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("t_dur", &TraceContext::t_dur)
         .def_readwrite("track_id", &TraceContext::track_id);
 
-    // static function calls
-    m.def("create_channel", &create_channel);
-    m.def("create_channel_py_map", [](int local, int peer, std::map<int, std::string> &uids) {
-        return create_channel(local, peer, (void*) uids.at(peer).c_str());
-    });
-    m.def("create_channel_py_single", [](int local, int peer, char* uid) {
-        return create_channel(local, peer, (void*) uid);
-    });
-
     REGISTER_FUNC(get_nccl_unique_id);
-    REGISTER_FUNC(instantiate_channels);
     REGISTER_FUNC(init_disaggregated_engine);
     REGISTER_FUNC(init_unified_engine);
     REGISTER_FUNC(start_engine);
@@ -161,8 +149,4 @@ PYBIND11_MODULE(disagmoe_c, m) {
     // Transport selection from Python (required before engine init)
     m.def("select_transport", &disagmoe::select_transport, py::arg("name"));
 
-    /********
-        Test functions
-    ********/
-    REGISTER_FUNC(test_nccl_p2p);
 }

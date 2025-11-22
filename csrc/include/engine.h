@@ -12,6 +12,7 @@ using std::vector;
 using std::string;
 
 std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
+    int world_size,
     int local_id, 
     int local_attn_dp_rank, // DP rank
     int top_k,
@@ -23,12 +24,13 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     // P2P Channels
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, std::string> &in_nccl_ids,
-    const std::map<int, std::string> &out_nccl_ids
+    std::string nccl_comm_id_low_to_high,
+    std::string nccl_comm_id_high_to_low,
+    const std::vector<ChannelInfo> &out_channel_infos
 );
 
 std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
+    int world_size,
     int local_id,
     int global_rank, // rank in group
     int top_k,
@@ -40,9 +42,9 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     // P2P Channels
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    const std::vector<ChannelInfo> &out_channel_infos,
-    const std::map<int, std::string> &in_nccl_ids,
-    const std::map<int, std::string> &out_nccl_ids
+    std::string nccl_comm_id_low_to_high,
+    std::string nccl_comm_id_high_to_low,
+    const std::vector<ChannelInfo> &out_channel_infos
 );
 
 void start_engine(scheduler_t scheduler, mu_dispatcher_t dispatcher);

@@ -131,38 +131,15 @@ class Controller:
     def all_device_ids(self):
         return self.device_ids
     
-    def _get_nccl_ids(
-            self, model_place: ModelPlacement
-        ) -> Tuple[Dict[int, Dict[int, str]], 
-                   Dict[int, Dict[int, str]], 
-                   Dict[Tuple[int], Tuple[str, str]]]:
-        in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
-        out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
-        for i, js in model_place.out_device_ids.items():
-            for j in js:
-                uid = get_nccl_unique_id()
-                in_nccl_ids[j][i] = uid
-                out_nccl_ids[i][j] = uid
-        group_nccl_ids = {
-            # NOTE(hogura|20241118): the first is for the channel in Pool, the second is for the channel in Scheduler
-            # the third is for the allreduce in TP Group
-            tuple(group): (get_nccl_unique_id(), get_nccl_unique_id(), get_nccl_unique_id())
-                for group in model_place.device_groups.values()
-        }
-        # inter-group nccl ids, [expert -> TP group]
-        for j, group in model_place.device_groups.items():
-            if len(group) > 1 and j != group[0]: # is a worker
-                root = group[0]
-                in_nccl_ids[j] = in_nccl_ids[root]
-        return in_nccl_ids, out_nccl_ids, group_nccl_ids
-    
-    def init_engine(self, 
-                    model_place: ModelPlacement, 
-                    model_config: Optional[ModelConfig] = None,
-                    cache_config: Optional[CacheConfig] = None,
-                    sampling_config: Optional[SamplingConfig] = None,
-                    gate_profile_file: Optional[str] = None):
-        
+    def init_engine(
+        self, 
+        transport_name: str,
+        model_place: ModelPlacement, 
+        model_config: Optional[ModelConfig] = None,
+        cache_config: Optional[CacheConfig] = None,
+        sampling_config: Optional[SamplingConfig] = None,
+        gate_profile_file: Optional[str] = None
+    ):
         if not model_config:
             # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
@@ -188,8 +165,6 @@ class Controller:
         self.sampling_config = sampling_config
         
         self.init_tokenizer()
-        
-        in_nccl_ids, out_nccl_ids, group_nccl_ids = self._get_nccl_ids(model_place)
         
         # collect attention workers for kv-cache management
         for worker, device_id in zip(self.workers, self.device_ids):
@@ -249,28 +224,25 @@ class Controller:
             ])
             self._logger.info(f"Uploaded gate profile and broadcast to attention workers: {len(_gate_profile_bytes)} bytes")
         
-        
-        # Broadcast transport selection to all workers before any C++ factory use.
-        # Re-parse the driver's CLI here to obtain the --transport value.
-        try:
-            from benchmark.utils import get_parser_base as _get_parser_base
-            import sys
-            _args = _get_parser_base().parse_args(sys.argv[1:])
-            transport_name = getattr(_args, 'transport', 'zmq')
-        except Exception:
-            transport_name = 'zmq'
+        print(f"transport_name: {transport_name}")
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
+        # All ranks should use the same nccl comm id
+        nccl_comm_id_low_to_high = get_nccl_unique_id()
+        nccl_comm_id_high_to_low = get_nccl_unique_id()
         
         # init core
         tasks = [
             worker.init_core.remote(
                 InitCoreArgs(
+                    world_size=len(self.workers),
                     layer_ids=model_place.layer_ids_at(device_id),
                     max_output_len=self.max_output_len,
                     min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
+                    nccl_comm_id_low_to_high=nccl_comm_id_low_to_high,
+                    nccl_comm_id_high_to_low=nccl_comm_id_high_to_low,
                     out_channel_infos=[
                         ChannelInfo(
                             model_place.expert_ids_at(out),
@@ -278,15 +250,11 @@ class Controller:
                             model_place.attn_dp_rank_at(out),
                         ) for out in model_place.out_device_ids.get(device_id, [])
                     ],
-                    in_nccl_ids=in_nccl_ids.get(device_id, {}),
-                    out_nccl_ids=out_nccl_ids.get(device_id, {}),
                     out_device_group_ids={
                         j: [device_id] + model_place.device_groups.get(j, [])
                             for j in model_place.out_device_ids.get(device_id, [])
                     },
                     device_group_ids=model_place.device_groups.get(device_id, []),
-                    group_nccl_ids=group_nccl_ids.get(
-                        tuple(model_place.device_groups.get(device_id, [])), ("", "", "")),
                     expert_ranks=model_place.out_expert_ranks_at(device_id),
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                     expert_wise_schedule=self.expert_wise_schedule,

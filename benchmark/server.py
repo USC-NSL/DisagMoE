@@ -5,11 +5,10 @@ import sys
 from flask import Flask
 from copy import copy
 
-from benchmark.benchmark_serving import benchmark_serving, launch, benchmark_warmup
-import disagmoe_c as c
-from benchmark.utils import get_parser_base
-from benchmark.workload import get_generator
-
+from benchmark_serving import benchmark_serving, launch, benchmark_warmup
+from utils import get_parser_base
+from workload import get_generator
+import disagmoe_c
 from disagmoe.utils.logger import new_logger
 from disagmoe.frontend.controller import Controller
 
@@ -123,7 +122,7 @@ def main():
     
     # transport selection (default zmq)
     try:
-        c.select_transport(args.transport)
+        disagmoe_c.select_transport(args.transport)
     except Exception as e:
         logger.error(f"Failed to select transport '{args.transport}': {e}")
         raise
