@@ -9,6 +9,9 @@ from vllm.distributed import (divide, split_tensor_along_last_dim,)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
+from vllm.model_executor.layers.linear import (
+    LinearBase as VLLMLinearBase,
+)
 from vllm.model_executor.parameter import (BasevLLMParameter,
                                            PackedColumnParameter,
                                            PackedvLLMParameter,
@@ -136,48 +139,7 @@ class UnquantizedLinearMethod(LinearMethodBase):
         return F.linear(x, layer.weight, bias)
 
 
-class LinearBase(torch.nn.Module):
-    """Base linear layer.
-
-    Args:
-        input_size: input dimension of the linear layer.
-        output_size: output dimension of the linear layer.
-        bias: If true, add bias.
-        skip_bias_add: If true, skip adding bias but instead return it.
-        params_dtype: Data type for the parameters.
-        quant_config: Quantization configure.
-    """
-
-    def __init__(
-        self,
-        input_size: int,
-        output_size: int,
-        skip_bias_add: bool = False,
-        params_dtype: Optional[torch.dtype] = None,
-        quant_config: Optional[QuantizationConfig] = None,
-        prefix: str = "",
-    ):
-        super().__init__()
-
-        # Keep input parameters
-        self.input_size = input_size
-        self.output_size = output_size
-        self.skip_bias_add = skip_bias_add
-        if params_dtype is None:
-            params_dtype = torch.get_default_dtype()
-        self.params_dtype = params_dtype
-        if quant_config is None:
-            self.quant_method: Optional[
-                QuantizeMethodBase] = UnquantizedLinearMethod()
-        else:
-            self.quant_method = quant_config.get_quant_method(self,
-                                                              prefix=prefix)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
-
-
-class ReplicatedLinear(LinearBase):
+class ReplicatedLinear(VLLMLinearBase):
     """Replicated linear layer.
 
     Args:
@@ -248,7 +210,7 @@ class ReplicatedLinear(LinearBase):
         return s
 
 
-class ColumnParallelLinear(LinearBase):
+class ColumnParallelLinear(VLLMLinearBase):
     """Linear layer with column parallelism.
 
     The linear layer is defined as Y = XA + b. A is parallelized along
@@ -291,6 +253,7 @@ class ColumnParallelLinear(LinearBase):
         tp_size = get_tensor_model_parallel_world_size()
         self.tp_size = tp_size
         assert self.quant_method is not None
+        self.input_size_per_partition = divide(self.input_size, tp_size)
         self.output_size_per_partition = divide(self.output_size, tp_size)
         self.output_partition_sizes = [self.output_size_per_partition]
         # If QKV or MergedColumn, use output size of each partition.
@@ -938,7 +901,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         param_data.copy_(loaded_weight)
 
 
-class RowParallelLinear(LinearBase):
+class RowParallelLinear(VLLMLinearBase):
     """Linear layer with row parallelism.
 
     The linear layer is defined as Y = XA + b. A is parallelized along

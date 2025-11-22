@@ -411,6 +411,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         self.loop_thread = None
         
         self.profiler = None
+        self.profile_dir = None
         self.inner_exp_rank = []
         self.device_group_ids = []
         self.handles = []
@@ -773,6 +774,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             # self.stats_pre_process(batch)
             output, meta = self.process_batch(meta, batch.data)
             self.post_process(output, meta)
+            if self.profiler is not None:
+                self.profiler.step()
             # self.stats_post_process(batch)
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
@@ -810,7 +813,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             get_logger().info("profiling directory not specified, using default")
             profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
             
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+        except Exception as e:
+            get_logger().warning(f"failed to create profile dir '{profile_dir}': {e}, falling back to 'torch_profile'")
+            profile_dir = "torch_profile"
+            os.makedirs(profile_dir, exist_ok=True)
+        
         get_logger().info(f"enable profiler, results stored at {profile_dir}")
+        self.profile_dir = profile_dir
     
         self.profiler = torch.profiler.profile(
                 activities=[
@@ -818,15 +829,26 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
                 # with_stack=True,
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(
-                    dir_name=profile_dir, 
-                    worker_name=f"engine-{self.device_id}",
-                    use_gzip=True,))
+            )
         self.profiler.start()
     
     def stop_profile(self):
-        assert self.profiler is not None, "torch rofiler is not enabled"
-        self.profiler.stop()
+        if self.profiler is None:
+            return
+        try:
+            self.profiler.stop()
+            ts = int(time.time())
+            out_file = os.path.join(self.profile_dir or ".", f"engine-{self.device_id}.{ts}.pt.trace.json")
+            try:
+                self.profiler.export_chrome_trace(out_file)
+                get_logger().info(f"exported chrome trace to {out_file}")
+            except Exception as ee:
+                get_logger().warning(f"failed to export chrome trace: {ee}")
+        except RuntimeError as e:
+            # Profiler may already be stopped if the schedule ended; make stop idempotent.
+            get_logger().warning(f"profiler.stop() ignored: {e}")
+        finally:
+            self.profiler = None
         
     def reset(self):
         # for stats usage

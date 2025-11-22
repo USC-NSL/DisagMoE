@@ -19,6 +19,9 @@ from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+from vllm.model_executor.layers.quantization import get_quantization_config
+from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 import triton.language as tl
 import triton
@@ -183,6 +186,24 @@ class AttnExecutor(Executor):
         free_memory, _ = torch.cuda.mem_get_info()
         self.init_gpu_memory = free_memory
         
+        # Build quantization config for attention QKV if requested
+        qkv_quant_config = None
+        try:
+            method = getattr(self.model_config, "attn_qkv_quant", None)
+            if method and method != "none":
+                if method == "fp8":
+                    # Use defaults; requires activation_scheme at construction time
+                    qkv_quant_config = Fp8Config(activation_scheme="dynamic")
+                    get_logger().info(f"Successfully built FP8 quant config for QKV.")
+                else:
+                    # Handle other methods as needed
+                    qkv_quant_config = None
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}. Falling back to unquantized."
+            )
+            qkv_quant_config = None
+        
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -192,10 +213,64 @@ class AttnExecutor(Executor):
                 self.model_config.num_experts,
                 self.model_config.top_k,
                 cache_config=self.vllm_cache_config,
+                quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
         _log_memory_usage("After allocate parameters")
+
+        # DisagMoE hacks:
+        # 1. for vllm's fp8, use randn dummy weights rather than empty weights
+        # 2. call process_weights_after_loading to match quantization kernel layouts
+        for operator in self.operators:
+            for _, module in operator.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if quant_method is None:
+                    continue
+                # Dummy init for original FP8 methods if no checkpoint populated them.
+                if quant_method.__class__.__name__ in (
+                        "Fp8LinearMethod",
+                        "PTPCFp8LinearMethod",
+                        "ModelOptFp8LinearMethod",
+                ):
+                    weight = getattr(module, "weight", None)
+                    # Scales may be per-tensor or block-wise (inv). Either might be present.
+                    weight_scale = getattr(module, "weight_scale",
+                                           getattr(module, "weight_scale_inv", None))
+                    input_k = getattr(module, "input_size_per_partition", None)
+                    output_n = getattr(module, "output_size_per_partition", None)
+                    if weight is not None and input_k is not None and output_n is not None:
+                        try:
+                            with torch.no_grad():
+                                # If scales exist and are still sentinel-min, or if scales don't exist,
+                                # initialize weights with a stable random tensor instead of empty memory.
+                                need_init = False
+                                if weight_scale is None:
+                                    need_init = True
+                                else:
+                                    try:
+                                        need_init = torch.all(
+                                            weight_scale == torch.finfo(torch.float32).min
+                                        ).item()
+                                    except Exception:
+                                        # If comparison fails for any reason, be conservative and skip
+                                        need_init = False
+                                if need_init:
+                                    # weight currently has shape [N, K] prior to post-load processing
+                                    rand_w = torch.randn((output_n, input_k),
+                                                         dtype=torch.float32,
+                                                         device=weight.device)
+                                    rand_w.clamp_(-2.0, 2.0)
+                                    weight.copy_(rand_w.to(weight.dtype))
+                                    if weight_scale is not None:
+                                        weight_scale.fill_(1.0)
+                        except Exception as e:
+                            get_logger().warning(
+                                f"FP8 dummy init failed for {module.__class__.__name__}: {e}"
+                            )
+                if isinstance(quant_method, QuantizeMethodBase) and hasattr(
+                        quant_method, "process_weights_after_loading"):
+                    quant_method.process_weights_after_loading(module)
         
         assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         if self.cache_config.num_gpu_blocks is None:
@@ -470,14 +545,86 @@ class ExpertsExecutor(Executor):
         super().__init__(model_config)
         expert_cls = MoEExperts if model_config.enable_grouped_gemm else MoEExpertsSerial
         self.type = ExecutorType.EXPERTS_EXEC
-        self.operators = [
-            expert_cls(
-                self.model_config.hidden_size,
-                self.model_config.intermediate_size,
-                self.model_config.num_experts_per_rank,
-                max_batch_size=self.model_config.max_batch_size_expert
-            ) for _ in range(self.num_layers)
-        ]
+        # Build quantization config for MoE experts (Serial only) if requested
+        moe_quant_config = None
+        if expert_cls is MoEExpertsSerial:
+            try:
+                method = getattr(self.model_config, "moe_linear_quant", None)
+                if method and method != "none":
+                    if method == "fp8":
+                        moe_quant_config = Fp8Config(activation_scheme="dynamic")
+                        get_logger().info(f"Successfully built FP8 quant config for MoE experts.")
+                    else:
+                        moe_quant_config = None
+            except Exception as e:
+                get_logger().warning(
+                    f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
+                )
+                moe_quant_config = None
+        # Create operators
+        self.operators = []
+        for _ in range(self.num_layers):
+            if expert_cls is MoEExpertsSerial:
+                self.operators.append(
+                    expert_cls(
+                        self.model_config.hidden_size,
+                        self.model_config.intermediate_size,
+                        self.model_config.num_experts_per_rank,
+                        max_batch_size=self.model_config.max_batch_size_expert,
+                        quant_config=moe_quant_config,
+                    )
+                )
+            else:
+                self.operators.append(
+                    expert_cls(
+                        self.model_config.hidden_size,
+                        self.model_config.intermediate_size,
+                        self.model_config.num_experts_per_rank,
+                        max_batch_size=self.model_config.max_batch_size_expert
+                    )
+                )
+        # DisagMoE hacks:
+        # 1. for vllm's fp8, use randn dummy weights rather than empty weights
+        # 2. call process_weights_after_loading to match quantization kernel layouts
+        if moe_quant_config is not None:
+            for operator in self.operators:
+                for _, module in operator.named_modules():
+                    quant_method = getattr(module, "quant_method", None)
+                    if quant_method is None:
+                        continue
+                    if quant_method.__class__.__name__ in (
+                            "Fp8LinearMethod",
+                            "PTPCFp8LinearMethod",
+                            "ModelOptFp8LinearMethod",
+                    ):
+                        weight = getattr(module, "weight", None)
+                        weight_scale = getattr(module, "weight_scale",
+                                               getattr(module, "weight_scale_inv", None))
+                        input_k = getattr(module, "input_size_per_partition", None)
+                        output_n = getattr(module, "output_size_per_partition", None)
+                        if weight is not None and input_k is not None and output_n is not None:
+                            with torch.no_grad():
+                                need_init = False
+                                if weight_scale is None:
+                                    need_init = True
+                                else:
+                                    try:
+                                        need_init = torch.all(
+                                            weight_scale == torch.finfo(torch.float32).min
+                                        ).item()
+                                    except Exception:
+                                        need_init = False
+                                if need_init:
+                                    rand_w = torch.randn((output_n, input_k),
+                                                            dtype=torch.float32,
+                                                            device=weight.device)
+                                    rand_w.clamp_(-2.0, 2.0)
+                                    weight.copy_(rand_w.to(weight.dtype))
+                                    if weight_scale is not None:
+                                        weight_scale.fill_(1.0)
+                    if isinstance(quant_method, QuantizeMethodBase) and hasattr(
+                            quant_method, "process_weights_after_loading"):
+                        quant_method.process_weights_after_loading(module)
         
     
     def warmup(self, batch_size: int):
@@ -506,6 +653,23 @@ class ParallelAttnExecutor(AttnExecutor):
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
+        # Build quantization config for attention QKV if requested
+        qkv_quant_config = None
+        try:
+            method = getattr(self.model_config, "attn_qkv_quant", None)
+            if method and method != "none":
+                if method == "fp8":
+                    # Use defaults; requires activation_scheme at construction time
+                    qkv_quant_config = Fp8Config(activation_scheme="dynamic")
+                    get_logger().info(f"Successfully built FP8 quant config for QKV.")
+                else:
+                    # Handle other methods as needed
+                    qkv_quant_config = None
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}. Falling back to unquantized."
+            )
+            qkv_quant_config = None
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -515,6 +679,7 @@ class ParallelAttnExecutor(AttnExecutor):
                 self.model_config.num_experts,
                 tp_size=model_config.tp_size,
                 tp_rank=model_config.rank,
+                quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]

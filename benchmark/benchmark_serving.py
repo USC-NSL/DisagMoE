@@ -102,6 +102,8 @@ def launch(args):
     model_config.top_k = args.topk
     model_config.enable_trace = args.trace
     model_config.num_kv_heads = args.num_kv_heads
+    model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant
+    model_config.moe_linear_quant = None if getattr(args, "moe_linear_quant", None) in (None, "", "none") else args.moe_linear_quant
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -247,7 +249,7 @@ def generate_step_trace(args,
                 
         metrics[pid] = asdict(metric)
         
-    from benchmark.plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
+    from plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
     
     trace_dir = os.path.dirname(args.file)
 
@@ -268,7 +270,7 @@ def analyze_throughput(args,
                        exp_queueing_delays: List[List[float]],
                        t_submitted: Dict[int, int],
                        slo_stats: List[SloStat]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
+    from plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
                                         get_ttft_name, get_req_finish_time_name, get_req_submit_time_name
     trace_dir = os.path.dirname(args.file)
     # request submit timestamp

@@ -89,6 +89,7 @@ class MoEAttention(nn.Module):
         rope_theta: float = 10000,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        quant_config_qkv: Optional[QuantizationConfig] = None,
         params_dtype: Optional[torch.dtype] = None,
         prefix: str = "",
         gate_profile_bytes: Optional[bytes] = None,
@@ -128,7 +129,7 @@ class MoEAttention(nn.Module):
             self.total_num_kv_heads,
             tp_size=tp_size,
             bias=False,
-            quant_config=quant_config,
+            quant_config=quant_config_qkv,
             prefix=f"{prefix}.qkv_proj",
             params_dtype=params_dtype,
         )

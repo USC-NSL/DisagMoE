@@ -1,7 +1,9 @@
 import torch
-from typing import override, List
+from typing import override, List, Optional
 from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
+from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+from disagmoe.models.linear import ReplicatedLinear
 
 class MoEExperts(torch.nn.Module):
     
@@ -79,17 +81,54 @@ class MoEExperts(torch.nn.Module):
 class MoEExpertsSerial(MoEExperts):
     
     def __init__(self, hidden_size, intermediate_size, num_experts, tp_size = 1, 
-                 max_batch_size: int = MAX_BATCH_SIZE):
+                 max_batch_size: int = MAX_BATCH_SIZE,
+                 quant_config: Optional[QuantizationConfig] = None):
+        # Store quantization config before parent ctor calls create_weights
+        self._moe_quant_config: Optional[QuantizationConfig] = quant_config
         super().__init__(hidden_size, intermediate_size, num_experts, tp_size, enable_cutlass_cache=False)
+    
+    @override
+    def create_weights(self, params_dtype: torch.dtype):
+        # Only override if we want to quantize MoE layers
+        if getattr(self, "_moe_quant_config", None) is None:
+            return super().create_weights(params_dtype)
+        else:
+            self.act_fn = torch.nn.SiLU(inplace=True)
+            self.up_linears = torch.nn.ModuleList([
+                ReplicatedLinear(
+                    input_size=self.hidden_size,
+                    output_size=self.intermediate_size * 2,
+                    bias=False,
+                    params_dtype=params_dtype,
+                    quant_config=self._moe_quant_config,
+                ).cuda() for _ in range(self.num_experts)
+            ])
+            self.down_linears = torch.nn.ModuleList([
+                ReplicatedLinear(
+                    input_size=self.intermediate_size,
+                    output_size=self.hidden_size,
+                    bias=False,
+                    params_dtype=params_dtype,
+                    quant_config=self._moe_quant_config,
+                ).cuda() for _ in range(self.num_experts)
+            ])
+            return
         
     @override
     def forward(self, num_tokens: int, hiddens: torch.Tensor, batch_sizes: List[int]):
         
         def calc(input, local_expert_id: int):
-            up = torch.matmul(input, self.w13_weight[local_expert_id])
-            up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
-            down = torch.matmul(up, self.w2_weight[local_expert_id])
-            return down
+            # Quantized path using vLLM Linear wrappers
+            if getattr(self, "_moe_quant_config", None) is not None:
+                up, _ = self.up_linears[local_expert_id](input)
+                up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
+                down, _ = self.down_linears[local_expert_id](up)
+                return down
+            else:
+                up = torch.matmul(input, self.w13_weight[local_expert_id])
+                up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
+                down = torch.matmul(up, self.w2_weight[local_expert_id])
+                return down
         
         if len(batch_sizes) == 1:
             return calc(hiddens, 0)
