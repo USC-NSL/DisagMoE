@@ -249,7 +249,7 @@ def generate_step_trace(args,
                 
         metrics[pid] = asdict(metric)
         
-    from benchmark.plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
+    from plotter.namer import get_trace_name, get_queue_length_name, get_trace_metrics_name
     
     trace_dir = os.path.dirname(args.file)
 
@@ -270,7 +270,7 @@ def analyze_throughput(args,
                        exp_queueing_delays: List[List[float]],
                        t_submitted: Dict[int, int],
                        slo_stats: List[SloStat]):
-    from benchmark.plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
+    from plotter.namer import get_sampler_step_name, get_worker_queueing_delay_name, \
                                         get_ttft_name, get_req_finish_time_name, get_req_submit_time_name
     trace_dir = os.path.dirname(args.file)
     # request submit timestamp
