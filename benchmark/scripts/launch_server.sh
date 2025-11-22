@@ -15,8 +15,9 @@ dp_size=1
 ep_size=1
 top_k=1
 
-ATTN_QKV_QUANT="fp8" # options: none | fp8
-MOE_LINEAR_QUANT="fp8" # options: none | fp8
+ATTN_QKV_QUANT="none" # options: none | fp8
+MOE_LINEAR_QUANT="none" # options: none | fp8
+USE_SERIAL_GEMM_MOE=0 # MoE linear quantization is only enabled for serial gemm path for now
 
 transport_backend=ucx
 
@@ -52,6 +53,11 @@ if [ "$ENABLE_TORCH_PROFILE" -eq 1 ]; then
     PROFILE_ARGS="-p $PROFILE_DIR"
 fi
 
+SERIAL_GEMM_ARGS=""
+if [ "$USE_SERIAL_GEMM_MOE" -eq 1 ]; then
+    SERIAL_GEMM_ARGS="--serial-gemm"
+fi
+
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
@@ -79,6 +85,7 @@ python benchmark/server.py \
     --transport $transport_backend \
     --attn-qkv-quant $ATTN_QKV_QUANT \
     --moe-linear-quant $MOE_LINEAR_QUANT \
+    $SERIAL_GEMM_ARGS \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \
