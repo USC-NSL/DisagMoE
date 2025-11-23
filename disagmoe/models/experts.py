@@ -136,7 +136,7 @@ class MoEExperts(torch.nn.Module):
         # Generate m_indices
         # batch_sizes is [num_experts], containing count of tokens per expert
         expert_ids = torch.arange(self.num_experts, device=hiddens.device, dtype=torch.int32)
-        m_indices = torch.repeat_interleave(expert_ids, batch_sizes.to(torch.int32))
+        m_indices = torch.repeat_interleave(expert_ids, batch_sizes.to(device=hiddens.device, dtype=torch.int32))
         
         # Cast hiddens to FP8
         hiddens_fp8 = hiddens.to(torch.float8_e4m3fn)
