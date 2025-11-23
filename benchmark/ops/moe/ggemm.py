@@ -401,7 +401,7 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
         
         # GEMM 1 Inputs
         # Quantize inputs using deep_gemm utility (simulating incoming FP8 or on-the-fly cast)
-        A_fp8, sfa_1 = dg.per_token_cast_to_fp8(A_flat_bf16)
+        A_fp8, sfa_1 = dg.per_token_cast_to_fp8(A_flat_bf16, use_ue8m0=False)
         
         # Buffers
         up_buf = torch.empty(M, gemm1_N, device=device, dtype=torch.bfloat16)
@@ -421,7 +421,7 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
             glu = up1 * up3
             
             # Convert to FP8 for GEMM 2 using deep_gemm utility
-            glu_fp8, sfa_2 = dg.per_token_cast_to_fp8(glu)
+            glu_fp8, sfa_2 = dg.per_token_cast_to_fp8(glu, use_ue8m0=False)
             
             # GEMM 2
             dg.m_grouped_fp8_gemm_nt_contiguous((glu_fp8, sfa_2), (Ds_fp8, sfb_2), down_buf, m_indices)

@@ -140,7 +140,7 @@ class MoEExperts(torch.nn.Module):
         m_indices = torch.repeat_interleave(expert_ids, batch_sizes.to(device=hiddens.device, dtype=torch.int32))
         
         # Cast hiddens to FP8 using deep_gemm utility
-        hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens)
+        hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
         
         # Output buffer for w13 (BF16)
         # shape: [M, intermediate_size * 2]
@@ -164,7 +164,7 @@ class MoEExperts(torch.nn.Module):
         
         # 2. Prepare inputs for w2
         # up: [M, intermediate_size] -> convert to FP8
-        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up)
+        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up, use_ue8m0=False)
         
         # Output buffer for w2 (BF16)
         # shape: [M, hidden_size]
