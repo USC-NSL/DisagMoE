@@ -269,14 +269,11 @@ class CPUBlockManager(BaseBlockManager):
         # 1. prepare block table
         if dummy_cache:
             # dummy_cache is True when _warmup_attn
-            block_table_cuda = torch.zeros(
-                (num_tokens, num_seqs * self.model_config.max_seq_len // self.block_size), 
+            block_table_cuda = torch.arange(
+                num_tokens * (self.model_config.max_seq_len // self.block_size), 
                 dtype=torch.int32, device=self.device
-            )
-            slot_mapping_cuda = torch.zeros(
-                (num_tokens, ), 
-                dtype=torch.int64, device=self.device
-            )
+            ).view(num_tokens, -1)
+            slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
         else:
             if self.use_gdr_copy:
                 num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
@@ -306,10 +303,10 @@ class CPUBlockManager(BaseBlockManager):
         batch.seq_lens_tensor = seq_lens_cuda
         
         return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decode_tokens=num_tokens,
+            slot_mapping=slot_mapping_cuda,
             seq_lens=batch.seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=0,
