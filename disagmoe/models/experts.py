@@ -62,7 +62,8 @@ class MoEExperts(torch.nn.Module):
         # w13_weight: [E, H, I*2] -> [E, I*2, H] for deep_gemm (if NT, B is transposed)
         # w2_weight: [E, I, H] -> [E, H, I]
         
-        # Scaling factors logic: using ones for now as in the example
+        # Scaling factors logic: this doesn't affect performance, and weights are 
+        # usually pre-quantized, so we just use ones for now.
         # ceil_div = lambda x, y: (x + y - 1) // y
         def ceil_div(x, y): return (x + y - 1) // y
         
@@ -138,17 +139,12 @@ class MoEExperts(torch.nn.Module):
         expert_ids = torch.arange(self.num_experts, device=hiddens.device, dtype=torch.int32)
         m_indices = torch.repeat_interleave(expert_ids, batch_sizes.to(device=hiddens.device, dtype=torch.int32))
         
-        # Cast hiddens to FP8
-        hiddens_fp8 = hiddens.to(torch.float8_e4m3fn)
-        
-        # Scaling factor for hiddens (sfa)
-        # shape: [M, ceil_div(K, 128)]
-        def ceil_div(x, y): return (x + y - 1) // y
-        M, K = hiddens.shape
-        sfa_hiddens = torch.ones(M, ceil_div(K, 128), device=hiddens.device, dtype=torch.float32)
+        # Cast hiddens to FP8 using deep_gemm utility
+        hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens)
         
         # Output buffer for w13 (BF16)
         # shape: [M, intermediate_size * 2]
+        M = hiddens.shape[0]
         intermediate_size_2 = self.intermediate_size * 2
         up_out = torch.empty(M, intermediate_size_2, device=hiddens.device, dtype=torch.bfloat16)
         
@@ -168,12 +164,7 @@ class MoEExperts(torch.nn.Module):
         
         # 2. Prepare inputs for w2
         # up: [M, intermediate_size] -> convert to FP8
-        up_fp8 = up.to(torch.float8_e4m3fn)
-        
-        # Scaling factor for up (sfa)
-        # K_up = intermediate_size
-        K_up = self.intermediate_size
-        sfa_up = torch.ones(M, ceil_div(K_up, 128), device=hiddens.device, dtype=torch.float32)
+        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up)
         
         # Output buffer for w2 (BF16)
         # shape: [M, hidden_size]

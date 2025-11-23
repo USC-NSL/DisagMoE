@@ -400,15 +400,14 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
             start = end
         
         # GEMM 1 Inputs
-        A_fp8 = A_flat_bf16.to(torch.float8_e4m3fn)
-        sfa_1 = torch.ones(M, ceil_div(gemm1_K, 128), device=device, dtype=torch.float32)
-
+        # Quantize inputs using deep_gemm utility (simulating incoming FP8 or on-the-fly cast)
+        A_fp8, sfa_1 = dg.per_token_cast_to_fp8(A_flat_bf16)
+        
         # Buffers
         up_buf = torch.empty(M, gemm1_N, device=device, dtype=torch.bfloat16)
         
         # For GEMM 2, we need scaling factors for the intermediate activation
         # It will depend on M
-        sfa_2 = torch.ones(M, ceil_div(gemm2_K, 128), device=device, dtype=torch.float32)
         down_buf = torch.empty(M, gemm2_N, device=device, dtype=torch.bfloat16)
 
         def run_once():
@@ -421,8 +420,8 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
             # Simple GLU (elementwise mul) as per run_expert reference
             glu = up1 * up3
             
-            # Convert to FP8 for GEMM 2
-            glu_fp8 = glu.to(torch.float8_e4m3fn)
+            # Convert to FP8 for GEMM 2 using deep_gemm utility
+            glu_fp8, sfa_2 = dg.per_token_cast_to_fp8(glu)
             
             # GEMM 2
             dg.m_grouped_fp8_gemm_nt_contiguous((glu_fp8, sfa_2), (Ds_fp8, sfb_2), down_buf, m_indices)
