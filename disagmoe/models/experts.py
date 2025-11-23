@@ -5,8 +5,6 @@ from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
 
-import deep_gemm as dg
-
 class MoEExperts(torch.nn.Module):
     
     def __init__(
@@ -57,6 +55,8 @@ class MoEExperts(torch.nn.Module):
         self.act_fn = torch.nn.SiLU(inplace=True)
 
     def prepare_deep_gemm_weights(self):
+        import deep_gemm as dg # lazy import, we don't need it if not using fp8 grouped gemm
+
         # We assume the weights are already initialized in BF16 in self.w13_weight and self.w2_weight
         # We need to transpose them and cast to FP8 for deep_gemm
         # w13_weight: [E, H, I*2] -> [E, I*2, H] for deep_gemm (if NT, B is transposed)
