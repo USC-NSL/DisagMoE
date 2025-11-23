@@ -547,20 +547,25 @@ class ExpertsExecutor(Executor):
         self.type = ExecutorType.EXPERTS_EXEC
         # Build quantization config for MoE experts (Serial only) if requested
         moe_quant_config = None
-        if expert_cls is MoEExpertsSerial:
-            try:
-                method = getattr(self.model_config, "moe_linear_quant", None)
-                if method and method != "none":
-                    if method == "fp8":
+        use_deep_gemm_fp8 = False
+        
+        try:
+            method = getattr(self.model_config, "moe_linear_quant", None)
+            if method and method != "none":
+                if method == "fp8":
+                    if expert_cls is MoEExpertsSerial:
                         moe_quant_config = Fp8Config(activation_scheme="dynamic")
-                        get_logger().info(f"Successfully built FP8 quant config for MoE experts.")
+                        get_logger().info(f"Successfully built FP8 quant config for MoE experts (Serial).")
                     else:
-                        moe_quant_config = None
-            except Exception as e:
-                get_logger().warning(
-                    f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
-                )
-                moe_quant_config = None
+                        use_deep_gemm_fp8 = True
+                        get_logger().info(f"Enabled deep_gemm FP8 for MoE experts (Grouped).")
+                else:
+                    moe_quant_config = None
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
+            )
+            moe_quant_config = None
         # Create operators
         self.operators = []
         for _ in range(self.num_layers):
@@ -580,7 +585,8 @@ class ExpertsExecutor(Executor):
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
-                        max_batch_size=self.model_config.max_batch_size_expert
+                        max_batch_size=self.model_config.max_batch_size_expert,
+                        use_deep_gemm_fp8=use_deep_gemm_fp8
                     )
                 )
         # DisagMoE hacks:

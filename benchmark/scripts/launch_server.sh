@@ -17,7 +17,7 @@ top_k=1
 
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
-USE_SERIAL_GEMM_MOE=0 # MoE linear quantization is only enabled for serial gemm path for now
+USE_SERIAL_GEMM_MOE=0
 
 transport_backend=ucx
 
