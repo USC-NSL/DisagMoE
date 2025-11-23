@@ -580,11 +580,17 @@ for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerat
     # Adjust width for 6 bars
     width = 0.14
     ax = axes[idx]
-    ax.bar(x - 2.5*width, single_scaled_means, width=width, label="Single Expert xE (torch.matmul)")
-    ax.bar(x - 1.5*width, seq_means, width=width, label="Sequential (graph)")
-    ax.bar(x - 0.5*width, seq_no_graph_means, width=width, label="Sequential (no graph)")
-    ax.bar(x + 0.5*width, grp_means, width=width, label="Grouped GEMM")
-    ax.bar(x + 1.5*width, triton_means, width=width, label="Triton Fused MoE")
+    
+    # Determine labels based on dtype
+    dtype_suffix = ""
+    if _DTYPE_STR == "fp8":
+        dtype_suffix = " (BF16)" # standard kernels run in BF16 when fp8 mode is active
+    
+    ax.bar(x - 2.5*width, single_scaled_means, width=width, label=f"Single Expert xE{dtype_suffix}")
+    ax.bar(x - 1.5*width, seq_means, width=width, label=f"Sequential (graph){dtype_suffix}")
+    ax.bar(x - 0.5*width, seq_no_graph_means, width=width, label=f"Sequential (no graph){dtype_suffix}")
+    ax.bar(x + 0.5*width, grp_means, width=width, label=f"Grouped GEMM{dtype_suffix}")
+    ax.bar(x + 1.5*width, triton_means, width=width, label=f"Triton Fused MoE{dtype_suffix}")
     ax.bar(x + 2.5*width, deep_gemm_means, width=width, label="DeepGemm (FP8)")
 
     # Use sparse xticks for readability
@@ -661,10 +667,15 @@ for flops_g, t_grp, t_sng, t_tri, t_single, t_dg, name, color in zip(
     model_names,
     model_colors,
 ):
-    ax2.plot(flops_g, t_grp, marker='o', linestyle='-', color=color, label=f"{name} - Grouped GEMM")
-    ax2.plot(flops_g, t_sng, marker='s', linestyle=':', color=color, alpha=0.9, label=f"{name} - Sequential (no graph)")
-    ax2.plot(flops_g, t_tri, marker='^', linestyle='--', color=color, alpha=0.9, label=f"{name} - Triton Fused MoE")
-    ax2.plot(flops_g, t_single, marker='x', linestyle='-.', color=color, alpha=0.7, label=f"{name} - Single Expert xE")
+    # Determine labels based on dtype
+    dtype_suffix = ""
+    if _DTYPE_STR == "fp8":
+        dtype_suffix = " (BF16)"
+
+    ax2.plot(flops_g, t_grp, marker='o', linestyle='-', color=color, label=f"{name} - Grouped GEMM{dtype_suffix}")
+    ax2.plot(flops_g, t_sng, marker='s', linestyle=':', color=color, alpha=0.9, label=f"{name} - Sequential (no graph){dtype_suffix}")
+    ax2.plot(flops_g, t_tri, marker='^', linestyle='--', color=color, alpha=0.9, label=f"{name} - Triton Fused MoE{dtype_suffix}")
+    ax2.plot(flops_g, t_single, marker='x', linestyle='-.', color=color, alpha=0.7, label=f"{name} - Single Expert xE{dtype_suffix}")
     if np.sum(t_dg) > 0:
         ax2.plot(flops_g, t_dg, marker='*', linestyle='-', color=color, alpha=0.8, label=f"{name} - DeepGemm (FP8)")
 ax2.set_xlabel("Estimated FLOPs per batch (GFLOPs)")
