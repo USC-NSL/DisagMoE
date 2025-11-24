@@ -33,17 +33,62 @@ class MoEExperts(torch.nn.Module):
             
         params_dtype = torch.get_default_dtype()
         assert params_dtype == torch.bfloat16, "Only bf16 is supported for now"
-        self.create_weights(params_dtype)
+        self.create_weights(torch.bfloat16) # create weights as bf16, later cast to fp8 if needed
         
+        # fp8-specific initializations
         if self.use_deep_gemm_fp8:
             if dg is None:
                 raise ImportError("deep_gemm is not available!")
-            self.prepare_deep_gemm_weights()
+            self.prepare_deep_gemm_fp8_weights()
+            # pre-allocate fixed size input buffers
+            self.fp8_up_in_buf = torch.empty(num_experts,
+                                          max_batch_size,
+                                          self.hidden_size,
+                                          device=self.w13_weight.device,
+                                          dtype=torch.float8_e4m3fn)
+            self.fp8_down_in_buf = torch.empty(num_experts,
+                                          max_batch_size,
+                                          self.intermediate_size,
+                                          device=self.w2_weight.device,
+                                          dtype=torch.float8_e4m3fn)
+            # pre-allocate scale buffers
+            self.fp8_up_scale_buf = torch.empty(num_experts,
+                                            max_batch_size,
+                                            1,
+                                            device=self.w13_weight.device,
+                                            dtype=torch.float32)
+            self.fp8_down_scale_buf = torch.empty(num_experts,
+                                            max_batch_size,
+                                            1,
+                                            device=self.w2_weight.device,
+                                            dtype=torch.float32)
+            # create cached grouped gemm buffers
+            self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
+            # change the views
+            self.cache_up = self.cache_up.view(self.num_experts, -1, self.intermediate_size * 2)
+            self.cache_down = self.cache_down.view(self.num_experts, -1, self.hidden_size)
             
-        self.gmm_with_cache = None
-        self.gmm = gmm
-        self.gmm_cache_max_batch_size = max_batch_size
-        self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
+            # capture the cudagraph for deep_gemm forward pass
+            self.graph = torch.cuda.CUDAGraph()
+            # Note that bs is a scalar to the kernel, so it has to be baked in, thus we use a conservative upper bound
+            self.static_bs = self.num_experts * max_batch_size # conservative upper bound
+            
+            # We need static 'batch_sizes' tensor for the mask, later update the contents in each forward pass
+            self.static_batch_sizes = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
+            
+            # Warmup
+            with torch.no_grad():
+                self._forward_deep_gemm_internal()
+                torch.cuda.synchronize()
+            
+            # Capture
+            with torch.cuda.graph(self.graph):
+                self._forward_deep_gemm_internal()
+        else:
+            self.gmm_with_cache = None
+            self.gmm = gmm
+            self.gmm_cache_max_batch_size = max_batch_size
+            self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
         
     def create_weights(self, params_dtype: torch.dtype):
         self.w13_weight = torch.nn.Parameter(torch.randn(self.num_experts,
@@ -62,7 +107,7 @@ class MoEExperts(torch.nn.Module):
         
         self.act_fn = torch.nn.SiLU(inplace=True)
 
-    def prepare_deep_gemm_weights(self):
+    def prepare_deep_gemm_fp8_weights(self):
         # We assume the weights are already initialized in BF16 in self.w13_weight and self.w2_weight
         # We need to transpose them and cast to FP8 for deep_gemm
         # w13_weight: [E, H, I*2] -> [E, I*2, H] for deep_gemm (if NT, B is transposed)
@@ -80,7 +125,7 @@ class MoEExperts(torch.nn.Module):
         # For w13: K = hidden_size, N = intermediate_size * 2
         k_w13 = self.hidden_size
         n_w13 = self.intermediate_size * 2
-        self.w13_sfb = torch.ones(
+        self.w13_sf = torch.ones(
             self.num_experts, 
             ceil_div(n_w13, 128), 
             ceil_div(k_w13, 128), 
@@ -93,7 +138,7 @@ class MoEExperts(torch.nn.Module):
         # For w2: K = intermediate_size, N = hidden_size
         k_w2 = self.intermediate_size
         n_w2 = self.hidden_size
-        self.w2_sfb = torch.ones(
+        self.w2_sf = torch.ones(
             self.num_experts, 
             ceil_div(n_w2, 128), 
             ceil_div(k_w2, 128), 
@@ -102,8 +147,12 @@ class MoEExperts(torch.nn.Module):
         )
 
     def create_grouped_gemm_cache(self, params_dtype, enable_cutlass_cache, max_batch_size):
-        self.cache_up = torch.empty((max_batch_size, self.intermediate_size * 2), dtype=params_dtype, device=torch.device("cuda"))
-        self.cache_down = torch.empty((max_batch_size, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
+        # TODO: for now we interpret max_batch_size as per-expert batch size
+        # but this leads to wasted memory for non-masked grouped gemm path, which will only use the first max_batch_size tokens
+        # later we should 1) differentiate between per-expert and per-rank batch sizes 2) support cudagraph for non-masked grouped gemm path
+        total_capacity = self.num_experts * max_batch_size
+        self.cache_up = torch.empty((total_capacity, self.intermediate_size * 2), dtype=params_dtype, device=torch.device("cuda"))
+        self.cache_down = torch.empty((total_capacity, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
         if enable_cutlass_cache:
             from grouped_gemm.backend import get_arguments, gmm_with_arguments
 
@@ -133,58 +182,77 @@ class MoEExperts(torch.nn.Module):
             down = self.gmm(up, self.w2_weight, batch_sizes)
             output = down
         return output
-
+    
     def _forward_deep_gemm(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        # 1. Prepare Inputs outside graph
         
-        # 1. Prepare inputs for w13
-        # hiddens: [M, K] -> convert to FP8
-        # m_indices: generate from batch_sizes
-        
-        # Generate m_indices
-        # batch_sizes is [num_experts], containing count of tokens per expert
-        expert_ids = torch.arange(self.num_experts, device=hiddens.device, dtype=torch.int32)
-        m_indices = torch.repeat_interleave(expert_ids, batch_sizes.to(device=hiddens.device, dtype=torch.int32))
-        
-        # Cast hiddens to FP8 using deep_gemm utility
+        # Cast hiddens to FP8 (Dynamic shape, cannot be in graph)
         hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
         
-        # Output buffer for w13 (BF16)
-        # shape: [M, intermediate_size * 2]
-        M = hiddens.shape[0]
-        intermediate_size_2 = self.intermediate_size * 2
-        up_out = torch.empty(M, intermediate_size_2, device=hiddens.device, dtype=torch.bfloat16)
+        # Scatter to fixed input buffe
+        start = 0
+        batch_sizes_cpu = batch_sizes.cpu() # this should already be on CPU, just make sure here
+        for i in range(self.num_experts):
+            length = batch_sizes_cpu[i].item()
+            if length > 0:
+                self.fp8_up_in_buf[i, :length].copy_(hiddens_fp8[start : start + length])
+                self.fp8_up_scale_buf[i, :length].copy_(sfa_hiddens[start : start + length])
+                start += length
+
+        # Update static mask
+        self.static_batch_sizes.copy_(batch_sizes)
+
+        # 2. Replay Graph (Compute)
+        self.graph.replay()
+        
+        # 3. Gather Output (Dynamic shape, cannot be in graph)
+        # Construct packed output [bs, hidden]
+        final_out = torch.empty(bs, self.hidden_size, dtype=torch.bfloat16, device=hiddens.device)
+        
+        start = 0
+        for i in range(self.num_experts):
+            length = batch_sizes_cpu[i].item()
+            if length > 0:
+                final_out[start : start + length].copy_(
+                    self.cache_down[i, :length]
+                )
+                start += length
+                
+        return final_out
+
+    def _forward_deep_gemm_internal(self):
+        # Everything here uses FIXED shapes and FIXED pointers
         
         # Run w13 kernel
-        # w13_weight_fp8: [E, I*2, H] (transposed)
-        dg.m_grouped_fp8_gemm_nt_contiguous(
-            (hiddens_fp8, sfa_hiddens), 
-            (self.w13_weight_fp8, self.w13_sfb), 
-            up_out, 
-            m_indices
+        dg.m_grouped_fp8_gemm_nt_masked(
+            (self.fp8_up_in_buf, self.fp8_up_scale_buf),
+            (self.w13_weight_fp8, self.w13_sf),
+            self.cache_up, #output buffer
+            self.static_batch_sizes,
+            self.static_bs # baked-in capacity
         )
         
         # Activation and gating
-        # up_out is [M, intermediate_size * 2]
-        # Split into gate and value
-        up = self.act_fn(up_out[:, :self.intermediate_size]) * up_out[:, self.intermediate_size:]
+        # In-place modification of cache_up is fine
+        # We perform this on the WHOLE buffer (including padding) to keep shape static
+        # Logic: up = SiLU(gate) * val
+        self.act_fn(self.cache_up[:, :, :self.intermediate_size]) # in-place SiLU on gate
+        up_res = self.cache_up[:, :, :self.intermediate_size] * self.cache_up[:, :, self.intermediate_size:]
         
-        # 2. Prepare inputs for w2
-        # up: [M, intermediate_size] -> convert to FP8
-        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up, use_ue8m0=False)
-        
-        # Output buffer for w2 (BF16)
-        # shape: [M, hidden_size]
-        down_out = torch.empty(M, self.hidden_size, device=hiddens.device, dtype=torch.bfloat16)
+        # TODO: can we merge the below quant + copy into a single kernel?
+        # Quantize + Copy to Down Input
+        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up_res, use_ue8m0=False)
+        self.fp8_down_in_buf.copy_(up_fp8)
+        self.fp8_down_scale_buf.copy_(sfa_up)
         
         # Run w2 kernel
-        dg.m_grouped_fp8_gemm_nt_contiguous(
-            (up_fp8, sfa_up), 
-            (self.w2_weight_fp8, self.w2_sfb), 
-            down_out, 
-            m_indices
+        dg.m_grouped_fp8_gemm_nt_masked(
+            (self.fp8_down_in_buf, self.fp8_down_scale_buf),
+            (self.w2_weight_fp8, self.w2_sf),
+            self.cache_down,
+            self.static_batch_sizes,
+            self.static_bs
         )
-        
-        return down_out
 
 class MoEExpertsSerial(MoEExperts):
     
