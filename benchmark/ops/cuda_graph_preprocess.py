@@ -66,8 +66,7 @@ class CudaGraphPreprocessBenchmark:
             block_tables[i, :num_blocks] = torch.arange(num_blocks, dtype=torch.int32, device="cuda")
         
         # Create seq_start_loc
-        seq_start_loc = torch.zeros(num_tokens + 1, dtype=torch.int32, device="cuda")
-        seq_start_loc[1:] = torch.arange(1, num_tokens + 1, dtype=torch.int32, device="cuda")
+        seq_start_loc = torch.arange(num_tokens + 1, dtype=torch.int32, device="cuda")
         
         meta = FlashAttentionMetadata(
             num_prefills=0,
@@ -211,7 +210,7 @@ class CudaGraphPreprocessBenchmark:
         return avg_time_ms
     
     def benchmark_configs(self, configs: List[Tuple[int, int, int]], 
-                         num_warmup: int = 10, num_iterations: int = 20) -> Dict:
+                         num_warmup: int = 10, num_iterations: int = 20):
         """Benchmark multiple configurations."""
         method_names = list(self.func_map.keys())
         print(f"{'Config':<30}" + " ".join([f'{method_names[i]:<15} (us)' for i in range(len(method_names))]))

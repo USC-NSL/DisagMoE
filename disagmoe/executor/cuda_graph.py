@@ -27,7 +27,7 @@ class CUDAGraphAttnExecutor:
         self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
         self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
 
-        self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
+        self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype, device="cuda")
         self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
         self.static_block_table = torch.zeros(
             (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
@@ -64,19 +64,19 @@ class CUDAGraphAttnExecutor:
             num_prefill_tokens=0,
             num_decode_tokens=num_tokens,
             slot_mapping=self.static_slot_mapping[ : num_tokens],
-            seq_lens=self.static_seq_lens[ : num_tokens],
+            seq_lens=meta.seq_lens,
             seq_lens_tensor=self.static_seq_lens[ : num_tokens],
             max_query_len=0,
             max_prefill_seq_len=0,
-            max_decode_seq_len=max(self.static_seq_lens[ : num_tokens]),
+            max_decode_seq_len=meta.max_decode_seq_len,
             max_decode_query_len=1,
             query_start_loc=self.static_query_start_loc[ : num_tokens + 1],
             seq_start_loc=self.static_seq_start_loc[ : num_tokens + 1],
             context_lens_tensor=self.static_context_lens[ : num_tokens],
             block_tables=self.static_block_table[ : num_tokens, : max_num_blocks],
-            use_cuda_graph=True,
-            multi_modal_placeholder_index_maps=None,
-            enable_kv_scales_calculation=True,
+            use_cuda_graph=meta.use_cuda_graph,
+            multi_modal_placeholder_index_maps=meta.multi_modal_placeholder_index_maps,
+            enable_kv_scales_calculation=meta.enable_kv_scales_calculation,
         )
         
     def capture(self):

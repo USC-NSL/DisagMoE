@@ -81,11 +81,8 @@ __global__ void preprocess_fused_cuda(
                 reinterpret_cast<int4*>(dst_bt)[offset] = v;
             }
 
-            if (thread_id == 0){
-                for (int i = vec_end; i < B; i++) {
-                    int v = src_bt[i];
-                    dst_bt[i] = v;
-                }
+            for (int i = vec_end + thread_id; i < B; i += num_threads) {
+                dst_bt[i] = src_bt[i];
             }
         }
     }
@@ -123,7 +120,7 @@ void launch_preprocess_fused_cuda(
     int grid = 1 + token_ctas;  // last block deals with small tensors
 
     preprocess_fused_cuda<TOKENS_PER_BLOCK>
-        <<<grid, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        <<<grid, THREADS, 0, stream>>>(
             (const bfloat16_t*)hidden.data_ptr<at::BFloat16>(),
             block_tables.data_ptr<int>(),
             positions.data_ptr<long>(),
