@@ -9,8 +9,9 @@ from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher
 from disagmoe.frontend.datatypes import (
-    AttentionScheduleBatch, AttentionForwardBatch, 
-    AttentionForwardResult, BatchMetadata, TokenBatch,
+    AttentionScheduleBatch, AttentionForwardBatch, AttentionForwardResult, 
+    ExpertForwardBatch, ExpertForwardResult,
+    BatchMetadata, TokenBatch,
     TraceContext, BatchDecodeResult, TokenizedRequest
 )
 from disagmoe.frontend.ray_helper import InitCoreArgs
@@ -131,7 +132,6 @@ class AttentionEngineMixin:
             for i in range(batch.num_prefill_tokens):
                 self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
 
-
         attn_meta = self._attn_driver_preprocess(batch.meta_c, batch)
         positions = batch.seq_lens_tensor.to(torch.int64)
             
@@ -141,13 +141,14 @@ class AttentionEngineMixin:
             positions=positions,
             metadata=attn_meta,
             req_ids=batch.req_ids,
+            meta_c=batch.meta_c,
         )
         
     def run_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         result = self.attn_executor.execute(batch)
         return result
             
-    def postprocess_batch_attn(self, meta_c: BatchMetadata, result: AttentionForwardResult) -> Tuple[Tensor, BatchMetadata]:
+    def postprocess_batch_attn(self, batch: AttentionForwardBatch, result: AttentionForwardResult) -> Tuple[Tensor, BatchMetadata]:
         # Deprecated optimization:
             # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
             # hiddens = permute_tokens(hiddens, reorder_ids)
@@ -164,7 +165,7 @@ class AttentionEngineMixin:
             # d2h_event.synchronize()
             # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
             # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-        new_meta_c = meta_c
+        new_meta_c = batch.meta_c
         if self.model_config.top_k == 1:
             expert_ids = result.expert_ids.view(-1).tolist()
         else:
@@ -208,7 +209,7 @@ class AttentionEngineMixin:
         else:
             forward_batch = self.preprocess_batch_attn(batch)
             result = self.run_batch_attn(forward_batch)
-            hiddens, new_meta_c = self.postprocess_batch_attn(batch.meta_c, result)
+            hiddens, new_meta_c = self.postprocess_batch_attn(forward_batch, result)
         return hiddens, new_meta_c
     
     def release_seqs(self, seq_ids: List[int]):
@@ -337,10 +338,7 @@ class ExpertEngineMixin:
             self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
         self.expert_executor.warmup(self.expert_max_batch_size)
         
-    @nvtx_range("expert_engine.process_batch_expert")
-    def process_batch_expert(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
-        # NOTE: input_tensor is already permuted by expert_ids in scheduler
-        # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+    def preprocess_batch_expert(self, meta_c: BatchMetadata, input_tensor: Tensor) -> ExpertForwardBatch:
         with self._timer.range("preprocess"):
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
@@ -362,39 +360,61 @@ class ExpertEngineMixin:
                 batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
                 batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
             range_pop()
+        return ExpertForwardBatch(
+            layer_id=meta_c.layer_id,
+            num_tokens=num_tokens,
+            data=input_tensor,
+            batch_sizes=batch_sizes,
+            meta_c=meta_c,
+        )
         
+    def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
         with self._timer.range("execute"):
-            # get_logger().info(f"executing expert {meta_c.req_ids}")
-            output = self.expert_executor.execute(meta_c.layer_id, num_tokens, input_tensor, batch_sizes)
+            hiddens = self.expert_executor.execute(batch.layer_id, batch.num_tokens, batch.data, batch.batch_sizes)
+        return ExpertForwardResult(
+            hiddens=hiddens
+        )
         
-        # 2. permute tokens back to <prefill><decode> order
+    def postprocess_batch_expert(self, batch: ExpertForwardBatch, result: ExpertForwardResult) -> Tuple[Tensor, BatchMetadata]:
         with self._timer.range("postprocess"):
             h2d_event = torch.cuda.Event()
-            new_mappings = list(meta_c.sort_by_attention())
+            new_mappings = list(batch.meta_c.sort_by_attention())
             
             with torch.cuda.stream(self.h2d_stream):
                 new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
                 
-                if num_tokens > self.expert_max_batch_size:
+                if batch.num_tokens > self.expert_max_batch_size:
                     new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
                 else:
-                    new_mappings_gpu = self.static_mappings_gpu[:num_tokens]
+                    new_mappings_gpu = self.static_mappings_gpu[:batch.num_tokens]
                     new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
+                    
                 if self.model_config.top_k > 1:
-                    topk_weights = torch.tensor(meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
-                    output = output * topk_weights
+                    topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
+                    hiddens = result.hiddens * topk_weights
+                else:
+                    hiddens = result.hiddens
                     
                 h2d_event.record(self.h2d_stream)
 
             h2d_event.wait(self.h2d_stream)
             
-            output = permute_tokens(output, new_mappings_gpu)
-            meta_c.exp_ids = []
-            meta_c.topk_weights = []
-            meta_c.step_layer()
+            hiddens = permute_tokens(hiddens, new_mappings_gpu)
+            batch.meta_c.exp_ids = []
+            batch.meta_c.topk_weights = []
+            batch.meta_c.step_layer()
+        return hiddens, batch.meta_c
+    
+    @nvtx_range("expert_engine.process_batch_expert")
+    def process_batch_expert(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
+        # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+        
+        batch = self.preprocess_batch_expert(meta_c, input_tensor)
+        result = self.execute_batch_expert(batch)
+        output, new_meta_c = self.postprocess_batch_expert(batch, result)
 
         # get_logger().info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
-        return output, meta_c
+        return output, new_meta_c
     
 class Engine(AttentionEngineMixin, ExpertEngineMixin):
 

@@ -203,12 +203,25 @@ class AttentionForwardBatch:
     positions: torch.Tensor
     metadata: FlashAttentionMetadata
     req_ids: Optional[List[int]] = None
+    meta_c: Optional[BatchMetadata_C] = None
     
 @dataclass
 class AttentionForwardResult:
     hiddens: torch.Tensor
     expert_weights: List[float]
     expert_ids: List[int]
+    
+@dataclass
+class ExpertForwardBatch:
+    layer_id: int
+    num_tokens: int
+    data: torch.Tensor
+    batch_sizes: List[int] | torch.Tensor
+    meta_c: Optional[BatchMetadata_C] = None
+    
+@dataclass
+class ExpertForwardResult:
+    hiddens: torch.Tensor
     
 @dataclass
 class SloStat:
