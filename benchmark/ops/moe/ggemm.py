@@ -42,7 +42,8 @@ trace_path = os.environ.get("PERFETTO_TRACE")
 _prof = None
 if trace_path:
     _prof = torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+        with_stack=True,
     )
     _prof.start()
 
@@ -753,6 +754,7 @@ def main(profile: bool = False) -> None:
                         torch.profiler.ProfilerActivity.CUDA,
                     ],
                     record_shapes=True,
+                    with_stack=True,
                 ) as local_prof:
                     row_sizes_dg, deep_gemm_means = benchmark_deep_gemm_moe(
                         hidden_size, intermediate_size, num_experts, label
