@@ -472,14 +472,6 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
 
     ceil_div = lambda x, y: (x + y - 1) // y
     
-    def adjust_scales(sfa, target_dim):
-        current_dim = sfa.shape[-1]
-        if current_dim == target_dim:
-            return sfa
-        if current_dim * 2 == target_dim:
-            return sfa.repeat_interleave(2, dim=-1)
-        return sfa
-
     # w13 scaling factors
     k_w13 = hidden_size
     n_w13 = intermediate_size * 2
@@ -524,15 +516,17 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
         up_res = cache_up[:, :, :intermediate_size] * cache_up[:, :, intermediate_size:]
         
         # Quantize + Copy to Down Input
-        # Flatten E and BS dimensions for per-token cast, then reshape back
-        # cache_up is [E, BS, I], flatten to [E*BS, I]
+        # per_token_cast_to_fp8 expects a 2D [M, K] matrix and returns:
+        #   up_fp8_flat: [M, K]
+        #   sfa_up_flat: [M, ceil_div(K, 128)]
+        # Here M = num_experts * MAX_BATCH_SIZE, K = intermediate_size
         up_res_flat = up_res.view(-1, intermediate_size)
         up_fp8_flat, sfa_up_flat = dg.per_token_cast_to_fp8(up_res_flat, use_ue8m0=False)
         
-        # Reshape back to [E, BS, I] and [E, BS, -1]
+        # Reshape back to the static [E, BS, K] / [E, BS, ceil_div(K,128)] layout
         up_fp8 = up_fp8_flat.view(num_experts, MAX_BATCH_SIZE, intermediate_size)
-        sfa_up = sfa_up_flat.view(num_experts, MAX_BATCH_SIZE, -1)
-        sfa_up = adjust_scales(sfa_up, fp8_down_scale_buf.shape[-1])
+        n_scale_down = ceil_div(intermediate_size, 128)
+        sfa_up = sfa_up_flat.view(num_experts, MAX_BATCH_SIZE, n_scale_down)
 
         fp8_down_in_buf.copy_(up_fp8)
         fp8_down_scale_buf.copy_(sfa_up)
@@ -569,9 +563,11 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
 
         def run_step():
             # 1. Prepare Inputs
+            # per_token_cast_to_fp8(hiddens) where hiddens is [total_rows, hidden_size]
+            # returns:
+            #   hiddens_fp8: [total_rows, hidden_size]
+            #   sfa_hiddens: [total_rows, ceil_div(hidden_size, 128)]
             hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
-            
-            sfa_hiddens = adjust_scales(sfa_hiddens, fp8_up_scale_buf.shape[-1])
             
             start_idx = 0
             for i in range(num_experts):
