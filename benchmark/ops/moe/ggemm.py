@@ -472,6 +472,14 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
 
     ceil_div = lambda x, y: (x + y - 1) // y
     
+    def adjust_scales(sfa, target_dim):
+        current_dim = sfa.shape[-1]
+        if current_dim == target_dim:
+            return sfa
+        if current_dim * 2 == target_dim:
+            return sfa.repeat_interleave(2, dim=-1)
+        return sfa
+
     # w13 scaling factors
     k_w13 = hidden_size
     n_w13 = intermediate_size * 2
@@ -521,15 +529,13 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
         up_res_flat = up_res.view(-1, intermediate_size)
         up_fp8_flat, sfa_up_flat = dg.per_token_cast_to_fp8(up_res_flat, use_ue8m0=False)
         
-        # Reshape back to [E, BS, I] and [E, BS, 1]
+        # Reshape back to [E, BS, I] and [E, BS, -1]
         up_fp8 = up_fp8_flat.view(num_experts, MAX_BATCH_SIZE, intermediate_size)
-        # sfa_up_flat shape can be larger if CUDA alignment padding is included by DeepGemm
-        # But we know it corresponds to (num_experts * MAX_BATCH_SIZE) tokens
-        sfa_up = sfa_up_flat[:num_experts*MAX_BATCH_SIZE].view(num_experts, MAX_BATCH_SIZE, 1)
+        sfa_up = sfa_up_flat.view(num_experts, MAX_BATCH_SIZE, -1)
+        sfa_up = adjust_scales(sfa_up, fp8_down_scale_buf.shape[-1])
 
         fp8_down_in_buf.copy_(up_fp8)
-        # sfa_up is [E, BS, 1], we need to broadcast/tile to match scale buffer shape
-        fp8_down_scale_buf.copy_(sfa_up) # Broadcasting should work here automatically
+        fp8_down_scale_buf.copy_(sfa_up)
 
         # w2
         dg.m_grouped_fp8_gemm_nt_masked(
@@ -564,6 +570,8 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
         def run_step():
             # 1. Prepare Inputs
             hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
+            
+            sfa_hiddens = adjust_scales(sfa_hiddens, fp8_up_scale_buf.shape[-1])
             
             start_idx = 0
             for i in range(num_experts):
