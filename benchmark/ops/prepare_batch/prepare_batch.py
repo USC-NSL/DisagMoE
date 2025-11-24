@@ -11,25 +11,25 @@ import torch.profiler as torch_profiler
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.datatypes import BatchMetadata, AttentionForwardBatch
+from disagmoe.frontend.datatypes import BatchMetadata, AttentionScheduleBatch
 from disagmoe.block_manager.block_manager import CPUBlockManager, GPUBlockManager
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C
 
-def prefill_cpu_update_block_table_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
+def prefill_cpu_update_block_table_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch) -> float:
     torch.cuda.synchronize()
     t0 = time.time()
     cpu_mgr.update_block_table(meta_c, batch)
     torch.cuda.synchronize()
     return time.time() - t0
 
-def prefill_gpu_update_block_table_iter(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
+def prefill_gpu_update_block_table_iter(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch) -> float:
     torch.cuda.synchronize()
     t0 = time.time()
     gpu_mgr.update_block_table(meta_c, batch)
     torch.cuda.synchronize()
     return time.time() - t0
 
-def decode_cpu_update_block_table_iter_layer1(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
+def decode_cpu_update_block_table_iter_layer1(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch) -> float:
     torch.cuda.synchronize()
     with torch_profiler.record_function("CPU/update_block_table/decode_layer1_iter"):
         t0 = time.time()
@@ -37,7 +37,7 @@ def decode_cpu_update_block_table_iter_layer1(cpu_mgr: CPUBlockManager, meta_c: 
         torch.cuda.synchronize()
     return time.time() - t0
 
-def decode_gpu_update_block_table_iter_layer1(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
+def decode_gpu_update_block_table_iter_layer1(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch) -> float:
     torch.cuda.synchronize()
     with torch_profiler.record_function("GPU/update_block_table/decode_layer1_iter"):
         t0 = time.time()
@@ -45,7 +45,7 @@ def decode_gpu_update_block_table_iter_layer1(gpu_mgr: GPUBlockManager, meta_c: 
         torch.cuda.synchronize()
     return time.time() - t0
 
-def decode_cpu_pack_flash_attn_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch, decode_seq_lens: List[int]) -> float:
+def decode_cpu_pack_flash_attn_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch, decode_seq_lens: List[int]) -> float:
     torch.cuda.synchronize()
     with torch_profiler.record_function("CPU/pack_flash_attn_metadata/decode_iter"):
         t0 = time.time()
@@ -53,7 +53,7 @@ def decode_cpu_pack_flash_attn_iter(cpu_mgr: CPUBlockManager, meta_c: BatchMetad
         torch.cuda.synchronize()
     return time.time() - t0
 
-def decode_gpu_pack_flash_attn_iter(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionForwardBatch) -> float:
+def decode_gpu_pack_flash_attn_iter(gpu_mgr: GPUBlockManager, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch) -> float:
     torch.cuda.synchronize()
     with torch_profiler.record_function("GPU/pack_flash_attn_metadata/decode_iter"):
         t0 = time.time()
@@ -99,7 +99,7 @@ def pack_cpu_setup_iter(cpu_mgr: CPUBlockManager, batch_size: int, seq_len: int)
             cpu_mgr.req_manager.update_decode_seq_lens(i, seq_len)
             cpu_mgr._block_mgr.allocate(i, seq_len)
 
-def pack_gpu_setup_once(gpu_mgr: GPUBlockManager, batch: AttentionForwardBatch, batch_size: int, seq_len: int):
+def pack_gpu_setup_once(gpu_mgr: GPUBlockManager, batch: AttentionScheduleBatch, batch_size: int, seq_len: int):
     with torch_profiler.record_function("setup/pack_metadata/gpu_reset_and_alloc_once"):
         gpu_mgr.reset_state()
         new_req_indices = gpu_mgr.req_to_token_pool.alloc(batch_size)
@@ -117,7 +117,7 @@ def pack_gpu_setup_once(gpu_mgr: GPUBlockManager, batch: AttentionForwardBatch, 
         batch.req_indices = list(new_req_indices)
         batch.req_indices_tensor = batch_req_indices_tensor
 
-def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, layer_id: int = 0) -> Tuple[BatchMetadata_C, AttentionForwardBatch]:
+def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, layer_id: int = 0) -> Tuple[BatchMetadata_C, AttentionScheduleBatch]:
     """Create test metadata for benchmarking"""
     num_prefill_tokens = num_prefill_seqs
     num_decode_tokens = batch_size - num_prefill_seqs
@@ -141,8 +141,8 @@ def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, l
     # Create dummy data tensor
     data = torch.zeros((batch_size, 1024), dtype=torch.bfloat16, device="cuda:0")
     
-    # Create AttentionForwardBatch from metadata
-    batch = AttentionForwardBatch.build(meta_py, data)
+    # Create AttentionScheduleBatch from metadata
+    batch = AttentionScheduleBatch.build(meta_py, data)
     batch.seq_lens = [seq_len] * batch_size
     
     # Create C++ metadata

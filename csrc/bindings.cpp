@@ -11,6 +11,7 @@
 #include "datatypes.hpp"
 #include "block_manager.h"
 #include "permute.h"
+#include "cuda_graph.h"
 #include "binding_helper.h"
 #include "profiler.hpp"
 #include "transport_factory.h"
@@ -145,6 +146,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     REGISTER_FUNC(init_unified_engine);
     REGISTER_FUNC(start_engine);
     REGISTER_FUNC(set_hosts);
+    REGISTER_FUNC(cuda_graph_preprocess_fused);
 
     // Transport selection from Python (required before engine init)
     m.def("select_transport", &disagmoe::select_transport, py::arg("name"));

@@ -5,9 +5,12 @@ import numpy as np
 
 from typing import override, Tuple, List, Union, Dict, Optional
 from enum import Enum
+import time
 
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.config import CacheConfig as VllmCacheConfig
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 from disagmoe.env import ENV_VARS
 from disagmoe.models.attention import MoEAttention
@@ -18,108 +21,9 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
-from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
-from vllm.model_executor.layers.quantization import get_quantization_config
-from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+from disagmoe.frontend.datatypes import AttentionForwardBatch, AttentionForwardResult
 
-import triton.language as tl
-import triton
-
-@triton.jit
-def cuda_graph_preprocess_kernel(
-    # Destination pointers
-    static_input_ptr, static_positions_ptr, static_slot_mapping_ptr,
-    static_block_table_ptr, static_seq_lens_ptr, static_context_lens_ptr,
-    static_seq_start_loc_ptr,
-    # Source pointers
-    hidden_states_ptr, positions_ptr, slot_mapping_ptr,
-    block_tables_ptr, seq_lens_tensor_ptr, context_lens_tensor_ptr,
-    seq_start_loc_ptr,
-    # Dimensions
-    num_tokens, hidden_dim, max_num_blocks,
-    # Strides
-    static_input_stride, hidden_states_stride,
-    static_block_table_stride_0, static_block_table_stride_1,
-    block_tables_stride_0, block_tables_stride_1,
-    TOKEN_BLOCK_SIZE: tl.constexpr,
-    HIDDEN_BLOCK_SIZE: tl.constexpr,
-):
-    # For hidden_states (2D tensor)
-    pid_token = tl.program_id(0)
-    pid_hidden = tl.program_id(1)
-    
-    # Calculate offsets for hidden states (this is more complex)
-    token_offset = pid_token * TOKEN_BLOCK_SIZE
-    hidden_offset = pid_hidden * HIDDEN_BLOCK_SIZE
-    
-    # Block for hidden_states copy
-    if pid_hidden < (hidden_dim + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE:
-        # Get token indices
-        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
-        hidden_indices = hidden_offset + tl.arange(0, HIDDEN_BLOCK_SIZE)
-        
-        # Create masks for boundary checking
-        token_mask = token_indices < num_tokens
-        hidden_mask = hidden_indices < hidden_dim
-        
-        # Load from hidden_states
-        # The offset calculation is different for 2D tensors
-        offsets_hidden = (token_indices[:, None] * hidden_states_stride + hidden_indices[None, :])
-        hidden_vals = tl.load(hidden_states_ptr + offsets_hidden, mask=token_mask[:, None] & hidden_mask[None, :])
-        
-        # Store to static_input
-        offsets_static = (token_indices[:, None] * static_input_stride + hidden_indices[None, :])
-        tl.store(static_input_ptr + offsets_static, hidden_vals, mask=token_mask[:, None] & hidden_mask[None, :])
-    
-    # For 1D tensors (positions, slot_mapping, seq_lens, context_lens)
-    if pid_hidden == 0:  # Only need one block in the hidden dimension
-        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
-        mask = token_indices < num_tokens
-        
-        # Copy positions
-        positions_vals = tl.load(positions_ptr + token_indices, mask=mask)
-        tl.store(static_positions_ptr + token_indices, positions_vals, mask=mask)
-        
-        # Copy slot_mapping
-        slot_mapping_vals = tl.load(slot_mapping_ptr + token_indices, mask=mask)
-        tl.store(static_slot_mapping_ptr + token_indices, slot_mapping_vals, mask=mask)
-        
-        # Copy seq_lens
-        seq_lens_vals = tl.load(seq_lens_tensor_ptr + token_indices, mask=mask)
-        tl.store(static_seq_lens_ptr + token_indices, seq_lens_vals, mask=mask)
-        
-        # Copy context_lens
-        context_lens_vals = tl.load(context_lens_tensor_ptr + token_indices, mask=mask)
-        tl.store(static_context_lens_ptr + token_indices, context_lens_vals, mask=mask)
-    
-    # Special handling for seq_start_loc (size is num_tokens + 1)
-    if pid_hidden == 0:
-        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
-        mask = token_indices < (num_tokens + 1)  # +1 for seq_start_loc
-        
-        seq_start_vals = tl.load(seq_start_loc_ptr + token_indices, mask=mask)
-        tl.store(static_seq_start_loc_ptr + token_indices, seq_start_vals, mask=mask)
-    
-    # For block_tables (2D tensor)
-    if pid_hidden < (max_num_blocks + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE:
-        token_indices = token_offset + tl.arange(0, TOKEN_BLOCK_SIZE)
-        block_indices = pid_hidden * HIDDEN_BLOCK_SIZE + tl.arange(0, HIDDEN_BLOCK_SIZE)
-        token_mask = token_indices < num_tokens
-        block_mask = block_indices < max_num_blocks
-        
-        # Load from block_tables
-        block_vals = tl.load(
-            block_tables_ptr + token_indices[:, None] * block_tables_stride_0 + block_indices[None, :] * block_tables_stride_1, 
-            mask=token_mask[:, None] & block_mask[None, :]
-        )
-        
-        # Store to static_block_table
-        tl.store(
-            static_block_table_ptr + token_indices[:, None] * static_block_table_stride_0 + block_indices[None, :] * static_block_table_stride_1,
-            block_vals, 
-            mask=token_mask[:, None] & block_mask[None, :]
-        )
+from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor
 
 def get_module_param_memory(module, unit='GB'):
     unit_scale = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
@@ -358,12 +262,14 @@ class AttnExecutor(Executor):
                 
         get_logger().info("Attention warmup done")
     
-    def execute_eager(self,
-                layer_id: int,
-                positions: torch.Tensor,
-                hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata,
-                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
+    def execute_eager(
+        self,
+        layer_id: int,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        attn_metadata: FlashAttentionMetadata,
+        request_ids: Optional[List[int]] = None
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         outputs, topk_weights, topk_ids = self.operators[vid].forward(
             positions, 
@@ -373,17 +279,19 @@ class AttnExecutor(Executor):
             request_ids=request_ids,
         )
         return outputs, topk_weights, topk_ids
-    
+        
     @nvtx_range("AttnExecutor.execute")
-    def execute(self, layer_id: int,
-                positions: torch.Tensor,
-                hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata,
-                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
-        if self.enable_cuda_graph and attn_metadata.use_cuda_graph and attn_metadata.num_decode_tokens <= self.attn_max_batch_size:
-            return self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
+    def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        if self.enable_cuda_graph and batch.metadata.use_cuda_graph and batch.metadata.num_decode_tokens <= self.attn_max_batch_size:
+            outputs, topk_weights, topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
         else:
-            return self.execute_eager(layer_id, positions, hidden_states, attn_metadata, request_ids=request_ids)
+            outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
+            
+        return AttentionForwardResult(
+            hiddens=outputs,
+            expert_weights=topk_weights,
+            expert_ids=topk_ids
+        )
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None) -> "Executor":
@@ -391,153 +299,6 @@ class AttnExecutor(Executor):
             return ParallelAttnExecutor(model_config, cache_config, gate_profile_bytes=gate_profile_bytes)
         else:
             return AttnExecutor(model_config, cache_config, gate_profile_bytes=gate_profile_bytes)
-        
-class CUDAGraphAttnExecutor:
-    
-    def __init__(self, model_config: ModelConfig, cache_config: DmoeCacheConfig, attn_executor: AttnExecutor):
-        self.model_config = model_config
-        self.cache_config = cache_config
-        self.attn_executor = attn_executor
-        
-    def create_cuda_graph_buffers(self):
-        assert self.model_config.enable_cuda_graph_attn
-        batch_size = self.model_config.max_batch_size_attn
-        self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
-        self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
-
-        self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
-        self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
-        self.static_block_table = torch.zeros(
-            (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
-            dtype=torch.int32, device="cuda")
-        self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
-
-        self.static_batch_info = torch.zeros((batch_size + batch_size + (batch_size + 1)), dtype=torch.int32, device="cuda")
-        self.static_seq_lens = self.static_batch_info[ : batch_size]
-        self.static_context_lens = self.static_batch_info[batch_size : batch_size + batch_size]
-        self.static_seq_start_loc = self.static_batch_info[batch_size + batch_size : ]
-
-        self.static_batch_infos: Dict[int, Tensor] = {}
-
-        self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
-                                            batch_size + 1,
-                                            self.model_config.graph_stride))
-        self.graph_batch_sizes = [1] + self.graph_batch_sizes
-
-        for layer_id in self.model_config.layer_ids:
-            self.graphs[layer_id] = [torch.cuda.CUDAGraph() for _ in self.graph_batch_sizes]
-            self.static_outputs[layer_id] = []
-        
-        for bs in self.graph_batch_sizes:
-            self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1)), dtype=torch.int32, device="cuda")
-
-    def capture(self):
-        for layer_id in self.model_config.layer_ids:
-            for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
-                batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
-                attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
-                self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
-
-                def run_once() -> Tuple[Tensor, Tensor, Tensor]:
-                    # Provide dummy request IDs from the synthetic batch to satisfy profile-driven gating.
-                    return self.attn_executor.execute(
-                        layer_id, self.static_positions[ : graph_batch_size], 
-                        self.static_input[ : graph_batch_size], attn_meta,
-                        request_ids=batch.req_ids
-                    )
-
-                for _ in range(2):
-                    # warmup
-                    torch.cuda.synchronize()
-                    run_once()
-                    torch.cuda.synchronize()
-
-                with torch.cuda.graph(graph):
-                    outputs = run_once()
-                    
-                torch.cuda.synchronize()
-
-                self.static_outputs[layer_id].append(outputs)
-                
-                # warmup for the actual execution
-                graph.replay()
-                    
-                torch.cuda.synchronize()
-
-        print("cuda graph captured")
-
-        self.test_graph()
-        
-        print("cuda graph tested")
-
-    def test_graph(self):
-        for layer_id in self.model_config.layer_ids:
-            for bs in range(1, self.model_config.max_batch_size_attn + 1):
-                batch = make_attention_dummy_batch(0, bs, self.model_config.hidden_size, self.model_config.max_seq_len)
-                meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
-                hiddens, expert_weights, expert_ids = self.run(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
-                torch.cuda.synchronize()
-                _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-
-    def _get_graph_by_batch_size(self, batch_size: int):
-        for i, size in enumerate(self.graph_batch_sizes):
-            if size >= batch_size:
-                return i, size
-        assert False, f"No available graph for batch size={batch_size}"
-        
-    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, positions: torch.Tensor, meta: FlashAttentionMetadata):
-        num_tokens = hidden_states.shape[0]
-        hidden_dim = hidden_states.shape[1]
-        max_num_blocks = meta.block_tables.shape[1]
-        
-        # Compute grid for kernel launch
-        TOKEN_BLOCK_SIZE = 64
-        HIDDEN_BLOCK_SIZE = 256
-        grid_token = (num_tokens + TOKEN_BLOCK_SIZE - 1) // TOKEN_BLOCK_SIZE
-        grid_hidden = (hidden_dim + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
-        grid_blocks = (max_num_blocks + HIDDEN_BLOCK_SIZE - 1) // HIDDEN_BLOCK_SIZE
-        
-        # Launch kernel
-        cuda_graph_preprocess_kernel[(grid_token, max(grid_hidden, grid_blocks))](
-            # Destination pointers
-            self.static_input, self.static_positions, self.static_slot_mapping,
-            self.static_block_table, self.static_seq_lens, self.static_context_lens,
-            self.static_seq_start_loc,
-            # Source pointers
-            hidden_states, positions, meta.slot_mapping,
-            meta.block_tables, meta.seq_lens_tensor, meta.context_lens_tensor,
-            meta.seq_start_loc,
-            # Dimensions
-            num_tokens, hidden_dim, max_num_blocks,
-            # Strides (adapt based on your tensors' memory layout)
-            self.static_input.stride(0), hidden_states.stride(0),
-            self.static_block_table.stride(0), self.static_block_table.stride(1),
-            meta.block_tables.stride(0), meta.block_tables.stride(1),
-            TOKEN_BLOCK_SIZE=TOKEN_BLOCK_SIZE, HIDDEN_BLOCK_SIZE=HIDDEN_BLOCK_SIZE,
-        )
-
-    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
-        meta.use_cuda_graph = True
-        
-        num_tokens = hidden_states.shape[0]
-        graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
-        
-        self.cuda_graph_preprocess(hidden_states, positions, meta)
-        
-        # self.static_input[ : num_tokens].copy_(hidden_states)
-        # self.static_positions[ : num_tokens].copy_(positions)
-        # self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
-        # max_num_blocks = meta.block_tables.shape[1]
-        # self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
-        # self.static_seq_lens[ : num_tokens].copy_(meta.seq_lens_tensor)
-        # self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
-        # self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
-
-        self.graphs[layer_id][graph_id].replay()
-
-        outputs, topk_weights, topk_ids = self.static_outputs[layer_id][graph_id]
-
-        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]
         
 class ExpertsExecutor(Executor):
 
