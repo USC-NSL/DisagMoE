@@ -6,6 +6,7 @@ N_NODE=1
 N_GPU_PER_NODE=2
 NUM_LAYERS=16
 NUM_EXPERTS=4
+MODEL_NAME="mixtral"  # options: mixtral | qwen3_235b
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
@@ -73,6 +74,7 @@ python benchmark/server.py \
     --num-kv-heads 4 \
     --num-layers $NUM_LAYERS \
     --num-experts $NUM_EXPERTS \
+    --model $MODEL_NAME \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
     --graph-stride $GRAPH_STRIDE \

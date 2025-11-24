@@ -22,6 +22,13 @@ def get_parser_base():
     parser.add_argument("--gate-profile-file", type=str, default=None, help="path to gate profile file to upload and broadcast to workers")
     
     # model config
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=["mixtral", "qwen3_235b"],
+        help="model configuration to use for benchmarking",
+    )
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")

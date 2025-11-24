@@ -11,6 +11,10 @@ try:
 except ImportError:
     dg = None
 
+# 1: use legacy non-graph, non-masked DeepGEMM path
+# 0: use masked DeepGEMM with CUDA graph
+NON_GRAPH_NON_MASK = 1
+
 class MoEExperts(torch.nn.Module):
     
     def __init__(
@@ -39,62 +43,67 @@ class MoEExperts(torch.nn.Module):
         if self.use_deep_gemm_fp8:
             if dg is None:
                 raise ImportError("deep_gemm is not available!")
+            # Always prepare FP8 weights/scales
             self.prepare_deep_gemm_fp8_weights()
-            # pre-allocate fixed size input buffers
-            self.fp8_up_in_buf = torch.empty(
-                num_experts,
-                max_batch_size,
-                self.hidden_size,
-                device=self.w13_weight.device,
-                dtype=torch.float8_e4m3fn,
-            )
-            self.fp8_down_in_buf = torch.empty(
-                num_experts,
-                max_batch_size,
-                self.intermediate_size,
-                device=self.w2_weight.device,
-                dtype=torch.float8_e4m3fn,
-            )
-            # pre-allocate scale buffers: one scale per 128-wide block along K
-            # DeepGEMM masked kernel and quant functions require scale buffers to have this alignment
-            up_scale_blocks = dg.ceil_div(self.hidden_size, 128)
-            down_scale_blocks = dg.ceil_div(self.intermediate_size, 128)
-            self.fp8_up_scale_buf = torch.empty(
-                num_experts,
-                max_batch_size,
-                up_scale_blocks,
-                device=self.w13_weight.device,
-                dtype=torch.float32,
-            )
-            self.fp8_down_scale_buf = torch.empty(
-                num_experts,
-                max_batch_size,
-                down_scale_blocks,
-                device=self.w2_weight.device,
-                dtype=torch.float32,
-            )
-            # create cached grouped gemm buffers
-            self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
-            # change the views
-            self.cache_up = self.cache_up.view(self.num_experts, -1, self.intermediate_size * 2)
-            self.cache_down = self.cache_down.view(self.num_experts, -1, self.hidden_size)
-            
-            # capture the cudagraph for deep_gemm forward pass
-            self.graph = torch.cuda.CUDAGraph()
-            # Note that bs is a scalar to the kernel, so it has to be baked in, thus we use a conservative upper bound
-            self.static_bs = self.num_experts * max_batch_size # conservative upper bound
-            
-            # We need static 'batch_sizes' tensor for the mask, later update the contents in each forward pass
-            self.static_batch_sizes = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
-            
-            # Warmup
-            with torch.no_grad():
-                self._forward_deep_gemm_internal()
-                torch.cuda.synchronize()
-            
-            # Capture
-            with torch.cuda.graph(self.graph):
-                self._forward_deep_gemm_internal()
+
+            # When NOT using the legacy non-graph, non-masked path, set up
+            # the masked + CUDA graph implementation (current optimized path).
+            if not NON_GRAPH_NON_MASK:
+                # pre-allocate fixed size input buffers
+                self.fp8_up_in_buf = torch.empty(
+                    num_experts,
+                    max_batch_size,
+                    self.hidden_size,
+                    device=self.w13_weight.device,
+                    dtype=torch.float8_e4m3fn,
+                )
+                self.fp8_down_in_buf = torch.empty(
+                    num_experts,
+                    max_batch_size,
+                    self.intermediate_size,
+                    device=self.w2_weight.device,
+                    dtype=torch.float8_e4m3fn,
+                )
+                # pre-allocate scale buffers: one scale per 128-wide block along K
+                # DeepGEMM masked kernel and quant functions require scale buffers to have this alignment
+                up_scale_blocks = dg.ceil_div(self.hidden_size, 128)
+                down_scale_blocks = dg.ceil_div(self.intermediate_size, 128)
+                self.fp8_up_scale_buf = torch.empty(
+                    num_experts,
+                    max_batch_size,
+                    up_scale_blocks,
+                    device=self.w13_weight.device,
+                    dtype=torch.float32,
+                )
+                self.fp8_down_scale_buf = torch.empty(
+                    num_experts,
+                    max_batch_size,
+                    down_scale_blocks,
+                    device=self.w2_weight.device,
+                    dtype=torch.float32,
+                )
+                # create cached grouped gemm buffers
+                self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
+                # change the views
+                self.cache_up = self.cache_up.view(self.num_experts, -1, self.intermediate_size * 2)
+                self.cache_down = self.cache_down.view(self.num_experts, -1, self.hidden_size)
+                
+                # capture the cudagraph for deep_gemm forward pass
+                self.graph = torch.cuda.CUDAGraph()
+                # Note that bs is a scalar to the kernel, so it has to be baked in, thus we use a conservative upper bound
+                self.static_bs = self.num_experts * max_batch_size # conservative upper bound
+                
+                # We need static 'batch_sizes' tensor for the mask, later update the contents in each forward pass
+                self.static_batch_sizes = torch.zeros(self.num_experts, dtype=torch.int32, device="cuda")
+                
+                # Warmup
+                with torch.no_grad():
+                    self._forward_deep_gemm_internal()
+                    torch.cuda.synchronize()
+                
+                # Capture
+                with torch.cuda.graph(self.graph):
+                    self._forward_deep_gemm_internal()
         else:
             self.gmm_with_cache = None
             self.gmm = gmm
@@ -193,6 +202,53 @@ class MoEExperts(torch.nn.Module):
         return output
     
     def _forward_deep_gemm(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        # When NON_GRAPH_NON_MASK is enabled, use the legacy non-graph, non-masked
+        # DeepGEMM implementation using the contiguous grouped kernel.
+        if NON_GRAPH_NON_MASK:
+            # Generate m_indices from batch_sizes
+            # batch_sizes: [num_experts], counts of tokens per expert
+            expert_ids = torch.arange(self.num_experts, device=hiddens.device, dtype=torch.int32)
+            m_indices = torch.repeat_interleave(
+                expert_ids,
+                batch_sizes.to(device=hiddens.device, dtype=torch.int32),
+            )
+
+            # Cast hiddens to FP8
+            hiddens_fp8, sf_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
+
+            # Output buffer for w13 (BF16), shape: [M, intermediate_size * 2]
+            M = hiddens.shape[0]
+            intermediate_size_2 = self.intermediate_size * 2
+            up_out = torch.empty(M, intermediate_size_2, device=hiddens.device, dtype=torch.bfloat16)
+
+            # Run w13 kernel (non-masked, contiguous)
+            dg.m_grouped_fp8_gemm_nt_contiguous(
+                (hiddens_fp8, sf_hiddens),
+                (self.w13_weight_fp8, self.w13_sf),
+                up_out,
+                m_indices,
+            )
+
+            # Activation and gating
+            up = self.act_fn(up_out[:, :self.intermediate_size]) * up_out[:, self.intermediate_size:]
+
+            # Prepare inputs for w2
+            up_fp8, sf_up = dg.per_token_cast_to_fp8(up, use_ue8m0=False)
+
+            # Output buffer for w2 (BF16), shape: [M, hidden_size]
+            down_out = torch.empty(M, self.hidden_size, device=hiddens.device, dtype=torch.bfloat16)
+
+            # Run w2 kernel (non-masked, contiguous)
+            dg.m_grouped_fp8_gemm_nt_contiguous(
+                (up_fp8, sf_up),
+                (self.w2_weight_fp8, self.w2_sf),
+                down_out,
+                m_indices,
+            )
+
+            return down_out
+
+        # Default path: masked DeepGEMM with CUDA graph capture.
         # 1. Prepare Inputs outside graph
         
         # Cast hiddens to FP8 (Dynamic shape, cannot be in graph)
