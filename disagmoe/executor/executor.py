@@ -21,6 +21,7 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
+from disagmoe.frontend.datatypes import AttentionForwardBatch, AttentionForwardResult
 
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor
 
@@ -261,12 +262,14 @@ class AttnExecutor(Executor):
                 
         get_logger().info("Attention warmup done")
     
-    def execute_eager(self,
-                layer_id: int,
-                positions: torch.Tensor,
-                hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata,
-                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
+    def execute_eager(
+        self,
+        layer_id: int,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        attn_metadata: FlashAttentionMetadata,
+        request_ids: Optional[List[int]] = None
+    ) -> Tuple[Tensor, Tensor, Tensor]:
         vid = self.layer_mappings[layer_id]
         outputs, topk_weights, topk_ids = self.operators[vid].forward(
             positions, 
@@ -276,17 +279,19 @@ class AttnExecutor(Executor):
             request_ids=request_ids,
         )
         return outputs, topk_weights, topk_ids
-    
+        
     @nvtx_range("AttnExecutor.execute")
-    def execute(self, layer_id: int,
-                positions: torch.Tensor,
-                hidden_states: torch.Tensor,
-                attn_metadata: FlashAttentionMetadata,
-                request_ids: Optional[List[int]] = None) -> Tuple[Tensor, Tensor, Tensor]:
-        if self.enable_cuda_graph and attn_metadata.use_cuda_graph and attn_metadata.num_decode_tokens <= self.attn_max_batch_size:
-            return self.cuda_graph_executor.run(layer_id, positions, hidden_states, attn_metadata)
+    def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        if self.enable_cuda_graph and batch.metadata.use_cuda_graph and batch.metadata.num_decode_tokens <= self.attn_max_batch_size:
+            outputs, topk_weights, topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
         else:
-            return self.execute_eager(layer_id, positions, hidden_states, attn_metadata, request_ids=request_ids)
+            outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
+            
+        return AttentionForwardResult(
+            hiddens=outputs,
+            expert_weights=topk_weights,
+            expert_ids=topk_ids
+        )
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None) -> "Executor":

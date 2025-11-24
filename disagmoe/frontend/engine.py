@@ -8,8 +8,11 @@ import zmq
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig
 from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher
-from disagmoe.frontend.datatypes import (AttentionForwardBatch, BatchMetadata, TokenBatch,
-                                         TraceContext, BatchDecodeResult, TokenizedRequest)
+from disagmoe.frontend.datatypes import (
+    AttentionScheduleBatch, AttentionForwardBatch, 
+    AttentionForwardResult, BatchMetadata, TokenBatch,
+    TraceContext, BatchDecodeResult, TokenizedRequest
+)
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import initialize_logger, get_logger
@@ -72,9 +75,11 @@ class AttentionEngineMixin:
             self.attn_executor.build_cuda_graph_executor()
     
     @nvtx_range("attn_engine.attn_driver_preprocess")
-    def _attn_driver_preprocess(self, 
-                                meta_c: BatchMetadata, 
-                                batch: AttentionForwardBatch) -> FlashAttentionMetadata:
+    def _attn_driver_preprocess(
+        self, 
+        meta_c: BatchMetadata, 
+        batch: AttentionScheduleBatch
+    ) -> FlashAttentionMetadata:
         self.block_mgr.update_block_table(meta_c, batch)
         seq_lens = batch.seq_lens
         
@@ -121,92 +126,92 @@ class AttentionEngineMixin:
         
         return attn_meta
     
-    @nvtx_range("attn_engine.process_batch_attn")
-    def process_batch_attn(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
-        # FIXME(shaoyuw): input tensor is sometimes zero tensor
-        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}, input_tensor.shape {input_tensor.shape}")
+    def preprocess_batch_attn(self, batch: AttentionScheduleBatch) -> AttentionForwardBatch:
+        if batch.layer_id == 0:
+            for i in range(batch.num_prefill_tokens):
+                self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
 
-        with self._timer.range("preprocess"):
-            batch = AttentionForwardBatch.build(meta_c, input_tensor)
-            assert len(batch.req_ids) > 0, "Scheduled batch is empty"
+
+        attn_meta = self._attn_driver_preprocess(batch.meta_c, batch)
+        positions = batch.seq_lens_tensor.to(torch.int64)
             
-            if batch.layer_id == 0:
-                for i in range(batch.num_prefill_tokens):
-                    self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
+        return AttentionForwardBatch(
+            layer_id=batch.layer_id,
+            data=batch.data,
+            positions=positions,
+            metadata=attn_meta,
+            req_ids=batch.req_ids,
+        )
+        
+    def run_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        result = self.attn_executor.execute(batch)
+        return result
             
-            # TODO: consider the position of this code piece
-            # It's better if this is done in the final expert layer, rather than having an extra hop to the attn worker
-            if batch.layer_id == self.model_total_num_layers:
-                # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
-                continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
-                continue_meta = meta_c.index_select(continue_ids)
-                continue_meta.init_prefill_lens = [-1] * len(continue_ids)
-                continue_meta.attn_dp_ranks = [self.attn_dp_rank] * len(continue_ids)
-                # print(f"after sampling: continue ids {continue_ids}, continue meta {continue_meta.req_ids}, {continue_meta.init_prefill_lens}")
-                self.release_seqs(finish_req_ids)
-                
-                batch_res = BatchDecodeResult(
-                    req_ids=batch.req_ids,
-                    token_ids=[0] * len(batch.req_ids),
-                    is_eos=[True] * len(batch.req_ids)
-                )
-                for cont_id in continue_ids:
-                    batch_res.is_eos[cont_id] = False
-                self.detokenizer_socket.send_pyobj(batch_res)
-                
-                return input_tensor[continue_ids], continue_meta
-
-            attn_meta = self._attn_driver_preprocess(meta_c, batch)
-            positions = batch.seq_lens_tensor.to(torch.int64)
-
-        with self._timer.range("execute"):
-            hiddens, expert_weights, expert_ids = self.attn_executor.execute(batch.layer_id, positions, batch.data, attn_meta, request_ids=batch.req_ids)
+    def postprocess_batch_attn(self, meta_c: BatchMetadata, result: AttentionForwardResult) -> Tuple[Tensor, BatchMetadata]:
+        # Deprecated optimization:
+            # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
+            # hiddens = permute_tokens(hiddens, reorder_ids)
+            # d2h_event = torch.cuda.Event()
+            # with torch.cuda.stream(self.d2h_stream):
+            #     new_meta_c = meta_c.to_metadata()
+            #     if self.model_config.top_k > 1:
+            #         new_meta_c.duplicate_topk(self.model_config.top_k)
+            #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
+            #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
+            #     if self.model_config.top_k > 1:
+            #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
+            #     d2h_event.record(self.d2h_stream)
+            # d2h_event.synchronize()
+            # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
+            # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+        new_meta_c = meta_c
+        if self.model_config.top_k == 1:
+            expert_ids = result.expert_ids.view(-1).tolist()
+        else:
+            new_meta_c.duplicate_topk(self.model_config.top_k)
+            expert_ids = result.expert_ids.view(-1).tolist()
+            expert_weights = result.expert_weights.view(-1).tolist()
+            new_meta_c.topk_weights = expert_weights
             
-        with self._timer.range("postprocess"):
-            # Deprecated optimization:
-                # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-                # hiddens = permute_tokens(hiddens, reorder_ids)
-                # d2h_event = torch.cuda.Event()
-                # with torch.cuda.stream(self.d2h_stream):
-                #     new_meta_c = meta_c.to_metadata()
-                #     if self.model_config.top_k > 1:
-                #         new_meta_c.duplicate_topk(self.model_config.top_k)
-                #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
-                #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
-                #     if self.model_config.top_k > 1:
-                #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-                #     d2h_event.record(self.d2h_stream)
-                # d2h_event.synchronize()
-                # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-                # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-            new_meta_c = meta_c
-            if self.model_config.top_k > 1:
-                new_meta_c.duplicate_topk(self.model_config.top_k)
-                
-            if self.model_config.top_k == 1:
-                expert_ids = expert_ids.view(-1).tolist()
-            else:
-                expert_ids = expert_ids.view(-1).tolist()
-                expert_weights = expert_weights.view(-1).tolist()
-                new_meta_c.topk_weights = expert_weights
-                
-            new_meta_c.exp_ids = expert_ids
-            exp_mappings = new_meta_c.sort_by_expert()
-            new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
-            # exp_mappings, _ = get_mappings_from_exp_ids(expert_ids, self.model_config.num_experts)
-            hiddens = permute_tokens(hiddens, exp_mappings)
-
-            assert new_meta_c.shape[0] == hiddens.shape[0], f"shape mismatch: {new_meta_c.shape[0]} != {hiddens.shape[0]}"
+        new_meta_c.exp_ids = expert_ids
+        exp_mappings = new_meta_c.sort_by_expert()
+        new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
+        hiddens = permute_tokens(result.hiddens, exp_mappings)
             
         return hiddens, new_meta_c
     
+    def sample_results(self, batch: AttentionScheduleBatch) -> Tuple[Tensor, BatchMetadata]:
+        # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
+        continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
+        continue_meta = batch.meta_c.index_select(continue_ids)
+        continue_meta.init_prefill_lens = [-1] * len(continue_ids)
+        continue_meta.attn_dp_ranks = [self.attn_dp_rank] * len(continue_ids)
+        self.release_seqs(finish_req_ids)
+        
+        batch_res = BatchDecodeResult(
+            req_ids=batch.req_ids,
+            token_ids=[0] * len(batch.req_ids),
+            is_eos=[True] * len(batch.req_ids)
+        )
+        for cont_id in continue_ids:
+            batch_res.is_eos[cont_id] = False
+        self.detokenizer_socket.send_pyobj(batch_res)
+        
+        return batch.data[continue_ids], continue_meta
+    
+    @nvtx_range("attn_engine.process_batch_attn")
+    def process_batch_attn(self, meta_c: BatchMetadata, input_tensor: Tensor) -> Tuple[Tensor, BatchMetadata]:
+        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}, input_tensor.shape {input_tensor.shape}")
+        batch = AttentionScheduleBatch.build(meta_c, input_tensor)
+        if batch.layer_id == self.model_total_num_layers:
+            hiddens, new_meta_c = self.sample_results(batch)
+        else:
+            forward_batch = self.preprocess_batch_attn(batch)
+            result = self.run_batch_attn(forward_batch)
+            hiddens, new_meta_c = self.postprocess_batch_attn(batch.meta_c, result)
+        return hiddens, new_meta_c
+    
     def release_seqs(self, seq_ids: List[int]):
-        # TODO(optimize): master should only send release request to the driver
-        if not self.has_attn:
-            return
-        if not self.is_attn_driver:
-            # is a worker, no kv cache to be released.
-            return
         self.block_mgr.release_seqs(seq_ids)
         
     def _create_attn_broadcast_buffers(self):

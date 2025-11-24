@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
-from disagmoe.utils.constants import CPS
 import torch
-from enum import Enum
+from vllm.attention.backends.flash_attn import FlashAttentionMetadata
+
 from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
@@ -139,7 +139,7 @@ class TokenBatch:
         )
         
 @dataclass
-class AttentionForwardBatch:
+class AttentionScheduleBatch:
     
     shape: List[int]
     dtype: str
@@ -153,6 +153,7 @@ class AttentionForwardBatch:
     num_decode_tokens: int
     
     data: torch.Tensor
+    meta_c: Optional[BatchMetadata_C] = None
     
     # used in engine and executor
     req_indices: Optional[List[int]] = None
@@ -161,8 +162,8 @@ class AttentionForwardBatch:
     seq_lens_tensor: Optional[torch.Tensor] = None
     
     @staticmethod
-    def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionForwardBatch":
-        return AttentionForwardBatch(
+    def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionScheduleBatch":
+        return AttentionScheduleBatch(
             shape=meta.shape,
             dtype=meta.dtype,
             layer_id=meta.layer_id,
@@ -172,7 +173,8 @@ class AttentionForwardBatch:
             num_prefill_seqs=meta.num_prefill_seqs,
             num_prefill_tokens=meta.num_prefill_tokens,
             num_decode_tokens=meta.num_decode_tokens,
-            data=data
+            data=data,
+            meta_c=meta if isinstance(meta, BatchMetadata_C) else None
         )
         
     def to_metadata(self) -> BatchMetadata:
@@ -193,6 +195,20 @@ class AttentionForwardBatch:
         
     def to_metadata_c(self) -> "BatchMetadata_C":
         return self.to_metadata().to_c()
+
+@dataclass
+class AttentionForwardBatch:
+    layer_id: int
+    data: torch.Tensor
+    positions: torch.Tensor
+    metadata: FlashAttentionMetadata
+    req_ids: Optional[List[int]] = None
+    
+@dataclass
+class AttentionForwardResult:
+    hiddens: torch.Tensor
+    expert_weights: List[float]
+    expert_ids: List[int]
     
 @dataclass
 class SloStat:
