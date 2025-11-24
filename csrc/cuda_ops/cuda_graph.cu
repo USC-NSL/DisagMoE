@@ -120,7 +120,7 @@ void launch_preprocess_fused_cuda(
     constexpr int THREADS = 128;
 
     int token_ctas = (T + TOKENS_PER_BLOCK - 1) / TOKENS_PER_BLOCK;
-    int grid = 1 + token_ctas;  // block 0 = metadata
+    int grid = 1 + token_ctas;  // last block deals with small tensors
 
     preprocess_fused_cuda<TOKENS_PER_BLOCK>
         <<<grid, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
