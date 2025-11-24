@@ -1,5 +1,5 @@
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-from disagmoe.frontend.datatypes import BatchMetadata, AttentionForwardBatch  
+from disagmoe.frontend.datatypes import BatchMetadata, AttentionScheduleBatch  
 from typing import Tuple
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
@@ -156,9 +156,9 @@ def make_attention_dummy_batch(
     num_decode_tokens: int, 
     hidden_size: int = 1024,
     seq_len: int = 1024,
-) -> AttentionForwardBatch:
+) -> AttentionScheduleBatch:
     bs = num_prefill_tokens + num_decode_tokens
-    batch = AttentionForwardBatch(
+    batch = AttentionScheduleBatch(
         shape=[bs, hidden_size],
         dtype="bf16",
         layer_id=0,

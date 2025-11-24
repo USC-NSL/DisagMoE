@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.utils.utils import nvtx_range
 from disagmoe.config import ModelConfig, CacheConfig
-from disagmoe.frontend.datatypes import AttentionForwardBatch
+from disagmoe.frontend.datatypes import AttentionScheduleBatch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
@@ -140,10 +140,10 @@ class BaseBlockManager:
     def reset_state(self):
         pass
     
-    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch):
         pass
     
-    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
+    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
         pass
     
     def release_seqs(self, req_ids: List[int]):
@@ -187,7 +187,7 @@ class CPUBlockManager(BaseBlockManager):
         self.req_manager.release_reqs(req_ids)
     
     @nvtx_range("CPUBlockManager.update_block_table")
-    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch):
         init_req_ids = batch.req_ids[:batch.num_prefill_seqs]
         decode_req_ids = batch.req_ids
         
@@ -212,7 +212,7 @@ class CPUBlockManager(BaseBlockManager):
         batch.seq_lens = decode_seq_lens
         
     @nvtx_range("CPUBlockManager.pack_flash_attn_metadata")
-    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
+    def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
         if self.use_rebind and self.use_gdr_copy and not dummy_cache:
             return self.pack_flash_attn_metadata_opt(meta_c, batch)
         else:
@@ -222,7 +222,7 @@ class CPUBlockManager(BaseBlockManager):
     def pack_flash_attn_metadata_opt(
         self, 
         meta_c: BatchMetadata_C, 
-        batch: AttentionForwardBatch
+        batch: AttentionScheduleBatch
     ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using CPU approach - follows original implementation"""
         num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
@@ -259,7 +259,7 @@ class CPUBlockManager(BaseBlockManager):
     def pack_flash_attn_metadata_naive(
         self, 
         meta_c: BatchMetadata_C, 
-        batch: AttentionForwardBatch, 
+        batch: AttentionScheduleBatch, 
         dummy_cache: bool = False
     ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using CPU approach - follows original implementation"""
@@ -269,14 +269,11 @@ class CPUBlockManager(BaseBlockManager):
         # 1. prepare block table
         if dummy_cache:
             # dummy_cache is True when _warmup_attn
-            block_table_cuda = torch.zeros(
-                (num_tokens, num_seqs * self.model_config.max_seq_len // self.block_size), 
+            block_table_cuda = torch.arange(
+                num_tokens * (self.model_config.max_seq_len // self.block_size), 
                 dtype=torch.int32, device=self.device
-            )
-            slot_mapping_cuda = torch.zeros(
-                (num_tokens, ), 
-                dtype=torch.int64, device=self.device
-            )
+            ).view(num_tokens, -1)
+            slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
         else:
             if self.use_gdr_copy:
                 num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
@@ -306,10 +303,10 @@ class CPUBlockManager(BaseBlockManager):
         batch.seq_lens_tensor = seq_lens_cuda
         
         return FlashAttentionMetadata(
-            0,
-            0,
-            num_tokens,
-            slot_mapping_cuda,
+            num_prefills=0,
+            num_prefill_tokens=0,
+            num_decode_tokens=num_tokens,
+            slot_mapping=slot_mapping_cuda,
             seq_lens=batch.seq_lens,
             seq_lens_tensor=seq_lens_cuda,
             max_query_len=0,
@@ -386,7 +383,7 @@ class GPUBlockManager(BaseBlockManager):
         self.token_allocator.free_group_end()
     
     @nvtx_range("GPUBlockManager.update_block_table")
-    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionForwardBatch):
+    def update_block_table(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch):
         init_req_ids = batch.req_ids[:batch.num_prefill_seqs]
         running_seq_ids = batch.req_ids[batch.num_prefill_seqs:]
         req_ids = batch.req_ids
@@ -434,7 +431,7 @@ class GPUBlockManager(BaseBlockManager):
     def pack_flash_attn_metadata(
             self, 
             meta_c: BatchMetadata_C, 
-            batch: AttentionForwardBatch, 
+            batch: AttentionScheduleBatch, 
             dummy_cache: bool = False
         ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using GPU approach"""
