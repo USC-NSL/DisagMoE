@@ -484,9 +484,10 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
 
     # Fixed Buffers
     fp8_up_in_buf = torch.empty(num_experts, MAX_BATCH_SIZE, hidden_size, device=device, dtype=torch.float8_e4m3fn)
-    fp8_up_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, 1, device=device, dtype=torch.float32)
+    # Scale buffers need to be block-aligned to satisfy DeepGEMM assertion on some versions
+    fp8_up_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, ceil_div(hidden_size, 128), device=device, dtype=torch.float32)
     fp8_down_in_buf = torch.empty(num_experts, MAX_BATCH_SIZE, intermediate_size, device=device, dtype=torch.float8_e4m3fn)
-    fp8_down_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, 1, device=device, dtype=torch.float32)
+    fp8_down_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, ceil_div(intermediate_size, 128), device=device, dtype=torch.float32)
 
     # Cache buffers (BF16)
     cache_up = torch.empty(num_experts, MAX_BATCH_SIZE, intermediate_size * 2, device=device, dtype=torch.bfloat16)
