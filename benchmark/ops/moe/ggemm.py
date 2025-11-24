@@ -447,6 +447,156 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
 
 
 @torch.inference_mode()
+def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, label):
+    if not HAS_DEEP_GEMM:
+        return np.array([]), []
+
+    # Check CUDA capability
+    major, _ = torch.cuda.get_device_capability()
+    if major < 9:
+        # print("Skipping DeepGemm benchmark: requires Hopper (SM90) or later.")
+        return np.array([]), []
+
+    row_sizes = np.array([1,2,4,8,16,32,64,128,256, 512, 1024])
+    num_repeats = 5
+    MAX_BATCH_SIZE = 4096 # Conservative upper bound
+
+    # Weights
+    BCs_bf16, Ds_bf16 = alloc_expert_weights(hidden_size, intermediate_size, num_experts, device, dtype=torch.bfloat16)
+    
+    # Prepare FP8 weights
+    # w13: [E, H, 2I] -> [E, 2I, H]
+    w13_weight_fp8 = BCs_bf16.transpose(1, 2).contiguous().to(torch.float8_e4m3fn)
+    # w2: [E, I, H] -> [E, H, I]
+    w2_weight_fp8 = Ds_bf16.transpose(1, 2).contiguous().to(torch.float8_e4m3fn)
+
+    ceil_div = lambda x, y: (x + y - 1) // y
+    
+    # w13 scaling factors
+    k_w13 = hidden_size
+    n_w13 = intermediate_size * 2
+    w13_sf = torch.ones(num_experts, ceil_div(n_w13, 128), ceil_div(k_w13, 128), device=device, dtype=torch.float32)
+
+    # w2 scaling factors
+    k_w2 = intermediate_size
+    n_w2 = hidden_size
+    w2_sf = torch.ones(num_experts, ceil_div(n_w2, 128), ceil_div(k_w2, 128), device=device, dtype=torch.float32)
+
+    # Fixed Buffers
+    fp8_up_in_buf = torch.empty(num_experts, MAX_BATCH_SIZE, hidden_size, device=device, dtype=torch.float8_e4m3fn)
+    fp8_up_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, 1, device=device, dtype=torch.float32)
+    fp8_down_in_buf = torch.empty(num_experts, MAX_BATCH_SIZE, intermediate_size, device=device, dtype=torch.float8_e4m3fn)
+    fp8_down_scale_buf = torch.empty(num_experts, MAX_BATCH_SIZE, 1, device=device, dtype=torch.float32)
+
+    # Cache buffers (BF16)
+    cache_up = torch.empty(num_experts, MAX_BATCH_SIZE, intermediate_size * 2, device=device, dtype=torch.bfloat16)
+    cache_down = torch.empty(num_experts, MAX_BATCH_SIZE, hidden_size, device=device, dtype=torch.bfloat16)
+    
+    static_batch_sizes = torch.zeros(num_experts, dtype=torch.int32, device="cuda")
+    static_bs = num_experts * MAX_BATCH_SIZE # baked-in capacity
+
+    act_fn = torch.nn.SiLU(inplace=True)
+
+    # CUDA Graph
+    graph = torch.cuda.CUDAGraph()
+    
+    def run_internal():
+        # w13
+        dg.m_grouped_fp8_gemm_nt_masked(
+            (fp8_up_in_buf, fp8_up_scale_buf),
+            (w13_weight_fp8, w13_sf),
+            cache_up,
+            static_batch_sizes,
+            static_bs
+        )
+        # Activation
+        # cache_up is [E, BS, 2I]
+        act_fn(cache_up[:, :, :intermediate_size])
+        up_res = cache_up[:, :, :intermediate_size] * cache_up[:, :, intermediate_size:]
+        
+        # Quantize + Copy to Down Input
+        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up_res, use_ue8m0=False)
+        fp8_down_in_buf.copy_(up_fp8)
+        fp8_down_scale_buf.copy_(sfa_up)
+
+        # w2
+        dg.m_grouped_fp8_gemm_nt_masked(
+            (fp8_down_in_buf, fp8_down_scale_buf),
+            (w2_weight_fp8, w2_sf),
+            cache_down,
+            static_batch_sizes,
+            static_bs
+        )
+
+    # Warmup and capture graph ONCE
+    static_batch_sizes.fill_(1) # Dummy batch sizes
+    for _ in range(2):
+        run_internal()
+    torch.cuda.synchronize()
+    
+    with torch.cuda.graph(graph):
+        run_internal()
+        
+    results_deep_gemm_masked = []
+    
+    for n_rows in row_sizes:
+        ratios_local = expert_batch_size_ratios if len(expert_batch_size_ratios) == num_experts else [1.0] * num_experts
+        batch_sizes_i = [max(1, int(round(float(n_rows) * float(r)))) for r in ratios_local]
+        
+        # Create input tensor
+        As_list = [torch.randn(bs, hidden_size, device=device, dtype=torch.bfloat16) for bs in batch_sizes_i]
+        hiddens = torch.cat(As_list, dim=0).contiguous()
+        batch_sizes_t = torch.tensor(batch_sizes_i, dtype=torch.int32, device="cpu")
+        total_rows = hiddens.shape[0]
+
+        def run_step():
+            # 1. Prepare Inputs
+            hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
+            
+            start_idx = 0
+            for i in range(num_experts):
+                length = batch_sizes_i[i]
+                if length > 0:
+                    fp8_up_in_buf[i, :length].copy_(hiddens_fp8[start_idx : start_idx + length])
+                    fp8_up_scale_buf[i, :length].copy_(sfa_hiddens[start_idx : start_idx + length])
+                    start_idx += length
+            
+            static_batch_sizes.copy_(batch_sizes_t)
+            
+            # 2. Replay
+            graph.replay()
+            
+            # 3. Gather
+            final_out = torch.empty(total_rows, hidden_size, dtype=torch.bfloat16, device=device)
+            start_idx = 0
+            for i in range(num_experts):
+                length = batch_sizes_i[i]
+                if length > 0:
+                    final_out[start_idx : start_idx + length].copy_(cache_down[i, :length])
+                    start_idx += length
+            return final_out
+
+        # Warmup
+        for _ in range(2):
+            run_step()
+            
+        # Measure
+        torch.cuda.synchronize()
+        start_evt = torch.cuda.Event(enable_timing=True)
+        end_evt = torch.cuda.Event(enable_timing=True)
+        
+        start_evt.record()
+        for _ in range(num_repeats):
+            run_step()
+        end_evt.record()
+        torch.cuda.synchronize()
+        
+        results_deep_gemm_masked.append(start_evt.elapsed_time(end_evt) / num_repeats)
+
+    return row_sizes, results_deep_gemm_masked
+
+
+@torch.inference_mode()
 def benchmark_single_expert_reference(hidden_size, intermediate_size, num_experts, label):
     # Same batch sizes as other benchmarks
     row_sizes = np.array([1,2,4,8,16,32,64,128,256, 512, 1024])
@@ -535,6 +685,7 @@ time_series_grouped = []
 time_series_seq_no_graph = []
 time_series_triton = []
 time_series_deep_gemm = []
+time_series_deep_gemm_masked = []
 time_series_single_scaled = []
 model_names = []
 model_colors = []
@@ -553,6 +704,7 @@ csv_header = [
     "grouped_gemm_ms",
     "triton_fused_moe_ms",
     "deep_gemm_ms",
+    "deep_gemm_masked_ms",
     "dtype",
 ]
 csv_rows = []
@@ -567,18 +719,22 @@ for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerat
     # Only run if dtype is fp8 to ensure fair comparison context or because it's specifically for fp8.
     if _DTYPE_STR == "fp8":
         row_sizes_dg, deep_gemm_means = benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label)
+        row_sizes_dg_masked, deep_gemm_masked_means = benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, label)
     else:
         row_sizes_dg, deep_gemm_means = row_sizes, []
+        row_sizes_dg_masked, deep_gemm_masked_means = row_sizes, []
 
     if len(deep_gemm_means) == 0:
         deep_gemm_means = [0.0] * len(row_sizes)
+    if len(deep_gemm_masked_means) == 0:
+        deep_gemm_masked_means = [0.0] * len(row_sizes)
 
     assert np.array_equal(row_sizes, row_sizes_t), "Row sizes mismatch between benchmarks"
     assert np.array_equal(row_sizes, row_sizes_s), "Row sizes mismatch for single-expert reference"
     
     x = np.arange(len(row_sizes))
-    # Adjust width for 6 bars
-    width = 0.14
+    # Adjust width for 7 bars
+    width = 0.12
     ax = axes[idx]
     
     # Determine labels based on dtype
@@ -586,12 +742,13 @@ for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerat
     if _DTYPE_STR == "fp8":
         dtype_suffix = " (BF16)" # standard kernels run in BF16 when fp8 mode is active
     
-    ax.bar(x - 2.5*width, single_scaled_means, width=width, label=f"Single Expert xE{dtype_suffix}")
-    ax.bar(x - 1.5*width, seq_means, width=width, label=f"Sequential (graph){dtype_suffix}")
-    ax.bar(x - 0.5*width, seq_no_graph_means, width=width, label=f"Sequential (no graph){dtype_suffix}")
-    ax.bar(x + 0.5*width, grp_means, width=width, label=f"Grouped GEMM{dtype_suffix}")
-    ax.bar(x + 1.5*width, triton_means, width=width, label=f"Triton Fused MoE{dtype_suffix}")
-    ax.bar(x + 2.5*width, deep_gemm_means, width=width, label="DeepGemm (FP8)")
+    ax.bar(x - 3*width, single_scaled_means, width=width, label=f"Single Expert xE{dtype_suffix}")
+    ax.bar(x - 2*width, seq_means, width=width, label=f"Sequential (graph){dtype_suffix}")
+    ax.bar(x - 1*width, seq_no_graph_means, width=width, label=f"Sequential (no graph){dtype_suffix}")
+    ax.bar(x, grp_means, width=width, label=f"Grouped GEMM{dtype_suffix}")
+    ax.bar(x + 1*width, triton_means, width=width, label=f"Triton Fused MoE{dtype_suffix}")
+    ax.bar(x + 2*width, deep_gemm_means, width=width, label="DeepGemm (FP8)")
+    ax.bar(x + 3*width, deep_gemm_masked_means, width=width, label="DeepGemm Masked (FP8)")
 
     # Use sparse xticks for readability
     if len(row_sizes) > 12:
@@ -613,6 +770,7 @@ for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerat
     time_series_triton.append(np.array(triton_means, dtype=np.float64))
     time_series_single_scaled.append(np.array(single_scaled_means, dtype=np.float64))
     time_series_deep_gemm.append(np.array(deep_gemm_means, dtype=np.float64))
+    time_series_deep_gemm_masked.append(np.array(deep_gemm_masked_means, dtype=np.float64))
     model_names.append(model)
     model_colors.append(plt.get_cmap('tab10')(idx))
 
@@ -632,6 +790,7 @@ for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerat
             float(grp_means[j]),
             float(triton_means[j]),
             float(deep_gemm_means[j]),
+            float(deep_gemm_masked_means[j]),
             str(_DTYPE_STR),
         ])
 
@@ -657,13 +816,14 @@ print(f"Saved comparison data CSV to {_csv_path}")
 # Create FLOPs vs Time line plot (all methods on one figure)
 fig2, ax2 = plt.subplots(figsize=(9, 6))
 # Plot per model with consistent color; two methods: Grouped GEMM vs Sequential (no graph)
-for flops_g, t_grp, t_sng, t_tri, t_single, t_dg, name, color in zip(
+for flops_g, t_grp, t_sng, t_tri, t_single, t_dg, t_dg_m, name, color in zip(
     flops_series_per_model,
     time_series_grouped,
     time_series_seq_no_graph,
     time_series_triton,
     time_series_single_scaled,
     time_series_deep_gemm,
+    time_series_deep_gemm_masked,
     model_names,
     model_colors,
 ):
@@ -678,6 +838,8 @@ for flops_g, t_grp, t_sng, t_tri, t_single, t_dg, name, color in zip(
     ax2.plot(flops_g, t_single, marker='x', linestyle='-.', color=color, alpha=0.7, label=f"{name} - Single Expert xE{dtype_suffix}")
     if np.sum(t_dg) > 0:
         ax2.plot(flops_g, t_dg, marker='*', linestyle='-', color=color, alpha=0.8, label=f"{name} - DeepGemm (FP8)")
+    if np.sum(t_dg_m) > 0:
+        ax2.plot(flops_g, t_dg_m, marker='d', linestyle='-', color=color, alpha=0.8, label=f"{name} - DeepGemm Masked (FP8)")
 ax2.set_xlabel("Estimated FLOPs per batch (GFLOPs)")
 ax2.set_ylabel("Avg Execution Time (ms)")
 ax2.set_title("Time vs Estimated FLOPs (Grouped GEMM vs Separate Kernels)")
