@@ -4,6 +4,7 @@ import numpy as np
 from grouped_gemm.backend import gmm
 import os
 import csv
+import argparse
 from triton_moe_demo import (
     _moe_align_block_size,
     _invoke_fused_moe_kernel,
@@ -672,201 +673,306 @@ def benchmark_single_expert_reference(hidden_size, intermediate_size, num_expert
     return row_sizes, results_single_scaled
 
 
-# hidden_sizes_k = np.array([6, 4, 7, 2, 4])
-# hidden_sizes = hidden_sizes_k * 1024
-# intermediate_sizes_k = np.array([16, 12, 2, 6, ])
-# intermediate_sizes = intermediate_sizes_k * 1024
-# models = ["Mixtral 8x22B", "Mixtral 8x7B", "Deepseek V3", "Qwen3-30B", "Qwen3-235B"]
-# labels = [f"{model}: hidden={h}k, intermediate={i}k" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes_k)]
-# num_experts_list = [8, 8, 8, 8, 8]
-# expert_batch_size_ratios = [1, 0.5, 0.1, 0.2, 0.8, 1.5, 1.9, 0.7] # this must equals to num_experts
-hidden_sizes_k = np.array([2, 4])
-hidden_sizes = hidden_sizes_k * 1024
-intermediate_sizes = [768, 1536]
-models = ["Qwen3-30B", "Qwen3-235B"]
-labels = [f"{model}: hidden={h}k, intermediate={i}" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes)]
-num_experts_list = [8, 8]
-# expert_batch_size_ratios = [1, 0.5, 0.1, 0.2, 0.8, 1.5, 1.9, 0.7] # this must equals to num_experts
-expert_batch_size_ratios = [1] * 8
+def main(profile: bool = False) -> None:
+    # hidden_sizes_k = np.array([6, 4, 7, 2, 4])
+    # hidden_sizes = hidden_sizes_k * 1024
+    # intermediate_sizes_k = np.array([16, 12, 2, 6, ])
+    # intermediate_sizes = intermediate_sizes_k * 1024
+    # models = ["Mixtral 8x22B", "Mixtral 8x7B", "Deepseek V3", "Qwen3-30B", "Qwen3-235B"]
+    # labels = [f"{model}: hidden={h}k, intermediate={i}k" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes_k)]
+    # num_experts_list = [8, 8, 8, 8, 8]
+    # expert_batch_size_ratios = [1, 0.5, 0.1, 0.2, 0.8, 1.5, 1.9, 0.7] # this must equals to num_experts
+    hidden_sizes_k = np.array([2, 4])
+    hidden_sizes = hidden_sizes_k * 1024
+    intermediate_sizes = [768, 1536]
+    models = ["Qwen3-30B", "Qwen3-235B"]
+    labels = [f"{model}: hidden={h}k, intermediate={i}" for model, h, i in zip(models, hidden_sizes_k, intermediate_sizes)]
+    num_experts_list = [8, 8]
+    # expert_batch_size_ratios = [1, 0.5, 0.1, 0.2, 0.8, 1.5, 1.9, 0.7] # this must equals to num_experts
+    global expert_batch_size_ratios
+    expert_batch_size_ratios = [1] * 8
 
-# Grouped bar chart per model (single figure with subplots)
-n_models = len(models)
-n_cols = 2
-n_rows = int(np.ceil(n_models / n_cols))
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(8 * n_cols, 6 * n_rows))
-axes = np.array(axes).ravel()
+    # Grouped bar chart per model (single figure with subplots)
+    n_models = len(models)
+    n_cols = 2
+    n_rows = int(np.ceil(n_models / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(8 * n_cols, 6 * n_rows))
+    axes = np.array(axes).ravel()
 
-flops_series_per_model = []
-time_series_grouped = []
-time_series_seq_no_graph = []
-time_series_triton = []
-time_series_deep_gemm = []
-time_series_deep_gemm_masked = []
-time_series_single_scaled = []
-model_names = []
-model_colors = []
+    flops_series_per_model = []
+    time_series_grouped = []
+    time_series_seq_no_graph = []
+    time_series_triton = []
+    time_series_deep_gemm = []
+    time_series_deep_gemm_masked = []
+    time_series_single_scaled = []
+    model_names = []
+    model_colors = []
 
-# Prepare CSV accumulation for comparison data
-csv_header = [
-    "model",
-    "hidden_size",
-    "intermediate_size",
-    "num_experts",
-    "per_expert_batch_size",
-    "flops_gflops",
-    "single_expert_xE_ms",
-    "sequential_graph_ms",
-    "sequential_no_graph_ms",
-    "grouped_gemm_ms",
-    "triton_fused_moe_ms",
-    "deep_gemm_ms",
-    "deep_gemm_masked_ms",
-    "dtype",
-]
-csv_rows = []
+    # Prepare CSV accumulation for comparison data
+    csv_header = [
+        "model",
+        "hidden_size",
+        "intermediate_size",
+        "num_experts",
+        "per_expert_batch_size",
+        "flops_gflops",
+        "single_expert_xE_ms",
+        "sequential_graph_ms",
+        "sequential_no_graph_ms",
+        "grouped_gemm_ms",
+        "triton_fused_moe_ms",
+        "deep_gemm_ms",
+        "deep_gemm_masked_ms",
+        "dtype",
+    ]
+    csv_rows = []
 
-for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerate(zip(hidden_sizes, intermediate_sizes, num_experts_list, labels, models)):
-    row_sizes, seq_means, seq_no_graph_means, grp_means = benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label)
-    row_sizes_t, triton_means = benchmark_triton_fused_moe(hidden_size, intermediate_size, num_experts, label)
-    row_sizes_s, single_scaled_means = benchmark_single_expert_reference(hidden_size, intermediate_size, num_experts, label)
-    
-    # Run DeepGemm benchmark if fp8 is requested (or if we decide to run it generally if available)
-    # The function handles availability checks internally.
-    # Only run if dtype is fp8 to ensure fair comparison context or because it's specifically for fp8.
-    if _DTYPE_STR == "fp8":
-        row_sizes_dg, deep_gemm_means = benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label)
-        row_sizes_dg_masked, deep_gemm_masked_means = benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, label)
-    else:
-        row_sizes_dg, deep_gemm_means = row_sizes, []
-        row_sizes_dg_masked, deep_gemm_masked_means = row_sizes, []
+    for idx, (hidden_size, intermediate_size, num_experts, label, model) in enumerate(
+        zip(hidden_sizes, intermediate_sizes, num_experts_list, labels, models)
+    ):
+        row_sizes, seq_means, seq_no_graph_means, grp_means = benchmark_grouped_gemm(
+            hidden_size, intermediate_size, num_experts, label
+        )
+        row_sizes_t, triton_means = benchmark_triton_fused_moe(
+            hidden_size, intermediate_size, num_experts, label
+        )
+        row_sizes_s, single_scaled_means = benchmark_single_expert_reference(
+            hidden_size, intermediate_size, num_experts, label
+        )
 
-    if len(deep_gemm_means) == 0:
-        deep_gemm_means = [0.0] * len(row_sizes)
-    if len(deep_gemm_masked_means) == 0:
-        deep_gemm_masked_means = [0.0] * len(row_sizes)
+        # Run DeepGemm benchmark if fp8 is requested (or if we decide to run it generally if available)
+        # The function handles availability checks internally.
+        # Only run if dtype is fp8 to ensure fair comparison context or because it's specifically for fp8.
+        if _DTYPE_STR == "fp8":
+            if profile and _prof is None:
+                prof_fname = f"deep_gemm_profile_{model}_{_DTYPE_STR}.json".replace(" ", "_")
+                with torch.profiler.profile(
+                    activities=[
+                        torch.profiler.ProfilerActivity.CPU,
+                        torch.profiler.ProfilerActivity.CUDA,
+                    ],
+                    record_shapes=True,
+                ) as local_prof:
+                    row_sizes_dg, deep_gemm_means = benchmark_deep_gemm_moe(
+                        hidden_size, intermediate_size, num_experts, label
+                    )
+                    row_sizes_dg_masked, deep_gemm_masked_means = benchmark_deep_gemm_moe_masked(
+                        hidden_size, intermediate_size, num_experts, label
+                    )
+                local_prof.export_chrome_trace(prof_fname)
+                print(f"Saved DeepGemm PyTorch profile to {prof_fname}")
+            else:
+                row_sizes_dg, deep_gemm_means = benchmark_deep_gemm_moe(
+                    hidden_size, intermediate_size, num_experts, label
+                )
+                row_sizes_dg_masked, deep_gemm_masked_means = benchmark_deep_gemm_moe_masked(
+                    hidden_size, intermediate_size, num_experts, label
+                )
+        else:
+            row_sizes_dg, deep_gemm_means = row_sizes, []
+            row_sizes_dg_masked, deep_gemm_masked_means = row_sizes, []
 
-    assert np.array_equal(row_sizes, row_sizes_t), "Row sizes mismatch between benchmarks"
-    assert np.array_equal(row_sizes, row_sizes_s), "Row sizes mismatch for single-expert reference"
-    
-    x = np.arange(len(row_sizes))
-    # Adjust width for 7 bars
-    width = 0.12
-    ax = axes[idx]
-    
-    # Determine labels based on dtype
-    dtype_suffix = ""
-    if _DTYPE_STR == "fp8":
-        dtype_suffix = " (BF16)" # standard kernels run in BF16 when fp8 mode is active
-    
-    ax.bar(x - 3*width, single_scaled_means, width=width, label=f"Single Expert xE{dtype_suffix}")
-    ax.bar(x - 2*width, seq_means, width=width, label=f"Sequential (graph){dtype_suffix}")
-    ax.bar(x - 1*width, seq_no_graph_means, width=width, label=f"Sequential (no graph){dtype_suffix}")
-    ax.bar(x, grp_means, width=width, label=f"Grouped GEMM{dtype_suffix}")
-    ax.bar(x + 1*width, triton_means, width=width, label=f"Triton Fused MoE{dtype_suffix}")
-    ax.bar(x + 2*width, deep_gemm_means, width=width, label="DeepGemm (FP8)")
-    ax.bar(x + 3*width, deep_gemm_masked_means, width=width, label="DeepGemm Masked (FP8)")
+        if len(deep_gemm_means) == 0:
+            deep_gemm_means = [0.0] * len(row_sizes)
+        if len(deep_gemm_masked_means) == 0:
+            deep_gemm_masked_means = [0.0] * len(row_sizes)
 
-    # Use sparse xticks for readability
-    if len(row_sizes) > 12:
-        tick_idx = np.linspace(0, len(row_sizes) - 1, num=12, dtype=int)
-    else:
-        tick_idx = np.arange(len(row_sizes))
-    ax.set_xticks(tick_idx)
-    ax.set_xticklabels([int(row_sizes[i]) for i in tick_idx])
-    ax.set_title(f"{label}, experts={num_experts}")
-    ax.set_xlabel("per-expert batch size")
-    ax.set_ylabel("Avg Execution Time (ms)")
-    ax.legend(fontsize=8)
+        assert np.array_equal(row_sizes, row_sizes_t), "Row sizes mismatch between benchmarks"
+        assert np.array_equal(row_sizes, row_sizes_s), "Row sizes mismatch for single-expert reference"
 
-    # Collect FLOPs vs time data (for all methods)
-    flops_total = 6.0 * float(num_experts) * float(hidden_size) * float(intermediate_size) * row_sizes.astype(np.float64)
-    flops_series_per_model.append(flops_total / 1e9)  # in GFLOPs
-    time_series_grouped.append(np.array(grp_means, dtype=np.float64))
-    time_series_seq_no_graph.append(np.array(seq_no_graph_means, dtype=np.float64))
-    time_series_triton.append(np.array(triton_means, dtype=np.float64))
-    time_series_single_scaled.append(np.array(single_scaled_means, dtype=np.float64))
-    time_series_deep_gemm.append(np.array(deep_gemm_means, dtype=np.float64))
-    time_series_deep_gemm_masked.append(np.array(deep_gemm_masked_means, dtype=np.float64))
-    model_names.append(model)
-    model_colors.append(plt.get_cmap('tab10')(idx))
+        x = np.arange(len(row_sizes))
+        # Adjust width for 7 bars
+        width = 0.12
+        ax = axes[idx]
 
-    # Accumulate CSV rows for this model
-    for j, bs in enumerate(row_sizes):
-        flops_gflops = (6.0 * float(num_experts) * float(hidden_size) * float(intermediate_size) * float(bs)) / 1e9
-        csv_rows.append([
-            str(model),
-            int(hidden_size),
-            int(intermediate_size),
-            int(num_experts),
-            int(bs),
-            float(flops_gflops),
-            float(single_scaled_means[j]),
-            float(seq_means[j]),
-            float(seq_no_graph_means[j]),
-            float(grp_means[j]),
-            float(triton_means[j]),
-            float(deep_gemm_means[j]),
-            float(deep_gemm_masked_means[j]),
-            str(_DTYPE_STR),
-        ])
+        # Determine labels based on dtype
+        dtype_suffix = ""
+        if _DTYPE_STR == "fp8":
+            dtype_suffix = " (BF16)"  # standard kernels run in BF16 when fp8 mode is active
 
-# Hide any unused subplots
-for ax in axes[len(models):]:
-    ax.set_visible(False)
+        ax.bar(x - 3 * width, single_scaled_means, width=width, label=f"Single Expert xE{dtype_suffix}")
+        ax.bar(x - 2 * width, seq_means, width=width, label=f"Sequential (graph){dtype_suffix}")
+        ax.bar(x - 1 * width, seq_no_graph_means, width=width, label=f"Sequential (no graph){dtype_suffix}")
+        ax.bar(x, grp_means, width=width, label=f"Grouped GEMM{dtype_suffix}")
+        ax.bar(x + 1 * width, triton_means, width=width, label=f"Triton Fused MoE{dtype_suffix}")
+        ax.bar(x + 2 * width, deep_gemm_means, width=width, label="DeepGemm (FP8)")
+        ax.bar(x + 3 * width, deep_gemm_masked_means, width=width, label="DeepGemm Masked (FP8)")
 
-plt.tight_layout()
-# Suffix output filenames with dtype
-_fname_suffix = f"_{_DTYPE_STR}"
-_cmp_path = f"ggemm_comparison{_fname_suffix}.png"
-plt.savefig(_cmp_path, dpi=300)
-print(f"Saved combined plot to {_cmp_path}")
+        # Use sparse xticks for readability
+        if len(row_sizes) > 12:
+            tick_idx = np.linspace(0, len(row_sizes) - 1, num=12, dtype=int)
+        else:
+            tick_idx = np.arange(len(row_sizes))
+        ax.set_xticks(tick_idx)
+        ax.set_xticklabels([int(row_sizes[i]) for i in tick_idx])
+        ax.set_title(f"{label}, experts={num_experts}")
+        ax.set_xlabel("per-expert batch size")
+        ax.set_ylabel("Avg Execution Time (ms)")
+        ax.legend(fontsize=8)
 
-# Write CSV comparison data
-_csv_path = f"ggemm_comparison_data{_fname_suffix}.csv"
-with open(_csv_path, mode="w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(csv_header)
-    writer.writerows(csv_rows)
-print(f"Saved comparison data CSV to {_csv_path}")
+        # Collect FLOPs vs time data (for all methods)
+        flops_total = (
+            6.0
+            * float(num_experts)
+            * float(hidden_size)
+            * float(intermediate_size)
+            * row_sizes.astype(np.float64)
+        )
+        flops_series_per_model.append(flops_total / 1e9)  # in GFLOPs
+        time_series_grouped.append(np.array(grp_means, dtype=np.float64))
+        time_series_seq_no_graph.append(np.array(seq_no_graph_means, dtype=np.float64))
+        time_series_triton.append(np.array(triton_means, dtype=np.float64))
+        time_series_single_scaled.append(np.array(single_scaled_means, dtype=np.float64))
+        time_series_deep_gemm.append(np.array(deep_gemm_means, dtype=np.float64))
+        time_series_deep_gemm_masked.append(np.array(deep_gemm_masked_means, dtype=np.float64))
+        model_names.append(model)
+        model_colors.append(plt.get_cmap("tab10")(idx))
 
-# Create FLOPs vs Time line plot (all methods on one figure)
-fig2, ax2 = plt.subplots(figsize=(9, 6))
-# Plot per model with consistent color; two methods: Grouped GEMM vs Sequential (no graph)
-for flops_g, t_grp, t_sng, t_tri, t_single, t_dg, t_dg_m, name, color in zip(
-    flops_series_per_model,
-    time_series_grouped,
-    time_series_seq_no_graph,
-    time_series_triton,
-    time_series_single_scaled,
-    time_series_deep_gemm,
-    time_series_deep_gemm_masked,
-    model_names,
-    model_colors,
-):
-    # Determine labels based on dtype
-    dtype_suffix = ""
-    if _DTYPE_STR == "fp8":
-        dtype_suffix = " (BF16)"
+        # Accumulate CSV rows for this model
+        for j, bs in enumerate(row_sizes):
+            flops_gflops = (
+                6.0 * float(num_experts) * float(hidden_size) * float(intermediate_size) * float(bs)
+            ) / 1e9
+            csv_rows.append(
+                [
+                    str(model),
+                    int(hidden_size),
+                    int(intermediate_size),
+                    int(num_experts),
+                    int(bs),
+                    float(flops_gflops),
+                    float(single_scaled_means[j]),
+                    float(seq_means[j]),
+                    float(seq_no_graph_means[j]),
+                    float(grp_means[j]),
+                    float(triton_means[j]),
+                    float(deep_gemm_means[j]),
+                    float(deep_gemm_masked_means[j]),
+                    str(_DTYPE_STR),
+                ]
+            )
 
-    ax2.plot(flops_g, t_grp, marker='o', linestyle='-', color=color, label=f"{name} - Grouped GEMM{dtype_suffix}")
-    ax2.plot(flops_g, t_sng, marker='s', linestyle=':', color=color, alpha=0.9, label=f"{name} - Sequential (no graph){dtype_suffix}")
-    ax2.plot(flops_g, t_tri, marker='^', linestyle='--', color=color, alpha=0.9, label=f"{name} - Triton Fused MoE{dtype_suffix}")
-    ax2.plot(flops_g, t_single, marker='x', linestyle='-.', color=color, alpha=0.7, label=f"{name} - Single Expert xE{dtype_suffix}")
-    if np.sum(t_dg) > 0:
-        ax2.plot(flops_g, t_dg, marker='*', linestyle='-', color=color, alpha=0.8, label=f"{name} - DeepGemm (FP8)")
-    if np.sum(t_dg_m) > 0:
-        ax2.plot(flops_g, t_dg_m, marker='d', linestyle='-', color=color, alpha=0.8, label=f"{name} - DeepGemm Masked (FP8)")
-ax2.set_xlabel("Estimated FLOPs per batch (GFLOPs)")
-ax2.set_ylabel("Avg Execution Time (ms)")
-ax2.set_title("Time vs Estimated FLOPs (Grouped GEMM vs Separate Kernels)")
-ax2.legend(ncol=2, fontsize=8)
-ax2.grid(True, linestyle='--', alpha=0.3)
-fig2.tight_layout()
-_flops_path = f"ggemm_flops_vs_time{_fname_suffix}.png"
-fig2.savefig(_flops_path, dpi=300)
-print(f"Saved FLOPs vs time plot to {_flops_path}")
+    # Hide any unused subplots
+    for ax in axes[len(models) :]:
+        ax.set_visible(False)
 
-if _prof is not None:
-    _prof.stop()
-    _prof.export_chrome_trace(trace_path)
-    print(f"Exported Perfetto-compatible trace to {trace_path}")
+    plt.tight_layout()
+    # Suffix output filenames with dtype
+    _fname_suffix = f"_{_DTYPE_STR}"
+    _cmp_path = f"ggemm_comparison{_fname_suffix}.png"
+    plt.savefig(_cmp_path, dpi=300)
+    print(f"Saved combined plot to {_cmp_path}")
+
+    # Write CSV comparison data
+    _csv_path = f"ggemm_comparison_data{_fname_suffix}.csv"
+    with open(_csv_path, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(csv_header)
+        writer.writerows(csv_rows)
+    print(f"Saved comparison data CSV to {_csv_path}")
+
+    # Create FLOPs vs Time line plot (all methods on one figure)
+    fig2, ax2 = plt.subplots(figsize=(9, 6))
+    # Plot per model with consistent color; two methods: Grouped GEMM vs Sequential (no graph)
+    for (
+        flops_g,
+        t_grp,
+        t_sng,
+        t_tri,
+        t_single,
+        t_dg,
+        t_dg_m,
+        name,
+        color,
+    ) in zip(
+        flops_series_per_model,
+        time_series_grouped,
+        time_series_seq_no_graph,
+        time_series_triton,
+        time_series_single_scaled,
+        time_series_deep_gemm,
+        time_series_deep_gemm_masked,
+        model_names,
+        model_colors,
+    ):
+        # Determine labels based on dtype
+        dtype_suffix = ""
+        if _DTYPE_STR == "fp8":
+            dtype_suffix = " (BF16)"
+
+        ax2.plot(
+            flops_g, t_grp, marker="o", linestyle="-", color=color, label=f"{name} - Grouped GEMM{dtype_suffix}"
+        )
+        ax2.plot(
+            flops_g,
+            t_sng,
+            marker="s",
+            linestyle=":",
+            color=color,
+            alpha=0.9,
+            label=f"{name} - Sequential (no graph){dtype_suffix}",
+        )
+        ax2.plot(
+            flops_g,
+            t_tri,
+            marker="^",
+            linestyle="--",
+            color=color,
+            alpha=0.9,
+            label=f"{name} - Triton Fused MoE{dtype_suffix}",
+        )
+        ax2.plot(
+            flops_g,
+            t_single,
+            marker="x",
+            linestyle="-.",
+            color=color,
+            alpha=0.7,
+            label=f"{name} - Single Expert xE{dtype_suffix}",
+        )
+        if np.sum(t_dg) > 0:
+            ax2.plot(
+                flops_g,
+                t_dg,
+                marker="*",
+                linestyle="-",
+                color=color,
+                alpha=0.8,
+                label=f"{name} - DeepGemm (FP8)",
+            )
+        if np.sum(t_dg_m) > 0:
+            ax2.plot(
+                flops_g,
+                t_dg_m,
+                marker="d",
+                linestyle="-",
+                color=color,
+                alpha=0.8,
+                label=f"{name} - DeepGemm Masked (FP8)",
+            )
+    ax2.set_xlabel("Estimated FLOPs per batch (GFLOPs)")
+    ax2.set_ylabel("Avg Execution Time (ms)")
+    ax2.set_title("Time vs Estimated FLOPs (Grouped GEMM vs Separate Kernels)")
+    ax2.legend(ncol=2, fontsize=8)
+    ax2.grid(True, linestyle="--", alpha=0.3)
+    fig2.tight_layout()
+    _flops_path = f"ggemm_flops_vs_time{_fname_suffix}.png"
+    fig2.savefig(_flops_path, dpi=300)
+    print(f"Saved FLOPs vs time plot to {_flops_path}")
+
+    if _prof is not None:
+        _prof.stop()
+        _prof.export_chrome_trace(trace_path)
+        print(f"Exported Perfetto-compatible trace to {trace_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Grouped GEMM vs DeepGemm MoE benchmarks")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable a PyTorch profile for DeepGemm and DeepGemm Masked passes (FP8 only).",
+    )
+    args = parser.parse_args()
+    main(profile=args.profile)
