@@ -516,9 +516,18 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
         up_res = cache_up[:, :, :intermediate_size] * cache_up[:, :, intermediate_size:]
         
         # Quantize + Copy to Down Input
-        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up_res, use_ue8m0=False)
+        # Flatten E and BS dimensions for per-token cast, then reshape back
+        # cache_up is [E, BS, I], flatten to [E*BS, I]
+        up_res_flat = up_res.view(-1, intermediate_size)
+        up_fp8_flat, sfa_up_flat = dg.per_token_cast_to_fp8(up_res_flat, use_ue8m0=False)
+        
+        # Reshape back to [E, BS, I] and [E, BS, 1]
+        up_fp8 = up_fp8_flat.view(num_experts, MAX_BATCH_SIZE, intermediate_size)
+        sfa_up = sfa_up_flat.view(num_experts, MAX_BATCH_SIZE, 1)
+
         fp8_down_in_buf.copy_(up_fp8)
-        fp8_down_scale_buf.copy_(sfa_up)
+        # sfa_up is [E, BS, 1], we need to broadcast/tile to match scale buffer shape
+        fp8_down_scale_buf.copy_(sfa_up) # Broadcasting should work here automatically
 
         # w2
         dg.m_grouped_fp8_gemm_nt_masked(
