@@ -15,7 +15,7 @@ class ModelConfig:
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
-    ep_size: int
+    ep_size: int = 1 # default to 1
     tp_size: int = 1
     dp_size: int = 1
     rank: int = 0
