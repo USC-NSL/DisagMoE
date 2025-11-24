@@ -523,7 +523,9 @@ def benchmark_deep_gemm_moe_masked(hidden_size, intermediate_size, num_experts, 
         
         # Reshape back to [E, BS, I] and [E, BS, 1]
         up_fp8 = up_fp8_flat.view(num_experts, MAX_BATCH_SIZE, intermediate_size)
-        sfa_up = sfa_up_flat.view(num_experts, MAX_BATCH_SIZE, 1)
+        # sfa_up_flat shape can be larger if CUDA alignment padding is included by DeepGemm
+        # But we know it corresponds to (num_experts * MAX_BATCH_SIZE) tokens
+        sfa_up = sfa_up_flat[:num_experts*MAX_BATCH_SIZE].view(num_experts, MAX_BATCH_SIZE, 1)
 
         fp8_down_in_buf.copy_(up_fp8)
         # sfa_up is [E, BS, 1], we need to broadcast/tile to match scale buffer shape
