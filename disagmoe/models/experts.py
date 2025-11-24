@@ -41,27 +41,38 @@ class MoEExperts(torch.nn.Module):
                 raise ImportError("deep_gemm is not available!")
             self.prepare_deep_gemm_fp8_weights()
             # pre-allocate fixed size input buffers
-            self.fp8_up_in_buf = torch.empty(num_experts,
-                                          max_batch_size,
-                                          self.hidden_size,
-                                          device=self.w13_weight.device,
-                                          dtype=torch.float8_e4m3fn)
-            self.fp8_down_in_buf = torch.empty(num_experts,
-                                          max_batch_size,
-                                          self.intermediate_size,
-                                          device=self.w2_weight.device,
-                                          dtype=torch.float8_e4m3fn)
-            # pre-allocate scale buffers
-            self.fp8_up_scale_buf = torch.empty(num_experts,
-                                            max_batch_size,
-                                            1,
-                                            device=self.w13_weight.device,
-                                            dtype=torch.float32)
-            self.fp8_down_scale_buf = torch.empty(num_experts,
-                                            max_batch_size,
-                                            1,
-                                            device=self.w2_weight.device,
-                                            dtype=torch.float32)
+            self.fp8_up_in_buf = torch.empty(
+                num_experts,
+                max_batch_size,
+                self.hidden_size,
+                device=self.w13_weight.device,
+                dtype=torch.float8_e4m3fn,
+            )
+            self.fp8_down_in_buf = torch.empty(
+                num_experts,
+                max_batch_size,
+                self.intermediate_size,
+                device=self.w2_weight.device,
+                dtype=torch.float8_e4m3fn,
+            )
+            # pre-allocate scale buffers: one scale per 128-wide block along K
+            # DeepGEMM masked kernel and quant functions require scale buffers to have this alignment
+            up_scale_blocks = dg.ceil_div(self.hidden_size, 128)
+            down_scale_blocks = dg.ceil_div(self.intermediate_size, 128)
+            self.fp8_up_scale_buf = torch.empty(
+                num_experts,
+                max_batch_size,
+                up_scale_blocks,
+                device=self.w13_weight.device,
+                dtype=torch.float32,
+            )
+            self.fp8_down_scale_buf = torch.empty(
+                num_experts,
+                max_batch_size,
+                down_scale_blocks,
+                device=self.w2_weight.device,
+                dtype=torch.float32,
+            )
             # create cached grouped gemm buffers
             self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
             # change the views
@@ -115,20 +126,18 @@ class MoEExperts(torch.nn.Module):
         
         # Scaling factors logic: this doesn't affect performance, and weights are 
         # usually pre-quantized, so we just use ones for now.
-        # ceil_div = lambda x, y: (x + y - 1) // y
-        def ceil_div(x, y): return (x + y - 1) // y
         
         # w13
         self.w13_weight_fp8 = self.w13_weight.transpose(1, 2).contiguous().to(torch.float8_e4m3fn)
-        # sfa is dynamic (input), sfb is static (weight)
-        # sfb shape: [G, ceil_div(N, 128), ceil_div(K, 128)]
         # For w13: K = hidden_size, N = intermediate_size * 2
         k_w13 = self.hidden_size
         n_w13 = self.intermediate_size * 2
+        # Each weight scale entry corresponds to a 128-wide tile along N and K.
+        # dg.ceil_div(dim, 128) gives the number of such tiles needed to cover that dimension.
         self.w13_sf = torch.ones(
             self.num_experts, 
-            ceil_div(n_w13, 128), 
-            ceil_div(k_w13, 128), 
+            dg.ceil_div(n_w13, 128), 
+            dg.ceil_div(k_w13, 128), 
             device=self.w13_weight.device, 
             dtype=torch.float32
         )
@@ -140,8 +149,8 @@ class MoEExperts(torch.nn.Module):
         n_w2 = self.hidden_size
         self.w2_sf = torch.ones(
             self.num_experts, 
-            ceil_div(n_w2, 128), 
-            ceil_div(k_w2, 128), 
+            dg.ceil_div(n_w2, 128), 
+            dg.ceil_div(k_w2, 128), 
             device=self.w2_weight.device, 
             dtype=torch.float32
         )
@@ -187,7 +196,7 @@ class MoEExperts(torch.nn.Module):
         # 1. Prepare Inputs outside graph
         
         # Cast hiddens to FP8 (Dynamic shape, cannot be in graph)
-        hiddens_fp8, sfa_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
+        hiddens_fp8, sf_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
         
         # Scatter to fixed input buffe
         start = 0
@@ -196,7 +205,7 @@ class MoEExperts(torch.nn.Module):
             length = batch_sizes_cpu[i].item()
             if length > 0:
                 self.fp8_up_in_buf[i, :length].copy_(hiddens_fp8[start : start + length])
-                self.fp8_up_scale_buf[i, :length].copy_(sfa_hiddens[start : start + length])
+                self.fp8_up_scale_buf[i, :length].copy_(sf_hiddens[start : start + length])
                 start += length
 
         # Update static mask
@@ -241,9 +250,21 @@ class MoEExperts(torch.nn.Module):
         
         # TODO: can we merge the below quant + copy into a single kernel?
         # Quantize + Copy to Down Input
-        up_fp8, sfa_up = dg.per_token_cast_to_fp8(up_res, use_ue8m0=False)
+        # per_token_cast_to_fp8 expects [M, K] and returns:
+        #   up_fp8_flat: [M, K]
+        #   up_res_sf_flat: [M, ceil_div(K, 128)]
+        # Here M = num_experts * max_batch_size, K = intermediate_size
+        up_res_flat = up_res.view(-1, self.intermediate_size)
+        up_fp8_flat, up_res_sf_flat = dg.per_token_cast_to_fp8(up_res_flat, use_ue8m0=False)
+
+        # Reshape back to [E, BS, K] and [E, BS, ceil_div(K,128)]
+        max_bs = self.fp8_down_in_buf.shape[1]
+        up_fp8 = up_fp8_flat.view(self.num_experts, max_bs, self.intermediate_size)
+        n_scale_down = dg.ceil_div(self.intermediate_size, 128)
+        up_res_sf = up_res_sf_flat.view(self.num_experts, max_bs, n_scale_down)
+
         self.fp8_down_in_buf.copy_(up_fp8)
-        self.fp8_down_scale_buf.copy_(sfa_up)
+        self.fp8_down_scale_buf.copy_(up_res_sf)
         
         # Run w2 kernel
         dg.m_grouped_fp8_gemm_nt_masked(
