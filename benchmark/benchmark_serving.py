@@ -409,7 +409,7 @@ async def benchmark_serving(
         await benchmark_warmup(master, args)
         
     if args.profile_dir is not None:
-        master.start_profile(args.profile_dir)
+        master.init_profile(profile_dir=args.profile_dir)
 
     # run benchmark
     logger.info("Now running benchmark.")

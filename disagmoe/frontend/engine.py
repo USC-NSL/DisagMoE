@@ -17,6 +17,7 @@ from disagmoe.frontend.datatypes import (
 from disagmoe.frontend.ray_helper import InitCoreArgs
 from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
 from disagmoe.utils.logger import initialize_logger, get_logger
+from disagmoe.frontend.profiler import EngineProfilerMixin
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
@@ -418,7 +419,7 @@ class ExpertEngineMixin:
         # get_logger().info(f"expert send out layer {meta_c.layer_id}, {meta_c.req_ids}")
         return output, new_meta_c
     
-class Engine(AttentionEngineMixin, ExpertEngineMixin):
+class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
 
     def __init__(self):
         
@@ -799,10 +800,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             meta: BatchMetadata = batch.metadata
             
             # self.stats_pre_process(batch)
+            self.step_profile(meta.num_tokens())
             output, meta = self.process_batch(meta, batch.data)
             self.post_process(output, meta)
-            if self.profiler is not None:
-                self.profiler.step()
             # self.stats_post_process(batch)
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:
@@ -832,50 +832,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
     def get_node_ip(self) -> str:
         return get_ip()
-    
-    def start_profile(self, profile_dir=None):
-        assert self.device_id is not None, "Engine should be assigned with a device before profiling"
-        
-        if profile_dir is None:
-            get_logger().info("profiling directory not specified, using default")
-            profile_dir = os.environ.get("DMOE_PROFILE_DIR", "torch_profile")
-            
-        try:
-            os.makedirs(profile_dir, exist_ok=True)
-        except Exception as e:
-            get_logger().warning(f"failed to create profile dir '{profile_dir}': {e}, falling back to 'torch_profile'")
-            profile_dir = "torch_profile"
-            os.makedirs(profile_dir, exist_ok=True)
-        
-        get_logger().info(f"enable profiler, results stored at {profile_dir}")
-        self.profile_dir = profile_dir
-    
-        self.profiler = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                # with_stack=True,
-            )
-        self.profiler.start()
-    
-    def stop_profile(self):
-        if self.profiler is None:
-            return
-        try:
-            self.profiler.stop()
-            ts = int(time.time())
-            out_file = os.path.join(self.profile_dir or ".", f"engine-{self.device_id}.{ts}.pt.trace.json")
-            try:
-                self.profiler.export_chrome_trace(out_file)
-                get_logger().info(f"exported chrome trace to {out_file}")
-            except Exception as ee:
-                get_logger().warning(f"failed to export chrome trace: {ee}")
-        except RuntimeError as e:
-            # Profiler may already be stopped if the schedule ended; make stop idempotent.
-            get_logger().warning(f"profiler.stop() ignored: {e}")
-        finally:
-            self.profiler = None
         
     def reset(self):
         # for stats usage
