@@ -12,7 +12,7 @@ from disagmoe.frontend.datatypes import ChannelInfo, SloStat, TraceContext, Samp
 from disagmoe.utils.placement import ModelPlacement, ColocatePlacement
 from disagmoe.utils.utils import get_nccl_unique_id, Counter, StepInfo
 from disagmoe.utils.metrics import Metric
-from disagmoe.utils.logger import new_logger
+from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
 from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
@@ -55,7 +55,6 @@ class Controller:
         self.workers = []
         self.attn_workers = []
         self.device_ids = []
-        self._logger = new_logger("controller")
         self._profile_enabled = False
         self.req_id_generator = Counter(start=1)
         self.in_flight_reqs = set()
@@ -67,6 +66,7 @@ class Controller:
         
         self.dp_scheduler: DPScheduler = None
         
+        initialize_logger("controller")
         init_cluster(self.n_worker, self.n_cpu_per_worker, self.n_gpu_per_worker)
         self._create_engines()
         
@@ -121,7 +121,7 @@ class Controller:
             self.workers.append(worker)
             self.device_ids.append(device_id)
             
-        self._logger.info(f"workers: {len(self.workers), self.device_ids, node_ids}")
+        get_logger().info(f"workers: {len(self.workers), self.device_ids, node_ids}")
     
     @property
     def all_workers(self):
@@ -130,6 +130,19 @@ class Controller:
     @property
     def all_device_ids(self):
         return self.device_ids
+    
+    def get_pairwise_nccl_ids(
+            self, model_place: ModelPlacement
+        ) -> Tuple[Dict[int, Dict[int, str]], 
+                   Dict[int, Dict[int, str]]]:
+        in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
+        out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
+        for i, js in model_place.out_device_ids.items():
+            for j in js:
+                uid = get_nccl_unique_id()
+                in_nccl_ids[j][i] = uid
+                out_nccl_ids[i][j] = uid
+        return in_nccl_ids, out_nccl_ids
     
     def init_engine(
         self, 
@@ -140,6 +153,7 @@ class Controller:
         sampling_config: Optional[SamplingConfig] = None,
         gate_profile_file: Optional[str] = None
     ):
+        get_logger().debug(f"Initializing engine with model placement: {model_place}")
         if not model_config:
             # TODO: replace default model config
             model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
@@ -176,7 +190,7 @@ class Controller:
             device_id: ray.get(worker.get_node_ip.remote()) 
                 for worker, device_id in zip(self.all_workers, self.all_device_ids)
         }
-        self._logger.info(f"device_id to host_ip: {device_2_host}")
+        get_logger().info(f"device_id to host_ip: {device_2_host}")
         ray.get([
             worker.set_hosts.remote(device_2_host)
                 for worker in self.all_workers
@@ -222,14 +236,13 @@ class Controller:
                     for worker, device_id in zip(self.workers, self.device_ids)
                     if model_place.has_attn(device_id)
             ])
-            self._logger.info(f"Uploaded gate profile and broadcast to attention workers: {len(_gate_profile_bytes)} bytes")
+            get_logger().info(f"Uploaded gate profile and broadcast to attention workers: {len(_gate_profile_bytes)} bytes")
         
         print(f"transport_name: {transport_name}")
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
         # All ranks should use the same nccl comm id
-        nccl_comm_id_low_to_high = get_nccl_unique_id()
-        nccl_comm_id_high_to_low = get_nccl_unique_id()
+        inbound_nccl_ids, outbound_nccl_ids = self.get_pairwise_nccl_ids(model_place)
         
         # init core
         tasks = [
@@ -241,8 +254,8 @@ class Controller:
                     min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
-                    nccl_comm_id_low_to_high=nccl_comm_id_low_to_high,
-                    nccl_comm_id_high_to_low=nccl_comm_id_high_to_low,
+                    inbound_nccl_ids=inbound_nccl_ids.get(device_id, {}),
+                    outbound_nccl_ids=outbound_nccl_ids.get(device_id, {}),
                     out_channel_infos=[
                         ChannelInfo(
                             model_place.expert_ids_at(out),
@@ -262,7 +275,7 @@ class Controller:
             ) for worker, device_id in zip(self.workers, self.device_ids)
         ]
         ray.get(tasks)
-        self._logger.info("launched all tasks")
+        get_logger().info("Launched all workers successfully")
         
         self.dp_scheduler = get_dp_scheduler(
             model_config.dp_size, self.max_output_len, cache_config.block_size, "max"

@@ -44,6 +44,8 @@ public:
         return this->other;
     }
 
+    virtual void initialize() {}
+
     virtual void sync() {}
 };
 
@@ -58,16 +60,19 @@ struct cmp_channel_t {
 class NcclChannel: public Channel {
 protected:
     ncclComm_t comm;
+    ncclUniqueId unique_id;
     cudaStream_t stream;
 
 public:
-    NcclChannel(int party_local, int party_other, ncclComm_t comm, cudaStream_t stream = nullptr);
+    NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream = nullptr);
 
     void send(uintptr_t data, const BatchMetadata& metadata) override;
 
     void recv(uintptr_t data, const BatchMetadata& metadata) override;
 
     void sync() override;
+
+    void initialize() override;
 };
 
 class TensorLocalChannel: public Channel {
@@ -87,7 +92,7 @@ class TensorLocalChannel: public Channel {
         void sync() override;
 };
 
-Channel_t create_nccl_channel(int party_local, int party_other, ncclComm_t comm);
+Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);
 
 Channel_t create_local_channel(int device_id);
 

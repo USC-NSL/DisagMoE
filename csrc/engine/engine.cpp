@@ -19,61 +19,52 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     int local_id,
     bool is_attn,
     // Inter-group Channels
-    std::string nccl_comm_id_low_to_high,
-    std::string nccl_comm_id_high_to_low,
-    const std::vector<int> &in_device_ids,
-    const std::vector<int> &out_device_ids,
+    std::map<int, std::string> inbound_nccl_ids,
+    std::map<int, std::string> outbound_nccl_ids,
+    const std::vector<int> &inbound_peer_ids,
+    const std::vector<int> &outbound_peer_ids,
     int local_attn_dp_rank
 ) {
-
-    ncclComm_t comm_low_to_high;
-    ncclComm_t comm_high_to_low;
-    ncclUniqueId nccl_unique_id_low_to_high = string_to_nccl_unique_id(nccl_comm_id_low_to_high);
-    ncclUniqueId nccl_unique_id_high_to_low = string_to_nccl_unique_id(nccl_comm_id_high_to_low);
-    NCCLCHECK(ncclCommInitRank(&comm_low_to_high, world_size, nccl_unique_id_low_to_high, local_id));
-    NCCLCHECK(ncclCommInitRank(&comm_high_to_low, world_size, nccl_unique_id_high_to_low, local_id));
-
-    DMOE_LOG(INFO) << "NCCL comm initialized with world size " << world_size << " and rank " << local_id << LEND;
-
-    auto n_in = in_device_ids.size();
-    auto n_out = out_device_ids.size();
+    auto n_in = inbound_peer_ids.size();
+    auto n_out = outbound_peer_ids.size();
 
     std::vector<Channel_t> in_channels;
     std::vector<Channel_t> out_channels;
     Channel_t local_channel = nullptr;
 
-
     // inbound channels
     for (size_t i = 0; i < n_in; i ++) {
-        auto peer_id = in_device_ids[i];
+        auto peer_id = inbound_peer_ids[i];
         Channel_t channel{};
         if (peer_id == local_id) {
             channel = create_local_channel(local_id);
             local_channel = channel;
-        } else if (local_id < peer_id) {
-            channel = create_nccl_channel(local_id, peer_id, comm_high_to_low);
         } else {
-            channel = create_nccl_channel(local_id, peer_id, comm_low_to_high);
+            channel = create_nccl_channel(local_id, peer_id, string_to_nccl_unique_id(inbound_nccl_ids[peer_id]));
         }
         in_channels.push_back(channel);
     }
 
-    // DMOE_LOG(DEBUG) << local_id << " " << "in channel initialized" << LEND;
-
     // outbound channels
     for (size_t i = 0; i < n_out; i ++) {
-        auto peer_id = out_device_ids[i];
+        auto peer_id = outbound_peer_ids[i];
         Channel_t channel{};
         if (peer_id == local_id) {
             channel = local_channel;
-        } else if (local_id < peer_id) {
-            channel = create_nccl_channel(local_id, peer_id, comm_low_to_high);
         } else {
-            channel = create_nccl_channel(local_id, peer_id, comm_high_to_low);
+            channel = create_nccl_channel(local_id, peer_id, string_to_nccl_unique_id(outbound_nccl_ids[peer_id]));
         }
         out_channels.push_back(channel);
     }
-    // DMOE_LOG(INFO) << local_id << " " << "all channels initialized" << LEND;
+    ncclGroupStart();
+    for (size_t i = 0; i < n_in; i++) {
+        in_channels[i]->initialize();
+    }
+    for (size_t i = 0; i < n_out; i++) {
+        out_channels[i]->initialize();
+    }
+    ncclGroupEnd();
+    DMOE_LOG(INFO) << "Rank " <<local_id << ": All NCCL channels initialized" << LEND;
     return std::make_tuple(in_channels, out_channels);
 }
 
@@ -89,15 +80,15 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    std::string nccl_comm_id_low_to_high,
-    std::string nccl_comm_id_high_to_low,
+    std::map<int, std::string> inbound_nccl_ids,
+    std::map<int, std::string> outbound_nccl_ids,
     const std::vector<ChannelInfo> &out_channel_infos
 ) {
     ASSERT ((has_attn ^ has_expert) == true);
 
     auto [in_channels, out_channels] = init_all_channels(
         world_size, local_id, has_attn, 
-        nccl_comm_id_low_to_high, nccl_comm_id_high_to_low, 
+        inbound_nccl_ids, outbound_nccl_ids, 
         in_device_ids, out_device_ids, 
         local_attn_dp_rank
     );
@@ -149,8 +140,8 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     const std::vector<int> &layer_ids,
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    std::string nccl_comm_id_low_to_high,
-    std::string nccl_comm_id_high_to_low,
+    std::map<int, std::string> inbound_nccl_ids,
+    std::map<int, std::string> outbound_nccl_ids,
     const std::vector<ChannelInfo> &out_channel_infos
 ) {
     // TODO: support expert wise schedule
@@ -159,7 +150,7 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
 
     auto [in_channels, out_channels] = init_all_channels(
         world_size, local_id, true, 
-        nccl_comm_id_low_to_high, nccl_comm_id_high_to_low, 
+        inbound_nccl_ids, outbound_nccl_ids, 
         in_device_ids, out_device_ids, 
         global_rank
     );
