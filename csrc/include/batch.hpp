@@ -12,6 +12,11 @@
 #include <torch/torch.h>
 #include <memory>
 
+static auto op_gather_tokens =
+    torch::Dispatcher::singleton()
+        .findSchemaOrThrow("disag_ops::gather_tokens", "")
+        .typed<void(torch::Tensor&, int64_t, int64_t, int64_t, int64_t)>();
+
 // TODO: have a dedicated CUDA stream to deal with GPU memory copy.
 struct TokenBatch: ScheduleUnit {
     torch::Tensor data;
@@ -72,8 +77,10 @@ struct TokenBatch: ScheduleUnit {
                 }
             }
         }
-        
-        gather_tokens_cuda(merged_tokens, srcs.data(), merged_meta->num_tokens(), merged_meta->token_hidden_dim(), stream.stream());
+
+        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
+        int64_t src_ptr = reinterpret_cast<int64_t>(srcs.data());
+        op_gather_tokens.call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
 
         return TokenBatch {merged_tokens, merged_meta};
     }
@@ -129,7 +136,10 @@ struct TokenBatch: ScheduleUnit {
             }
         }
 
-        gather_tokens_cuda(merged_tokens, src_ptrs.data(), merged_meta->num_tokens(), merged_meta->token_hidden_dim(), stream.stream());
+        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
+        int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
+
+        op_gather_tokens.call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
 
         return TokenBatch {merged_tokens, merged_meta};
     }
@@ -181,7 +191,9 @@ struct TokenBatch: ScheduleUnit {
             }
         }
         // TODO: Fuse gather and sum
-        gather_tokens_cuda(gathered_topk_tensor, src_ptrs.data(), meta->num_tokens(), meta->token_hidden_dim(), stream.stream());
+        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
+        int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
+        op_gather_tokens.call(gathered_topk_tensor, src_ptr, meta->num_tokens(), meta->token_hidden_dim(), raw_cuda_stream);
         auto aggregated_tokens_tensor = torch::sum(gathered_topk_tensor.view({n, topk, -1}), 1);
         return TokenBatch{aggregated_tokens_tensor, meta};
     }

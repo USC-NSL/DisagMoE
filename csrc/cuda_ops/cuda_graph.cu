@@ -143,7 +143,7 @@ void launch_preprocess_fused_cuda(
         );
 }
 
-void cuda_graph_preprocess_fused(
+void cuda_graph_preprocess_fused_dispatch(
     torch::Tensor hidden,
     torch::Tensor positions,
     torch::Tensor block_tables,
@@ -160,10 +160,10 @@ void cuda_graph_preprocess_fused(
     torch::Tensor out_context_lens,
     torch::Tensor out_seq_start_loc,
 
-    int tokens_per_block,
-    uintptr_t raw_cuda_stream
+    int64_t tokens_per_block,
+    int64_t raw_cuda_stream
 ){
-    cudaStream_t stream = (cudaStream_t) raw_cuda_stream;
+    cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
     switch(tokens_per_block) {
         case 1:
             launch_preprocess_fused_cuda<1>(
@@ -195,4 +195,17 @@ void cuda_graph_preprocess_fused(
         default:
             TORCH_CHECK(false, "Unsupported tokens_per_block");
     }
+}
+
+TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
+    m.def(R"(
+        cuda_graph_preprocess_fused(
+            Tensor hidden, Tensor positions, Tensor block_tables, Tensor slot_mapping, 
+            Tensor seq_lens, Tensor context_lens, Tensor seq_start_loc, 
+            Tensor out_hidden, Tensor out_positions, Tensor out_block_tables, Tensor out_slot_mapping, 
+            Tensor out_seq_lens, Tensor out_context_lens, Tensor out_seq_start_loc, 
+            int tokens_per_block, int raw_cuda_stream
+        ) -> void
+    )");
+    m.impl("cuda_graph_preprocess_fused", torch::kCUDA, cuda_graph_preprocess_fused_dispatch);
 }

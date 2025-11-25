@@ -5,9 +5,6 @@
 
 #include "cuda_utils.h"
 
-torch::Tensor permute_tokens_cuda(torch::Tensor tokens, torch::Tensor mappings, uintptr_t raw_cuda_stream);
+torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor mappings, int64_t raw_cuda_stream);
 
-void gather_tokens_cuda(torch::Tensor dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream);
-
-// a debug kernel
-void add_one_cuda(float *d_out, float *d_in, int num_tokens, cudaStream_t stream);
+void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size, int64_t raw_cuda_stream);
