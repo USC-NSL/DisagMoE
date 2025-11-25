@@ -4,7 +4,7 @@ from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
-from disagmoe.ops.fp8_quantizer.fp8_quant import sglang_per_token_group_quant_fp8
+from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
 
 # Optional import for deep_gemm (only available for sm90+)
 try:

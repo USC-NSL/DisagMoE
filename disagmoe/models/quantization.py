@@ -1,25 +1,34 @@
 '''
-Quantizer utility borrowed from sglang.
+Supporting the fp8 quantization kernel borrowed from sglang
 '''
 
 import torch
 from functools import lru_cache
 from typing import Optional, Tuple
 
-# ---- extracted helpers (from sglang.srt.utils.common) ----
+# Ensure the core C++ extension is loaded so that the TORCH_LIBRARY
+# registration for quant_fp8 is executed and the op becomes available
+# as torch.ops.quant_fp8.sgl_per_token_group_quant_8bit.
+import disagmoe_c  # noqa: F401
+
 
 def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
 
+
 def ceil_align(x: int, y: int) -> int:
     return ceil_div(x, y) * y
 
+
 HIP_FP8_E4M3_FNUZ_MAX = 224.0
+
 
 def is_hip() -> bool:
     return torch.version.hip is not None
 
+
 _is_hip = is_hip()
+
 
 @lru_cache()
 def is_fp8_fnuz() -> bool:
@@ -28,6 +37,7 @@ def is_fp8_fnuz() -> bool:
         return "gfx94" in torch.cuda.get_device_properties(0).gcnArchName
     return False
 
+
 if is_fp8_fnuz():
     fp8_dtype = torch.float8_e4m3fnuz
     fp8_max = HIP_FP8_E4M3_FNUZ_MAX
@@ -35,17 +45,6 @@ else:
     fp8_dtype = torch.float8_e4m3fn
     fp8_max = torch.finfo(fp8_dtype).max
 fp8_min = -fp8_max
-
-
-# Thin wrapper around the extracted CUDA op; this keeps the original API.
-_has_native_kernel = False
-try:
-    # Ensure the extension is loaded (usually handled by __init__.py import, 
-    # but we check the ops registry here)
-    _quant_op = torch.ops.quant_fp8.sgl_per_token_group_quant_8bit
-    _has_native_kernel = True
-except (AttributeError, RuntimeError):
-    raise RuntimeError("quant_fp8 CUDA extension is not built; build the extension before calling sglang_per_token_group_quant_fp8.")
 
 
 def create_per_token_group_quant_fp8_output_scale(
@@ -70,7 +69,6 @@ def create_per_token_group_quant_fp8_output_scale(
         ).transpose(-1, -2)[..., :x_s_mn, :]
     elif column_major_scales:
         if scale_tma_aligned:
-            # TODO extract "align" function
             # aligned to 4 * sizeof(float)
             aligned_size = (x_shape[-2] + 3) // 4 * 4
             return torch.empty(
@@ -90,6 +88,17 @@ def create_per_token_group_quant_fp8_output_scale(
             device=device,
             dtype=torch.float32,
         )
+
+
+def _get_native_quant_op():
+    try:
+        return torch.ops.quant_fp8.sgl_per_token_group_quant_8bit
+    except (AttributeError, RuntimeError) as exc:
+        raise RuntimeError(
+            "quant_fp8 CUDA op is not available. Make sure the disagmoe_c "
+            "extension is built and importable so that the FP8 kernel is "
+            "registered with torch.ops.quant_fp8.sgl_per_token_group_quant_8bit."
+        ) from exc
 
 
 def sglang_per_token_group_quant_fp8(
@@ -120,15 +129,10 @@ def sglang_per_token_group_quant_fp8(
         scale_ue8m0=scale_ue8m0,
     )
 
-    if not _has_native_kernel:
-        raise RuntimeError(
-            "quant_fp8 CUDA extension is not built; "
-            "build the extension before calling sglang_per_token_group_quant_fp8."
-        )
+    quant_op = _get_native_quant_op()
 
     if x.shape[0] > 0:
-        # We always go through the low-level CUDA kernel path in this extracted version.
-        _quant_op(
+        quant_op(
             x,
             x_q,
             x_s,
@@ -140,3 +144,6 @@ def sglang_per_token_group_quant_fp8(
         )
 
     return x_q, x_s
+
+
+

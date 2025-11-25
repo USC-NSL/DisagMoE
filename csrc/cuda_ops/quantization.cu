@@ -3,7 +3,9 @@
 
 #include <cmath>
 
-#include "per_token_group_quant_8bit.cuh"
+#include <torch/extension.h>
+
+#include "quantization.cuh"
 
 namespace {
 
@@ -206,5 +208,6 @@ void sgl_per_token_group_quant_8bit(
 
 #undef LAUNCH_KERNEL
 }
+
 
 
