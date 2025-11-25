@@ -14,10 +14,10 @@ except ImportError:
 
 class MoEExperts(torch.nn.Module):
     def __init__(
-        self,
-        hidden_size: int,
+        self, 
+        hidden_size: int, 
         intermediate_size: int,
-        num_experts: int,
+        num_experts: int, 
         tp_size: int = 1,
         enable_cutlass_cache: bool = True,
         max_batch_size: int = MAX_BATCH_SIZE,
@@ -28,7 +28,7 @@ class MoEExperts(torch.nn.Module):
         self.num_experts = num_experts
         self.tp_size = tp_size
         assert tp_size == 1, "Not implemented TP for experts yet"
-
+            
         params_dtype = torch.get_default_dtype()
         assert params_dtype == torch.bfloat16, "Only bf16 is supported for now"
         # create weights as bf16
@@ -155,16 +155,14 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         k_w13 = self.hidden_size
         n_w13 = self.intermediate_size * 2
         # DeepGEMM expects weights shaped [E, N, K] with per-[128x128] block scales.
-        self.w13_weight_fp8 = torch.nn.Parameter(
-            torch.empty(
-                self.num_experts,
-                n_w13,
-                k_w13,
-                device="cuda",
-                dtype=torch.float8_e4m3fn,
-            ).uniform_(-2.0, 2.0),
-            requires_grad=False,
+        w13_init_bf16 = torch.randn(
+            self.num_experts,
+            n_w13,
+            k_w13,
+            device="cuda",
+            dtype=torch.bfloat16,
         )
+        self.w13_weight_fp8 = torch.nn.Parameter(w13_init_bf16.to(torch.float8_e4m3fn), requires_grad=False)
         # For w13: K = hidden_size, N = intermediate_size * 2
         # Each weight scale entry corresponds to a 128-wide tile along N and K.
         # dg.ceil_div(dim, 128) gives the number of such tiles needed to cover that dimension.
@@ -180,16 +178,14 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         # For w2: K = intermediate_size, N = hidden_size
         k_w2 = self.intermediate_size
         n_w2 = self.hidden_size
-        self.w2_weight_fp8 = torch.nn.Parameter(
-            torch.empty(
-                self.num_experts,
-                n_w2,
-                k_w2,
-                device="cuda",
-                dtype=torch.float8_e4m3fn,
-            ).uniform_(-2.0, 2.0),
-            requires_grad=False,
+        w2_init_bf16 = torch.randn(
+            self.num_experts,
+            n_w2,
+            k_w2,
+            device="cuda",
+            dtype=torch.bfloat16,
         )
+        self.w2_weight_fp8 = torch.nn.Parameter(w2_init_bf16.to(torch.float8_e4m3fn), requires_grad=False)
         # For w2: K = intermediate_size, N = hidden_size
         self.w2_sf = torch.ones(
             self.num_experts,
@@ -312,14 +308,14 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
             num_experts,
             max_batch_size,
             up_scale_blocks,
-            device=self.w13_weight.device,
+            device="cuda",
             dtype=torch.float32,
         )
         self.fp8_down_scale_buf = torch.empty(
             num_experts,
             max_batch_size,
             down_scale_blocks,
-            device=self.w2_weight.device,
+            device="cuda",
             dtype=torch.float32,
         )
 
@@ -353,26 +349,24 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
 
     def create_weights(self):
         """Allocate FP8 weights directly in the DeepGEMM-preferred layout."""
-
+        
         self.act_fn = torch.nn.SiLU(inplace=True)
 
         # w13: K = hidden_size, N = intermediate_size * 2
         k_w13 = self.hidden_size
         n_w13 = self.intermediate_size * 2
-        self.w13_weight_fp8 = torch.nn.Parameter(
-            torch.empty(
-                self.num_experts,
-                n_w13,
-                k_w13,
-                device="cuda",
-                dtype=torch.float8_e4m3fn,
-            ).uniform_(-2.0, 2.0),
-            requires_grad=False,
-        )
-        self.w13_sf = torch.ones(
+        w13_init_bf16 = torch.randn(
             self.num_experts,
-            dg.ceil_div(n_w13, 128),
-            dg.ceil_div(k_w13, 128),
+            n_w13,
+            k_w13,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        self.w13_weight_fp8 = torch.nn.Parameter(w13_init_bf16.to(torch.float8_e4m3fn), requires_grad=False)
+        self.w13_sf = torch.ones(
+            self.num_experts, 
+            dg.ceil_div(n_w13, 128), 
+            dg.ceil_div(k_w13, 128), 
             device=self.w13_weight_fp8.device,
             dtype=torch.float32,
         )
@@ -380,19 +374,17 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
         # w2
         k_w2 = self.intermediate_size
         n_w2 = self.hidden_size
-        self.w2_weight_fp8 = torch.nn.Parameter(
-            torch.empty(
-                self.num_experts,
-                n_w2,
-                k_w2,
-                device="cuda",
-                dtype=torch.float8_e4m3fn,
-            ).uniform_(-2.0, 2.0),
-            requires_grad=False,
-        )
-        self.w2_sf = torch.ones(
+        w2_init_bf16 = torch.randn(
             self.num_experts,
-            dg.ceil_div(n_w2, 128),
+            n_w2,
+            k_w2,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+        self.w2_weight_fp8 = torch.nn.Parameter(w2_init_bf16.to(torch.float8_e4m3fn), requires_grad=False)
+        self.w2_sf = torch.ones(
+            self.num_experts, 
+            dg.ceil_div(n_w2, 128), 
             dg.ceil_div(k_w2, 128), 
             device=self.w2_weight_fp8.device,
             dtype=torch.float32
@@ -411,13 +403,13 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
 
             def _gmm(hiddens, weight, batch_sizes, **kwargs):
                 return gmm_with_arguments(hiddens, weight, batch_sizes, self.cutlass_workspace, self.arguments_ptr, **kwargs)
-
+            
             self.gmm_with_cache = _gmm
         
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         # Cast hiddens to FP8 (Dynamic shape, cannot be in graph)
         hiddens_fp8, sf_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
-
+        
         # Scatter to fixed input buffer
         start = 0
         batch_sizes_cpu = batch_sizes.cpu() # this should already be on CPU, just make sure here
@@ -433,7 +425,7 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
 
         # Replay Graph (Compute)
         self.graph.replay()
-
+        
         # Gather Output (Dynamic shape, cannot be in graph)
         # Construct packed output [bs, hidden]
         final_out = torch.empty(bs, self.hidden_size, dtype=torch.bfloat16, device=hiddens.device)
@@ -444,12 +436,12 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
             if length > 0:
                 final_out[start : start + length].copy_(self.cache_down[i, :length])
                 start += length
-
+                
         return final_out
 
     def _forward_deep_gemm_internal(self):
         # Everything here uses FIXED shapes and FIXED pointers
-
+        
         # Run w13 kernel
         dg.m_grouped_fp8_gemm_nt_masked(
             (self.fp8_up_in_buf, self.fp8_up_scale_buf),
