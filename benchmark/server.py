@@ -107,22 +107,16 @@ def set_schedule_endpoint():
     return "set_schedule executed successfully", 200
 
 
-@app.route('/start_profile', methods=['POST'])
-def start_profile_endpoint():
+@app.route('/init_profile', methods=['POST'])
+def init_profile_endpoint():
     global master, args
     from flask import request
-    data = request.get_json(silent=True) or {}
-    profile_dir = data.get("dir", args.profile_dir)
-    master.start_profile(profile_dir)
-    return "start_profile executed successfully", 200
-
-
-@app.route('/stop_profile', methods=['POST'])
-def stop_profile_endpoint():
-    global master
-    master.stop_profile()
-    return "stop_profile executed successfully", 200
-
+    data = request.get_json()
+    profile_start_min_batch_size = data.get('profile_start_min_batch_size', 100)
+    profile_num_steps = data.get('profile_num_steps', 10)
+    profile_dir = data.get('profile_dir', None)
+    master.init_profile(profile_start_min_batch_size, profile_num_steps, profile_dir)
+    return "init_profile executed successfully", 200
 
 async def init(master: Controller, args):
     master.start_polling_results()
@@ -147,7 +141,7 @@ def main():
     master = launch(args)
     asyncio.run(init(master, args))
     if args.profile_dir is not None:
-        master.start_profile(args.profile_dir)
+        master.init_profile(profile_dir=args.profile_dir)
     
     logger.info("DisagMoE Controller launched.")
     

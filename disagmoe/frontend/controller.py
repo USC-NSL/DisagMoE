@@ -373,7 +373,12 @@ class Controller:
         ray.get(tasks)
         self.stop_profile()
         
-    def start_profile(self, profile_dir=None):
+    def init_profile(
+        self, 
+        profile_start_min_batch_size: int = 100, 
+        profile_num_steps: int = 10, 
+        profile_dir: Optional[str] = None
+    ):
         if self._profile_enabled:
             return
         self._profile_enabled = True
@@ -383,7 +388,7 @@ class Controller:
                 resolved_dir = os.path.abspath(profile_dir)
             except Exception:
                 resolved_dir = profile_dir
-        tasks = [worker.start_profile.remote(resolved_dir) for worker in self.workers]
+        tasks = [worker.init_profile.remote(profile_start_min_batch_size, profile_num_steps, resolved_dir) for worker in self.workers]
         ray.get(tasks)
         
     def stop_profile(self):
