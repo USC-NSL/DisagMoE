@@ -403,7 +403,7 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
         
         # GEMM 1 Inputs
         # Quantize inputs using deep_gemm utility (simulating incoming FP8 or on-the-fly cast)
-        A_fp8, sfa_1 = dg.per_token_cast_to_fp8(A_flat_bf16, use_ue8m0=False)
+        # MOVED to run_once
         
         # Buffers
         up_buf = torch.empty(M, gemm1_N, device=device, dtype=torch.bfloat16)
@@ -413,6 +413,8 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
         down_buf = torch.empty(M, gemm2_N, device=device, dtype=torch.bfloat16)
 
         def run_once():
+            A_fp8, sfa_1 = sglang_per_token_group_quant_fp8(A_flat_bf16, group_size=128, scale_ue8m0=False)
+
             # GEMM 1
             dg.m_grouped_fp8_gemm_nt_contiguous((A_fp8, sfa_1), (BCs_fp8, sfb_1), up_buf, m_indices)
             
@@ -423,7 +425,7 @@ def benchmark_deep_gemm_moe(hidden_size, intermediate_size, num_experts, label):
             glu = up1 * up3
             
             # Convert to FP8 for GEMM 2 using deep_gemm utility
-            glu_fp8, sfa_2 = dg.per_token_cast_to_fp8(glu, use_ue8m0=False)
+            glu_fp8, sfa_2 = sglang_per_token_group_quant_fp8(glu, group_size=128, scale_ue8m0=False)
             
             # GEMM 2
             dg.m_grouped_fp8_gemm_nt_contiguous((glu_fp8, sfa_2), (Ds_fp8, sfb_2), down_buf, m_indices)
@@ -968,6 +970,8 @@ def main(profile: bool = False) -> None:
         _prof.export_chrome_trace(trace_path)
         print(f"Exported Perfetto-compatible trace to {trace_path}")
 
+
+from disagmoe.ops.fp8_quantizer.fp8_quant import sglang_per_token_group_quant_fp8
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Grouped GEMM vs DeepGemm MoE benchmarks")
