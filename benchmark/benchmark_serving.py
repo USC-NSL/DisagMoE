@@ -3,7 +3,13 @@ from disagmoe.utils.placement import ModelPlacement, ClusterConfig, get_model_pl
 from disagmoe.utils.utils import StepInfo
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
-from disagmoe.config import ModelConfig, CacheConfig, mixtral_config, SamplingConfig
+from disagmoe.config import (
+    ModelConfig,
+    CacheConfig,
+    mixtral_config,
+    qwen3_235b_config,
+    SamplingConfig,
+)
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from utils import get_parser_base
@@ -87,7 +93,12 @@ def launch(args):
     c.select_transport(args.transport)
     cluster_config = ClusterConfig(n_node=args.num_nodes, n_gpu=args.num_gpus)
 
-    model_config = mixtral_config
+    if args.model == "qwen3_235b":
+        model_config = qwen3_235b_config
+    elif args.model == "mixtral":
+        model_config = mixtral_config
+    else:
+        raise ValueError(f"Unknown model type: {args.model}")
     model_config.num_layers = args.num_layers
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
