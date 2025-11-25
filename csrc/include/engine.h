@@ -24,8 +24,8 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     // P2P Channels
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    std::string nccl_comm_id_low_to_high,
-    std::string nccl_comm_id_high_to_low,
+    std::map<int, std::string> inbound_nccl_ids,
+    std::map<int, std::string> outbound_nccl_ids,
     const std::vector<ChannelInfo> &out_channel_infos
 );
 
@@ -42,8 +42,8 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     // P2P Channels
     const std::vector<int> &in_device_ids,
     const std::vector<int> &out_device_ids,
-    std::string nccl_comm_id_low_to_high,
-    std::string nccl_comm_id_high_to_low,
+    std::map<int, std::string> inbound_nccl_ids,
+    std::map<int, std::string> outbound_nccl_ids,
     const std::vector<ChannelInfo> &out_channel_infos
 );
 
