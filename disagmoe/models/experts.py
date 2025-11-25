@@ -4,6 +4,7 @@ from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
+from disagmoe.ops.fp8_quantizer.fp8_quant import sglang_per_token_group_quant_fp8
 
 # Optional import for deep_gemm (only available for sm90+)
 try:
@@ -104,6 +105,10 @@ class MoEExperts(torch.nn.Module):
                 # Capture
                 with torch.cuda.graph(self.graph):
                     self._forward_deep_gemm_internal()
+            else:
+                # init for non-masked, non-graph deep_gemm path
+                self.m_indices_buffer = torch.empty(self.num_experts * max_batch_size, dtype=torch.int32, device="cuda")
+                self.expert_ids = torch.arange(self.num_experts, device="cuda", dtype=torch.int32)
         else:
             self.gmm_with_cache = None
             self.gmm = gmm
@@ -207,19 +212,22 @@ class MoEExperts(torch.nn.Module):
         if NON_GRAPH_NON_MASK:
             # Generate m_indices from batch_sizes
             # batch_sizes: [num_experts], counts of tokens per expert
-            expert_ids = torch.arange(self.num_experts, device=hiddens.device, dtype=torch.int32)
-            m_indices = torch.repeat_interleave(
-                expert_ids,
+            
+            # reuse buffer
+            torch.repeat_interleave(
+                self.expert_ids,
                 batch_sizes.to(device=hiddens.device, dtype=torch.int32),
+                out=self.m_indices_buffer[:bs]
             )
+            m_indices = self.m_indices_buffer[:bs]
 
             # Cast hiddens to FP8
-            hiddens_fp8, sf_hiddens = dg.per_token_cast_to_fp8(hiddens, use_ue8m0=False)
+            # For sglang with DeepEP, the cast is fused with communication.
+            hiddens_fp8, sf_hiddens = sglang_per_token_group_quant_fp8(hiddens, group_size=128, scale_ue8m0=False)
 
-            # Output buffer for w13 (BF16), shape: [M, intermediate_size * 2]
-            M = hiddens.shape[0]
+            # Output buffer for w13 (BF16), shape: [total_tokens, intermediate_size * 2]
             intermediate_size_2 = self.intermediate_size * 2
-            up_out = torch.empty(M, intermediate_size_2, device=hiddens.device, dtype=torch.bfloat16)
+            up_out = torch.empty(bs, intermediate_size_2, device=hiddens.device, dtype=torch.bfloat16)
 
             # Run w13 kernel (non-masked, contiguous)
             dg.m_grouped_fp8_gemm_nt_contiguous(
@@ -233,10 +241,10 @@ class MoEExperts(torch.nn.Module):
             up = self.act_fn(up_out[:, :self.intermediate_size]) * up_out[:, self.intermediate_size:]
 
             # Prepare inputs for w2
-            up_fp8, sf_up = dg.per_token_cast_to_fp8(up, use_ue8m0=False)
+            up_fp8, sf_up = sglang_per_token_group_quant_fp8(up, group_size=128, scale_ue8m0=False)
 
             # Output buffer for w2 (BF16), shape: [M, hidden_size]
-            down_out = torch.empty(M, self.hidden_size, device=hiddens.device, dtype=torch.bfloat16)
+            down_out = torch.empty(bs, self.hidden_size, device=hiddens.device, dtype=torch.bfloat16)
 
             # Run w2 kernel (non-masked, contiguous)
             dg.m_grouped_fp8_gemm_nt_contiguous(

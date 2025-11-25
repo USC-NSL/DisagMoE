@@ -1,3 +1,7 @@
+'''
+Quantizer utility borrowed from sglang.
+'''
+
 import torch
 from functools import lru_cache
 from typing import Optional, Tuple
@@ -41,7 +45,7 @@ try:
     _quant_op = torch.ops.quant_fp8.sgl_per_token_group_quant_8bit
     _has_native_kernel = True
 except (AttributeError, RuntimeError):
-    _quant_op = None
+    raise RuntimeError("quant_fp8 CUDA extension is not built; build the extension before calling sglang_per_token_group_quant_fp8.")
 
 
 def create_per_token_group_quant_fp8_output_scale(
