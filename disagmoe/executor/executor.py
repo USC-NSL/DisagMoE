@@ -14,7 +14,7 @@ from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 from disagmoe.env import ENV_VARS
 from disagmoe.models.attention import MoEAttention
-from disagmoe.models.experts import MoEExperts, MoEExpertsSerial
+from disagmoe.models.experts import MoEExperts, MoEExpertsSerial, MoEExpertsDeepGemmFP8
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
@@ -334,7 +334,7 @@ class ExpertsExecutor(Executor):
         for _ in range(self.num_layers):
             if expert_cls is MoEExpertsSerial:
                 self.operators.append(
-                    expert_cls(
+                    MoEExpertsSerial(
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
@@ -343,13 +343,13 @@ class ExpertsExecutor(Executor):
                     )
                 )
             else:
+                grouped_cls = MoEExpertsDeepGemmFP8 if use_deep_gemm_fp8 else MoEExperts
                 self.operators.append(
-                    expert_cls(
+                    grouped_cls(
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
                         max_batch_size=self.model_config.max_batch_size_expert,
-                        use_deep_gemm_fp8=use_deep_gemm_fp8
                     )
                 )
         # DisagMoE hacks:
