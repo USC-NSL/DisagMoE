@@ -1,6 +1,7 @@
 from disagmoe.utils.constants import *
 from disagmoe.utils.utils import Counter
 from disagmoe.config import ModelConfig
+from disagmoe.utils.logger import get_logger
 
 from typing import Dict, Tuple, Optional, Union, List, override
 from dataclasses import dataclass
@@ -502,7 +503,5 @@ def get_model_placement(
         solver = cls(model_config, cluster_config)
         
     place: ModelPlacement = solver.solve()
-    
-    print(f"Model Placement: {place}")
     
     return place

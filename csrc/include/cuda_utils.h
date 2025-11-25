@@ -1,5 +1,6 @@
 #pragma once
 
+#include "logging.h"
 #include "cuda_runtime.h"
 #include "nccl.h"
 #include "constants.h"
@@ -94,6 +95,14 @@ inline void* convert_to_cuda_buffer(size_t number) {
 inline cudaStream_t get_current_torch_stream(int device_id = 0) {
     at::cuda::CUDAStream c10_stream = at::cuda::getCurrentCUDAStream(device_id);
     return c10_stream.stream();
+}
+
+inline void log_gpu_memory_usage(const char* tag) {
+    size_t free, total;
+    cudaMemGetInfo(&free, &total);
+    double free_gb  = free  / 1024.0 / 1024.0 / 1024.0;
+    double total_gb = total / 1024.0 / 1024.0 / 1024.0;
+    DMOE_LOG(INFO) << tag << " free " << free_gb << " GB / total " << total_gb << " GB" << LEND;
 }
 
 #ifdef D_ENABLE_NVTX

@@ -23,6 +23,7 @@ from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
+from disagmoe.utils.utils import _log_memory_usage
 from disagmoe.models.distributed import set_tensor_model_parallel_config
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
@@ -337,6 +338,7 @@ class ExpertEngineMixin:
         for i in range(self.model_config.num_experts_per_rank):
             self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
         self.expert_executor.warmup(self.expert_max_batch_size)
+        _log_memory_usage("After building expert executor")
         
     def preprocess_batch_expert(self, meta_c: BatchMetadata, input_tensor: Tensor) -> ExpertForwardBatch:
         with self._timer.range("preprocess"):
@@ -496,7 +498,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
         
         self.model_config.layer_ids = core_args.layer_ids
             
-        get_logger().info(
+        get_logger().debug(
             "launching core: %s",
             (
                 core_args.layer_ids,
@@ -509,7 +511,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             ),
         )
         
-        # get_logger().info(f"launching core: {core_args.in_nccl_ids, core_args.out_nccl_ids, core_args.group_nccl_ids}")
+        _log_memory_usage("Before launching engine")
+        
         if self.engine_type == EngineType.HYBRID:
             get_logger().info("launching unified engine")
             init_engine = init_unified_engine
@@ -540,6 +543,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             core_args.nccl_comm_id_high_to_low,
             [info.to_c() for info in core_args.out_channel_infos],
         )
+        
+        _log_memory_usage("After initializing engine")
             
         if self.has_attn and self._tp_enabled:
             dist.init_process_group(backend="nccl", 
@@ -587,10 +592,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             detokenizer_addr: str = None,
         ):
         
-        if self.device_id is not None:
-            initialize_logger(f"engine{self.device_id}")
-        else:
-            initialize_logger("engine")
+        initialize_logger(f"engine{self.device_id}")
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:

@@ -32,7 +32,6 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     ncclUniqueId nccl_unique_id_high_to_low = string_to_nccl_unique_id(nccl_comm_id_high_to_low);
     NCCLCHECK(ncclCommInitRank(&comm_low_to_high, world_size, nccl_unique_id_low_to_high, local_id));
     NCCLCHECK(ncclCommInitRank(&comm_high_to_low, world_size, nccl_unique_id_high_to_low, local_id));
-
     DMOE_LOG(INFO) << "NCCL comm initialized with world size " << world_size << " and rank " << local_id << LEND;
 
     auto n_in = in_device_ids.size();
@@ -41,7 +40,6 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     std::vector<Channel_t> in_channels;
     std::vector<Channel_t> out_channels;
     Channel_t local_channel = nullptr;
-
 
     // inbound channels
     for (size_t i = 0; i < n_in; i ++) {

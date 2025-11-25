@@ -1,25 +1,28 @@
+#!/usr/bin/bash
+
 MIN_INPUT_LEN=10
 MAX_INPUT_LEN=11
 MIN_OUTPUT_LEN=50
 MAX_OUTPUT_LEN=51
-N_NODE=1
-N_GPU_PER_NODE=2
-NUM_LAYERS=16
-NUM_EXPERTS=4
+
+NUM_LAYERS=20
+NUM_EXPERTS=8
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
 GRAPH_STRIDE=8
-step_attn=1
-step_exp=1
-dp_size=1
-ep_size=1
+
+N_NODE=1
+N_GPU_PER_NODE=2
+WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
+dp_size=$WORLD_SIZE
+ep_size=$WORLD_SIZE
 top_k=1
 
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
 USE_SERIAL_GEMM_MOE=0 # MoE linear quantization is only enabled for serial gemm path for now
 
-transport_backend=ucx
+transport_backend=zmq
 
 placement="colocate"
 
@@ -77,8 +80,6 @@ python benchmark/server.py \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
     --graph-stride $GRAPH_STRIDE \
     --block-size 16 \
-    --step-attn $step_attn \
-    --step-exp $step_exp \
     --placement $placement \
     --dp-size $dp_size \
     --ep-size $ep_size \

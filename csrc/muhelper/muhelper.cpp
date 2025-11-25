@@ -26,9 +26,7 @@
 // MuHelper
 
 MuHelper::MuHelper(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels): 
-    layer_ids(layer_ids), device_id(device_id), channels(channels), end_flag(false) {
-        DMOE_LOG(INFO) << "init muhelper@" << device_id << LEND;
-    }
+    layer_ids(layer_ids), device_id(device_id), channels(channels), end_flag(false) { }
 
 MuHelper::~MuHelper() {}
 

@@ -83,12 +83,12 @@ class AttnExecutor(Executor):
         self.block_mgr: BaseBlockManager = None
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
         
-        self.init_model_and_cache()
+        self.init_model()
+        self.init_kv_cache()
         
-    def init_model_and_cache(self, use_gpu_block_mgr: bool = False):
-        _log_memory_usage("Setup device")
-        free_memory, _ = torch.cuda.mem_get_info()
-        self.init_gpu_memory = free_memory
+    def init_model(self):
+        _, total_memory = torch.cuda.mem_get_info()
+        self.init_gpu_memory = total_memory
         
         # Build quantization config for attention QKV if requested
         qkv_quant_config = None
@@ -121,7 +121,7 @@ class AttnExecutor(Executor):
                 gate_profile_bytes=self.gate_profile_bytes,
             ) for layer_id in range(self.num_layers)
         ]
-        _log_memory_usage("After allocate parameters")
+        _log_memory_usage("After allocate attention parameters")
 
         # DisagMoE hacks:
         # 1. for vllm's fp8, use randn dummy weights rather than empty weights
@@ -175,7 +175,8 @@ class AttnExecutor(Executor):
                 if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                         quant_method, "process_weights_after_loading"):
                     quant_method.process_weights_after_loading(module)
-        
+                    
+    def init_kv_cache(self, use_gpu_block_mgr: bool=False):
         assert not self.cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
         if self.cache_config.num_gpu_blocks is None:
             self.num_cache_blocks = self.determine_kv_cache_blocks()
@@ -194,7 +195,7 @@ class AttnExecutor(Executor):
             self.device,
         )
         
-        _log_memory_usage("After initialize cache")
+        _log_memory_usage("After initializing kv cache")
         
         # TODO: fix this magic number
         self.max_running_reqs = self.num_cache_blocks * self.cache_config.block_size // 100 + 1
@@ -203,7 +204,7 @@ class AttnExecutor(Executor):
             self.block_mgr = GPUBlockManager(self.model_config, self.cache_config, self.max_running_reqs, self.device)
         else:
             self.block_mgr = CPUBlockManager(self.model_config, self.cache_config, self.max_running_reqs, self.device)
-        
+    
     def get_num_cache_blocks(self):
         return self.num_cache_blocks
     
@@ -231,6 +232,7 @@ class AttnExecutor(Executor):
         _log_memory_usage("After profile run")
         
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        
         peak_memory = self.init_gpu_memory - free_gpu_memory
         cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
                             * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
