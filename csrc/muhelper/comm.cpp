@@ -10,8 +10,8 @@
 #include <cstring>
 #include <cstdlib>
 
-NcclChannel::NcclChannel(int party_local, int party_other, ncclComm_t comm, cudaStream_t stream): 
-    Channel::Channel(party_local, party_other), comm(comm) {
+NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream): 
+    Channel::Channel(party_local, party_other), unique_id(unique_id) {
     // TODO(hogura|20240927): convert the party_local to local gpu rank (0<local<num_gpu)
     #ifndef D_ENABLE_RAY
     CUDACHECK(cudaSetDevice(this->local));
@@ -22,6 +22,18 @@ NcclChannel::NcclChannel(int party_local, int party_other, ncclComm_t comm, cuda
     } else {
         this->stream = stream;
     }
+}
+
+void NcclChannel::initialize() {
+    #ifndef D_ENABLE_RAY
+    CUDACHECK(cudaSetDevice(this->local));
+    #endif
+    NCCLCHECK(ncclCommInitRank(
+        &this->comm,
+        /*nranks=*/ 2,
+        this->unique_id,
+        /*rank=*/ this->m_rank()
+    ));
 }
 
 extern char** _environ;
@@ -97,8 +109,8 @@ void TensorLocalChannel::sync() {
 
 std::mutex global_mutex;
 
-Channel_t create_nccl_channel(int party_local, int party_other, ncclComm_t comm) {
-    auto channel = std::make_shared<NcclChannel>(party_local, party_other, comm);
+Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id) {
+    auto channel = std::make_shared<NcclChannel>(party_local, party_other, unique_id);
     return channel;
 }
 

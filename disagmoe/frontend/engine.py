@@ -536,8 +536,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin):
             # P2P Channels
             core_args.in_device_ids,
             core_args.out_device_ids,
-            core_args.nccl_comm_id_low_to_high,
-            core_args.nccl_comm_id_high_to_low,
+            core_args.inbound_nccl_ids,
+            core_args.outbound_nccl_ids,
             [info.to_c() for info in core_args.out_channel_infos],
         )
             

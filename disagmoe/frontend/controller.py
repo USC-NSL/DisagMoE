@@ -131,6 +131,19 @@ class Controller:
     def all_device_ids(self):
         return self.device_ids
     
+    def get_pairwise_nccl_ids(
+            self, model_place: ModelPlacement
+        ) -> Tuple[Dict[int, Dict[int, str]], 
+                   Dict[int, Dict[int, str]]]:
+        in_nccl_ids = {i: {} for i in model_place.in_device_ids.keys()}
+        out_nccl_ids = {i: {} for i in model_place.out_device_ids.keys()}
+        for i, js in model_place.out_device_ids.items():
+            for j in js:
+                uid = get_nccl_unique_id()
+                in_nccl_ids[j][i] = uid
+                out_nccl_ids[i][j] = uid
+        return in_nccl_ids, out_nccl_ids
+    
     def init_engine(
         self, 
         transport_name: str,
@@ -228,8 +241,7 @@ class Controller:
         ray.get([w.set_transport.remote(transport_name) for w in self.all_workers])
         
         # All ranks should use the same nccl comm id
-        nccl_comm_id_low_to_high = get_nccl_unique_id()
-        nccl_comm_id_high_to_low = get_nccl_unique_id()
+        inbound_nccl_ids, outbound_nccl_ids = self.get_pairwise_nccl_ids(model_place)
         
         # init core
         tasks = [
@@ -241,8 +253,8 @@ class Controller:
                     min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
-                    nccl_comm_id_low_to_high=nccl_comm_id_low_to_high,
-                    nccl_comm_id_high_to_low=nccl_comm_id_high_to_low,
+                    inbound_nccl_ids=inbound_nccl_ids.get(device_id, {}),
+                    outbound_nccl_ids=outbound_nccl_ids.get(device_id, {}),
                     out_channel_infos=[
                         ChannelInfo(
                             model_place.expert_ids_at(out),

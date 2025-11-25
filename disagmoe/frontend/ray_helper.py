@@ -37,8 +37,8 @@ class InitCoreArgs:
     out_device_ids: List[int]
     out_channel_infos: List[ChannelInfo]
     
-    nccl_comm_id_low_to_high: str
-    nccl_comm_id_high_to_low: str
+    inbound_nccl_ids:  Dict[int, str]
+    outbound_nccl_ids: Dict[int, str]
     
     expert_ranks: List[Tuple[int, int, int]]
     expert_wise_schedule: bool = False
@@ -47,6 +47,3 @@ class InitCoreArgs:
     out_device_group_ids: Dict[int, List[int]] = None
     device_group_ids: List[int] = None
     local_attn_dp_rank: int = 0
-    
-
-    
