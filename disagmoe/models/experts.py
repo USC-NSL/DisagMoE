@@ -107,7 +107,6 @@ class MoEExperts(torch.nn.Module):
                     self._forward_deep_gemm_internal()
             else:
                 # init for non-masked, non-graph deep_gemm path
-                self.m_indices_buffer = torch.empty(self.num_experts * max_batch_size, dtype=torch.int32, device="cuda")
                 self.expert_ids = torch.arange(self.num_experts, device="cuda", dtype=torch.int32)
         else:
             self.gmm_with_cache = None
@@ -214,12 +213,10 @@ class MoEExperts(torch.nn.Module):
             # batch_sizes: [num_experts], counts of tokens per expert
             
             # reuse buffer
-            torch.repeat_interleave(
+            m_indices = torch.repeat_interleave(
                 self.expert_ids,
                 batch_sizes.to(device=hiddens.device, dtype=torch.int32),
-                out=self.m_indices_buffer[:bs]
             )
-            m_indices = self.m_indices_buffer[:bs]
 
             # Cast hiddens to FP8
             # For sglang with DeepEP, the cast is fused with communication.
