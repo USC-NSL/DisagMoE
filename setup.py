@@ -93,6 +93,13 @@ ext_modules = [
         ],
         language='c++',
     ),
+    cpp_extension.CUDAExtension(
+        name="disagmoe.ops.fp8_quantizer._C",
+        sources=[
+            "disagmoe/ops/fp8_quantizer/csrc/binding.cpp",
+            "disagmoe/ops/fp8_quantizer/csrc/per_token_group_quant_8bit.cu",
+        ],
+    ),
 ]
 
 setup(
