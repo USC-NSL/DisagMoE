@@ -19,7 +19,6 @@ cfg = mixtral_config
 cfg.enable_cuda_graph_expert = False
 cfg.num_layers = 1
 cfg.layer_ids = [0]
-cfg.graph_stride = bs
 cfg.ep_size = 1
 cfg.max_batch_size_expert = bs
 cfg.enable_grouped_gemm = True

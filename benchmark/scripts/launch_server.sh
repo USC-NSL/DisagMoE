@@ -1,37 +1,39 @@
 #!/usr/bin/bash
 
-MIN_INPUT_LEN=10
-MAX_INPUT_LEN=11
-MIN_OUTPUT_LEN=50
-MAX_OUTPUT_LEN=51
-N_NODE=1
-N_GPU_PER_NODE=2
-NUM_LAYERS=16
-NUM_EXPERTS=4
-MODEL_NAME="mixtral"  # options: mixtral | qwen3_235b
-MAX_BATCH_SIZE_ATTN=160
-MAX_BATCH_SIZE_EXP=512
-GRAPH_STRIDE=8
-
+# cluster config
 N_NODE=1
 N_GPU_PER_NODE=2
 WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
-dp_size=$WORLD_SIZE
-ep_size=$WORLD_SIZE
-top_k=1
 
+# model config
+NUM_LAYERS=16
+NUM_EXPERTS=4
+MODEL_NAME="mixtral"  # options: mixtral | qwen3_235b
+top_k=1
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
-USE_SERIAL_GEMM_MOE=0
 
-transport_backend=zmq
-
+# placement config
 placement="colocate"
 
+# runtime config
+transport_backend=zmq
+
+dp_size=$WORLD_SIZE
+ep_size=$WORLD_SIZE
+MAX_BATCH_SIZE_ATTN=160
+MAX_BATCH_SIZE_EXP=512
+
 if [ $placement == "colocate" ]; then
-    dp_size=$((N_GPU_PER_NODE * N_NODE))
-    ep_size=$dp_size
+    dp_size=$WORLD_SIZE
+    ep_size=$WORLD_SIZE
 fi
+
+ENABLE_CUDA_GRAPH_ATTN=0
+
+ENABLE_TORCH_PROFILE=0
+
+USE_SERIAL_GEMM_MOE=0
 
 # Optional: path to a gate profile file on the launching node. If set, it will be
 # uploaded to the cluster and delivered via Ray's object store.
@@ -42,7 +44,6 @@ fi
 
 REPORT_DIR=./reports
 # Set to 1 to enable PyTorch profiler; 0 to disable
-ENABLE_TORCH_PROFILE=0
 PROFILE_DIR=$REPORT_DIR/torch_profile
 
 if [ ! -d $REPORT_DIR ]; then
@@ -50,6 +51,12 @@ if [ ! -d $REPORT_DIR ]; then
 fi
 
 # Conditionally enable profiler
+
+CUDA_GRAPH_ATTN_ARGS=""
+if [ "$ENABLE_CUDA_GRAPH_ATTN" -eq 1 ]; then
+    CUDA_GRAPH_ATTN_ARGS="--cuda-graph-attn"
+fi
+
 PROFILE_ARGS=""
 if [ "$ENABLE_TORCH_PROFILE" -eq 1 ]; then
     if [ ! -d $PROFILE_DIR ]; then
@@ -66,10 +73,6 @@ fi
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
-    --min-input-len $MIN_INPUT_LEN \
-    --max-input-len $MAX_INPUT_LEN \
-    --min-output-len $MIN_OUTPUT_LEN \
-    --max-output-len $MAX_OUTPUT_LEN \
     $PROFILE_ARGS \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
@@ -81,7 +84,6 @@ python benchmark/server.py \
     --model $MODEL_NAME \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
-    --graph-stride $GRAPH_STRIDE \
     --block-size 16 \
     --placement $placement \
     --dp-size $dp_size \
@@ -90,6 +92,7 @@ python benchmark/server.py \
     --attn-qkv-quant $ATTN_QKV_QUANT \
     --moe-linear-quant $MOE_LINEAR_QUANT \
     $SERIAL_GEMM_ARGS \
+    $CUDA_GRAPH_ATTN_ARGS \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \

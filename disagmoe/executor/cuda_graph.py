@@ -12,6 +12,7 @@ from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda
+from disagmoe.frontend.engine_utils import get_global_engine_config
 
 class CUDAGraphAttnExecutor:
     
@@ -22,8 +23,8 @@ class CUDAGraphAttnExecutor:
         self.fused_copy = True
         
     def create_cuda_graph_buffers(self):
-        assert self.model_config.enable_cuda_graph_attn
-        batch_size = self.model_config.max_batch_size_attn
+        assert get_global_engine_config().enable_cuda_graph_attn
+        batch_size = get_global_engine_config().max_attn_graph_bsz
         self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
         self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
 
@@ -44,10 +45,7 @@ class CUDAGraphAttnExecutor:
 
         self.static_batch_infos: Dict[int, Tensor] = {}
 
-        self.graph_batch_sizes = list(range(max(self.model_config.graph_stride, self.model_config.ep_size),
-                                            batch_size + 1,
-                                            self.model_config.graph_stride))
-        self.graph_batch_sizes = [1] + self.graph_batch_sizes
+        self.graph_batch_sizes = self.get_graph_batch_sizes(batch_size)
 
         for layer_id in self.model_config.layer_ids:
             self.graphs[layer_id] = [torch.cuda.CUDAGraph() for _ in self.graph_batch_sizes]
@@ -55,6 +53,22 @@ class CUDAGraphAttnExecutor:
         
         for bs in self.graph_batch_sizes:
             self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1) + (bs + 1)), dtype=torch.int32, device="cuda")
+            
+    def get_graph_batch_sizes(self, graph_max_batch_size: int):
+        assert graph_max_batch_size <= 1024
+        graph_bsz = [1]
+        bsz_stage = [8, 128, 256, 512, 1024]
+        bsz_inc = [0, 8, 16, 32, 64]
+        
+        for i in range(1, len(bsz_stage)):
+            if graph_max_batch_size > bsz_stage[i]:
+                graph_bsz.extend(list(range(bsz_stage[i-1], bsz_stage[i], bsz_inc[i])))
+            else:
+                graph_bsz.extend(list(range(bsz_stage[i-1], graph_max_batch_size, bsz_inc[i])))
+                if graph_bsz[-1] != graph_max_batch_size:
+                    graph_bsz.append(graph_max_batch_size)
+                break
+        return graph_bsz
             
     def prepare_metadata_for_capture(self, meta: FlashAttentionMetadata):
         num_tokens = meta.num_prefill_tokens + meta.num_decode_tokens
@@ -78,7 +92,7 @@ class CUDAGraphAttnExecutor:
             multi_modal_placeholder_index_maps=meta.multi_modal_placeholder_index_maps,
             enable_kv_scales_calculation=meta.enable_kv_scales_calculation,
         )
-        
+    
     def capture(self):
         start_time = time.perf_counter()
         get_logger().info(f"Capturing CUDA graphs for attention, bsz {self.graph_batch_sizes}")
@@ -110,17 +124,14 @@ class CUDAGraphAttnExecutor:
         torch.cuda.synchronize()
         get_logger().info(f"cuda graph captured in {end_time - start_time} seconds")
         self.test_graph()
-        
+
     def test_graph(self):
-        start_time = time.perf_counter()
         for layer_id in self.model_config.layer_ids:
             for bs in self.graph_batch_sizes:
                 batch = make_attention_dummy_batch(0, bs, self.model_config.hidden_size, self.model_config.max_seq_len)
                 meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
                 hiddens, expert_weights, expert_ids = self.run(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
         torch.cuda.synchronize()
-        end_time = time.perf_counter()
-        get_logger().info(f"cuda graph test passed in {end_time - start_time} seconds")
 
     def _get_graph_by_batch_size(self, batch_size: int):
         for i, size in enumerate(self.graph_batch_sizes):

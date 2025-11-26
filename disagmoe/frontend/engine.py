@@ -6,7 +6,7 @@ import random
 import zmq
 
 from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
-from disagmoe.config import ModelConfig, CacheConfig
+from disagmoe.config import ModelConfig, CacheConfig, EngineConfig
 from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher
 from disagmoe.frontend.datatypes import (
     AttentionScheduleBatch, AttentionForwardBatch, AttentionForwardResult, 
@@ -43,10 +43,7 @@ from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
                         recorder_create as disagmoe_recorder_create,
                         recorder_output as disagmoe_recorder_output)
 
-class EngineType(enum.Enum):
-    ATTENTION = enum.auto()
-    EXPERT = enum.auto()
-    HYBRID = enum.auto()
+from disagmoe.frontend.engine_utils import EngineType, set_global_engine_config
     
 class AttentionEngineMixin:
     
@@ -54,6 +51,7 @@ class AttentionEngineMixin:
     model_total_num_layers: int
     attn_executor: AttnExecutor
     model_config: ModelConfig
+    engine_config: EngineConfig
     cache_config: CacheConfig
     device: str
     req_seq_lens: Tensor
@@ -72,9 +70,9 @@ class AttentionEngineMixin:
         if self._tp_enabled:
             self._create_attn_broadcast_buffers()
             
-        self.attn_executor.warmup(self.attn_max_batch_size)
+        self.attn_executor.warmup(self.engine_config.max_batch_size_attn)
             
-        if self.model_config.enable_cuda_graph_attn:
+        if self.engine_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
     
     @nvtx_range("attn_engine.attn_driver_preprocess")
@@ -220,10 +218,10 @@ class AttentionEngineMixin:
     def _create_attn_broadcast_buffers(self):
         assert False, "TP in attention is now deprecated"
         self.buffer_meta = torch.zeros((BROADCAST_BUFFER_SIZE), dtype=torch.int32, device="cuda")
-        self.buffer_tensor = torch.zeros((self.attn_max_batch_size, self.model_config.hidden_size), device="cuda")
+        self.buffer_tensor = torch.zeros((self.engine_config.max_batch_size_attn, self.model_config.hidden_size), device="cuda")
         
         # [decode_seq_lens, query_start_loc, seq_start_loc, context_lens, slot_mapping, block_table]
-        shape = (self.attn_max_batch_size + self.attn_max_batch_size * self.model_config.max_seq_len // self.cache_config.block_size, )
+        shape = (self.engine_config.max_batch_size_attn + self.engine_config.max_batch_size_attn * self.model_config.max_seq_len // self.cache_config.block_size, )
         self.buffer_attn_meta = torch.zeros(shape, dtype=torch.int32, device="cuda")
     
     @nvtx_range("attn_engine.attn_worker_preprocess")
@@ -242,12 +240,12 @@ class AttentionEngineMixin:
         num_tokens = num_prefill_tokens + num_decode_tokens
         num_seqs = num_prefill_seqs + num_decode_tokens
 
-        batch_size = get_graph_batch_size(num_tokens)[1] if self.model_config.enable_cuda_graph_attn else num_tokens
+        batch_size = get_graph_batch_size(num_tokens)[1] if self.engine_config.enable_cuda_graph_attn else num_tokens
         
         input_tensor = self.buffer_tensor[ : num_tokens]
         self._add_async_handle(dist.broadcast(input_tensor, 0, async_op=True))
         
-        if not self.model_config.enable_cuda_graph_attn:
+        if not self.engine_config.enable_cuda_graph_attn:
             seq_lens = meta[4 : ]
             seq_lens_cuda = self.buffer_meta[4 : 4 + num_tokens]
             context_lens_tensor = seq_lens_cuda - 1
@@ -277,7 +275,7 @@ class AttentionEngineMixin:
         bc_attn_meta = self.buffer_attn_meta[ : num_elems]
         dist.broadcast(bc_attn_meta, 0)
         
-        if not self.model_config.enable_cuda_graph_attn:
+        if not self.engine_config.enable_cuda_graph_attn:
             slot_mapping_cuda = bc_attn_meta[ : num_tokens].to(torch.int64)
             block_table_cuda = bc_attn_meta[num_tokens : ].view(num_tokens, -1)
         else:
@@ -300,7 +298,7 @@ class AttentionEngineMixin:
             seq_start_loc=seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_table_cuda,
-            use_cuda_graph=self.model_config.enable_cuda_graph_attn,
+            use_cuda_graph=self.engine_config.enable_cuda_graph_attn,
         )
 
     @torch.inference_mode()
@@ -329,6 +327,7 @@ class ExpertEngineMixin:
     expert_max_batch_size: int
     expert_executor: ExpertsExecutor
     model_config: ModelConfig
+    engine_config: EngineConfig
     cache_config: CacheConfig
     device: str
     
@@ -346,7 +345,7 @@ class ExpertEngineMixin:
             range_push("engine.copy_batch_sizes")
             # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
             num_tokens = meta_c.num_tokens()
-            if self.model_config.enable_grouped_gemm:
+            if self.engine_config.enable_grouped_gemm:
                 if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
                     meta_c.get_expert_batch_sizes_cuda(
                         self.model_config.num_experts, self.inner_exp_rank,
@@ -433,6 +432,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self.engine_type: EngineType = None
         self.model_config: ModelConfig = None
         self.cache_config: CacheConfig = None
+        self.engine_config: EngineConfig = None
         
         self.model_total_num_layers = 0
             
@@ -587,6 +587,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self, 
             engine_type: EngineType,
             model_config: ModelConfig,
+            engine_config: EngineConfig,
             cache_config: CacheConfig = None,
             rank: int = 0,
             tokenizer_addr: str = None,
@@ -610,13 +611,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             
         self.engine_type = engine_type
         self.model_config = model_config
+        self.engine_config = engine_config
         self.cache_config = cache_config
+        
+        set_global_engine_config(engine_config)
         
         self.model_total_num_layers = model_config.num_layers
         
         if self.has_attn:
-            self.attn_max_batch_size = model_config.max_batch_size_attn 
-            
             context = zmq.Context(2)
             self.tokenizer_socket = context.socket(zmq.PULL)
             self.tokenizer_socket.connect(tokenizer_addr)
@@ -625,9 +627,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.detokenizer_socket.connect(detokenizer_addr)
         
         if self.has_expert:
-            self.expert_max_batch_size = model_config.max_batch_size_expert
+            self.expert_max_batch_size = engine_config.max_batch_size_expert
         
-        get_logger().info(f"engine setup. {self.engine_type, model_config}")
+        get_logger().info(f"engine setup. {self.engine_type, engine_config}")
 
     # Accepts bytes uploaded via Ray object store and retains them for later
     # consumption by attention operators/gates.
@@ -673,7 +675,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self._step_start_timestamp_ms = time_ms()
         
     def record_empty_step(self):
-        if not self.model_config.enable_trace:
+        if not self.engine_config.enable_trace:
             return
         
         step_end_timestamp_ms = time_ms()
@@ -690,7 +692,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         
         factor = self.model_config.top_k if self.has_attn else 1
         real_batch_size = batch.data.shape[0] // factor # excluding topk tokens
-        if self.model_config.enable_trace:
+        if self.engine_config.enable_trace:
             pool_snapshot_dict = dict()
             queueing_tokens = 0
             queueing_batches = 0

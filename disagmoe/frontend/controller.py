@@ -15,7 +15,7 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
-from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig
+from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig, EngineConfig
 from disagmoe.env import ENV_VARS
 from disagmoe.frontend.tokenizer import Tokenizer, Detokenizer
 
@@ -148,35 +148,15 @@ class Controller:
         self, 
         transport_name: str,
         model_place: ModelPlacement, 
-        model_config: Optional[ModelConfig] = None,
-        cache_config: Optional[CacheConfig] = None,
-        sampling_config: Optional[SamplingConfig] = None,
+        model_config: ModelConfig,
+        engine_config: EngineConfig,
+        cache_config: CacheConfig,
         gate_profile_file: Optional[str] = None
     ):
         get_logger().debug(f"Initializing engine with model placement: {model_place}")
-        if not model_config:
-            # TODO: replace default model config
-            model_config = ModelConfig(hidden_size=HIDDEN_SIZE,
-                                        num_heads=16, 
-                                        num_kv_heads=8, 
-                                        num_experts=N_EXPERTS, 
-                                        intermediate_size=INTERMEDIATE_SIZE,
-                                        dtype=torch.bfloat16)
-        if not cache_config:
-            cache_config = CacheConfig(BLOCK_SIZE, 0.8, 2, "auto", 
-                                       num_gpu_blocks=NUM_BLOCKS)
-            
-        if not sampling_config:
-            self.min_output_len = 100
-            self.max_output_len = 200
-            print(f"Sampler using default output len: [{self.min_output_len}, {self.max_output_len})")
-        else:
-            self.min_output_len = sampling_config.min_output_len
-            self.max_output_len = sampling_config.max_output_len
         
         self.model_config = model_config
         self.cache_config = cache_config
-        self.sampling_config = sampling_config
         
         self.init_tokenizer()
         
@@ -217,6 +197,7 @@ class Controller:
                 worker.setup_engine.remote(
                     worker_type,
                     model_config=model_config,
+                    engine_config=engine_config,
                     cache_config=cache_config,
                     rank=rank,
                     tokenizer_addr=tokenizer_addr,
