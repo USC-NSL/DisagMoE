@@ -170,10 +170,9 @@ class CPUBlockManager(BaseBlockManager):
         
         self.req_manager = ReqManager(max_running_reqs)
         
-        max_forward_batch_size = 256
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
         
-        self.batch_tensor_buffer = BatchTensorBuffer(max_forward_batch_size, max_pages_per_req)
+        self.batch_tensor_buffer = BatchTensorBuffer(model_config.max_batch_size_attn, max_pages_per_req)
         
         self._block_mgr.register_gdr_context(self.batch_tensor_buffer.block_table, self.batch_tensor_buffer.slot_mapping)
         self._block_mgr.register_seq_info_gdr(self.batch_tensor_buffer.seq_lens, self.batch_tensor_buffer.context_lens, self.batch_tensor_buffer.seq_start_loc)

@@ -44,6 +44,12 @@ std::vector<int> Scheduler::get_pool_snapshot() {
     return this->pool_snapshot_;
 }
 
+std::vector<int> Scheduler::get_topk_pool_snapshot() {
+    if (this->is_unified()) {
+        return this->unified_pool->get_topk_pool_snapshot();
+    }
+    return {};
+}
 // void Scheduler::set_schedule_policy(std::string type) {
 //     if (!this->layer_scheduler) {
 //         throw std::runtime_error("Layer scheduler is not initialized");
@@ -96,7 +102,7 @@ TokenBatch Scheduler::schedule_attention() {
 
 TokenBatch Scheduler::schedule_unified() {
     tx_range _{"Scheduler::schedule_unified"};
-    this->pool_snapshot_ = {};
+    this->pool_snapshot_ = unified_pool->get_pool_snapshot();
     int id = this->layer_scheduler->schedule();
     auto batch = unified_pool->get_batch_from_layer(id);
     return batch;

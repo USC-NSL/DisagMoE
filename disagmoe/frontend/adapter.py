@@ -11,6 +11,9 @@ class Scheduler:
         
     def get_pool_snapshot(self) -> List[int]:
         ...
+        
+    def get_topk_pool_snapshot(self) -> List[int]:
+        ...
 
     def set_schedule_policy(self, policy: str) -> None:
         ...

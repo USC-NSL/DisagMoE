@@ -17,7 +17,7 @@
 #include <cereal/types/map.hpp>
 #include <cereal/types/optional.hpp>
 
-constexpr int max_num_experts = 32;
+constexpr int max_num_experts = 128;
 constexpr int max_num_attn_dp_ranks = 32;
 
 struct BatchMetadata;

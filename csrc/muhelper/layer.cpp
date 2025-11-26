@@ -81,6 +81,17 @@ TokenBatch UnifiedLayerScheduler::get_batch_from_layer(int layer_id) {
     return batch;
 }
 
+std::vector<int> UnifiedLayerScheduler::get_pool_snapshot() {
+    std::vector<int> snapshot(this->num_attn_layers + this->num_expert_layers, 0);
+    for (int i = 0; i < this->num_attn_layers; i++) {
+        snapshot[i] = this->attn_layers[i]->get_num_tokens();
+    }
+    for (int i = 0; i < this->num_expert_layers; i++) {
+        snapshot[i + this->num_attn_layers] = this->expert_layers[i]->get_num_tokens();
+    }
+    return snapshot;
+}
+
 void UnifiedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
     throw std::runtime_error("add_tokens_to_layer is not supported for UnifiedLayerScheduler");
 }

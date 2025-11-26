@@ -184,7 +184,7 @@ class AttentionEngineMixin:
         return hiddens, new_meta_c
     
     def sample_results(self, batch: AttentionScheduleBatch) -> Tuple[Tensor, BatchMetadata]:
-        # get_logger().info(f"sampling: layer_id {meta_c.layer_id}, req_ids {batch.seq_ids}")
+        # get_logger().info(f"sampling: layer_id {batch.meta_c.layer_id}, req_ids {batch.seq_ids}")
         continue_ids, finish_req_ids = self.dummy_sampler.sample_once(batch.req_ids)
         continue_meta = batch.meta_c.index_select(continue_ids)
         continue_meta.init_prefill_lens = [-1] * len(continue_ids)
@@ -457,7 +457,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self.gate_profile_bytes: Optional[bytes] = None
         self.tokenizer_socket = None
         self.detokenizer_socket = None
-
+        
     @property
     def has_attn(self):
         return self.engine_type == EngineType.ATTENTION or self.engine_type == EngineType.HYBRID
@@ -669,11 +669,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.dispatcher.put(batch, 0)
 
     def stats_pre_process(self, batch: TokenBatch):
-        if not self.engine_type == EngineType.HYBRID:
-            self._pool_snapshot = self.scheduler.get_pool_snapshot()
-        else:
-            # TODO: support snapshot for hybrid engine
-            self._pool_snapshot = []
+        self._pool_snapshot = self.scheduler.get_pool_snapshot()
         self._step_start_timestamp_ms = time_ms()
         
     def record_empty_step(self):
@@ -820,6 +816,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     
     def fetch_queueing_delays(self) -> List[float]:
         return self._queueing_delays
+    
+    def get_pool_snapshot(self) -> List[int]:
+        return self.scheduler.get_pool_snapshot()
+    
+    def get_topk_pool_snapshot(self) -> List[int]:
+        return self.scheduler.get_topk_pool_snapshot()
     
     def terminate(self):
         self.end_flag = True

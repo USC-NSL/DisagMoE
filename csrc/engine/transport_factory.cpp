@@ -10,6 +10,11 @@
 #include <stdexcept>
 #include <cstring>
 
+static zmq::context_t& GlobalZmqContext() {
+    static zmq::context_t ctx(4);
+    return ctx;
+}
+
 namespace disagmoe {
 
 static MqFactory g_mq_factory;
@@ -22,7 +27,9 @@ namespace {
 class ZmqSocketAdapter final : public MqSocket {
 public:
     ZmqSocketAdapter(bool isPush)
-        : ctx_(1), sock_(ctx_, isPush ? zmq::socket_type::push : zmq::socket_type::pull) {}
+        : ctx_(GlobalZmqContext()), sock_(ctx_, isPush ? zmq::socket_type::push : zmq::socket_type::pull) {
+
+    }
 
     void bind(const std::string &endpoint) override { sock_.bind(endpoint); }
     void connect(const std::string &endpoint) override { sock_.connect(endpoint); }
@@ -45,7 +52,7 @@ public:
     }
 
 private:
-    zmq::context_t ctx_;
+    zmq::context_t &ctx_;
     zmq::socket_t sock_;
 };
 

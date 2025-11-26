@@ -425,7 +425,7 @@ void MuPool::run() {
         int peer_id;
         batch_metadata_t meta;
         recv_metadata(peer_id, meta, /*non_blocking=*/ false);
-        ASSERT(meta.get() != nullptr);
+        ASSERT_MSG(meta.get() != nullptr, "Metadata is nullptr while receiving from peer " + std::to_string(peer_id));
         
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 

@@ -54,6 +54,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
         .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
+        .def("get_topk_pool_snapshot", &Scheduler::get_topk_pool_snapshot)
         .def("set_schedule_policy", &Scheduler::set_schedule_policy)
         .def("set_schedule_block", &Scheduler::set_schedule_block)
         .def("schedule", &Scheduler::schedule);
