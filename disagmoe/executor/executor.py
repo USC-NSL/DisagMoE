@@ -292,7 +292,8 @@ class AttnExecutor(Executor):
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=topk_weights,
-            expert_ids=topk_ids
+            expert_ids=topk_ids,
+            sync_event=None,
         )
     
     @staticmethod

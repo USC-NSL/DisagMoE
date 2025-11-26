@@ -135,6 +135,31 @@ class TokenBatch:
             batch_c.metadata
         )
         
+    @staticmethod
+    def make_c(data: torch.Tensor, metadata: BatchMetadata_C) -> "TokenBatch_C":
+        batch = TokenBatch_C()
+        batch.data = data
+        batch.metadata = metadata
+        return batch
+    
+@dataclass
+class TokenBatchCWrapper:
+    data: torch.Tensor
+    metadata: BatchMetadata_C
+    
+    @staticmethod
+    def from_c(batch_c: "TokenBatch_C") -> "TokenBatchCWrapper":
+        return TokenBatchCWrapper(
+            data=batch_c.data,
+            metadata=batch_c.metadata
+        )
+    
+    def to_c(self) -> "TokenBatch_C":
+        batch = TokenBatch_C()
+        batch.data = self.data
+        batch.metadata = self.metadata
+        return batch
+        
 @dataclass
 class AttentionScheduleBatch:
     
@@ -198,7 +223,7 @@ class ForwardBatch:
     meta_c: BatchMetadata_C
     
     proc_func: Optional[Callable[["ForwardBatch"], "ForwardResult"]]
-    post_proc_func: Optional[Callable[["ForwardBatch", "ForwardResult"], Tuple[torch.Tensor, BatchMetadata]]]
+    post_proc_func: Optional[Callable[["ForwardBatch", "ForwardResult"], TokenBatchCWrapper]]
 
 @dataclass
 class AttentionForwardBatch(ForwardBatch):
@@ -213,6 +238,7 @@ class ExpertForwardBatch(ForwardBatch):
 @dataclass
 class ForwardResult:
     hiddens: torch.Tensor
+    sync_event: Optional[torch.cuda.Event]
 
 @dataclass
 class AttentionForwardResult(ForwardResult):
