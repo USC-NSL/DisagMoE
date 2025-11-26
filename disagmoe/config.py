@@ -1,3 +1,4 @@
+from math import exp
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -14,7 +15,7 @@ class ModelConfig:
     num_experts: int
     intermediate_size: int
     dtype: torch.dtype
-    ep_size: int
+    ep_size: int = 1 # default to 1
     tp_size: int = 1
     dp_size: int = 1
     rank: int = 0
@@ -91,4 +92,15 @@ duo_expert_mixtral = ModelConfig(
     intermediate_size = 14336,
     dtype = torch.bfloat16,
     ep_size = 2,
+)
+
+qwen3_235b_config = ModelConfig(
+    hidden_size = 4096,
+    num_layers = 94,
+    num_heads = 64,
+    num_kv_heads = 4,
+    num_experts = 128,
+    intermediate_size = 1536,
+    dtype = torch.bfloat16,
+    top_k = 8,
 )

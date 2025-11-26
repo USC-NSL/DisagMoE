@@ -4,6 +4,7 @@
 #include <pybind11/complex.h>
 #include <pybind11/stl.h>
 #include <torch/extension.h>
+#include <torch/library.h>
 
 #include "tests.h"
 #include "engine.h"
@@ -16,11 +17,25 @@
 #include "profiler.hpp"
 #include "transport_factory.h"
 #include "tensor_utils.hpp"
+#include "quantization.cuh"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
 
 PYBIND11_MAKE_OPAQUE(std::map<std::pair<int, int>, int>);
+
+// Register FP8 quantization op in the Torch dispatcher
+TORCH_LIBRARY(quant_fp8, m) {
+  m.def(
+      "sgl_per_token_group_quant_8bit(Tensor input, Tensor output_q, Tensor output_s, int group_size, "
+      "float eps, float fp8_min, float fp8_max, bool scale_ue8m0) -> ()");
+}
+
+TORCH_LIBRARY_IMPL(quant_fp8, CUDA, m) {
+  m.impl(
+      "sgl_per_token_group_quant_8bit",
+      TORCH_FN(sgl_per_token_group_quant_8bit));
+}
 
 namespace py = pybind11;
 
