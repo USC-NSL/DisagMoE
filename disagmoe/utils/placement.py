@@ -17,7 +17,7 @@ class ParallelConfig:
     expert_ranks: Dict[Tuple[int, int], int] = None
     
     @staticmethod
-    def from_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+    def to_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
         from disagmoe_c import ParallelConfig as ParallelConfig_C
         cfg = ParallelConfig_C()
         cfg.tp = tp

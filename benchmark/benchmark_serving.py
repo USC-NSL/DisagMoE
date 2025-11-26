@@ -130,8 +130,7 @@ def launch(args):
         enable_nsys=args.nsys
     )
 
-    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
-                               num_gpu_blocks=args.num_blocks if args.num_blocks else None)
+    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto")
 
     master.init_engine(args.transport, mp, model_config, engine_config, cache_config,
                       gate_profile_file=args.gate_profile_file)

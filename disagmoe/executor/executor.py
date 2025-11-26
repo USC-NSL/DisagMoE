@@ -226,7 +226,7 @@ class AttnExecutor(Executor):
     def determine_kv_cache_blocks(self) -> int:
         torch.cuda.empty_cache()
                 
-        self.memory_profile(self.model_config.max_batch_size_attn)      
+        self.memory_profile(get_global_engine_config().max_batch_size_attn)      
         torch.cuda.synchronize()
         
         _log_memory_usage("After profile run")

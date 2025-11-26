@@ -43,6 +43,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("get_topk_pool_snapshot", &Scheduler::get_topk_pool_snapshot)
         .def("set_schedule_policy", &Scheduler::set_schedule_policy)
         .def("set_schedule_block", &Scheduler::set_schedule_block)
+        .def("set_schedule_token_threshold", &Scheduler::set_schedule_token_threshold)
         .def("schedule", &Scheduler::schedule);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
@@ -76,7 +77,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("topk_weights", &BatchMetadata::topk_weights)
         .def_readwrite("attn_dp_ranks", &BatchMetadata::attn_dp_ranks)
         .def_readwrite("init_prefill_lens", &BatchMetadata::init_prefill_lens)
-        .def_readwrite("max_output_lens", &BatchMetadata::max_output_lens)
         .def_readwrite("num_prefill_seqs", &BatchMetadata::num_prefill_seqs)
         .def_readwrite("num_prefill_tokens", &BatchMetadata::num_prefill_tokens)
         .def_readwrite("num_decode_tokens", &BatchMetadata::num_decode_tokens)

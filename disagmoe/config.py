@@ -60,12 +60,10 @@ class CacheConfig(vllm.config.CacheConfig):
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
-        num_gpu_blocks: Optional[int] = None,
     ) -> None:
         super().__init__(block_size, gpu_memory_utilization, 
                          swap_space, cache_dtype, num_gpu_blocks_override, 
                          sliding_window, enable_prefix_caching, cpu_offload_gb)
-        self.num_gpu_blocks = num_gpu_blocks
 
 mixtral_config = ModelConfig(
     hidden_size = 4096,

@@ -36,7 +36,6 @@ struct BatchMetadata {
 
     std::vector<int> attn_dp_ranks;
     std::vector<int> init_prefill_lens; // positive for first decoding tokens, -1 for subsequence decoding tokens
-    std::vector<int> max_output_lens; // only used at attention layer 0, should be ignored later
     
     // Only used in attention batch.
     // Note: All metadata operations will ignore these optional fields.
@@ -64,7 +63,7 @@ struct BatchMetadata {
         archive(
             batch_tag, shape, dtype, layer_id, 
             req_ids, exp_ids, topk_weights, 
-            attn_dp_ranks, init_prefill_lens, max_output_lens,
+            attn_dp_ranks, init_prefill_lens,
             num_prefill_tokens, num_prefill_seqs, num_decode_tokens
         );
     }
@@ -290,8 +289,7 @@ struct BatchMetadata {
             index_select_vector(exp_ids, indices),
             index_select_vector(topk_weights, indices),
             index_select_vector(attn_dp_ranks, indices),
-            index_select_vector(init_prefill_lens, indices),
-            index_select_vector(max_output_lens, indices),
+            index_select_vector(init_prefill_lens, indices)
         });
     }
 
@@ -417,7 +415,6 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
 
     std::vector<int> new_req_ids{};
     std::vector<int> new_init_prefill_lens{};
-    std::vector<int> new_max_output_lens{};
 
     for (auto &meta: metas) {
         ASSERT (meta->attention_batch_safe_check());
@@ -428,9 +425,6 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
         for (int i = 0; i < meta->num_prefill_seqs.value(); i++) {
             new_req_ids.emplace_back(meta->req_ids[i]);
             new_init_prefill_lens.emplace_back(meta->init_prefill_lens[i]);
-            if (meta->layer_id == 0) {
-                new_max_output_lens.emplace_back(meta->max_output_lens[i]);
-            }
         }
     }
 
@@ -453,7 +447,6 @@ inline batch_metadata_t BatchMetadata::merge_by_attention(const std::vector<batc
         {}, // topk_weights
         {}, // attn_dp_ranks
         new_init_prefill_lens,
-        new_max_output_lens, // max_output_lens
         new_prefills_seqs,
         new_prefill_tokens,
         new_decode_tokens
@@ -498,7 +491,6 @@ inline batch_metadata_t BatchMetadata::pack_topk_tokens(int layer_id, const std:
             {}, // topk_weights
             attn_dp_ranks, // attn_dp_ranks
             new_init_prefill_lens, // init_prefill_lens
-            {}, // max_output_lens
             new_prefill_seqs,
             new_prefill_tokens,
             new_decode_tokens,

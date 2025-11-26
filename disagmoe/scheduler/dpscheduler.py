@@ -17,10 +17,9 @@ class RequestItem:
 
 class DPScheduler:
     
-    def __init__(self, dp_size: int, max_output_len: int, block_size: int):
+    def __init__(self, dp_size: int, block_size: int):
         self.dp_size = dp_size
         self.kv_cache_stats = [0 for i in range(dp_size)]
-        self.max_output_len = max_output_len
         self.block_size = block_size
         self.seq_ranks = {}
         self.seq_max_len = {}
@@ -142,8 +141,8 @@ class DPSchedulerMax(DPScheduler):
 
 class DPSChedulerRR(DPScheduler):
     
-    def __init__(self, dp_size: int, seq_len: int, block_size: int):
-        super().__init__(dp_size, seq_len, block_size)
+    def __init__(self, dp_size: int, block_size: int):
+        super().__init__(dp_size, block_size)
         self.cur_rank = 0
     
     @override
@@ -157,6 +156,6 @@ _clses = {
     "max": DPSchedulerMax,
 }
 
-def get_dp_scheduler(dp_size: int, seq_len: int, block_size: int, policy: str) -> DPScheduler:
+def get_dp_scheduler(dp_size: int, block_size: int, policy: str) -> DPScheduler:
     cls = _clses[policy]
-    return cls(dp_size, seq_len, block_size)
+    return cls(dp_size, block_size)

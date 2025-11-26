@@ -15,7 +15,7 @@ from disagmoe.utils.metrics import Metric
 from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
-from disagmoe.config import CacheConfig, ModelConfig, SamplingConfig, EngineConfig
+from disagmoe.config import CacheConfig, ModelConfig, EngineConfig
 from disagmoe.env import ENV_VARS
 from disagmoe.frontend.tokenizer import Tokenizer, Detokenizer
 
@@ -231,8 +231,6 @@ class Controller:
                 InitCoreArgs(
                     world_size=len(self.workers),
                     layer_ids=model_place.layer_ids_at(device_id),
-                    max_output_len=self.max_output_len,
-                    min_output_len=self.min_output_len,
                     in_device_ids=model_place.in_device_ids_at(device_id),
                     out_device_ids=model_place.out_device_ids.get(device_id, []),
                     inbound_nccl_ids=inbound_nccl_ids.get(device_id, {}),
@@ -258,9 +256,7 @@ class Controller:
         ray.get(tasks)
         get_logger().info("Launched all workers successfully")
         
-        self.dp_scheduler = get_dp_scheduler(
-            model_config.dp_size, self.max_output_len, cache_config.block_size, "max"
-        )
+        self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "max")
         
         self.model_place: ModelPlacement = model_place
         

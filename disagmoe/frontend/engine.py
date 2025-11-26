@@ -128,23 +128,22 @@ class AttentionEngineMixin:
         return attn_meta
     
     def preprocess_batch_attn(self, batch: AttentionScheduleBatch) -> AttentionForwardBatch:
-        if batch.layer_id == 0:
-            for i in range(batch.num_prefill_tokens):
-                self.record_max_output_lens(batch.req_ids[i], batch.max_output_lens[i])
-
         attn_meta = self._attn_driver_preprocess(batch.meta_c, batch)
         positions = batch.seq_lens_tensor.to(torch.int64)
             
         return AttentionForwardBatch(
             layer_id=batch.layer_id,
             data=batch.data,
+            num_tokens=batch.num_decode_tokens,
             positions=positions,
             metadata=attn_meta,
             req_ids=batch.req_ids,
             meta_c=batch.meta_c,
+            proc_func=self.execute_batch_attn,
+            post_proc_func=self.postprocess_batch_attn,
         )
         
-    def run_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+    def execute_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         result = self.attn_executor.execute(batch)
         return result
             
@@ -208,7 +207,7 @@ class AttentionEngineMixin:
             hiddens, new_meta_c = self.sample_results(batch)
         else:
             forward_batch = self.preprocess_batch_attn(batch)
-            result = self.run_batch_attn(forward_batch)
+            result = self.execute_batch_attn(forward_batch)
             hiddens, new_meta_c = self.postprocess_batch_attn(forward_batch, result)
         return hiddens, new_meta_c
     
@@ -368,6 +367,8 @@ class ExpertEngineMixin:
             data=input_tensor,
             batch_sizes=batch_sizes,
             meta_c=meta_c,
+            proc_func=self.execute_batch_expert,
+            post_proc_func=self.postprocess_batch_expert,
         )
         
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
@@ -529,7 +530,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.has_attn,
             self.has_expert,
             core_args.expert_wise_schedule,
-            ParallelConfig.from_c(
+            ParallelConfig.to_c(
                 1, # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.dp_size,
@@ -545,6 +546,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             [info.to_c() for info in core_args.out_channel_infos],
         )
         
+        self.scheduler.set_schedule_token_threshold(self.engine_config.max_batch_size_attn, self.engine_config.max_batch_size_expert)
+        
         _log_memory_usage("After initializing engine")
             
         if self.has_attn and self._tp_enabled:
@@ -554,7 +557,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                                     init_method=f"tcp://{get_nccl_url_from_uid(core_args.group_nccl_ids[0])}")
         
         if self.has_attn:
-            self.dummy_sampler = DummySampler(core_args.min_output_len, core_args.max_output_len)
+            self.dummy_sampler = DummySampler()
         
         if self.has_expert:
             self.static_mappings_gpu = torch.zeros((self.expert_max_batch_size, ), dtype=torch.int64, device="cuda")
@@ -753,8 +756,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 topk_weights=[1.0],
                 attn_dp_ranks=[self.attn_dp_rank],
                 init_prefill_lens=[new_request.init_prefill_len],
-                max_output_lens=[new_request.max_output_len],
             )
+            self.record_max_output_lens(new_request.req_id, new_request.max_output_len)
             batch: TokenBatch = TokenBatch_C()
             batch.data = torch.rand((1, self.model_config.hidden_size), dtype=torch.bfloat16, device=self.device)
             batch.metadata = meta.to_c()
@@ -865,11 +868,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
 
 class DummySampler:
     
-    def __init__(self, min_output_len: int, max_output_len: int):
-        if max_output_len == min_output_len:
-            max_output_len += 1
-        self.min_output_len = min_output_len
-        self.max_output_len = max_output_len
+    def __init__(self):
         self.req_max_output_len: Dict[int, int] = {}
         self.output_len: Dict[int, int] = {}
         
@@ -887,9 +886,7 @@ class DummySampler:
                 continue_ids.append(i)
         return continue_ids, finish_req_ids
     
-    def create_request(self, req_id: int, max_output_len: int = -1):
-        if max_output_len == -1:
-            max_output_len = random.randint(self.min_output_len, self.max_output_len)
+    def create_request(self, req_id: int, max_output_len: int):
         self.req_max_output_len[req_id] = max_output_len
         self.output_len[req_id] = 0
 

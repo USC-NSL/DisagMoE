@@ -20,6 +20,9 @@ class Scheduler:
         
     def set_schedule_block(self, step: int) -> None:
         ...
+        
+    def set_schedule_token_threshold(self, attn_token_threshold: int, expert_token_threshold: int) -> None:
+        ...
 
 class MuDispatcher:
         
