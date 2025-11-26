@@ -23,6 +23,17 @@
 
 #include <cereal/archives/binary.hpp>
 
+// Struct to pack peer_id and metadata together
+struct MetadataWithPeerId {
+    int peer_id;
+    BatchMetadata metadata;
+
+    template<class Archive>
+    void serialize(Archive &archive) {
+        archive(peer_id, metadata);
+    }
+};
+
 // MuHelper
 
 MuHelper::MuHelper(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels): 
@@ -74,8 +85,12 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    auto data = cerealize(std::make_shared<BatchMetadata>(meta));
-    this->peer_mq[cid]->send_multipart(this->device_id_str, data.c_str(), data.size());
+    // Pack peer_id and metadata into a single message
+    MetadataWithPeerId packed_data;
+    packed_data.peer_id = this->device_id;
+    packed_data.metadata = meta;
+    auto data = cerealize_(packed_data);
+    this->peer_mq[cid]->send(data.c_str(), data.size());
     this->channels[cid]->send(buf, meta);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
@@ -344,14 +359,17 @@ MuPool::~MuPool() {}
 
 void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
-    std::string f0; std::vector<uint8_t> f1;
-    bool ok = mq->recv_multipart(f0, f1, non_blocking);
+    std::vector<uint8_t> data;
+    bool ok = mq->recv(data, non_blocking);
     if (!ok) {
         meta = nullptr;
         return;
     }
-    peer_id = std::stoi(f0);
-    meta = decerealize<BatchMetadata>(reinterpret_cast<char*>(f1.data()), f1.size());
+    // Unpack peer_id and metadata from a single message
+    MetadataWithPeerId packed_data;
+    decerealize_(reinterpret_cast<char*>(data.data()), data.size(), packed_data);
+    peer_id = packed_data.peer_id;
+    meta = std::make_shared<BatchMetadata>(std::move(packed_data.metadata));
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
