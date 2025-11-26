@@ -6,11 +6,6 @@ import torch
 from functools import lru_cache
 from typing import Optional, Tuple
 
-# Ensure the core C++ extension is loaded so that the TORCH_LIBRARY
-# registration for quant_fp8 is executed and the op becomes available
-# as torch.ops.quant_fp8.sgl_per_token_group_quant_8bit.
-import disagmoe_c  # noqa: F401
-
 
 def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
@@ -92,12 +87,12 @@ def create_per_token_group_quant_fp8_output_scale(
 
 def _get_native_quant_op():
     try:
-        return torch.ops.quant_fp8.sgl_per_token_group_quant_8bit
+        return torch.ops.disag_ops.sgl_per_token_group_quant_8bit
     except (AttributeError, RuntimeError) as exc:
         raise RuntimeError(
-            "quant_fp8 CUDA op is not available. Make sure the disagmoe_c "
+            "FP8 quant CUDA op is not available. Make sure the disagmoe_c "
             "extension is built and importable so that the FP8 kernel is "
-            "registered with torch.ops.quant_fp8.sgl_per_token_group_quant_8bit."
+            "registered with torch.ops.disag_ops.sgl_per_token_group_quant_8bit."
         ) from exc
 
 

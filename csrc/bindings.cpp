@@ -17,25 +17,11 @@
 #include "profiler.hpp"
 #include "transport_factory.h"
 #include "tensor_utils.hpp"
-#include "quantization.cuh"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
 
 PYBIND11_MAKE_OPAQUE(std::map<std::pair<int, int>, int>);
-
-// Register FP8 quantization op in the Torch dispatcher
-TORCH_LIBRARY(quant_fp8, m) {
-  m.def(
-      "sgl_per_token_group_quant_8bit(Tensor input, Tensor output_q, Tensor output_s, int group_size, "
-      "float eps, float fp8_min, float fp8_max, bool scale_ue8m0) -> ()");
-}
-
-TORCH_LIBRARY_IMPL(quant_fp8, CUDA, m) {
-  m.impl(
-      "sgl_per_token_group_quant_8bit",
-      TORCH_FN(sgl_per_token_group_quant_8bit));
-}
 
 namespace py = pybind11;
 
@@ -138,9 +124,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("register_seq_info_gdr", &BlockManager::register_seq_info_gdr)
         .def("prepare_seq_info_gdr", &BlockManager::prepare_seq_info_gdr);
 
-    // custom ops
-    REGISTER_FUNC(permute_tokens_cuda_dispatch);
-    REGISTER_FUNC(cuda_graph_preprocess_fused_dispatch);
     REGISTER_FUNC(rebind_1d_tensor);
     REGISTER_FUNC(rebind_2d_tensor);
     REGISTER_FUNC(rebind_batch_info_tensor);

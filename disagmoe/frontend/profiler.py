@@ -50,7 +50,7 @@ class EngineProfilerMixin:
                 torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA,
             ],
-            # with_stack=True,
+            with_stack=True,
         )
         self.profiler.start()
         self.profile_in_progress = True
