@@ -155,6 +155,6 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
     m.def("permute_tokens(Tensor tokens, Tensor mappings, int stream) -> Tensor");
     m.impl("permute_tokens", torch::kCUDA, permute_tokens_cuda_dispatch);
 
-    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> void");
+    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> ()");
     m.impl("gather_tokens", torch::kCUDA, gather_tokens_cuda_dispatch);
 }

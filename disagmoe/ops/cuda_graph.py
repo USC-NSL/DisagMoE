@@ -6,8 +6,6 @@ from torch import Tensor
 import triton.language as tl
 import triton
 
-from disagmoe_c import cuda_graph_preprocess_fused
-
 @triton.jit
 def cuda_graph_preprocess_triton(
     # Destination pointers
@@ -221,7 +219,7 @@ def cuda_graph_preprocess_cuda(
     else:
         stream_ptr = stream.cuda_stream
         
-    cuda_graph_preprocess_fused(
+    torch.ops.disag_ops.cuda_graph_preprocess_fused(
         hidden_states,
         positions,
         block_tables,

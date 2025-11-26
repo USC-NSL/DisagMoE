@@ -205,7 +205,7 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
             Tensor out_hidden, Tensor out_positions, Tensor out_block_tables, Tensor out_slot_mapping, 
             Tensor out_seq_lens, Tensor out_context_lens, Tensor out_seq_start_loc, 
             int tokens_per_block, int raw_cuda_stream
-        ) -> void
+        ) -> ()
     )");
     m.impl("cuda_graph_preprocess_fused", torch::kCUDA, cuda_graph_preprocess_fused_dispatch);
 }
