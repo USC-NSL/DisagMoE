@@ -44,6 +44,7 @@ public:
 
     // General snapshot of current pool state
     std::vector<int> get_pool_snapshot();
+    std::vector<int> get_topk_pool_snapshot();
     void set_schedule_policy(std::string type);
     void set_schedule_block(int step);
 

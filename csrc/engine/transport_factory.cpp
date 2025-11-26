@@ -10,6 +10,11 @@
 #include <stdexcept>
 #include <cstring>
 
+static zmq::context_t& GlobalZmqContext() {
+    static zmq::context_t ctx(4);
+    return ctx;
+}
+
 namespace disagmoe {
 
 static MqFactory g_mq_factory;
@@ -22,7 +27,9 @@ namespace {
 class ZmqSocketAdapter final : public MqSocket {
 public:
     ZmqSocketAdapter(bool isPush)
-        : ctx_(1), sock_(ctx_, isPush ? zmq::socket_type::push : zmq::socket_type::pull) {}
+        : ctx_(GlobalZmqContext()), sock_(ctx_, isPush ? zmq::socket_type::push : zmq::socket_type::pull) {
+
+    }
 
     void bind(const std::string &endpoint) override { sock_.bind(endpoint); }
     void connect(const std::string &endpoint) override { sock_.connect(endpoint); }
@@ -43,9 +50,21 @@ public:
         if (f1.size()) std::memcpy(frame1.data(), f1.data(), f1.size());
         return true;
     }
+    void send(const void *data, size_t size) override {
+        sock_.send(zmq::buffer(data, size));
+    }
+    bool recv(std::vector<uint8_t> &data, bool non_blocking = false) override {
+        zmq::message_t msg;
+        auto flags = non_blocking ? zmq::recv_flags::dontwait : zmq::recv_flags::none;
+        auto r = sock_.recv(msg, flags);
+        if (!r.has_value()) return false;
+        data.resize(msg.size());
+        if (msg.size()) std::memcpy(data.data(), msg.data(), msg.size());
+        return true;
+    }
 
 private:
-    zmq::context_t ctx_;
+    zmq::context_t &ctx_;
     zmq::socket_t sock_;
 };
 
@@ -67,6 +86,17 @@ public:
         frame0 = frames[0].to_string();
         frame1.resize(frames[1].size());
         std::memcpy(frame1.data(), frames[1].data(), frames[1].size());
+        return true;
+    }
+    void send(const void *data, size_t size) override {
+        sock_->send(ucxq::buffer(data, size));
+    }
+    bool recv(std::vector<uint8_t> &data, bool non_blocking = false) override {
+        ucxq::message_t msg;
+        auto res = sock_->recv(msg, non_blocking);
+        if (!res.has_value()) return false;
+        data.resize(msg.size());
+        if (msg.size()) std::memcpy(data.data(), msg.data(), msg.size());
         return true;
     }
 

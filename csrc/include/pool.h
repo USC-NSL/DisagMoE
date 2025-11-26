@@ -37,9 +37,13 @@ public:
         int top_k = 1
     );
 
-    TokenBatch get_batch_from_layer(int layer_id);
+    TokenBatch get_batch_from_layer(int layer_id) override;
+
+    std::vector<int> get_pool_snapshot() override;
 
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
+
+    std::vector<int> get_topk_pool_snapshot();
 };
 
 using unified_pool_t = std::shared_ptr<UnifiedPool>;

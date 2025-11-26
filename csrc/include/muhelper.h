@@ -197,7 +197,7 @@ public:
         return largest_batch_layer_id_;
     }
 
-    std::vector<int> get_pool_snapshot();
+    virtual std::vector<int> get_pool_snapshot();
 
     virtual int tokens_in_layer(int lid);
 
@@ -283,6 +283,8 @@ public:
     std::vector<TokenTopKInfo> fetch_ready_tokens();
 
     int get_top_k() { return top_k; }
+
+    int get_pool_size() { return this->pool_.size(); }
 
 };
 

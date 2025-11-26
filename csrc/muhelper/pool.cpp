@@ -84,3 +84,17 @@ TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
 std::shared_ptr<LayerSchedulerBase> UnifiedPool::get_layer_scheduler() {
     return std::dynamic_pointer_cast<LayerSchedulerBase>(this->layer_scheduler);
 }
+
+std::vector<int> UnifiedPool::get_pool_snapshot() {
+    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    return this->layer_scheduler->get_pool_snapshot();
+}
+
+std::vector<int> UnifiedPool::get_topk_pool_snapshot() {
+    ASSERT_MSG(this->top_k > 1, "Top-k pool snapshot is only supported for top-k > 1");
+    std::vector<int> snapshot(this->topk_pools.size(), 0);
+    for (int i = 0; i < this->topk_pools.size(); i++) {
+        snapshot[i] = this->topk_pools[i].get_pool_size();
+    }
+    return snapshot;
+}

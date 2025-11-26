@@ -92,6 +92,8 @@ public:
 
     void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta);
 
+    std::vector<int> get_pool_snapshot();
+
     TokenBatch get_batch_from_layer(int layer_id);
 };
 

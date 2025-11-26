@@ -349,6 +349,12 @@ class Controller:
             req_id, input_len + output_len, input_len, output_len
         )
         return res
+    
+    def get_pool_snapshot(self) -> List[List[int]]:
+        return ray.get([worker.get_pool_snapshot.remote() for worker in self.workers])
+    
+    def get_topk_pool_snapshot(self) -> List[List[int]]:
+        return ray.get([worker.get_topk_pool_snapshot.remote() for worker in self.workers])
         
     def fetch_submitted_time(self) -> Dict[int, int]:
         return ray.get(self.tokenizer.fetch_submitted_time.remote())
