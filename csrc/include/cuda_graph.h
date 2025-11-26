@@ -7,7 +7,7 @@
 
 #include "cuda_utils.h"
 
-void cuda_graph_preprocess_fused(
+void cuda_graph_preprocess_fused_dispatch(
     torch::Tensor hidden,
     torch::Tensor positions,
     torch::Tensor block_tables,
@@ -24,8 +24,8 @@ void cuda_graph_preprocess_fused(
     torch::Tensor out_context_lens,
     torch::Tensor out_seq_start_loc,
 
-    int tokens_per_block,
-    uintptr_t raw_cuda_stream
+    int64_t tokens_per_block,
+    int64_t raw_cuda_stream
 );
 
 #endif // CUDA_GRAPH_H

@@ -6,8 +6,6 @@ import triton.language as tl
 from disagmoe.utils.utils import nvtx_range, range_push, range_pop
 from typing import List, Tuple, Union
 
-from disagmoe_c import permute_tokens_cuda as _permute_tokens_cuda
-
 @triton.jit
 def _permute_tokens_kernel(
     out_ptr, # buffer for permuted tokens 
@@ -99,4 +97,8 @@ def permute_tokens_cuda(tokens: torch.Tensor,
     mappings_device = mappings.to(tokens.device)
     range_pop()
     
-    return _permute_tokens_cuda(tokens, mappings_device, torch.cuda.current_stream().cuda_stream)
+    return torch.ops.disag_ops.permute_tokens(
+        tokens,
+        mappings_device,
+        torch.cuda.current_stream().cuda_stream,
+    )
