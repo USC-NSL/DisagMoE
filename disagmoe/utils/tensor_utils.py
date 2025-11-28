@@ -2,7 +2,7 @@ import torch
 
 GPU_PAGE_SIZE = 1 << 16
 
-def get_cuda_aligned_tensor(numel: int, dtype, alignment: int = GPU_PAGE_SIZE, device: str = "cuda"):
+def get_cuda_aligned_tensor(numel: int, dtype: torch.dtype, alignment: int = GPU_PAGE_SIZE, device: str = "cuda"):
     """
     Allocate a CUDA tensor with a 64KB-aligned data pointer.
     Returns (aligned_tensor, base_tensor).

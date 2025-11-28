@@ -13,6 +13,9 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda
 from disagmoe.frontend.engine_utils import get_global_engine_config
+from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
+
+STATIC_BUFFER_ALIGNMENT = 16 # float4/int4 alignment
 
 class CUDAGraphAttnExecutor:
     
@@ -28,12 +31,14 @@ class CUDAGraphAttnExecutor:
         self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
         self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
 
-        self.static_input = torch.zeros((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype, device="cuda")
-        self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
-        self.static_block_table = torch.zeros(
-            (batch_size, self.model_config.max_seq_len // self.cache_config.block_size), 
-            dtype=torch.int32, device="cuda")
+        self.static_input = get_cuda_aligned_tensor(batch_size * self.model_config.hidden_size, self.model_config.dtype, alignment=STATIC_BUFFER_ALIGNMENT, device="cuda")
+        self.static_input = self.static_input.reshape(batch_size, self.model_config.hidden_size)
+        self.static_block_table = get_cuda_aligned_tensor(batch_size * self.model_config.max_seq_len // self.cache_config.block_size, torch.int32, alignment=STATIC_BUFFER_ALIGNMENT, device="cuda")
+        self.static_block_table = self.static_block_table.reshape(batch_size, self.model_config.max_seq_len // self.cache_config.block_size)
+
         self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
+        
+        self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
 
         self.static_batch_info = torch.zeros((batch_size + batch_size + (batch_size + 1) + (batch_size + 1)), dtype=torch.int32, device="cuda")
         static_batch_info_splits = self.static_batch_info.split([batch_size, batch_size, batch_size + 1, batch_size + 1])
@@ -95,8 +100,12 @@ class CUDAGraphAttnExecutor:
     
     def capture(self):
         start_time = time.perf_counter()
+        layer_time_elapse = []
+        layer_memory_elapse = []
         get_logger().info(f"Capturing CUDA graphs for attention, bsz {self.graph_batch_sizes}")
         for layer_id in self.model_config.layer_ids:
+            layer_start_time = time.perf_counter()
+            free_memory_before, _ = torch.cuda.mem_get_info()
             for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
                 batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
                 attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
@@ -119,10 +128,15 @@ class CUDAGraphAttnExecutor:
                     outputs = run_once()
                     
                 self.static_outputs[layer_id].append(outputs)
-                
-        end_time = time.perf_counter()
+            layer_end_time = time.perf_counter()
+            layer_time_elapse.append(layer_end_time - layer_start_time)
+            free_memory_after, _ = torch.cuda.mem_get_info()
+            layer_memory_elapse.append(round(((free_memory_after - free_memory_before) / (1024 ** 3)), 2))
         torch.cuda.synchronize()
+        end_time = time.perf_counter()
         get_logger().info(f"cuda graph captured in {end_time - start_time} seconds")
+        # get_logger().info(f"Layer time elapse: {layer_time_elapse}")
+        # get_logger().info(f"Layer memory elapse: {layer_memory_elapse}")
         self.test_graph()
 
     def test_graph(self):
@@ -165,8 +179,8 @@ class CUDAGraphAttnExecutor:
         else:
             self.static_input[ : num_tokens].copy_(hidden_states)
             self.static_positions[ : num_tokens].copy_(positions)
-            self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
             self.static_block_table[ : num_tokens, : max_num_blocks].copy_(meta.block_tables)
+            self.static_slot_mapping[ : num_tokens].copy_(meta.slot_mapping)
             self.static_seq_lens[ : num_tokens].copy_(meta.seq_lens_tensor)
             self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
             self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
@@ -174,13 +188,18 @@ class CUDAGraphAttnExecutor:
     def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
         meta.use_cuda_graph = True
         
-        num_tokens = hidden_states.shape[0]
-        graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
-        
-        self.cuda_graph_preprocess(hidden_states, positions, meta)
-        self.graphs[layer_id][graph_id].replay()
+        try:
+            num_tokens = hidden_states.shape[0]
+            graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
+            
+            self.cuda_graph_preprocess(hidden_states, positions, meta)
+            self.graphs[layer_id][graph_id].replay()
 
-        outputs, topk_weights, topk_ids = self.static_outputs[layer_id][graph_id]
+            outputs, topk_weights, topk_ids = self.static_outputs[layer_id][graph_id]
+            
+        except Exception as e:
+            get_logger().error(f"Error in run: {e}, layer_id {layer_id}, batch_size {num_tokens}, graph_bsz {self.graph_batch_sizes[graph_id]}")
+            raise e
 
         return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]
         

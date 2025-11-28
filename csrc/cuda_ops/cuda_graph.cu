@@ -51,8 +51,12 @@ __global__ void preprocess_fused_cuda(
         }
     } else {
         // Other blocks deal with data tensors and block tables
-        constexpr int VEC_SIZE_HIDDEN = 8;   // float4 = 16 bytes = 8 fp16
-        constexpr int VEC_SIZE_BLOCK_TABLE = 4;
+        using hidden_vec_t = float4;
+        constexpr int VEC_SIZE_HIDDEN = sizeof(hidden_vec_t) / sizeof(bfloat16_t);
+
+        using block_table_vec_t = int;
+        constexpr int VEC_SIZE_BLOCK_TABLE = sizeof(block_table_vec_t) / sizeof(int);
+
         int start_token = block_id * TOKENS_PER_BLOCK;
 
         for (int t = 0; t < TOKENS_PER_BLOCK; t++) {
@@ -65,8 +69,8 @@ __global__ void preprocess_fused_cuda(
             #pragma unroll
             for (int i = thread_id * VEC_SIZE_HIDDEN; i < H; i += num_threads * VEC_SIZE_HIDDEN) {
                 int offset = i / VEC_SIZE_HIDDEN;
-                float4 v = reinterpret_cast<const float4*>(src_hidden)[offset];
-                reinterpret_cast<float4*>(dst_hidden)[offset] = v;
+                hidden_vec_t v = reinterpret_cast<const hidden_vec_t*>(src_hidden)[offset];
+                reinterpret_cast<hidden_vec_t*>(dst_hidden)[offset] = v;
             }
 
             const int* src_bt = block_tables + token * in_block_table_stride;
@@ -77,8 +81,8 @@ __global__ void preprocess_fused_cuda(
             #pragma unroll
             for (int i = thread_id * VEC_SIZE_BLOCK_TABLE; i < vec_end; i += num_threads * VEC_SIZE_BLOCK_TABLE) {
                 int offset = i / VEC_SIZE_BLOCK_TABLE;
-                int4 v = reinterpret_cast<const int4*>(src_bt)[offset];
-                reinterpret_cast<int4*>(dst_bt)[offset] = v;
+                block_table_vec_t v = reinterpret_cast<const block_table_vec_t*>(src_bt)[offset];
+                reinterpret_cast<block_table_vec_t*>(dst_bt)[offset] = v;
             }
 
             for (int i = vec_end + thread_id; i < B; i += num_threads) {

@@ -48,10 +48,10 @@ def add_model_arguments(parser: ArgumentParser):
         choices=["mixtral", "qwen3_235b"],
         help="model configuration to use for benchmarking",
     )
-    parser.add_argument("-L", "--num-layers", type=int, default=32, help="number of layers")
-    parser.add_argument("-E", "--num-experts", type=int, default=8, help="number of experts")
-    parser.add_argument("-K", "--topk", type=int, default=1, help="top k")
-    parser.add_argument("--num-kv-heads", type=int, default=8, help="number of kv heads")
+    parser.add_argument("-L", "--num-layers", type=int, default=None, help="number of layers")
+    parser.add_argument("-E", "--num-experts", type=int, default=None, help="number of experts")
+    parser.add_argument("-K", "--topk", type=int, default=None, help="top k")
+    parser.add_argument("--num-kv-heads", type=int, default=None, help="number of kv heads")
     
     parser.add_argument("--attn-qkv-quant", type=str, default="none", choices=["none", "fp8"], help="quantization method for attention QKV projection")
     parser.add_argument("--moe-linear-quant", type=str, default="none", choices=["none", "fp8"], help="quantization method for MoE experts linear (Serial path)")

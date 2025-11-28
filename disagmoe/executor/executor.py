@@ -253,7 +253,7 @@ class AttnExecutor(Executor):
             
     def warmup(self, batch_size: int):
         get_logger().info(f"Attention warmup start, batch size {batch_size}")
-        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, 256)
+        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
         meta = self.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
         get_logger().info(f"Attention warmup meta block table shape: {meta.block_tables.shape}")
         for layer_id in self.model_config.layer_ids:

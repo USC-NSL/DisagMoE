@@ -86,6 +86,12 @@ class BenchmarkMetrics:
         except Exception as e:
             print("Error: failed to write to file, with exception:", e)
 
+def override_model_config_with_args(args, model_config: ModelConfig):
+    model_config.num_layers = args.num_layers if args.num_layers is not None else model_config.num_layers
+    model_config.num_experts = args.num_experts if args.num_experts is not None else model_config.num_experts
+    model_config.top_k = args.topk if args.topk is not None else model_config.top_k
+    model_config.num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else model_config.num_kv_heads
+    return model_config
 
 def launch(args):
     # Select transport in C++ backend (default from CLI is zmq)
@@ -98,14 +104,12 @@ def launch(args):
         model_config = mixtral_config
     else:
         raise ValueError(f"Unknown model type: {args.model}")
-    model_config.num_layers = args.num_layers
+    
+    model_config = override_model_config_with_args(args, model_config)
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
-    model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
-    model_config.top_k = args.topk
     model_config.enable_trace = args.trace
-    model_config.num_kv_heads = args.num_kv_heads
     model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant
     model_config.moe_linear_quant = None if getattr(args, "moe_linear_quant", None) in (None, "", "none") else args.moe_linear_quant
     
@@ -193,7 +197,6 @@ def analyze_batch_sizes(all_batch_sizes: List[List[int]]):
         plt.title(f"Worker {i} batch sizes")
         plt.savefig(f"worker_{i}_batch_sizes.png")
         plt.close()
-
 
 def generate_step_trace(args,
                         step_stats: List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]):
