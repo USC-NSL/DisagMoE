@@ -139,6 +139,7 @@ class CUDAGraphAttnExecutor:
                     get_logger().info(f"Time taken to capture graph: {time_after_capture - time_before_capture} seconds")
                     
                 self.static_outputs[graph_batch_size].append(outputs)
+                
             bsz_end_time = time.perf_counter()
             layer_time_elapse.append(bsz_end_time - bsz_start_time)
             free_memory_after, _ = torch.cuda.mem_get_info()
