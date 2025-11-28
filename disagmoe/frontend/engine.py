@@ -76,6 +76,8 @@ class AttentionEngineMixin:
             
         if self.engine_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
+            
+        self.req_tracker: Dict[int, int] = {}
 
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -172,6 +174,7 @@ class AttentionEngineMixin:
             # d2h_event.synchronize()
             # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
             # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+            
         new_meta_c = batch.meta_c
         if self.model_config.top_k == 1:
             expert_ids = result.expert_ids.view(-1).tolist()
@@ -573,7 +576,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.scheduler, self.dispatcher)
         
-        self.loop_thread = Thread(target=self.single_module_loop)
+        self.loop_thread = Thread(target=self.single_module_loop_overlap)
             
         self.loop_thread.start()
 
@@ -778,16 +781,19 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         
         result_queue: Deque[Tuple[Optional[ForwardBatch], Optional[ForwardResult]]] = deque()
         last_batch = None
+        idle_conunt = 0
+        inflight_req = dict()
         
         while not self.end_flag:
             self.recv_new_request()
             batch = self.scheduler.schedule()
             forward_batch = None
             if batch.data is not None:
+                idle_conunt = 0
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 forward_batch = self.preprocess_batch(batch_wrapper)
                 if forward_batch is None:
-                    result_queue.append((None, None))
+                    pass
                 else:
                     result = forward_batch.proc_func(forward_batch)
                     result.sync_event = torch.cuda.Event()
@@ -805,8 +811,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     self.post_process(final_result)
             elif batch.data is None:
                 # do idle check
-                pass
-            
+                idle_conunt += 1
+                
             last_batch = forward_batch
         
     @torch.inference_mode()
