@@ -29,8 +29,6 @@ def get_global_placement_group():
 class InitCoreArgs:
     world_size: int
     layer_ids: List[int]
-    min_output_len: int
-    max_output_len: int
     
     # P2P Channels
     in_device_ids: List[int]

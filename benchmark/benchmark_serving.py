@@ -8,7 +8,7 @@ from disagmoe.config import (
     CacheConfig,
     mixtral_config,
     qwen3_235b_config,
-    SamplingConfig,
+    EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
 from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
@@ -16,7 +16,6 @@ from utils import get_parser_base
 import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
 from typing import List, Dict, Tuple
-from argparse import ArgumentParser
 from dataclasses import dataclass, asdict
 
 import gzip
@@ -102,19 +101,20 @@ def launch(args):
     model_config.num_layers = args.num_layers
     model_config.ep_size = args.ep_size
     model_config.tp_size = args.tp_size
-    model_config.enable_cuda_graph_attn = args.cuda_graph_attn
-    model_config.enable_cuda_graph_expert = False
-    model_config.enable_grouped_gemm = not args.serial_gemm and not args.expert_wise_schedule
     model_config.num_experts = args.num_experts
     model_config.dp_size = args.dp_size
-    model_config.max_batch_size_attn = args.max_batch_size_attn
-    model_config.max_batch_size_expert = args.max_batch_size_expert
-    model_config.graph_stride = args.graph_stride
     model_config.top_k = args.topk
     model_config.enable_trace = args.trace
     model_config.num_kv_heads = args.num_kv_heads
     model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant
     model_config.moe_linear_quant = None if getattr(args, "moe_linear_quant", None) in (None, "", "none") else args.moe_linear_quant
+    
+    engine_config = EngineConfig(
+        enable_cuda_graph_attn=args.cuda_graph_attn,
+        enable_grouped_gemm=not args.serial_gemm and not args.expert_wise_schedule,
+        max_batch_size_attn=args.max_batch_size_attn,
+        max_batch_size_expert=args.max_batch_size_expert,
+    )
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 
                              step_attn=args.step_attn, step_expert=args.step_expert, 
@@ -130,12 +130,9 @@ def launch(args):
         enable_nsys=args.nsys
     )
 
-    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto",
-                               num_gpu_blocks=args.num_blocks if args.num_blocks else None)
+    cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto")
 
-    sampling_config = SamplingConfig(min_output_len=args.min_output_len, max_output_len=args.max_output_len)
-    
-    master.init_engine(args.transport, mp, model_config, cache_config, sampling_config,
+    master.init_engine(args.transport, mp, model_config, engine_config, cache_config,
                       gate_profile_file=args.gate_profile_file)
     
     master.start_engine()

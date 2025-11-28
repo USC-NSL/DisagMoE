@@ -15,6 +15,10 @@ private:
 
     int top_k;
 
+    int attn_schedule_token_threshold{-1};
+
+    int expert_schedule_token_threshold{-1};
+
     std::vector<TokenTopKPool> topk_pools;
 
     unified_layer_scheduler_t layer_scheduler;
@@ -36,6 +40,10 @@ public:
         int num_groups = 1,
         int top_k = 1
     );
+
+    void set_attn_schedule_token_threshold(int token_threshold);
+
+    void set_expert_schedule_token_threshold(int token_threshold);
 
     TokenBatch get_batch_from_layer(int layer_id) override;
 

@@ -164,7 +164,6 @@ def make_attention_dummy_batch(
         layer_id=0,
         req_ids=list(range(bs)),
         init_prefill_lens=[seq_len] * bs,
-        max_output_lens=[seq_len] * bs,
         num_prefill_seqs=num_prefill_tokens,
         num_prefill_tokens=num_prefill_tokens,
         num_decode_tokens=num_decode_tokens,

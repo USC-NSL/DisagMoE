@@ -8,6 +8,7 @@
 #include "batch.hpp"
 #include <memory>
 #include <vector>
+#include <deque>
 #include <torch/torch.h>
 
 enum class LayerType { ATTENTION, EXPERT };
@@ -25,7 +26,7 @@ private:
     int num_tokens;
     int num_batches;
 
-    std::vector<TokenBatch> batch_queue{};
+    std::deque<TokenBatch> batch_queue;
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
@@ -51,6 +52,8 @@ public:
     void add_batch(torch::Tensor tensor, const batch_metadata_t &meta);
 
     std::vector<TokenBatch> get_all_batches();
+
+    std::vector<TokenBatch> get_batches_restricted(int token_threshold);
 
 };
 
@@ -80,9 +83,13 @@ private:
 
 public:
 
+    UnifiedLayerScheduler(int num_layers);
+
     UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers);
 
-    UnifiedLayerScheduler(int num_layers);
+    bool is_attn_layer(int layer_id);
+
+    bool is_expert_layer(int layer_id);
 
     int schedule() override;
 
@@ -95,6 +102,8 @@ public:
     std::vector<int> get_pool_snapshot();
 
     TokenBatch get_batch_from_layer(int layer_id);
+
+    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold);
 };
 
 using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerScheduler>;

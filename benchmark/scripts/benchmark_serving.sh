@@ -10,7 +10,6 @@ NUM_LAYERS=32
 NUM_EXPERTS=4
 MAX_BATCH_SIZE_ATTN=160
 MAX_BATCH_SIZE_EXP=512
-GRAPH_STRIDE=8
 step_attn=1
 dp_size=2
 step_exp=1
@@ -42,7 +41,6 @@ python benchmark/benchmark_serving.py \
     --num-experts $NUM_EXPERTS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
-    --graph-stride $GRAPH_STRIDE \
     --step-attn $step_attn \
     --step-exp $step_exp \
     --dp-size $dp_size \

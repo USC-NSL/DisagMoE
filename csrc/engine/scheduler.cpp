@@ -72,6 +72,14 @@ void Scheduler::set_schedule_block(int step) {
 
 }
 
+void Scheduler::set_schedule_token_threshold(int attn_token_threshold, int expert_token_threshold) {
+    if (this->is_unified()) {
+        this->unified_pool->set_attn_schedule_token_threshold(attn_token_threshold);
+        this->unified_pool->set_expert_schedule_token_threshold(expert_token_threshold);
+    } else {
+        throw std::runtime_error("Scheduler must be constructed with a unified pool");
+    }
+}
 
 TokenBatch Scheduler::schedule() {
     if (this->is_attention()) {

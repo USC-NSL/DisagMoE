@@ -12,7 +12,6 @@ import disagmoe_c
 from disagmoe.utils.logger import new_logger
 from disagmoe.frontend.controller import Controller
 
-
 logger = new_logger("BenchmarkServer")
 
 app = Flask(__name__)
@@ -27,10 +26,10 @@ def run_once_endpoint():
     rate = data.get('rate', 10)
     duration = data.get('time', 10)
     distribution = data.get('distribution', 'poisson')
-    min_input_len = data.get('min_input_len', 30)
-    max_input_len = data.get('max_input_len', 70)
-    min_output_len = data.get('min_output_len', 80)
-    max_output_len = data.get('max_output_len', 120)
+    min_input_len = data.get('min_input_len', 200)
+    max_input_len = data.get('max_input_len', 500)
+    min_output_len = data.get('min_output_len', 100)
+    max_output_len = data.get('max_output_len', 300)
     
     if rate is None or duration is None or distribution is None:
         return "Missing required parameters", 400
@@ -70,7 +69,6 @@ def run_once_endpoint():
     
     return f"run_once executed successfully\n{metrics}\n", 200
 
-
 @app.route('/set_schedule', methods=['POST'])
 def set_schedule_endpoint():
     global master, args
@@ -105,7 +103,6 @@ def set_schedule_endpoint():
         args.layer_scheduler_step = step
     
     return "set_schedule executed successfully", 200
-
 
 @app.route('/init_profile', methods=['POST'])
 def init_profile_endpoint():

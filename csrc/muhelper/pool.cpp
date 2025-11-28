@@ -14,6 +14,14 @@ UnifiedPool::UnifiedPool(
     }
 }
 
+void UnifiedPool::set_attn_schedule_token_threshold(int token_threshold) {
+    this->attn_schedule_token_threshold = token_threshold;
+}
+
+void UnifiedPool::set_expert_schedule_token_threshold(int token_threshold) {
+    this->expert_schedule_token_threshold = token_threshold;
+}
+
 void UnifiedPool::process_attn_batch_topk(torch::Tensor tensor, batch_metadata_t &meta) {
     this->topk_pools[meta->layer_id].put_batch((TokenBatch) {tensor, meta});
     auto ready_tokens = this->topk_pools[meta->layer_id].fetch_ready_tokens();
@@ -78,7 +86,14 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
 
 TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
-    return this->layer_scheduler->get_batch_from_layer(layer_id);
+
+    int token_threshold = -1;
+    if (this->layer_scheduler->is_attn_layer(layer_id)) {
+        token_threshold = this->attn_schedule_token_threshold;
+    } else {
+        token_threshold = this->expert_schedule_token_threshold;
+    }
+    return this->layer_scheduler->get_batch_from_layer_restricted(layer_id, token_threshold);
 }
 
 std::shared_ptr<LayerSchedulerBase> UnifiedPool::get_layer_scheduler() {
