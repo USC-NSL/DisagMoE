@@ -5,6 +5,7 @@ from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
+from disagmoe.models.indices import get_m_indices
 
 # Optional import for deep_gemm (only available for sm90+)
 try:
@@ -200,9 +201,8 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         # batch_sizes: [num_experts], counts of tokens per expert
 
         # reuse buffer
-        m_indices = torch.repeat_interleave(
-            self.expert_ids,
-            batch_sizes.to(device=hiddens.device, dtype=torch.int32),
+        m_indices = get_m_indices(
+            batch_sizes.to(device=hiddens.device, dtype=torch.int32)
         )
 
         # Cast hiddens to FP8
