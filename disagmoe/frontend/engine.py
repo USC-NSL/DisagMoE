@@ -521,29 +521,63 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             get_logger().info("launching disaggregated engine")
             init_engine = init_disaggregated_engine
             
-        self.pool, self.scheduler, self.dispatcher = init_engine(
-            core_args.world_size,
-            self.device_id,
-            core_args.local_attn_dp_rank,
-            self.model_config.top_k,
-            self.has_attn,
-            self.has_expert,
-            core_args.expert_wise_schedule,
-            ParallelConfig.from_c(
-                1, # control the init of attn_scheduler
-                self.model_config.ep_size,
-                self.model_config.dp_size,
-                self.model_config.num_experts_per_rank,
-                core_args.expert_ranks,
-            ), # parallel config
-            core_args.layer_ids,
-            # P2P Channels
-            core_args.in_device_ids,
-            core_args.out_device_ids,
-            core_args.inbound_nccl_ids,
-            core_args.outbound_nccl_ids,
-            [info.to_c() for info in core_args.out_channel_infos],
-        )
+        if self.engine_type == EngineType.HYBRID:
+            # Unified (colocated) engine
+            unified_scheduler_type = getattr(self.model_config, "unified_scheduler_type", "flfs")
+            defrag_weight_decay = getattr(self.model_config, "defrag_weight_decay", 0.8)
+            defrag_lookahead_steps = getattr(self.model_config, "defrag_lookahead_steps", 8)
+            defrag_lookback_steps = getattr(self.model_config, "defrag_lookback_steps", 8)
+            self.pool, self.scheduler, self.dispatcher = init_engine(
+                core_args.world_size,
+                self.device_id,
+                core_args.local_attn_dp_rank,
+                self.model_config.top_k,
+                unified_scheduler_type,
+                defrag_weight_decay,
+                defrag_lookahead_steps,
+                defrag_lookback_steps,
+                self.has_attn,
+                self.has_expert,
+                core_args.expert_wise_schedule,
+                ParallelConfig.from_c(
+                    1, # control the init of attn_scheduler
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ), # parallel config
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                core_args.inbound_nccl_ids,
+                core_args.outbound_nccl_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+            )
+        else:
+            self.pool, self.scheduler, self.dispatcher = init_engine(
+                core_args.world_size,
+                self.device_id,
+                core_args.local_attn_dp_rank,
+                self.model_config.top_k,
+                self.has_attn,
+                self.has_expert,
+                core_args.expert_wise_schedule,
+                ParallelConfig.from_c(
+                    1, # control the init of attn_scheduler
+                    self.model_config.ep_size,
+                    self.model_config.dp_size,
+                    self.model_config.num_experts_per_rank,
+                    core_args.expert_ranks,
+                ), # parallel config
+                core_args.layer_ids,
+                # P2P Channels
+                core_args.in_device_ids,
+                core_args.out_device_ids,
+                core_args.inbound_nccl_ids,
+                core_args.outbound_nccl_ids,
+                [info.to_c() for info in core_args.out_channel_infos],
+            )
         
         _log_memory_usage("After initializing engine")
             

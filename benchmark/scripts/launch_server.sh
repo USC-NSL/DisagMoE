@@ -27,6 +27,10 @@ USE_SERIAL_GEMM_MOE=0
 transport_backend=zmq
 
 placement="colocate"
+UNIFIED_SCHEDULER_TYPE="flfs" # flfs | defrag; only valid for colocate mode
+DEFRAG_WEIGHT_DECAY=0.8
+DEFRAG_LOOKAHEAD_STEPS=8
+DEFRAG_LOOKBACK_STEPS=8
 
 if [ $placement == "colocate" ]; then
     dp_size=$((N_GPU_PER_NODE * N_NODE))
@@ -87,6 +91,10 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
+    --unified-scheduler-type $UNIFIED_SCHEDULER_TYPE \
+    --defrag-weight-decay $DEFRAG_WEIGHT_DECAY \
+    --defrag-lookahead-steps $DEFRAG_LOOKAHEAD_STEPS \
+    --defrag-lookback-steps $DEFRAG_LOOKBACK_STEPS \
     --attn-qkv-quant $ATTN_QKV_QUANT \
     --moe-linear-quant $MOE_LINEAR_QUANT \
     $SERIAL_GEMM_ARGS \

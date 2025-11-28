@@ -111,6 +111,10 @@ def launch(args):
     model_config.max_batch_size_expert = args.max_batch_size_expert
     model_config.graph_stride = args.graph_stride
     model_config.top_k = args.topk
+    model_config.unified_scheduler_type = getattr(args, "unified_scheduler_type", "flfs")
+    model_config.defrag_weight_decay = getattr(args, "defrag_weight_decay", 0.8)
+    model_config.defrag_lookahead_steps = getattr(args, "defrag_lookahead_steps", 8)
+    model_config.defrag_lookback_steps = getattr(args, "defrag_lookback_steps", 8)
     model_config.enable_trace = args.trace
     model_config.num_kv_heads = args.num_kv_heads
     model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant

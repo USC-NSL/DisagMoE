@@ -133,6 +133,10 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     int local_id,
     int global_rank,
     int top_k,
+    const std::string& unified_scheduler_type,
+    float defrag_weight_decay,
+    int defrag_lookahead_steps,
+    int defrag_lookback_steps,
     bool has_attn,
     bool has_expert,
     bool expert_wise_schedule,
@@ -155,8 +159,11 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
         global_rank
     );
 
-    auto unified_dispatcher = std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
-    auto unified_pool = std::make_shared<UnifiedPool>(layer_ids, local_id, in_channels, num_groups, top_k);
+    auto unified_dispatcher =
+        std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
+    auto unified_pool = std::make_shared<UnifiedPool>(
+        layer_ids, local_id, in_channels, num_groups, top_k,
+        unified_scheduler_type, defrag_weight_decay, defrag_lookahead_steps, defrag_lookback_steps);
     auto scheduler = std::make_shared<Scheduler>(unified_pool);
 
     auto casted_pool = std::static_pointer_cast<MuPool>(unified_pool);

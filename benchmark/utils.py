@@ -50,6 +50,15 @@ def get_parser_base():
     parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
     parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")
     parser.add_argument("--expert-wise-schedule", action="store_true", default=False, help="enable expert-wise schedule")
+    parser.add_argument("--unified-scheduler-type", type=str, default="flfs",
+                        choices=["flfs", "defrag"],
+                        help="unified attention+MoE scheduler type for colocated deployment: 'flfs' or 'defrag'")
+    parser.add_argument("--defrag-weight-decay", type=float, default=0.8,
+                        help="weight decay used by unified defragging scheduler")
+    parser.add_argument("--defrag-lookahead-steps", type=int, default=8,
+                        help="lookahead steps used by unified defragging scheduler")
+    parser.add_argument("--defrag-lookback-steps", type=int, default=8,
+                        help="lookback steps used by unified defragging scheduler")
 
     # placement config
     parser.add_argument("--placement", type=str, default="pipeline", help="placement strategy")

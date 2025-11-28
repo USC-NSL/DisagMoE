@@ -34,6 +34,10 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     int local_id,
     int global_rank, // rank in group
     int top_k,
+    const std::string& unified_scheduler_type,
+    float defrag_weight_decay,
+    int defrag_lookahead_steps,
+    int defrag_lookback_steps,
     bool has_attn,
     bool has_expert,
     bool expert_wise_schedule,
