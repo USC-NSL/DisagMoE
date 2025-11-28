@@ -799,6 +799,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     result.sync_event = torch.cuda.Event()
                     result.sync_event.record(self.stream)
                     result_queue.append((forward_batch, result)) # forward_batch.copy?
+                self.step_profile(batch.metadata.num_tokens())
                 
             if last_batch:
                 tmp_batch, tmp_result = result_queue.popleft()
