@@ -10,6 +10,7 @@
 #include <string>
 #include <optional>
 #include <memory>
+#include <algorithm>
 
 #include "nccl.h"
 #include <cereal/types/vector.hpp>
@@ -315,18 +316,44 @@ inline std::vector<BatchMetadata> BatchMetadata::split_with_sizes(const std::vec
     std::vector<std::vector<float>> split_topk_weights = split_vector_by_size(this->topk_weights, sizes);
     std::vector<BatchMetadata> metas;
     for (int i = 0; i < n; i ++) {
-        metas.emplace_back(
-            BatchMetadata {
-                this->batch_tag,
-                {sizes[i], this->shape[1]},
-                this->dtype, this->layer_id,
-                split_req_ids[i], 
-                split_exp_ids[i],
-                split_topk_weights[i],
-                split_attn_dp_ranks[i],
-                split_init_prefill_lens[i]
-            }
-        );
+        if (is_attention()) {
+            // Count prefill and decode tokens for this split
+            int num_prefill_tokens = std::count_if(
+                split_init_prefill_lens[i].begin(), 
+                split_init_prefill_lens[i].end(),
+                [](int len) { return len != -1; }
+            );
+            int num_decode_tokens = sizes[i] - num_prefill_tokens;
+            int num_prefill_seqs = num_prefill_tokens;
+            metas.emplace_back(
+                BatchMetadata {
+                    this->batch_tag,
+                    {sizes[i], this->shape[1]},
+                    this->dtype, this->layer_id,
+                    split_req_ids[i], 
+                    split_exp_ids[i],
+                    split_topk_weights[i],
+                    split_attn_dp_ranks[i],
+                    split_init_prefill_lens[i],
+                    num_prefill_seqs,
+                    num_prefill_tokens,
+                    num_decode_tokens
+                }
+            );
+        } else {
+            metas.emplace_back(
+                BatchMetadata {
+                    this->batch_tag,
+                    {sizes[i], this->shape[1]},
+                    this->dtype, this->layer_id,
+                    split_req_ids[i], 
+                    split_exp_ids[i],
+                    split_topk_weights[i],
+                    split_attn_dp_ranks[i],
+                    split_init_prefill_lens[i]
+                }
+            );
+        }
     }
     return metas;
 }

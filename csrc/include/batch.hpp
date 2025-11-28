@@ -41,6 +41,17 @@ struct TokenBatch: ScheduleUnit {
         return batches;
     }
 
+    std::vector<TokenBatch> split_with_sizes(const std::vector<int> &sizes) {
+        int n = sizes.size();
+        auto metas = metadata->split_with_sizes(sizes);
+        auto token_chunks = split_tensor_by_size(data, sizes);
+        std::vector<TokenBatch> batches;
+        for (int i = 0; i < n; i ++) {
+            batches.emplace_back(TokenBatch{token_chunks[i], std::make_shared<BatchMetadata>(std::move(metas[i]))});
+        }
+        return batches;
+    }
+
     inline static TokenBatch merge_by_expert(const std::vector<TokenBatch>& batches) {
         if (batches.empty()) {
             return TokenBatch {};

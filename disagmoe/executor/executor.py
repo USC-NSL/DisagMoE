@@ -252,9 +252,10 @@ class AttnExecutor(Executor):
             _log_memory_usage("After build CUDA graphs")
             
     def warmup(self, batch_size: int):
-        get_logger().info("Attention warmup start")
-        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, 256)
+        get_logger().info(f"Attention warmup start, batch size {batch_size}")
+        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
         meta = self.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
+        get_logger().info(f"Attention warmup meta block table shape: {meta.block_tables.shape}")
         for layer_id in self.model_config.layer_ids:
             # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
@@ -284,15 +285,21 @@ class AttnExecutor(Executor):
         
     @nvtx_range("AttnExecutor.execute")
     def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
-        if self.enable_cuda_graph and batch.metadata.use_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
+        if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
             outputs, topk_weights, topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
+            # TODO: if overlap schedule is enabled, we need to copy results out to leave the output buffer free for the next batch
+            # The copy process can be optimized by using a buffer pool
+            # outputs = outputs.clone()
+            # topk_weights = topk_weights.clone()
+            # topk_ids = topk_ids.clone()
         else:
             outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
             
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=topk_weights,
-            expert_ids=topk_ids
+            expert_ids=topk_ids,
+            sync_event=None,
         )
     
     @staticmethod

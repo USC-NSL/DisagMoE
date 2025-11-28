@@ -61,6 +61,7 @@ class Detokenizer:
     def process_batch(self, batch: BatchDecodeResult):
         num_tokens = len(batch.req_ids)
         cur_time_ms = t_now_high_ms()
+        self.token_processed += num_tokens
         
         self.detokenizer_step_counter += 1
         if self.detokenizer_step_counter % 100 == 0:

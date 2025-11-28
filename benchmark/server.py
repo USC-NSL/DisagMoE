@@ -106,7 +106,7 @@ def set_schedule_endpoint():
 
 @app.route('/init_profile', methods=['POST'])
 def init_profile_endpoint():
-    global master, args
+    global master
     from flask import request
     data = request.get_json()
     profile_start_min_batch_size = data.get('profile_start_min_batch_size', 100)

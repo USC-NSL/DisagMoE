@@ -269,11 +269,9 @@ class CPUBlockManager(BaseBlockManager):
         # 1. prepare block table
         if dummy_cache:
             # dummy_cache is True when _warmup_attn
-            block_table_cuda = torch.arange(
-                num_tokens * (self.model_config.max_seq_len // self.block_size), 
-                dtype=torch.int32, device=self.device
-            ).view(num_tokens, -1)
-            slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
+            max_num_blocks = (max(batch.seq_lens) - 1) // self.block_size + 1
+            block_table_cuda = torch.zeros(num_tokens * max_num_blocks, dtype=torch.int32, device=self.device).view(num_tokens, -1)
+            slot_mapping_cuda = torch.zeros(num_tokens, dtype=torch.int64, device=self.device)
         else:
             if self.use_gdr_copy:
                 num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
