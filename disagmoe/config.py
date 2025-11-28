@@ -21,6 +21,8 @@ class ModelConfig:
     rank: int = 0
     layer_ids: Optional[List[int]] = None
     top_k: int = 1
+    max_seq_len: int = 4096
+    
     # Attention-specific quantization option for QKV projection
     # e.g., "fp8" or None
     attn_qkv_quant: Optional[str] = None
@@ -28,21 +30,22 @@ class ModelConfig:
     # e.g., "fp8" or None
     moe_linear_quant: Optional[str] = None
     
+    @property
+    def num_experts_per_rank(self):
+        return self.num_experts // self.ep_size
+    
+@dataclass
+class EngineConfig:
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
     enable_grouped_gemm: bool = False
     
-    graph_stride: int = 8
     max_batch_size_attn: int = 160
     max_batch_size_expert: int = 512
-    max_seq_len: int = 4096
+    max_attn_graph_bsz: int = 160
     
     # FIXME(hogura|20250110): temporary field, should be moved to other place
     enable_trace: bool = False
-    
-    @property
-    def num_experts_per_rank(self):
-        return self.num_experts // self.ep_size
     
 @dataclass
 class CacheConfig(vllm.config.CacheConfig):
@@ -57,19 +60,10 @@ class CacheConfig(vllm.config.CacheConfig):
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
-        num_gpu_blocks: Optional[int] = None,
     ) -> None:
         super().__init__(block_size, gpu_memory_utilization, 
                          swap_space, cache_dtype, num_gpu_blocks_override, 
                          sliding_window, enable_prefix_caching, cpu_offload_gb)
-        self.num_gpu_blocks = num_gpu_blocks        
-
-
-@dataclass
-class SamplingConfig:
-    min_output_len: int    
-    max_output_len: int
-
 
 mixtral_config = ModelConfig(
     hidden_size = 4096,

@@ -132,7 +132,6 @@ def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, l
         topk_weights=[1.0] * batch_size,
         attn_dp_ranks=[0] * batch_size,
         init_prefill_lens=[seq_len] * num_prefill_seqs + [-1] * num_decode_tokens,
-        max_output_lens=[4096] * batch_size,
         num_prefill_seqs=num_prefill_seqs,
         num_prefill_tokens=num_prefill_tokens,
         num_decode_tokens=num_decode_tokens,
@@ -155,7 +154,6 @@ def create_test_metadata(batch_size: int, num_prefill_seqs: int, seq_len: int, l
     meta_c.topk_weights = [1.0] * batch_size
     meta_c.attn_dp_ranks = [0] * batch_size
     meta_c.init_prefill_lens = [seq_len] * num_prefill_seqs + [-1] * num_decode_tokens
-    meta_c.max_output_lens = [4096] * batch_size
     meta_c.num_prefill_seqs = num_prefill_seqs
     meta_c.num_prefill_tokens = num_prefill_tokens
     meta_c.num_decode_tokens = num_decode_tokens

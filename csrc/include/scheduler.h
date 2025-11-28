@@ -47,6 +47,7 @@ public:
     std::vector<int> get_topk_pool_snapshot();
     void set_schedule_policy(std::string type);
     void set_schedule_block(int step);
+    void set_schedule_token_threshold(int attn_token_threshold, int expert_token_threshold);
 
     TokenBatch schedule();
     TokenBatch schedule_expert();

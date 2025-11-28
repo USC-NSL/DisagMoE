@@ -8,6 +8,7 @@
 #include "batch.hpp"
 #include <memory>
 #include <vector>
+#include <deque>
 #include <torch/torch.h>
 
 enum class LayerType { ATTENTION, EXPERT };
@@ -25,7 +26,7 @@ private:
     int num_tokens;
     int num_batches;
 
-    std::vector<TokenBatch> batch_queue{};
+    std::deque<TokenBatch> batch_queue;
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
@@ -52,6 +53,8 @@ public:
 
     std::vector<TokenBatch> get_all_batches();
 
+    std::vector<TokenBatch> get_batches_restricted(int token_threshold);
+
 };
 
 
@@ -73,6 +76,12 @@ class UnifiedLayerSchedulerBase : public LayerSchedulerBase {
 public:
     virtual ~UnifiedLayerSchedulerBase() = default;
 
+    // Query whether a given global layer id corresponds to an attention layer
+    // or an expert layer. Semantics are defined by unified schedulers.
+    virtual bool is_attn_layer(int layer_id) = 0;
+
+    virtual bool is_expert_layer(int layer_id) = 0;
+
     virtual void add_batch(const TokenBatch &batch) = 0;
 
     virtual void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta) = 0;
@@ -80,6 +89,11 @@ public:
     virtual std::vector<int> get_pool_snapshot() = 0;
 
     virtual TokenBatch get_batch_from_layer(int layer_id) = 0;
+
+    // Get a batch from `layer_id` but cap the number of tokens to `token_threshold`
+    // (<= 0 means no restriction). Implemented by unified schedulers that support
+    // partial draining.
+    virtual TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) = 0;
 };
 
 // TODO: support expert-wise scheduling
@@ -97,9 +111,13 @@ private:
 
 public:
 
+    UnifiedLayerScheduler(int num_layers);
+
     UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers);
 
-    UnifiedLayerScheduler(int num_layers);
+    bool is_attn_layer(int layer_id) override;
+
+    bool is_expert_layer(int layer_id) override;
 
     int schedule() override;
 
@@ -112,6 +130,8 @@ public:
     std::vector<int> get_pool_snapshot() override;
 
     TokenBatch get_batch_from_layer(int layer_id) override;
+
+    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) override;
 };
 
 using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerSchedulerBase>;
@@ -167,6 +187,10 @@ public:
 
     int schedule() override;
 
+    bool is_attn_layer(int layer_id) override;
+
+    bool is_expert_layer(int layer_id) override;
+
     // Not supported
     void add_tokens_to_layer(int layer_id, int num_tokens) override;
 
@@ -177,6 +201,8 @@ public:
     std::vector<int> get_pool_snapshot() override;
 
     TokenBatch get_batch_from_layer(int layer_id) override;
+
+    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) override;
 };
 
 

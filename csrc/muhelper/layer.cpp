@@ -1,4 +1,5 @@
 #include "layer.h"
+#include "batch.hpp"
 
 UnifiedLayer::UnifiedLayer(LayerType layer_type, int layer_id): 
     layer_type(layer_type), layer_id(layer_id), expert_id(-1), num_tokens(0), num_batches(0) {}
@@ -28,9 +29,41 @@ void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
 
 std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
     std::vector<TokenBatch> result{};
-    result.swap(this->batch_queue);
+    while (!this->batch_queue.empty()) {
+        result.emplace_back(std::move(this->batch_queue.front()));
+        this->batch_queue.pop_front();
+    }
     this->num_tokens = 0;
     this->num_batches = 0;
+    return result;
+}
+
+std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold) {
+    std::vector<TokenBatch> result{};
+    int total_tokens = 0;
+    int num_batches = 0;
+    while (!this->batch_queue.empty() && total_tokens < token_threshold) {
+        auto first_batch = this->batch_queue.front();
+        int tokens_in_batch = first_batch.metadata->num_tokens();
+        if (total_tokens + tokens_in_batch > token_threshold) {
+            int need_tokens = token_threshold - total_tokens;
+            auto batches = first_batch.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
+            tokens_in_batch = batches[0].metadata->num_tokens();
+            result.emplace_back(std::move(batches[0]));
+            this->batch_queue.front() = std::move(batches[1]);
+        } else {
+            result.emplace_back(std::move(this->batch_queue.front()));
+            this->batch_queue.pop_front();
+        }
+        total_tokens += tokens_in_batch;
+        num_batches += 1;
+    }
+    this->num_tokens -= total_tokens;
+    this->num_batches -= num_batches;
+    ASSERT_MSG(total_tokens > 0 && num_batches > 0, "Got nothing from layer" + std::to_string(this->layer_id) + \
+    " under token threshold, total tokens in layer: " + std::to_string(this->num_tokens) + \
+    ", num tokens in next batch in layer: " + std::to_string(this->batch_queue.front().metadata->num_tokens()) + \
+    ", token threshold: " + std::to_string(token_threshold));
     return result;
 }
 
@@ -58,6 +91,14 @@ UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert
 UnifiedLayerScheduler::UnifiedLayerScheduler(int num_layers):
     UnifiedLayerScheduler(num_layers, num_layers) { }
 
+bool UnifiedLayerScheduler::is_attn_layer(int layer_id) {
+    return layer_id < this->num_attn_layers;
+}
+
+bool UnifiedLayerScheduler::is_expert_layer(int layer_id) {
+    return layer_id >= this->num_attn_layers;
+}
+
 int UnifiedLayerScheduler::schedule() {
     // TODO: this is fisrt-layer-first-serve, implement other policies
     for (int i = 0; i < this->num_attn_layers; i++) {
@@ -79,6 +120,18 @@ TokenBatch UnifiedLayerScheduler::get_batch_from_layer(int layer_id) {
     auto batches = this->layers[layer_id]->get_all_batches();
     auto batch = TokenBatch::merge(batches);
     return batch;
+}
+
+TokenBatch UnifiedLayerScheduler::get_batch_from_layer_restricted(int layer_id, int token_threshold) {
+    if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
+        return TokenBatch {};
+    }
+    if (token_threshold > 0 && this->layers[layer_id]->get_num_tokens() > token_threshold) {
+        auto batches = this->layers[layer_id]->get_batches_restricted(token_threshold);
+        auto batch = TokenBatch::merge(batches);
+        return batch;
+    } 
+    return this->get_batch_from_layer(layer_id);
 }
 
 std::vector<int> UnifiedLayerScheduler::get_pool_snapshot() {

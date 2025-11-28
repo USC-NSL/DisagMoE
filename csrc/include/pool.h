@@ -15,6 +15,10 @@ private:
 
     int top_k;
 
+    int attn_schedule_token_threshold{-1};
+
+    int expert_schedule_token_threshold{-1};
+
     std::vector<TokenTopKPool> topk_pools;
 
     unified_layer_scheduler_t layer_scheduler;
@@ -32,6 +36,10 @@ public:
     UnifiedPool(std::vector<int> layer_ids, int device_id, std::vector<Channel_t> channels,
                 int num_groups, int top_k, const std::string& unified_scheduler_type,
                 float defrag_weight_decay, int defrag_lookahead_steps, int defrag_lookback_steps);
+
+    void set_attn_schedule_token_threshold(int token_threshold);
+
+    void set_expert_schedule_token_threshold(int token_threshold);
 
     TokenBatch get_batch_from_layer(int layer_id) override;
 

@@ -12,6 +12,7 @@ from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocator, PagedTokenToKVPoolAllocator
 
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
+from disagmoe.frontend.engine_utils import get_global_engine_config
 
 @dataclass
 class BatchTensorBuffer:
@@ -135,7 +136,7 @@ class BaseBlockManager:
         self.max_running_reqs = max_running_reqs
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self.decode_seq_lens = {}  # Track sequence lengths for each request
-        self.query_start_loc_cuda_buffer = torch.arange(self.model_config.max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
+        self.query_start_loc_cuda_buffer = torch.arange(get_global_engine_config().max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
         
     def reset_state(self):
         pass
@@ -172,7 +173,7 @@ class CPUBlockManager(BaseBlockManager):
         
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
         
-        self.batch_tensor_buffer = BatchTensorBuffer(model_config.max_batch_size_attn, max_pages_per_req)
+        self.batch_tensor_buffer = BatchTensorBuffer(get_global_engine_config().max_batch_size_attn, max_pages_per_req)
         
         self._block_mgr.register_gdr_context(self.batch_tensor_buffer.block_table, self.batch_tensor_buffer.slot_mapping)
         self._block_mgr.register_seq_info_gdr(self.batch_tensor_buffer.seq_lens, self.batch_tensor_buffer.context_lens, self.batch_tensor_buffer.seq_start_loc)
@@ -268,11 +269,9 @@ class CPUBlockManager(BaseBlockManager):
         # 1. prepare block table
         if dummy_cache:
             # dummy_cache is True when _warmup_attn
-            block_table_cuda = torch.arange(
-                num_tokens * (self.model_config.max_seq_len // self.block_size), 
-                dtype=torch.int32, device=self.device
-            ).view(num_tokens, -1)
-            slot_mapping_cuda = torch.arange(num_tokens, dtype=torch.int64, device=self.device)
+            max_num_blocks = (max(batch.seq_lens) - 1) // self.block_size + 1
+            block_table_cuda = torch.zeros(num_tokens * max_num_blocks, dtype=torch.int32, device=self.device).view(num_tokens, -1)
+            slot_mapping_cuda = torch.zeros(num_tokens, dtype=torch.int64, device=self.device)
         else:
             if self.use_gdr_copy:
                 num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
@@ -357,7 +356,7 @@ class GPUBlockManager(BaseBlockManager):
                 need_sort=False,    
             )
         
-        self.seq_start_loc = torch.zeros(self.model_config.max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
+        self.seq_start_loc = torch.zeros(get_global_engine_config().max_batch_size_attn + 1, dtype=torch.int32, device=self.device)
     
     def reset_state(self):
         self.decode_seq_lens = {}

@@ -22,7 +22,7 @@ from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
 from disagmoe.frontend.datatypes import AttentionForwardBatch, AttentionForwardResult
-
+from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor
 
 def get_module_param_memory(module, unit='GB'):
@@ -77,7 +77,7 @@ class AttnExecutor(Executor):
             gpu_memory_utilization=0,
             swap_space=0,
         )
-        self.enable_cuda_graph = self.model_config.enable_cuda_graph_attn
+        self.enable_cuda_graph = get_global_engine_config().enable_cuda_graph_attn
         self.cuda_graph_executor = None
         self.device = "cuda"
         self.block_mgr: BaseBlockManager = None
@@ -226,7 +226,7 @@ class AttnExecutor(Executor):
     def determine_kv_cache_blocks(self) -> int:
         torch.cuda.empty_cache()
                 
-        self.memory_profile(self.model_config.max_batch_size_attn)      
+        self.memory_profile(get_global_engine_config().max_batch_size_attn)      
         torch.cuda.synchronize()
         
         _log_memory_usage("After profile run")
@@ -252,9 +252,10 @@ class AttnExecutor(Executor):
             _log_memory_usage("After build CUDA graphs")
             
     def warmup(self, batch_size: int):
-        get_logger().info("Attention warmup start")
-        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, 256)
+        get_logger().info(f"Attention warmup start, batch size {batch_size}")
+        batch = make_attention_dummy_batch(0, batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
         meta = self.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
+        get_logger().info(f"Attention warmup meta block table shape: {meta.block_tables.shape}")
         for layer_id in self.model_config.layer_ids:
             # get_logger().info(f"Attention warmup layer {layer_id} start")
             for _ in range(2):
@@ -284,15 +285,21 @@ class AttnExecutor(Executor):
         
     @nvtx_range("AttnExecutor.execute")
     def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
-        if self.enable_cuda_graph and batch.metadata.use_cuda_graph and batch.metadata.num_decode_tokens <= self.attn_max_batch_size:
+        if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
             outputs, topk_weights, topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
+            # TODO: if overlap schedule is enabled, we need to copy results out to leave the output buffer free for the next batch
+            # The copy process can be optimized by using a buffer pool
+            # outputs = outputs.clone()
+            # topk_weights = topk_weights.clone()
+            # topk_ids = topk_ids.clone()
         else:
             outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
             
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=topk_weights,
-            expert_ids=topk_ids
+            expert_ids=topk_ids,
+            sync_event=None,
         )
     
     @staticmethod
@@ -306,7 +313,7 @@ class ExpertsExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig):
         super().__init__(model_config)
-        expert_cls = MoEExperts if model_config.enable_grouped_gemm else MoEExpertsSerial
+        expert_cls = MoEExperts if get_global_engine_config().enable_grouped_gemm else MoEExpertsSerial
         self.type = ExecutorType.EXPERTS_EXEC
         # Build quantization config for MoE experts (Serial only) if requested
         moe_quant_config = None
@@ -338,7 +345,7 @@ class ExpertsExecutor(Executor):
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
-                        max_batch_size=self.model_config.max_batch_size_expert,
+                        max_batch_size=get_global_engine_config().max_batch_size_expert,
                         quant_config=moe_quant_config,
                     )
                 )
@@ -349,7 +356,7 @@ class ExpertsExecutor(Executor):
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
-                        max_batch_size=self.model_config.max_batch_size_expert,
+                        max_batch_size=get_global_engine_config().max_batch_size_expert,
                     )
                 )
         # DisagMoE hacks:

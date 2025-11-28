@@ -139,7 +139,7 @@ class MoEAttention(nn.Module):
             bias=False,
             tp_size=tp_size,
             tp_rank=tp_rank,
-            quant_config=quant_config,
+            quant_config=quant_config_qkv,
             prefix=f"{prefix}.o_proj",
             params_dtype=params_dtype,
         )
@@ -155,7 +155,7 @@ class MoEAttention(nn.Module):
                               self.scaling,
                               num_kv_heads=self.num_kv_heads,
                               cache_config=cache_config,
-                              quant_config=quant_config,
+                              quant_config=None,
                               use_direct_call=True,)
         
         self.gate = ReplicatedLinear(hidden_size,

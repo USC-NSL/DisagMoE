@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Callable
 import torch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
@@ -41,7 +41,6 @@ class BatchMetadata:
     topk_weights: List[float]
     attn_dp_ranks: List[int]
     init_prefill_lens: List[int]
-    max_output_lens: List[int]
     
     # Only used in attention batch - optional fields
     num_prefill_seqs: Optional[int] = None
@@ -104,7 +103,6 @@ class BatchMetadata:
             topk_weights=meta_c.topk_weights,
             attn_dp_ranks=meta_c.attn_dp_ranks,
             init_prefill_lens=meta_c.init_prefill_lens,
-            max_output_lens=meta_c.max_output_lens,
             num_prefill_seqs=meta_c.num_prefill_seqs,
             num_prefill_tokens=meta_c.num_prefill_tokens,
             num_decode_tokens=meta_c.num_decode_tokens
@@ -120,7 +118,6 @@ class BatchMetadata:
         meta_c.topk_weights = self.topk_weights
         meta_c.attn_dp_ranks = self.attn_dp_ranks
         meta_c.init_prefill_lens = self.init_prefill_lens
-        meta_c.max_output_lens = self.max_output_lens
         meta_c.num_prefill_seqs = self.num_prefill_seqs
         meta_c.num_prefill_tokens = self.num_prefill_tokens
         meta_c.num_decode_tokens = self.num_decode_tokens
@@ -138,6 +135,31 @@ class TokenBatch:
             batch_c.metadata
         )
         
+    @staticmethod
+    def make_c(data: torch.Tensor, metadata: BatchMetadata_C) -> "TokenBatch_C":
+        batch = TokenBatch_C()
+        batch.data = data
+        batch.metadata = metadata
+        return batch
+    
+@dataclass
+class TokenBatchCWrapper:
+    data: torch.Tensor
+    metadata: BatchMetadata_C
+    
+    @staticmethod
+    def from_c(batch_c: "TokenBatch_C") -> "TokenBatchCWrapper":
+        return TokenBatchCWrapper(
+            data=batch_c.data,
+            metadata=batch_c.metadata
+        )
+    
+    def to_c(self) -> "TokenBatch_C":
+        batch = TokenBatch_C()
+        batch.data = self.data
+        batch.metadata = self.metadata
+        return batch
+        
 @dataclass
 class AttentionScheduleBatch:
     
@@ -146,7 +168,6 @@ class AttentionScheduleBatch:
     layer_id: int
     req_ids: List[int]
     init_prefill_lens: List[int]
-    max_output_lens: List[int]
     
     num_prefill_seqs: int
     num_prefill_tokens: int
@@ -169,7 +190,6 @@ class AttentionScheduleBatch:
             layer_id=meta.layer_id,
             req_ids=meta.req_ids,
             init_prefill_lens=meta.init_prefill_lens,
-            max_output_lens=meta.max_output_lens,
             num_prefill_seqs=meta.num_prefill_seqs,
             num_prefill_tokens=meta.num_prefill_tokens,
             num_decode_tokens=meta.num_decode_tokens,
@@ -187,7 +207,6 @@ class AttentionScheduleBatch:
             topk_weights=[],
             attn_dp_ranks=[],
             init_prefill_lens=self.init_prefill_lens,
-            max_output_lens=self.max_output_lens,
             num_prefill_seqs=self.num_prefill_seqs,
             num_prefill_tokens=self.num_prefill_tokens,
             num_decode_tokens=self.num_decode_tokens
@@ -197,31 +216,38 @@ class AttentionScheduleBatch:
         return self.to_metadata().to_c()
 
 @dataclass
-class AttentionForwardBatch:
+class ForwardBatch:
     layer_id: int
     data: torch.Tensor
+    num_tokens: int
+    meta_c: BatchMetadata_C
+    
+    proc_func: Optional[Callable[["ForwardBatch"], "ForwardResult"]]
+    post_proc_func: Optional[Callable[["ForwardBatch", "ForwardResult"], TokenBatchCWrapper]]
+
+@dataclass
+class AttentionForwardBatch(ForwardBatch):
     positions: torch.Tensor
     metadata: FlashAttentionMetadata
     req_ids: Optional[List[int]] = None
-    meta_c: Optional[BatchMetadata_C] = None
-    
+
 @dataclass
-class AttentionForwardResult:
+class ExpertForwardBatch(ForwardBatch):
+    batch_sizes: List[int] | torch.Tensor
+
+@dataclass
+class ForwardResult:
     hiddens: torch.Tensor
+    sync_event: Optional[torch.cuda.Event]
+
+@dataclass
+class AttentionForwardResult(ForwardResult):
     expert_weights: List[float]
     expert_ids: List[int]
-    
+
 @dataclass
-class ExpertForwardBatch:
-    layer_id: int
-    num_tokens: int
-    data: torch.Tensor
-    batch_sizes: List[int] | torch.Tensor
-    meta_c: Optional[BatchMetadata_C] = None
-    
-@dataclass
-class ExpertForwardResult:
-    hiddens: torch.Tensor
+class ExpertForwardResult(ForwardResult):
+    pass
     
 @dataclass
 class SloStat:
