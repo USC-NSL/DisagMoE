@@ -9,7 +9,7 @@ from disagmoe.executor.executor import Executor, ExpertsExecutor, AttnExecutor
 from disagmoe.config import ModelConfig, CacheConfig, EngineConfig
 from disagmoe.frontend.adapter import Scheduler, MuPool, MuDispatcher
 from disagmoe.frontend.datatypes import (
-    AttentionScheduleBatch, 
+    AttentionScheduleBatch,
     ForwardBatch, ForwardResult, 
     AttentionForwardBatch, AttentionForwardResult, 
     ExpertForwardBatch, ExpertForwardResult,
@@ -23,6 +23,7 @@ from disagmoe.frontend.profiler import EngineProfilerMixin
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent)
+from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
@@ -46,6 +47,7 @@ from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
                         recorder_output as disagmoe_recorder_output)
 
 from disagmoe.frontend.engine_utils import EngineType, set_global_engine_config
+from disagmoe.utils.gdr_context import GdrContext
     
 class AttentionEngineMixin:
     
@@ -78,6 +80,9 @@ class AttentionEngineMixin:
             self.attn_executor.build_cuda_graph_executor()
             
         self.req_tracker: Dict[int, int] = {}
+        
+        self.attn_token_mapping_buffer = get_cuda_aligned_tensor(self.engine_config.max_batch_size_attn * self.model_config.top_k, torch.int32, device="cuda")
+        self.attn_token_mapping_buffer_gdr = GdrContext(self.attn_token_mapping_buffer)
 
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -186,8 +191,9 @@ class AttentionEngineMixin:
             
         new_meta_c.exp_ids = expert_ids
         exp_mappings = new_meta_c.sort_by_expert()
+        self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
-        hiddens = permute_tokens(result.hiddens, exp_mappings)
+        hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer[:len(exp_mappings)], self.stream)
             
         return TokenBatchCWrapper(data=hiddens, metadata=new_meta_c)
     
@@ -348,6 +354,12 @@ class ExpertEngineMixin:
         self.expert_executor.warmup(self.expert_max_batch_size)
         _log_memory_usage("After building expert executor")
         
+        self.expert_token_mapping_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
+        self.expert_token_mapping_buffer_gdr = GdrContext(self.expert_token_mapping_buffer)
+        
+        self.expert_weights_staging_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.bfloat16, device="cuda")
+        self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
+        
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
         input_tensor = batch.data
@@ -389,29 +401,18 @@ class ExpertEngineMixin:
         
     def postprocess_batch_expert(self, batch: ExpertForwardBatch, result: ExpertForwardResult) -> TokenBatchCWrapper:
         with self._timer.range("postprocess"):
-            h2d_event = torch.cuda.Event()
-            new_mappings = list(batch.meta_c.sort_by_attention())
-            
-            with torch.cuda.stream(self.h2d_stream):
-                new_mappings_cpu = torch.tensor(new_mappings, dtype=torch.int64, device="cpu", pin_memory=True)
+            assert batch.num_tokens <= self.expert_max_batch_size
                 
-                if batch.num_tokens > self.expert_max_batch_size:
-                    new_mappings_gpu = new_mappings_cpu.to("cuda", non_blocking=True)
-                else:
-                    new_mappings_gpu = self.static_mappings_gpu[:batch.num_tokens]
-                    new_mappings_gpu.copy_(new_mappings_cpu, non_blocking=True)
-                    
-                if self.model_config.top_k > 1:
-                    topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cuda").view(-1, 1)
-                    hiddens = result.hiddens * topk_weights
-                else:
-                    hiddens = result.hiddens
-                    
-                h2d_event.record(self.h2d_stream)
-
-            h2d_event.wait(self.h2d_stream)
-            
-            hiddens = permute_tokens(hiddens, new_mappings_gpu)
+            if self.model_config.top_k > 1:
+                topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
+                self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
+                hiddens = result.hiddens * self.expert_weights_staging_buffer[:batch.num_tokens].view(-1, 1)
+            else:
+                hiddens = result.hiddens
+                
+            new_mappings = list(batch.meta_c.sort_by_attention()) # 20us
+            self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
+            hiddens = permute_tokens(hiddens, self.expert_token_mapping_buffer[:batch.num_tokens], self.stream)
             batch.meta_c.exp_ids = []
             batch.meta_c.topk_weights = []
             batch.meta_c.step_layer()
@@ -576,7 +577,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.scheduler, self.dispatcher)
         
-        self.loop_thread = Thread(target=self.single_module_loop_overlap)
+        self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
 

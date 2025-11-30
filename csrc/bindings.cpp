@@ -125,6 +125,19 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("register_seq_info_gdr", &BlockManager::register_seq_info_gdr)
         .def("prepare_seq_info_gdr", &BlockManager::prepare_seq_info_gdr);
 
+    py::class_<GdrContext, std::shared_ptr<GdrContext>>(m, "GdrContext")
+        .def(py::init<const torch::Tensor&>())
+        .def("get_tensor", &GdrContext::get_tensor)
+        .def("copy_from_host", &GdrContext::copy_from_host)
+        .def("copy_from_host_tensor", &GdrContext::copy_from_host_tensor)
+        .def("copy_to_host", &GdrContext::copy_to_host)
+        .def("copy_to_host_tensor", &GdrContext::copy_to_host_tensor)
+        .def("fill", &GdrContext::fill)
+        .def("copy_from_host_int32", &GdrContext::copy_from_host_int32)
+        .def("copy_from_host_int64", &GdrContext::copy_from_host_int64)
+        .def("copy_to_host_int32", &GdrContext::copy_to_host_int32)
+        .def("copy_to_host_int64", &GdrContext::copy_to_host_int64);
+
     REGISTER_FUNC(rebind_1d_tensor);
     REGISTER_FUNC(rebind_2d_tensor);
     REGISTER_FUNC(rebind_batch_info_tensor);
