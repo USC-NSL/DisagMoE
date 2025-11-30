@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import List, Dict, Tuple, Optional, Callable, Union
 import torch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
@@ -233,7 +233,8 @@ class AttentionForwardBatch(ForwardBatch):
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):
-    batch_sizes: List[int] | torch.Tensor
+    batch_sizes: Optional[Union[List[int], torch.Tensor]]
+    m_indices: Optional[torch.Tensor]
 
 @dataclass
 class ForwardResult:

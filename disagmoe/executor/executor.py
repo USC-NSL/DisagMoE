@@ -21,9 +21,11 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch, make_prefill_meta
 from disagmoe.block_manager.block_manager import GPUBlockManager, CPUBlockManager, BaseBlockManager
 from disagmoe.block_manager.mem_pool import MHATokenToKVPool
-from disagmoe.frontend.datatypes import AttentionForwardBatch, AttentionForwardResult
+from disagmoe.frontend.datatypes import AttentionForwardBatch, AttentionForwardResult, ExpertForwardBatch
 from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor
+from disagmoe.frontend.datatypes import BatchMetadata
+from disagmoe.ops.indices import get_m_indices
 
 def get_module_param_memory(module, unit='GB'):
     unit_scale = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
@@ -313,21 +315,21 @@ class ExpertsExecutor(Executor):
 
     def __init__(self, model_config: ModelConfig):
         super().__init__(model_config)
-        expert_cls = MoEExperts if get_global_engine_config().enable_grouped_gemm else MoEExpertsSerial
         self.type = ExecutorType.EXPERTS_EXEC
         # Build quantization config for MoE experts (Serial only) if requested
         moe_quant_config = None
-        use_deep_gemm_fp8 = False
+        self.use_deep_gemm_fp8 = False
+        self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
         
         try:
             method = getattr(self.model_config, "moe_linear_quant", None)
             if method and method != "none":
                 if method == "fp8":
-                    if expert_cls is MoEExpertsSerial:
+                    if not get_global_engine_config().enable_grouped_gemm:
                         moe_quant_config = Fp8Config(activation_scheme="dynamic")
                         get_logger().info(f"Successfully built FP8 quant config for MoE experts (Serial).")
                     else:
-                        use_deep_gemm_fp8 = True
+                        self.use_deep_gemm_fp8 = True
                         get_logger().info(f"Enabled deep_gemm FP8 for MoE experts (Grouped).")
                 else:
                     moe_quant_config = None
@@ -336,13 +338,16 @@ class ExpertsExecutor(Executor):
                 f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
             )
             moe_quant_config = None
-        
+            
         # Create operators
         self.operators = []
-        if use_deep_gemm_fp8 and get_global_engine_config().enable_cuda_graph_expert:
+        if self.use_deep_gemm_fp8 and get_global_engine_config().enable_cuda_graph_expert:
             get_logger().info(f"Enabled CUDA graphs for experts, need to capture graphs.")
+            
+        self.expert_cls = self.get_expert_cls()
+        
         for _ in range(self.num_layers):
-            if expert_cls is MoEExpertsSerial:
+            if self.expert_cls is MoEExpertsSerial:
                 self.operators.append(
                     MoEExpertsSerial(
                         self.model_config.hidden_size,
@@ -353,16 +358,8 @@ class ExpertsExecutor(Executor):
                     )
                 )
             else:
-                if use_deep_gemm_fp8:
-                    if get_global_engine_config().enable_cuda_graph_expert:
-                        grouped_cls = MoEExpertsDeepGemmFP8Graph
-                    else:
-                        grouped_cls = MoEExpertsDeepGemmFP8
-                else:
-                    grouped_cls = MoEExperts
-
                 self.operators.append(
-                    grouped_cls(
+                    self.expert_cls(
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
                         self.model_config.num_experts_per_rank,
@@ -411,7 +408,44 @@ class ExpertsExecutor(Executor):
                     if isinstance(quant_method, QuantizeMethodBase) and hasattr(
                             quant_method, "process_weights_after_loading"):
                         quant_method.process_weights_after_loading(module)
+                        
+    def get_expert_cls(self):
+        expert_cls = MoEExperts if get_global_engine_config().enable_grouped_gemm else MoEExpertsSerial
+        if self.use_deep_gemm_fp8:
+            if get_global_engine_config().enable_cuda_graph_expert:
+                expert_cls = MoEExpertsDeepGemmFP8Graph
+            else:
+                expert_cls = MoEExpertsDeepGemmFP8
+        return expert_cls
+    
+    def prepare_bsz_and_indices(self, meta_c: BatchMetadata) -> Tuple[Optional[Union[Tensor, List[int]]], Optional[Tensor]]:
+        batch_sizes = None
+        m_indices = None
         
+        if self.expert_cls is MoEExpertsSerial:
+            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
+            
+        if self.expert_cls is MoEExperts:
+            if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                meta_c.get_expert_batch_sizes_cuda(
+                    self.model_config.num_experts, self.inner_exp_rank,
+                    self._static_bs_cuda, self.stream.cuda_stream
+                )
+                batch_sizes = self._static_bs_cuda
+            else:
+                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                batch_sizes = torch.tensor(
+                    [batch_sizes[i] for i in self.inner_exp_rank],
+                    dtype=torch.int64, device="cuda"
+                )
+        
+        if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
+            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
+            m_indices = get_m_indices(batch_sizes, self.expert_ids)
+
+        return batch_sizes, m_indices
     
     def warmup(self, batch_size: int):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
@@ -426,10 +460,13 @@ class ExpertsExecutor(Executor):
                 _ = self.execute(layer_id, batch_size, input, batch_sizes)
 
     @nvtx_range("ExpertsExecutor.execute")
-    def execute(self, layer_id: int, num_tokens: int, hidden_states: Tensor, batch_sizes: Tensor) -> Tensor:
-        vid = self.layer_mappings[layer_id]
+    def execute(self, batch: ExpertForwardBatch) -> Tensor:
+        vid = self.layer_mappings[batch.layer_id]
         operator = self.operators[vid]
-        outputs = operator.forward(num_tokens, hidden_states, batch_sizes)
+        if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
+            outputs = operator.forward(batch.num_tokens, batch.data, batch.m_indices)
+        else:
+            outputs = operator.forward(batch.num_tokens, batch.data, batch.batch_sizes)
         return outputs
     
 class ParallelAttnExecutor(AttnExecutor):

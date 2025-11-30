@@ -9,13 +9,11 @@ def get_m_indices(batch_sizes: torch.Tensor,
     Returns: m_indices on same device as expert_ids, dtype int32.
     """
     # Move to CPU and get plain ints
-    counts = batch_sizes.to("cpu").to(torch.long).numpy()
+    counts = batch_sizes.to("cpu").to(torch.int32).numpy()
     ids = expert_ids.to("cpu").to(torch.int32).numpy()
 
     # Fast C implementation of repeat_interleave
     m_indices_cpu = np.repeat(ids, counts).astype(np.int32, copy=False)
 
     # Single copy to target device
-    return torch.from_numpy(m_indices_cpu).to(
-        device=expert_ids.device, dtype=torch.int32, non_blocking=True
-    )
+    return torch.from_numpy(m_indices_cpu).to("cuda")

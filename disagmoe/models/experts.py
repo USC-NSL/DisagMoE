@@ -5,7 +5,6 @@ from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
-from disagmoe.models.indices import get_m_indices
 from disagmoe.utils.logger import get_logger
 from disagmoe.ops.cuda_graph import fused_copy_and_pad_cuda
 
@@ -198,15 +197,7 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
             dtype=torch.float32,
         )
 
-    def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
-        # Generate m_indices from batch_sizes
-        # batch_sizes: [num_experts], counts of tokens per expert
-        
-        m_indices = get_m_indices(
-            batch_sizes.to(device=hiddens.device, dtype=torch.int32),
-            self.expert_ids,
-        ).to(device=hiddens.device, non_blocking=True)
-
+    def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
         # Cast hiddens to FP8
         # For sglang with DeepEP, the cast is fused with communication.
         hiddens_fp8, sf_hiddens = sglang_per_token_group_quant_fp8(
@@ -407,28 +398,22 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
         )
         
     @override
-    def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
-        # 1. Compute m_indices (dynamic, outside graph)
-        m_indices = get_m_indices(
-            batch_sizes.to(device=hiddens.device, dtype=torch.int32),
-            self.expert_ids,
-        ).to(device=hiddens.device, non_blocking=True)
-        
-        # 2. Select bucket
+    def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
+        # 1. Select bucket
         bucket_bs = self._get_graph_by_batch_size(bs)
         buffers = self.static_buffers[bucket_bs]
         
-        # 3. Fused Copy + Pad (CUDA Op)
+        # 2. Fused Copy + Pad (CUDA Op)
         fused_copy_and_pad_cuda(
             hiddens, m_indices,
             buffers["hiddens"], buffers["m_indices"],
             bucket_bs,
         )
 
-        # 4. Replay Graph
+        # 3. Replay Graph
         self.graphs[bucket_bs].replay()
         
-        # 5. Return output sliced
+        # 4. Return output sliced
         return buffers["down_out"][:bs]
 
 

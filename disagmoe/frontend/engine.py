@@ -349,31 +349,13 @@ class ExpertEngineMixin:
         meta_c = batch.metadata
         input_tensor = batch.data
         with self._timer.range("preprocess"):
-            range_push("engine.copy_batch_sizes")
-            # NOTE(hogura|20250101): MAGIC. calling tensor.shape[0] is 10us slower than meta_c.num_tokens()
-            num_tokens = meta_c.num_tokens()
-            if self.engine_config.enable_grouped_gemm:
-                if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
-                    meta_c.get_expert_batch_sizes_cuda(
-                        self.model_config.num_experts, self.inner_exp_rank,
-                        self._static_bs_cuda, self.stream.cuda_stream
-                    )
-                    batch_sizes = self._static_bs_cuda
-                else:
-                    batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-                    batch_sizes = torch.tensor(
-                        [batch_sizes[i] for i in self.inner_exp_rank],
-                        dtype=torch.int64, device="cuda"
-                    )
-            else:
-                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-                batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
-            range_pop()
+            batch_sizes, m_indices = self.expert_executor.prepare_bsz_and_indices(meta_c)
         return ExpertForwardBatch(
             layer_id=meta_c.layer_id,
-            num_tokens=num_tokens,
+            num_tokens=meta_c.num_tokens(),
             data=input_tensor,
             batch_sizes=batch_sizes,
+            m_indices=m_indices,
             meta_c=meta_c,
             proc_func=self.execute_batch_expert,
             post_proc_func=self.postprocess_batch_expert,
@@ -381,7 +363,7 @@ class ExpertEngineMixin:
         
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
         with self._timer.range("execute"):
-            hiddens = self.expert_executor.execute(batch.layer_id, batch.num_tokens, batch.data, batch.batch_sizes)
+            hiddens = self.expert_executor.execute(batch)
         return ExpertForwardResult(hiddens=hiddens, sync_event=None)
         
     def postprocess_batch_expert(self, batch: ExpertForwardBatch, result: ExpertForwardResult) -> TokenBatchCWrapper:
