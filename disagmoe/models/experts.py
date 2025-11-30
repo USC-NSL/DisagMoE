@@ -314,7 +314,6 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
 
     def capture_graphs(self):
         # We need to capture a graph for each bucket size
-        get_logger().info(f"Capturing CUDA graphs for experts, bsz {self.graph_batch_sizes}")
         for bs in self.graph_batch_sizes:
             self.static_buffers[bs] = self._allocate_static_buffers(bs)
             

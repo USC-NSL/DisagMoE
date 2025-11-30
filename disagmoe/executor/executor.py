@@ -336,8 +336,11 @@ class ExpertsExecutor(Executor):
                 f"Failed to build MoE quantization config '{getattr(self.model_config, 'moe_linear_quant', None)}': {e}. Falling back to unquantized."
             )
             moe_quant_config = None
+        
         # Create operators
         self.operators = []
+        if use_deep_gemm_fp8 and get_global_engine_config().enable_cuda_graph_expert:
+            get_logger().info(f"Enabled CUDA graphs for experts, need to capture graphs.")
         for _ in range(self.num_layers):
             if expert_cls is MoEExpertsSerial:
                 self.operators.append(
