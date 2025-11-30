@@ -1,5 +1,5 @@
 import torch
-from typing import override, List, Optional
+from typing import override, List, Optional, Dict
 from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
@@ -120,7 +120,7 @@ class MoEExperts(torch.nn.Module):
         return output
 
 
-class MoEExpertsDeepGemmFP8(torch.nn.Module):
+class MoEExpertsDeepGemmFP8XX(torch.nn.Module):
     """DeepGEMM-based FP8 grouped experts, legacy non-graph, non-masked path."""
 
     def __init__(
@@ -145,7 +145,7 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         self.create_weights()
 
         # init for non-masked, non-graph deep_gemm path
-        self.expert_ids = torch.arange(self.num_experts, device="cuda", dtype=torch.int32)
+        self.expert_ids = torch.arange(self.num_experts, device="cpu", dtype=torch.int32)
 
     def create_weights(self):
         """Allocate FP8 weights directly in the DeepGEMM-preferred layout."""
@@ -199,11 +199,11 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         # Generate m_indices from batch_sizes
         # batch_sizes: [num_experts], counts of tokens per expert
-
-        # reuse buffer
+        
         m_indices = get_m_indices(
-            batch_sizes.to(device=hiddens.device, dtype=torch.int32)
-        )
+            batch_sizes.to(device=hiddens.device, dtype=torch.int32),
+            self.expert_ids,
+        ).to(device=hiddens.device, non_blocking=True)
 
         # Cast hiddens to FP8
         # For sglang with DeepEP, the cast is fused with communication.
@@ -255,6 +255,179 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         )
 
         return down_out
+
+
+class MoEExpertsDeepGemmFP8(MoEExpertsDeepGemmFP8XX):
+    """DeepGEMM-based FP8 grouped experts using CUDAGraphs with bucketing."""
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int,
+        tp_size: int = 1,
+        max_batch_size: int = MAX_BATCH_SIZE,
+    ):
+        super().__init__(hidden_size, intermediate_size, num_experts, tp_size, max_batch_size)
+
+        self.graph_batch_sizes = self.get_graph_batch_sizes(max_batch_size)
+        self.graphs: Dict[int, torch.cuda.CUDAGraph] = {}
+        self.static_buffers: Dict[int, Dict[str, torch.Tensor]] = {}
+        
+        # Warmup and capture
+        self.capture_graphs()
+
+    def get_graph_batch_sizes(self, graph_max_batch_size: int) -> List[int]:
+        # Logic borrowed from CUDAGraphAttnExecutor
+        if graph_max_batch_size <= 1:
+            return [1]
+            
+        graph_bsz = [1]
+        # Adjust stages as needed. 
+        bsz_stage = [8, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
+        bsz_inc = [0, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+        
+        for i in range(1, len(bsz_stage)):
+            if graph_max_batch_size > bsz_stage[i]:
+                graph_bsz.extend(list(range(bsz_stage[i-1], bsz_stage[i], bsz_inc[i])))
+            else:
+                graph_bsz.extend(list(range(bsz_stage[i-1], graph_max_batch_size, bsz_inc[i])))
+                if graph_bsz[-1] != graph_max_batch_size:
+                    graph_bsz.append(graph_max_batch_size)
+                break
+        
+        # Filter duplicates and sort
+        graph_bsz = sorted(list(set(graph_bsz)))
+        # Filter out sizes larger than max_batch_size
+        graph_bsz = [x for x in graph_bsz if x <= graph_max_batch_size]
+        if graph_bsz[-1] != graph_max_batch_size:
+             graph_bsz.append(graph_max_batch_size)
+             
+        return graph_bsz
+
+    def _get_graph_by_batch_size(self, batch_size: int):
+        for bs in self.graph_batch_sizes:
+            if bs >= batch_size:
+                return bs
+        raise RuntimeError(f"Batch size {batch_size} exceeds max_batch_size {self.max_batch_size}")
+
+    def capture_graphs(self):
+        # We need to capture a graph for each bucket size
+        for bs in self.graph_batch_sizes:
+            self.static_buffers[bs] = self._allocate_static_buffers(bs)
+            
+            # Warmup
+            self._run_graph_pass(bs, warmup=True)
+            torch.cuda.synchronize()
+            
+            # Capture
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                self._run_graph_pass(bs, warmup=False)
+            self.graphs[bs] = g
+
+    def _allocate_static_buffers(self, bs: int) -> Dict[str, torch.Tensor]:
+        buffers = {}
+        device = self.w13_weight_fp8.device
+        
+        # Input hiddens
+        buffers["hiddens"] = torch.zeros((bs, self.hidden_size), dtype=torch.bfloat16, device=device)
+        
+        # m_indices
+        buffers["m_indices"] = torch.zeros((bs,), dtype=torch.int32, device=device)
+        
+        # Intermediate: Quantization 1
+        buffers["hiddens_fp8"] = torch.empty((bs, self.hidden_size), dtype=torch.float8_e4m3fn, device=device)
+        n_scales_hiddens = dg.ceil_div(self.hidden_size, 128)
+        buffers["hiddens_sf"] = torch.empty((bs, n_scales_hiddens), dtype=torch.float32, device=device)
+
+        # Intermediate: w13 output (BF16)
+        buffers["up_out"] = torch.empty((bs, self.intermediate_size * 2), dtype=torch.bfloat16, device=device)
+        
+        # Intermediate: Activation
+        buffers["up_activated"] = torch.empty((bs, self.intermediate_size), dtype=torch.bfloat16, device=device)
+        
+        # Intermediate: Quantization 2
+        buffers["up_fp8"] = torch.empty((bs, self.intermediate_size), dtype=torch.float8_e4m3fn, device=device)
+        n_scales_up = dg.ceil_div(self.intermediate_size, 128)
+        buffers["up_sf"] = torch.empty((bs, n_scales_up), dtype=torch.float32, device=device)
+        
+        # Output: w2 output (BF16)
+        buffers["down_out"] = torch.empty((bs, self.hidden_size), dtype=torch.bfloat16, device=device)
+        
+        return buffers
+
+    def _run_graph_pass(self, bs: int, warmup: bool = False):
+        buffers = self.static_buffers[bs]
+        
+        # 1. Quantize Hiddens
+        sglang_per_token_group_quant_fp8(
+            buffers["hiddens"],
+            group_size=128,
+            scale_ue8m0=False,
+            out_q=buffers["hiddens_fp8"],
+            out_s=buffers["hiddens_sf"]
+        )
+        
+        # 2. GEMM w13
+        dg.m_grouped_fp8_gemm_nt_contiguous(
+            (buffers["hiddens_fp8"], buffers["hiddens_sf"]),
+            (self.w13_weight_fp8, self.w13_sf),
+            buffers["up_out"],
+            buffers["m_indices"],
+        )
+        
+        # 3. Activation
+        gate = buffers["up_out"][:, :self.intermediate_size]
+        val = buffers["up_out"][:, self.intermediate_size:]
+        
+        # In-place SiLU on gate
+        self.act_fn(gate) 
+        
+        # Element-wise mul. `gate * val` -> up_activated
+        torch.mul(gate, val, out=buffers["up_activated"])
+
+        # 4. Quantize Up
+        sglang_per_token_group_quant_fp8(
+            buffers["up_activated"],
+            group_size=128,
+            scale_ue8m0=False,
+            out_q=buffers["up_fp8"],
+            out_s=buffers["up_sf"]
+        )
+
+        # 5. GEMM w2
+        dg.m_grouped_fp8_gemm_nt_contiguous(
+            (buffers["up_fp8"], buffers["up_sf"]),
+            (self.w2_weight_fp8, self.w2_sf),
+            buffers["down_out"],
+            buffers["m_indices"],
+        )
+        
+    @override
+    def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        # 1. Compute m_indices (dynamic, outside graph)
+        m_indices = get_m_indices(
+            batch_sizes.to(device=hiddens.device, dtype=torch.int32),
+            self.expert_ids,
+        ).to(device=hiddens.device, non_blocking=True)
+        
+        # 2. Select bucket
+        bucket_bs = self._get_graph_by_batch_size(bs)
+        buffers = self.static_buffers[bucket_bs]
+        
+        # 3. Fused Copy + Pad (CUDA Op)
+        torch.ops.disag_ops.fused_copy_and_pad(
+            hiddens, m_indices,
+            buffers["hiddens"], buffers["m_indices"],
+            bs, bucket_bs
+        )
+
+        # 4. Replay Graph
+        self.graphs[bucket_bs].replay()
+        
+        # 5. Return output sliced
+        return buffers["down_out"][:bs]
 
 
 class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
