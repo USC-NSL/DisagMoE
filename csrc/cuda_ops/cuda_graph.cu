@@ -108,9 +108,7 @@ void launch_preprocess_fused_cuda(
     at::Tensor& out_slot_mapping,
     at::Tensor& out_seq_lens,
     at::Tensor& out_context_lens,
-    at::Tensor& out_seq_start_loc,
-
-    cudaStream_t stream
+    at::Tensor& out_seq_start_loc
 ){
     TORCH_CHECK(hidden.is_cuda(), "Input must be CUDA tensor");
 
@@ -124,7 +122,7 @@ void launch_preprocess_fused_cuda(
     int grid = 1 + token_ctas;  // last block deals with small tensors
 
     preprocess_fused_cuda<TOKENS_PER_BLOCK>
-        <<<grid, THREADS, 0, stream>>>(
+        <<<grid, THREADS>>>(
             (const bfloat16_t*)hidden.data_ptr<at::BFloat16>(),
             block_tables.data_ptr<int>(),
             positions.data_ptr<long>(),
@@ -164,10 +162,8 @@ void cuda_graph_preprocess_fused_dispatch(
     torch::Tensor out_context_lens,
     torch::Tensor out_seq_start_loc,
 
-    int64_t tokens_per_block,
-    int64_t raw_cuda_stream
+    int64_t tokens_per_block
 ){
-    cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
     switch(tokens_per_block) {
         case 1:
             launch_preprocess_fused_cuda<1>(
@@ -175,7 +171,7 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc, stream
+                out_seq_start_loc
             );
             break;
         case 2:
@@ -184,7 +180,7 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc, stream
+                out_seq_start_loc
             );
             break;
         case 4:
@@ -193,7 +189,7 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc, stream
+                out_seq_start_loc
             );
             break;
         default:
@@ -208,7 +204,7 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
             Tensor seq_lens, Tensor context_lens, Tensor seq_start_loc, 
             Tensor out_hidden, Tensor out_positions, Tensor out_block_tables, Tensor out_slot_mapping, 
             Tensor out_seq_lens, Tensor out_context_lens, Tensor out_seq_start_loc, 
-            int tokens_per_block, int raw_cuda_stream
+            int tokens_per_block
         ) -> ()
     )");
     m.impl("cuda_graph_preprocess_fused", torch::kCUDA, cuda_graph_preprocess_fused_dispatch);

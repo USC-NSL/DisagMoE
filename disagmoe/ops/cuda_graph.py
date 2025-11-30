@@ -212,13 +212,7 @@ def cuda_graph_preprocess_cuda(
     static_seq_start_loc: Tensor,
     
     tokens_per_block: int = 2,
-    stream: torch.cuda.Stream | None = None,
 ):
-    if stream is None:
-        stream_ptr = torch.cuda.current_stream().cuda_stream
-    else:
-        stream_ptr = stream.cuda_stream
-        
     torch.ops.disag_ops.cuda_graph_preprocess_fused(
         hidden_states,
         positions,
@@ -236,5 +230,4 @@ def cuda_graph_preprocess_cuda(
         static_context_lens,
         static_seq_start_loc,
         tokens_per_block,
-        stream_ptr,
     )

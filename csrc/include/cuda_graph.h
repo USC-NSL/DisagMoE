@@ -24,8 +24,7 @@ void cuda_graph_preprocess_fused_dispatch(
     torch::Tensor out_context_lens,
     torch::Tensor out_seq_start_loc,
 
-    int64_t tokens_per_block,
-    int64_t raw_cuda_stream
+    int64_t tokens_per_block
 );
 
 #endif // CUDA_GRAPH_H

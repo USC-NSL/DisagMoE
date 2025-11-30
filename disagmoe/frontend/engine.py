@@ -17,7 +17,7 @@ from disagmoe.frontend.datatypes import (
     TraceContext, BatchDecodeResult, TokenizedRequest
 )
 from disagmoe.frontend.ray_helper import InitCoreArgs
-from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens, get_mappings_from_exp_ids
+from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
 from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.frontend.profiler import EngineProfilerMixin
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
@@ -174,25 +174,8 @@ class AttentionEngineMixin:
         sync_event.record(self.stream)
         result.sync_event = sync_event
         return result
-            
+
     def postprocess_batch_attn(self, batch: AttentionForwardBatch, result: AttentionForwardResult) -> TokenBatchCWrapper:
-        # Deprecated optimization:
-            # _, reorder_ids = torch.sort(expert_ids.view(-1), stable=True)
-            # hiddens = permute_tokens(hiddens, reorder_ids)
-            # d2h_event = torch.cuda.Event()
-            # with torch.cuda.stream(self.d2h_stream):
-            #     new_meta_c = meta_c.to_metadata()
-            #     if self.model_config.top_k > 1:
-            #         new_meta_c.duplicate_topk(self.model_config.top_k)
-            #     expert_ids_cpu = expert_ids.view(-1).to("cpu", non_blocking=True)
-            #     reorder_ids_cpu = reorder_ids.view(-1).to("cpu", non_blocking=True)
-            #     if self.model_config.top_k > 1:
-            #         new_meta_c.topk_weights = expert_weights.view(-1).tolist()
-            #     d2h_event.record(self.d2h_stream)
-            # d2h_event.synchronize()
-            # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
-            # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
-        
         if result.sync_event is not None:
             result.sync_event.synchronize()
             result.sync_event = None
@@ -214,7 +197,7 @@ class AttentionEngineMixin:
         exp_mappings = new_meta_c.sort_by_expert()
         self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
-        hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer[:len(exp_mappings)], self.stream)
+        hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer[:len(exp_mappings)])
 
         return TokenBatchCWrapper(data=hiddens, metadata=new_meta_c)
     
@@ -440,7 +423,7 @@ class ExpertEngineMixin:
                 
             new_mappings = list(batch.meta_c.sort_by_attention()) # 20us
             self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
-            hiddens = permute_tokens(hiddens, self.expert_token_mapping_buffer[:batch.num_tokens], self.stream)
+            hiddens = permute_tokens(hiddens, self.expert_token_mapping_buffer[:batch.num_tokens])
             batch.meta_c.exp_ids = []
             batch.meta_c.topk_weights = []
             batch.meta_c.step_layer()
@@ -637,13 +620,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
             self.device = "cuda:0" # only one visible devices for one worker
             torch.set_default_device(self.device)
-            stream = torch.cuda.Stream(priority=-1)
-            torch.cuda.set_stream(stream)
-            get_logger().info(f"set stream {stream}")
-            self.stream = stream
-            self.h2d_stream = torch.cuda.Stream(priority=-1)
-            self.d2h_stream = torch.cuda.Stream(priority=-1)
-            self.stream_schedule = torch.cuda.Stream(priority=-1)
+            self.stream = torch.cuda.current_stream()
             set_tensor_model_parallel_config(model_config)
             
         self.engine_type = engine_type

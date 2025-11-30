@@ -92,11 +92,6 @@ def permute_tokens_triton(tokens: torch.Tensor,
 def permute_tokens_cuda(
     tokens: torch.Tensor, 
     mappings: torch.Tensor,
-    stream: Optional[torch.cuda.Stream] = None
 ) -> torch.Tensor:
 
-    return torch.ops.disag_ops.permute_tokens(
-        tokens,
-        mappings,
-        stream.cuda_stream if stream is not None else torch.cuda.current_stream().cuda_stream,
-    )
+    return torch.ops.disag_ops.permute_tokens(tokens, mappings)

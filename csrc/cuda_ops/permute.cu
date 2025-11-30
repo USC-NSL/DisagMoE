@@ -61,11 +61,11 @@ __global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const in
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_output_tokens, hidden_size / chunk_size, 1); \
-    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, topk, hidden_size); \
+    permute_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src, mappings, topk, hidden_size); \
 } while(0)
     
 template <class T>
-void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, int num_output_tokens, int hidden_size, cudaStream_t stream) {
+void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, int num_output_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
@@ -83,9 +83,7 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, 
 // This kernel is used to permute the tokens in the hidden states
 // 1. if num of tokens equals to size of mappings, do normal permutation
 // 2. if num of tokens is smaller than size of mappings, do topk token scatter
-torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor mappings, int64_t raw_cuda_stream) {
-
-    cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
+torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor mappings) {
 
     assert(tokens.dim() == 2);
     assert(mappings.dim() == 1);
@@ -103,7 +101,7 @@ torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor m
     AT_DISPATCH_REDUCED_FLOATING_TYPES(tokens.scalar_type(), "permute_tokens_cuda", [&] {
         _permute_tokens_cuda<scalar_t>(
             out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
-            num_input_tokens, num_output_tokens, hidden_size, stream
+            num_input_tokens, num_output_tokens, hidden_size
         );
     });
 
@@ -166,7 +164,7 @@ void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t nu
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
-    m.def("permute_tokens(Tensor tokens, Tensor mappings, int stream) -> Tensor");
+    m.def("permute_tokens(Tensor tokens, Tensor mappings) -> Tensor");
     m.impl("permute_tokens", torch::kCUDA, permute_tokens_cuda_dispatch);
 
     m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> ()");
