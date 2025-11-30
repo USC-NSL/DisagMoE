@@ -1,6 +1,5 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <iostream>
 
 #include <torch/torch.h>
 #include <torch/extension.h>
@@ -9,11 +8,12 @@
 
 #include <assert.h>
 #include <cstring>
-#include <string>
-#include <vector>
+#include <memory>
 
+#include "gdr_context.hpp"
 #include "permute.h"
 #include "cuda_utils.h"
+#include "tensor_utils.hpp"
 
 template <class T, int CHUNK_SIZE>
 __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
@@ -140,15 +140,29 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
     }
 }
 
+
+constexpr int MAX_GATHER_TOKENS = 1024 * 16;
+gdr_context_t gather_src_ptrs_gdr = nullptr;
+
+gdr_context_t get_gather_src_ptrs_gdr() {
+    if (gather_src_ptrs_gdr == nullptr) {
+        auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
+        gather_src_ptrs_gdr = std::make_shared<GdrContext>(src_tensor);
+    }
+    return gather_src_ptrs_gdr;
+}
+
 void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size, int64_t raw_cuda_stream) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
     cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
     uintptr_t* src_ptr_host = reinterpret_cast<uintptr_t*>(src_ptr);
-    torch::Tensor src_tensor = torch::from_blob(src_ptr_host, {num_tokens}, torch::TensorOptions().dtype(torch::kUInt64)).to(dest.device());
+    gdr_context_t gather_src_ptrs_gdr = get_gather_src_ptrs_gdr();
+    gather_src_ptrs_gdr->copy_from_host(src_ptr_host, num_tokens * sizeof(uintptr_t));
+    auto src_tensor = gather_src_ptrs_gdr->get_tensor();
+    src_tensor = src_tensor.narrow(0, 0, num_tokens);
     AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
         _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
     });
-    CUDACHECK(cudaStreamSynchronize(stream));
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {

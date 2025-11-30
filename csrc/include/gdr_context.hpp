@@ -204,3 +204,5 @@ private:
 
     torch::Tensor tensor_;
 };
+
+using gdr_context_t = std::shared_ptr<GdrContext>;
