@@ -81,8 +81,16 @@ class AttentionEngineMixin:
             
         self.req_tracker: Dict[int, int] = {}
         
-        self.attn_token_mapping_buffer = get_cuda_aligned_tensor(self.engine_config.max_batch_size_attn * self.model_config.top_k, torch.int32, device="cuda")
+        
+        post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.max_seq_len
+        self.attn_token_mapping_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
         self.attn_token_mapping_buffer_gdr = GdrContext(self.attn_token_mapping_buffer)
+        
+        self.expert_weights_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.bfloat16, device="cuda")
+        self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
+        
+        self.expert_ids_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
+        self.expert_ids_staging_buffer_gdr = GdrContext(self.expert_ids_staging_buffer)
 
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -156,10 +164,15 @@ class AttentionEngineMixin:
             meta_c=schedule_batch.meta_c,
             proc_func=self.execute_batch_attn,
             post_proc_func=self.postprocess_batch_attn,
+            expert_ids_buffer=self.expert_ids_staging_buffer,
+            expert_weights_buffer=self.expert_weights_staging_buffer,
         )
         
     def execute_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         result = self.attn_executor.execute(batch)
+        sync_event = torch.cuda.Event()
+        sync_event.record(self.stream)
+        result.sync_event = sync_event
         return result
             
     def postprocess_batch_attn(self, batch: AttentionForwardBatch, result: AttentionForwardResult) -> TokenBatchCWrapper:
@@ -179,22 +192,30 @@ class AttentionEngineMixin:
             # d2h_event.synchronize()
             # optimize: pass torch tensor to c++ and use it in cxx to reduce cpu
             # new_meta_c.update_exp_ids(expert_ids_cpu.tolist(), reorder_ids_cpu.tolist())
+        
+        if result.sync_event is not None:
+            result.sync_event.synchronize()
+            result.sync_event = None
             
         new_meta_c = batch.meta_c
-        if self.model_config.top_k == 1:
-            expert_ids = result.expert_ids.view(-1).tolist()
-        else:
-            new_meta_c.duplicate_topk(self.model_config.top_k)
-            expert_ids = result.expert_ids.view(-1).tolist()
-            expert_weights = result.expert_weights.view(-1).tolist()
-            new_meta_c.topk_weights = expert_weights
-            
+        
+        new_meta_c.duplicate_topk(self.model_config.top_k)
+        expert_ids_cpu = torch.empty_like(result.expert_ids, device="cpu")
+        self.expert_ids_staging_buffer_gdr.copy_to_host_tensor(expert_ids_cpu)
+        expert_ids = expert_ids_cpu.tolist()
         new_meta_c.exp_ids = expert_ids
+        
+        if self.model_config.top_k > 1:
+            expert_weights_cpu = torch.empty_like(result.expert_weights, device="cpu")
+            self.expert_weights_staging_buffer_gdr.copy_to_host_tensor(expert_weights_cpu)
+            expert_weights = expert_weights_cpu.tolist()
+            new_meta_c.topk_weights = expert_weights
+
         exp_mappings = new_meta_c.sort_by_expert()
         self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
         hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer[:len(exp_mappings)], self.stream)
-            
+
         return TokenBatchCWrapper(data=hiddens, metadata=new_meta_c)
     
     def sample_results(self, batch: AttentionScheduleBatch) -> TokenBatchCWrapper:
@@ -397,10 +418,17 @@ class ExpertEngineMixin:
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch.layer_id, batch.num_tokens, batch.data, batch.batch_sizes)
-        return ExpertForwardResult(hiddens=hiddens, sync_event=None)
+            
+        sync_event = torch.cuda.Event()
+        sync_event.record(self.stream)
+        return ExpertForwardResult(hiddens=hiddens, sync_event=sync_event)
         
     def postprocess_batch_expert(self, batch: ExpertForwardBatch, result: ExpertForwardResult) -> TokenBatchCWrapper:
         with self._timer.range("postprocess"):
+            if result.sync_event is not None:
+                result.sync_event.synchronize()
+                result.sync_event = None
+                
             assert batch.num_tokens <= self.expert_max_batch_size
                 
             if self.model_config.top_k > 1:
@@ -577,7 +605,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.scheduler, self.dispatcher)
         
-        self.loop_thread = Thread(target=self.single_module_loop)
+        self.loop_thread = Thread(target=self.single_module_loop_overlap)
             
         self.loop_thread.start()
 
@@ -797,8 +825,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     pass
                 else:
                     result = forward_batch.proc_func(forward_batch)
-                    result.sync_event = torch.cuda.Event()
-                    result.sync_event.record(self.stream)
                     result_queue.append((forward_batch, result)) # forward_batch.copy?
                 self.step_profile(batch.metadata.num_tokens())
                 
@@ -809,6 +835,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 else:
                     if tmp_result.sync_event is not None:
                         tmp_result.sync_event.synchronize()
+                        tmp_result.sync_event = None
                     final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
                     self.post_process(final_result)
             elif batch.data is None:

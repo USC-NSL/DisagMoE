@@ -282,19 +282,30 @@ class AttnExecutor(Executor):
             request_ids=request_ids,
         )
         return outputs, topk_weights, topk_ids
-        
+
     @nvtx_range("AttnExecutor.execute")
     def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
-            outputs, topk_weights, topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
+            outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
             # TODO: if overlap schedule is enabled, we need to copy results out to leave the output buffer free for the next batch
             # The copy process can be optimized by using a buffer pool
             outputs = outputs.clone()
-            topk_weights = topk_weights.clone()
-            topk_ids = topk_ids.clone()
+            clone_results = True
         else:
-            outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
+            outputs, staging_topk_weights, staging_topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
+            clone_results = False
             
+        if batch.expert_ids_buffer is not None:
+            nelems = staging_topk_ids.numel()
+            topk_weights = batch.expert_weights_buffer[:nelems]
+            topk_ids = batch.expert_ids_buffer[:nelems]
+            
+            topk_weights.copy_(staging_topk_weights.view(-1))
+            topk_ids.copy_(staging_topk_ids.view(-1))
+        else:
+            topk_weights = staging_topk_weights.clone() if clone_results else staging_topk_weights
+            topk_ids = staging_topk_ids.clone() if clone_results else staging_topk_ids
+        
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=topk_weights,

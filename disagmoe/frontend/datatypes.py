@@ -230,6 +230,8 @@ class AttentionForwardBatch(ForwardBatch):
     positions: torch.Tensor
     metadata: FlashAttentionMetadata
     req_ids: Optional[List[int]] = None
+    expert_ids_buffer: Optional[torch.Tensor] = None
+    expert_weights_buffer: Optional[torch.Tensor] = None
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):
