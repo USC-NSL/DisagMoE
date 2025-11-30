@@ -115,6 +115,7 @@ def launch(args):
     
     engine_config = EngineConfig(
         enable_cuda_graph_attn=args.cuda_graph_attn,
+        enable_cuda_graph_expert=args.cuda_graph_expert,
         enable_grouped_gemm=not args.serial_gemm and not args.expert_wise_schedule,
         max_batch_size_attn=args.max_batch_size_attn,
         max_attn_graph_bsz=args.max_attn_graph_bsz,

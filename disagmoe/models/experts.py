@@ -6,6 +6,7 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
 from disagmoe.models.indices import get_m_indices
+from disagmoe.utils.logger import get_logger
 
 # Optional import for deep_gemm (only available for sm90+)
 try:
@@ -120,7 +121,7 @@ class MoEExperts(torch.nn.Module):
         return output
 
 
-class MoEExpertsDeepGemmFP8XX(torch.nn.Module):
+class MoEExpertsDeepGemmFP8(torch.nn.Module):
     """DeepGEMM-based FP8 grouped experts, legacy non-graph, non-masked path."""
 
     def __init__(
@@ -257,7 +258,7 @@ class MoEExpertsDeepGemmFP8XX(torch.nn.Module):
         return down_out
 
 
-class MoEExpertsDeepGemmFP8(MoEExpertsDeepGemmFP8XX):
+class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
     """DeepGEMM-based FP8 grouped experts using CUDAGraphs with bucketing."""
 
     def __init__(
@@ -313,6 +314,7 @@ class MoEExpertsDeepGemmFP8(MoEExpertsDeepGemmFP8XX):
 
     def capture_graphs(self):
         # We need to capture a graph for each bucket size
+        get_logger().info(f"Capturing CUDA graphs for experts, bsz {self.graph_batch_sizes}")
         for bs in self.graph_batch_sizes:
             self.static_buffers[bs] = self._allocate_static_buffers(bs)
             

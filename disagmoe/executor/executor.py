@@ -14,7 +14,7 @@ from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 from disagmoe.env import ENV_VARS
 from disagmoe.models.attention import MoEAttention
-from disagmoe.models.experts import MoEExperts, MoEExpertsSerial, MoEExpertsDeepGemmFP8
+from disagmoe.models.experts import MoEExperts, MoEExpertsSerial, MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
@@ -350,7 +350,14 @@ class ExpertsExecutor(Executor):
                     )
                 )
             else:
-                grouped_cls = MoEExpertsDeepGemmFP8 if use_deep_gemm_fp8 else MoEExperts
+                if use_deep_gemm_fp8:
+                    if get_global_engine_config().enable_cuda_graph_expert:
+                        grouped_cls = MoEExpertsDeepGemmFP8Graph
+                    else:
+                        grouped_cls = MoEExpertsDeepGemmFP8
+                else:
+                    grouped_cls = MoEExperts
+
                 self.operators.append(
                     grouped_cls(
                         self.model_config.hidden_size,
