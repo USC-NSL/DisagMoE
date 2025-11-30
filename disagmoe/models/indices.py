@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 def get_m_indices(batch_sizes: torch.Tensor,
                       expert_ids: torch.Tensor) -> torch.Tensor:
