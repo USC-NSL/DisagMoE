@@ -7,6 +7,7 @@ from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
 from disagmoe.models.indices import get_m_indices
 from disagmoe.utils.logger import get_logger
+from disagmoe.ops.cuda_graph import fused_copy_and_pad_cuda
 
 # Optional import for deep_gemm (only available for sm90+)
 try:
@@ -418,10 +419,10 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
         buffers = self.static_buffers[bucket_bs]
         
         # 3. Fused Copy + Pad (CUDA Op)
-        torch.ops.disag_ops.fused_copy_and_pad(
+        fused_copy_and_pad_cuda(
             hiddens, m_indices,
             buffers["hiddens"], buffers["m_indices"],
-            bs, bucket_bs
+            bucket_bs,
         )
 
         # 4. Replay Graph

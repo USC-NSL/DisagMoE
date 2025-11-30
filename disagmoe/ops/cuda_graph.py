@@ -238,3 +238,20 @@ def cuda_graph_preprocess_cuda(
         tokens_per_block,
         stream_ptr,
     )
+    
+def fused_copy_and_pad_cuda(
+    hidden_states: Tensor,
+    m_indices: Tensor,
+    out_hiddens: Tensor,
+    out_m_indices: Tensor,
+    padded_bsz: int,
+    tokens_per_block: int = 2,
+):
+    torch.ops.disag_ops.fused_copy_and_pad(
+        hidden_states,
+        m_indices,
+        out_hiddens,
+        out_m_indices,
+        padded_bsz,
+        tokens_per_block,
+    )
