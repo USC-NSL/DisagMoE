@@ -91,8 +91,20 @@ class AttentionEngineMixin:
         self.expert_weights_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.float32, device="cuda")
         self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
         
+        self.expert_weights_staging_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.float32, device="cuda")
+        self.expert_weights_staging_buffer_alt_gdr = GdrContext(self.expert_weights_staging_buffer_alt)
+
         self.expert_ids_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
         self.expert_ids_staging_buffer_gdr = GdrContext(self.expert_ids_staging_buffer)
+
+        self.expert_ids_staging_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
+        self.expert_ids_staging_buffer_alt_gdr = GdrContext(self.expert_ids_staging_buffer_alt)
+        
+    def swap_staging_buffers(self):
+        self.expert_weights_staging_buffer, self.expert_weights_staging_buffer_alt = self.expert_weights_staging_buffer_alt, self.expert_weights_staging_buffer
+        self.expert_weights_staging_buffer_gdr, self.expert_weights_staging_buffer_alt_gdr = self.expert_weights_staging_buffer_alt_gdr, self.expert_weights_staging_buffer_gdr
+        self.expert_ids_staging_buffer, self.expert_ids_staging_buffer_alt = self.expert_ids_staging_buffer_alt, self.expert_ids_staging_buffer
+        self.expert_ids_staging_buffer_gdr, self.expert_ids_staging_buffer_alt_gdr = self.expert_ids_staging_buffer_alt_gdr, self.expert_ids_staging_buffer_gdr
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -156,7 +168,7 @@ class AttentionEngineMixin:
         attn_meta = self._attn_driver_preprocess(schedule_batch.meta_c, schedule_batch)
         positions = schedule_batch.seq_lens_tensor.to(torch.int64)
             
-        return AttentionForwardBatch(
+        forward_batch = AttentionForwardBatch(
             layer_id=schedule_batch.layer_id,
             data=schedule_batch.data,
             num_tokens=schedule_batch.num_tokens(),
@@ -169,6 +181,8 @@ class AttentionEngineMixin:
             expert_ids_buffer=self.expert_ids_staging_buffer,
             expert_weights_buffer=self.expert_weights_staging_buffer,
         )
+        self.swap_staging_buffers()
+        return forward_batch
         
     def execute_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         result = self.attn_executor.execute(batch)
