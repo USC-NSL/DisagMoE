@@ -442,8 +442,9 @@ class ExpertsExecutor(Executor):
                 )
         
         if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
-            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
+            all_batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            local_batch_sizes = [all_batch_sizes[i] for i in self.inner_exp_rank]
+            batch_sizes = torch.tensor(local_batch_sizes, dtype=torch.int64, device="cpu")
             m_indices = get_m_indices(batch_sizes, self.expert_ids)
 
         return batch_sizes, m_indices
