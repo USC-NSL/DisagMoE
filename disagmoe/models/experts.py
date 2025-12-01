@@ -406,9 +406,6 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
             bucket_bs,
         )
 
-        # 3. Replay Graph
-        self.graphs[bucket_bs].replay()
-
         # Check m_indices requirements (User requested hardcoded check)
         m_idx = buffers["m_indices"].cpu()
         neg_indices = (m_idx == -1).nonzero(as_tuple=True)[0]
@@ -427,6 +424,9 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
                 raise RuntimeError(f"m_indices check failed: Found values >= num_experts ({self.num_experts}). Buffer: {m_idx.tolist()}")
             if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
                 raise RuntimeError(f"m_indices check failed: Valid part is not monotonically increasing. Buffer: {m_idx.tolist()}")
+
+        # 3. Replay Graph
+        self.graphs[bucket_bs].replay()
         
         # 4. Return output sliced
         return buffers["down_out"][:bs]
