@@ -271,31 +271,27 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
         self.capture_graphs()
 
     def get_graph_batch_sizes(self, graph_max_batch_size: int) -> List[int]:
-        # Logic borrowed from CUDAGraphAttnExecutor
-        if graph_max_batch_size <= 1:
-            return [1]
-            
-        graph_bsz = [1]
-        # Adjust stages as needed. 
-        bsz_stage = [8, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
-        bsz_inc = [0, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-        
-        for i in range(1, len(bsz_stage)):
-            if graph_max_batch_size > bsz_stage[i]:
-                graph_bsz.extend(list(range(bsz_stage[i-1], bsz_stage[i], bsz_inc[i])))
-            else:
-                graph_bsz.extend(list(range(bsz_stage[i-1], graph_max_batch_size, bsz_inc[i])))
-                if graph_bsz[-1] != graph_max_batch_size:
-                    graph_bsz.append(graph_max_batch_size)
-                break
-        
-        # Filter duplicates and sort
-        graph_bsz = sorted(list(set(graph_bsz)))
-        # Filter out sizes larger than max_batch_size
-        graph_bsz = [x for x in graph_bsz if x <= graph_max_batch_size]
+        """
+        We use 128-aligned, exponentially growing buckets:
+        128, 256, 512, 1024, 2048, ... up to graph_max_batch_size.
+        """
+        if graph_max_batch_size <= 0:
+            raise ValueError("graph_max_batch_size must be positive")
+
+        # If max batch size is small, just capture exactly that size.
+        if graph_max_batch_size <= 128:
+            return [graph_max_batch_size]
+
+        graph_bsz: List[int] = []
+        bsz = 128
+        while bsz < graph_max_batch_size:
+            graph_bsz.append(bsz)
+            bsz *= 2
+
+        # Always include the exact max batch size as the last bucket
         if graph_bsz[-1] != graph_max_batch_size:
-             graph_bsz.append(graph_max_batch_size)
-             
+            graph_bsz.append(graph_max_batch_size)
+
         return graph_bsz
 
     def _get_graph_by_batch_size(self, batch_size: int):

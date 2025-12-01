@@ -337,11 +337,11 @@ class ExpertEngineMixin:
     device: str
     
     def build_expert_executor(self):
-        self.expert_executor = ExpertsExecutor(self.model_config)
-        # prepare inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
+        # prepare map from global exp rank to inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
         self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
         for i in range(self.model_config.num_experts_per_rank):
             self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+        self.expert_executor = ExpertsExecutor(self.model_config, self.inner_exp_rank)
         self.expert_executor.warmup(self.expert_max_batch_size)
         _log_memory_usage("After building expert executor")
         

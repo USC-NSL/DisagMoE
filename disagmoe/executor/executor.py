@@ -313,13 +313,14 @@ class AttnExecutor(Executor):
         
 class ExpertsExecutor(Executor):
 
-    def __init__(self, model_config: ModelConfig):
+    def __init__(self, model_config: ModelConfig, inner_exp_rank: List[int]):
         super().__init__(model_config)
         self.type = ExecutorType.EXPERTS_EXEC
         # Build quantization config for MoE experts (Serial only) if requested
         moe_quant_config = None
         self.use_deep_gemm_fp8 = False
         self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
+        self.inner_exp_rank = inner_exp_rank
         
         try:
             method = getattr(self.model_config, "moe_linear_quant", None)
