@@ -408,6 +408,25 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
 
         # 3. Replay Graph
         self.graphs[bucket_bs].replay()
+
+        # Check m_indices requirements (User requested hardcoded check)
+        m_idx = buffers["m_indices"].cpu()
+        neg_indices = (m_idx == -1).nonzero(as_tuple=True)[0]
+        if len(neg_indices) > 0:
+            first_neg = neg_indices[0].item()
+            if not torch.all(m_idx[first_neg:] == -1).item():
+                raise RuntimeError(f"m_indices check failed: Found non -1 values after the first -1. Buffer: {m_idx.tolist()}")
+            valid_m_idx = m_idx[:first_neg]
+        else:
+            valid_m_idx = m_idx
+
+        if valid_m_idx.numel() > 0:
+            if torch.any(valid_m_idx < 0).item():
+                raise RuntimeError(f"m_indices check failed: Found negative values in valid part. Buffer: {m_idx.tolist()}")
+            if torch.any(valid_m_idx >= self.num_experts).item():
+                raise RuntimeError(f"m_indices check failed: Found values >= num_experts ({self.num_experts}). Buffer: {m_idx.tolist()}")
+            if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
+                raise RuntimeError(f"m_indices check failed: Valid part is not monotonically increasing. Buffer: {m_idx.tolist()}")
         
         # 4. Return output sliced
         return buffers["down_out"][:bs]
