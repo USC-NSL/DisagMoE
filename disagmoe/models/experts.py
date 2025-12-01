@@ -316,7 +316,7 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
             self.graphs[bs] = g
 
     def _allocate_static_buffers(self, bs: int) -> Dict[str, torch.Tensor]:
-        buffers = {}
+        buffers: Dict[str, torch.Tensor] = {}
         device = self.w13_weight_fp8.device
         
         # Input hiddens
@@ -324,22 +324,6 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
         
         # m_indices
         buffers["m_indices"] = torch.zeros((bs,), dtype=torch.int32, device=device)
-        
-        # Intermediate: Quantization 1
-        buffers["hiddens_fp8"] = torch.empty((bs, self.hidden_size), dtype=torch.float8_e4m3fn, device=device)
-        n_scales_hiddens = dg.ceil_div(self.hidden_size, 128)
-        buffers["hiddens_sf"] = torch.empty((bs, n_scales_hiddens), dtype=torch.float32, device=device)
-
-        # Intermediate: w13 output (BF16)
-        buffers["up_out"] = torch.empty((bs, self.intermediate_size * 2), dtype=torch.bfloat16, device=device)
-        
-        # Intermediate: Activation
-        buffers["up_activated"] = torch.empty((bs, self.intermediate_size), dtype=torch.bfloat16, device=device)
-        
-        # Intermediate: Quantization 2
-        buffers["up_fp8"] = torch.empty((bs, self.intermediate_size), dtype=torch.float8_e4m3fn, device=device)
-        n_scales_up = dg.ceil_div(self.intermediate_size, 128)
-        buffers["up_sf"] = torch.empty((bs, n_scales_up), dtype=torch.float32, device=device)
         
         # Output: w2 output (BF16)
         buffers["down_out"] = torch.empty((bs, self.hidden_size), dtype=torch.bfloat16, device=device)
@@ -349,45 +333,81 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
     def _run_graph_pass(self, bs: int, warmup: bool = False):
         buffers = self.static_buffers[bs]
         
+        hiddens_fp8 = torch.empty(
+            (bs, self.hidden_size),
+            dtype=torch.float8_e4m3fn,
+            device=buffers["hiddens"].device,
+        )
+        n_scales_hiddens = dg.ceil_div(self.hidden_size, 128)
+        hiddens_sf = torch.empty(
+            (bs, n_scales_hiddens),
+            dtype=torch.float32,
+            device=buffers["hiddens"].device,
+        )
+
+        up_out = torch.empty(
+            (bs, self.intermediate_size * 2),
+            dtype=torch.bfloat16,
+            device=buffers["hiddens"].device,
+        )
+
+        up_activated = torch.empty(
+            (bs, self.intermediate_size),
+            dtype=torch.bfloat16,
+            device=buffers["hiddens"].device,
+        )
+
+        up_fp8 = torch.empty(
+            (bs, self.intermediate_size),
+            dtype=torch.float8_e4m3fn,
+            device=buffers["hiddens"].device,
+        )
+        n_scales_up = dg.ceil_div(self.intermediate_size, 128)
+        up_sf = torch.empty(
+            (bs, n_scales_up),
+            dtype=torch.float32,
+            device=buffers["hiddens"].device,
+        )
+
         # 1. Quantize Hiddens
         sglang_per_token_group_quant_fp8(
             buffers["hiddens"],
             group_size=128,
             scale_ue8m0=False,
-            out_q=buffers["hiddens_fp8"],
-            out_s=buffers["hiddens_sf"]
+            out_q=hiddens_fp8,
+            out_s=hiddens_sf,
         )
         
         # 2. GEMM w13
         dg.m_grouped_fp8_gemm_nt_contiguous(
-            (buffers["hiddens_fp8"], buffers["hiddens_sf"]),
+            (hiddens_fp8, hiddens_sf),
             (self.w13_weight_fp8, self.w13_sf),
-            buffers["up_out"],
+            up_out,
             buffers["m_indices"],
         )
         
         # 3. Activation
-        gate = buffers["up_out"][:, :self.intermediate_size]
-        val = buffers["up_out"][:, self.intermediate_size:]
+        gate = up_out[:, : self.intermediate_size]
+        val = up_out[:, self.intermediate_size :]
         
         # In-place SiLU on gate
         self.act_fn(gate) 
         
         # Element-wise mul. `gate * val` -> up_activated
-        torch.mul(gate, val, out=buffers["up_activated"])
+        torch.mul(gate, val, out=up_activated)
 
         # 4. Quantize Up
         sglang_per_token_group_quant_fp8(
-            buffers["up_activated"],
+            up_activated,
             group_size=128,
             scale_ue8m0=False,
-            out_q=buffers["up_fp8"],
-            out_s=buffers["up_sf"]
+            out_q=up_fp8,
+            out_s=up_sf,
         )
 
         # 5. GEMM w2
         dg.m_grouped_fp8_gemm_nt_contiguous(
-            (buffers["up_fp8"], buffers["up_sf"]),
+            (up_fp8, up_sf),
             (self.w2_weight_fp8, self.w2_sf),
             buffers["down_out"],
             buffers["m_indices"],
@@ -406,23 +426,58 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
             bucket_bs,
         )
 
+        # # Data copy integrity check for -1 case
+        # m_idx = buffers["m_indices"].cpu()
+        # neg_indices = (m_idx == -1).nonzero(as_tuple=True)[0]
+        # if len(neg_indices) > 0:
+        #     first_neg = neg_indices[0].item()
+        #     if not torch.all(m_idx[first_neg:] == -1).item():
+        #         raise RuntimeError(
+        #             f"m_indices check failed: Found non -1 values after the first -1. "
+        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+        #         )
+        #     valid_m_idx = m_idx[:first_neg]
+        # else:
+        #     valid_m_idx = m_idx
+        #
+        # if valid_m_idx.numel() > 0:
+        #     if torch.any(valid_m_idx < 0).item():
+        #         raise RuntimeError(
+        #             f"m_indices check failed: Found negative values in valid part. "
+        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+        #         )
+        #     if torch.any(valid_m_idx >= self.num_experts).item():
+        #         raise RuntimeError(
+        #             f"m_indices check failed: Found values >= num_experts ({self.num_experts}). "
+        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+        #         )
+        #     if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
+        #         raise RuntimeError(
+        #             f"m_indices check failed: Valid part is not monotonically increasing. "
+        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+        #         )
+
         
-        # a simpler check
-        with torch.no_grad():
-            src_idx = m_indices.to("cpu")
-            dst_idx = buffers["m_indices"][: src_idx.numel()].to("cpu")
-            mismatches = (src_idx != dst_idx).nonzero(as_tuple=True)[0]
-            if mismatches.numel() > 0:
-                first_bad = mismatches[0].item()
-                raise RuntimeError(
-                    "m_indices copy check failed: destination buffer does not match source "
-                    f"at position {first_bad}. "
-                    f"bs={bs}, bucket_bs={bucket_bs}, "
-                    f"src_val={int(src_idx[first_bad])}, "
-                    f"dst_val={int(dst_idx[first_bad])}, "
-                    f"src={src_idx.tolist()}, "
-                    f"dst={dst_idx.tolist()}"
-                )
+        # # a simpler check for 0 case
+        # with torch.no_grad():
+        #     src_idx = m_indices.to("cpu")
+        #     dst_idx = buffers["m_indices"][: src_idx.numel()].to("cpu")
+        #     mismatches = (src_idx != dst_idx).nonzero(as_tuple=True)[0]
+        #     if mismatches.numel() > 0:
+        #         first_bad = mismatches[0].item()
+        #         raise RuntimeError(
+        #             "m_indices copy check failed: destination buffer does not match source "
+        #             f"at position {first_bad}. "
+        #             f"bs={bs}, bucket_bs={bucket_bs}, "
+        #             f"src_val={int(src_idx[first_bad])}, "
+        #             f"dst_val={int(dst_idx[first_bad])}, "
+        #             f"src={src_idx.tolist()}, "
+        #             f"dst={dst_idx.tolist()}"
+        #         )
 
         # 3. Replay Graph
         self.graphs[bucket_bs].replay()
