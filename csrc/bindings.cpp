@@ -11,8 +11,6 @@
 #include "muhelper.h"
 #include "datatypes.hpp"
 #include "block_manager.h"
-#include "permute.h"
-#include "cuda_graph.h"
 #include "binding_helper.h"
 #include "profiler.hpp"
 #include "transport_factory.h"

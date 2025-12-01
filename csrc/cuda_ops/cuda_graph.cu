@@ -3,7 +3,6 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
-#include "cuda_graph.h"
 
 using namespace at;
 

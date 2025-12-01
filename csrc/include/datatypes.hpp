@@ -12,7 +12,6 @@
 #include "cuda_utils.h"
 #include "logging.h"
 #include "constants.h"
-#include "permute.h"
 #include "vector_utils.hpp"
 #include "tensor_utils.hpp"
 

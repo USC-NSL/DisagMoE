@@ -11,7 +11,6 @@
 #include <memory>
 
 #include "gdr_context.hpp"
-#include "permute.h"
 #include "cuda_utils.h"
 #include "tensor_utils.hpp"
 
