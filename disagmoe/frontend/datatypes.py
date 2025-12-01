@@ -248,8 +248,8 @@ class ForwardResult:
 
 @dataclass
 class AttentionForwardResult(ForwardResult):
-    expert_weights: List[float]
-    expert_ids: List[int]
+    expert_weights: Optional[torch.Tensor]
+    expert_ids: Optional[torch.Tensor]
 
 @dataclass
 class ExpertForwardResult(ForwardResult):

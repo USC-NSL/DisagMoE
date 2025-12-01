@@ -197,6 +197,97 @@ void cuda_graph_preprocess_fused_dispatch(
     }
 }
 
+
+template<int TOKENS_PER_BLOCK>
+__global__ void copy_graph_results_fused_kernel(
+    const bfloat16_t* __restrict__ tokens,
+    const int* __restrict__ topk_ids,
+    const float* __restrict__ topk_weights,
+
+    bfloat16_t* __restrict__ out_tokens,
+    int* __restrict__ out_topk_ids,
+    float* __restrict__ out_topk_weights,
+
+    int num_tokens,
+    int hidden_size,
+    int topk
+) {
+    int block_id = blockIdx.x;
+    int num_blocks = gridDim.x;
+    int thread_id = threadIdx.x;
+    int num_threads = blockDim.x;
+
+    if (block_id == num_blocks - 1) {
+        // Last block deals with topk results
+        #pragma unroll
+        int nelems = num_tokens * topk;
+        for (int i = thread_id; i < nelems; i += num_threads) {
+            out_topk_weights[i] = topk_weights[i];
+            out_topk_ids[i] = topk_ids[i];
+        }
+    } else {
+        // Other blocks deal with data tensors and block tables
+        using hidden_vec_t = float4;
+        constexpr int VEC_SIZE_HIDDEN = sizeof(hidden_vec_t) / sizeof(bfloat16_t);
+        int start_token = block_id * TOKENS_PER_BLOCK;
+        int end_token = min(start_token + TOKENS_PER_BLOCK, num_tokens);
+        for (int i = start_token; i < end_token; i++) {
+            const bfloat16_t* src_hidden = tokens + i * hidden_size;
+            bfloat16_t* dst_hidden       = out_tokens + i * hidden_size;
+            #pragma unroll
+            for (int j = thread_id * VEC_SIZE_HIDDEN; j < hidden_size; j += num_threads * VEC_SIZE_HIDDEN) {
+                int offset = j / VEC_SIZE_HIDDEN;
+                hidden_vec_t v = reinterpret_cast<const hidden_vec_t*>(src_hidden)[offset];
+                reinterpret_cast<hidden_vec_t*>(dst_hidden)[offset] = v;
+            }
+        }
+    }
+}
+
+void copy_graph_results_fused_dispatch(
+    torch::Tensor tokens,
+    torch::Tensor topk_ids,
+    torch::Tensor topk_weights,
+
+    torch::Tensor out_tokens,
+    torch::Tensor out_topk_ids,
+    torch::Tensor out_topk_weights,
+
+    int64_t num_tokens = 0
+) {
+    // only move num_tokens tokens, others are ignored
+    TORCH_CHECK(tokens.size(0) >= num_tokens, "tokens must have at least num_tokens tokens");
+    TORCH_CHECK(out_tokens.size(0) >= num_tokens, "out_tokens must have at least num_tokens tokens");
+    TORCH_CHECK(topk_ids.size(1) == topk_weights.size(1), "topk_ids and topk_weights must have the same number of columns");
+
+    if (num_tokens == 0) {
+        num_tokens = tokens.size(0);
+        TORCH_CHECK(out_tokens.size(0) == num_tokens, "out_tokens must have the same number of tokens as tokens");
+        TORCH_CHECK(out_topk_ids.size(0) == num_tokens, "out_topk_ids must have the same number of tokens as tokens");
+        TORCH_CHECK(out_topk_weights.size(0) == num_tokens, "out_topk_weights must have the same number of tokens as tokens");
+    }
+    int hidden_size = tokens.size(1);
+    int topk = topk_ids.size(1);
+
+    constexpr int TOKENS_PER_BLOCK = 2;
+    constexpr int NUM_THREADS = 128;
+
+    int token_ctas = (num_tokens + TOKENS_PER_BLOCK - 1) / TOKENS_PER_BLOCK;
+    int grid = 1 + token_ctas;  // last block deals with small tensors
+
+    copy_graph_results_fused_kernel<TOKENS_PER_BLOCK>
+        <<<grid, NUM_THREADS>>>(
+            (const bfloat16_t*)tokens.data_ptr<at::BFloat16>(),
+            (const int*)topk_ids.data_ptr<int>(),
+            (const float*)topk_weights.data_ptr<float>(),
+
+            (bfloat16_t*)out_tokens.data_ptr<at::BFloat16>(),
+            (int*)out_topk_ids.data_ptr<int>(),
+            (float*)out_topk_weights.data_ptr<float>(),
+            num_tokens, hidden_size, topk
+        );
+}
+
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
     m.def(R"(
         cuda_graph_preprocess_fused(
@@ -208,4 +299,13 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
         ) -> ()
     )");
     m.impl("cuda_graph_preprocess_fused", torch::kCUDA, cuda_graph_preprocess_fused_dispatch);
+
+    m.def(R"(
+        copy_graph_results_fused(
+            Tensor tokens, Tensor topk_ids, Tensor topk_weights,
+            Tensor out_tokens, Tensor out_topk_ids, Tensor out_topk_weights,
+            int num_tokens = 0
+        ) -> ()
+    )");
+    m.impl("copy_graph_results_fused", torch::kCUDA, copy_graph_results_fused_dispatch);
 }

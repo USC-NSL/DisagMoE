@@ -231,3 +231,15 @@ def cuda_graph_preprocess_cuda(
         static_seq_start_loc,
         tokens_per_block,
     )
+    
+def copy_graph_results_cuda(
+    tokens: Tensor,
+    topk_ids: Tensor,
+    topk_weights: Tensor,
+    out_tokens: Tensor,
+    out_topk_ids: Tensor,
+    out_topk_weights: Tensor,
+    num_tokens: int = 0,
+):
+    torch.ops.disag_ops.copy_graph_results_fused(
+        tokens, topk_ids, topk_weights, out_tokens, out_topk_ids, out_topk_weights, num_tokens)

@@ -64,7 +64,7 @@ class CUDAGraphAttnExecutor:
             
         self.output_view = make_tensor_view(dtype=self.model_config.dtype)
         self.topk_ids_view = make_tensor_view(dtype=torch.int32)
-        self.topk_weights_view = make_tensor_view(dtype=self.model_config.dtype)
+        self.topk_weights_view = make_tensor_view(dtype=torch.float32)
             
     def get_graph_batch_sizes(self, graph_max_batch_size: int):
         assert graph_max_batch_size <= 1024
@@ -225,8 +225,13 @@ class CUDAGraphAttnExecutor:
         hidden_size = self.model_config.hidden_size
         topk = self.model_config.top_k
         
-        bind_tensor_view_2d(self.output_view, outputs, 0, num_tokens, hidden_size, hidden_size)
-        bind_tensor_view_2d(self.topk_ids_view, topk_ids, 0, num_tokens, topk, topk)
-        bind_tensor_view_2d(self.topk_weights_view, topk_weights, 0, num_tokens, topk, topk)
+        use_view = True
+        if use_view:
+            bind_tensor_view_2d(self.output_view, outputs, 0, num_tokens, hidden_size, hidden_size)
+            bind_tensor_view_2d(self.topk_ids_view, topk_ids, 0, num_tokens, topk, topk)
+            bind_tensor_view_2d(self.topk_weights_view, topk_weights, 0, num_tokens, topk, topk)
+            
+            return self.output_view, self.topk_weights_view, self.topk_ids_view
         
-        return self.output_view, self.topk_weights_view, self.topk_ids_view
+        else:
+            return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]

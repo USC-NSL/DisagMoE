@@ -29,8 +29,14 @@ class GdrContext:
     def copy_from_host_int64(self, src: list[int]) -> None:
         self.gdr_context.copy_from_host_int64(src)
         
+    def copy_from_host_float(self, src: list[float]) -> None:
+        self.gdr_context.copy_from_host_float(src)
+        
     def copy_to_host_int32(self, nelems: int) -> list[int]:
         return self.gdr_context.copy_to_host_int32(nelems)
+    
+    def copy_to_host_float(self, nelems: int) -> list[float]:
+        return self.gdr_context.copy_to_host_float(nelems)
         
     def copy_to_host_int64(self, nelems: int) -> list[int]:
         return self.gdr_context.copy_to_host_int64(nelems)

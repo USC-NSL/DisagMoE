@@ -75,6 +75,11 @@ public:
         this->copy_from_host(src.data(), nbytes);
     }
 
+    inline void copy_from_host_float(const std::vector<float>& src) {
+        size_t nbytes = src.size() * sizeof(float);
+        this->copy_from_host(src.data(), nbytes);
+    }
+
     inline void copy_from_host_int64(const std::vector<int64_t>& src) {
         size_t nbytes = src.size() * sizeof(int64_t);
         this->copy_from_host(src.data(), nbytes);
@@ -99,6 +104,12 @@ public:
     inline std::vector<int> copy_to_host_int32(int nelems) {
         std::vector<int> result(nelems);
         this->copy_to_host(result.data(), nelems * sizeof(int));
+        return result;
+    }
+
+    inline std::vector<float> copy_to_host_float(int nelems) {
+        std::vector<float> result(nelems);
+        this->copy_to_host(result.data(), nelems * sizeof(float));
         return result;
     }
 

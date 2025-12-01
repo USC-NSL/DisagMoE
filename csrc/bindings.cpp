@@ -135,7 +135,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("fill", &GdrContext::fill)
         .def("copy_from_host_int32", &GdrContext::copy_from_host_int32)
         .def("copy_from_host_int64", &GdrContext::copy_from_host_int64)
+        .def("copy_from_host_float", &GdrContext::copy_from_host_float)
         .def("copy_to_host_int32", &GdrContext::copy_to_host_int32)
+        .def("copy_to_host_float", &GdrContext::copy_to_host_float)
         .def("copy_to_host_int64", &GdrContext::copy_to_host_int64);
 
     REGISTER_FUNC(rebind_1d_tensor);
