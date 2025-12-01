@@ -450,14 +450,29 @@ class ExpertsExecutor(Executor):
     def warmup(self, batch_size: int):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
         
-        input = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
+        input_data = torch.zeros((batch_size, self.model_config.hidden_size), device="cuda")
         batch_sizes = torch.tensor([batch_size // self.model_config.num_experts_per_rank] * self.model_config.num_experts_per_rank,
             dtype=torch.int64,
             # NOTE(hogura|20241014): cuBLAS grouped_gemm requires batch_sizes to be on cpu
             device="cuda" if ENV_VARS["GROUPED_GEMM_CUTLASS"] else "cpu")
+            
+        m_indices = None
+        if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
+            m_indices = get_m_indices(batch_sizes, self.expert_ids)
+            
         for layer_id in self.model_config.layer_ids:
+            batch = ExpertForwardBatch(
+                layer_id=layer_id,
+                data=input_data,
+                num_tokens=batch_size,
+                meta_c=None,
+                proc_func=None,
+                post_proc_func=None,
+                batch_sizes=batch_sizes,
+                m_indices=m_indices
+            )
             for _ in range(2):
-                _ = self.execute(layer_id, batch_size, input, batch_sizes)
+                _ = self.execute(batch)
 
     @nvtx_range("ExpertsExecutor.execute")
     def execute(self, batch: ExpertForwardBatch) -> Tensor:
