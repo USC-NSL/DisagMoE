@@ -412,18 +412,34 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
         if len(neg_indices) > 0:
             first_neg = neg_indices[0].item()
             if not torch.all(m_idx[first_neg:] == -1).item():
-                raise RuntimeError(f"m_indices check failed: Found non -1 values after the first -1. Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}")
+                raise RuntimeError(
+                    f"m_indices check failed: Found non -1 values after the first -1. "
+                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+                )
             valid_m_idx = m_idx[:first_neg]
         else:
             valid_m_idx = m_idx
 
         if valid_m_idx.numel() > 0:
             if torch.any(valid_m_idx < 0).item():
-                raise RuntimeError(f"m_indices check failed: Found negative values in valid part. Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}")
+                raise RuntimeError(
+                    f"m_indices check failed: Found negative values in valid part. "
+                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+                )
             if torch.any(valid_m_idx >= self.num_experts).item():
-                raise RuntimeError(f"m_indices check failed: Found values >= num_experts ({self.num_experts}). Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}")
+                raise RuntimeError(
+                    f"m_indices check failed: Found values >= num_experts ({self.num_experts}). "
+                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+                )
             if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
-                raise RuntimeError(f"m_indices check failed: Valid part is not monotonically increasing. Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}")
+                raise RuntimeError(
+                    f"m_indices check failed: Valid part is not monotonically increasing. "
+                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
+                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+                )
 
         # 3. Replay Graph
         self.graphs[bucket_bs].replay()
