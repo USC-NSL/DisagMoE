@@ -17,7 +17,10 @@ from disagmoe.frontend.datatypes import (
     TraceContext, BatchDecodeResult, TokenizedRequest
 )
 from disagmoe.frontend.ray_helper import InitCoreArgs
-from disagmoe.ops.memory import permute_tokens_cuda as permute_tokens
+from disagmoe.ops.memory import (
+    permute_tokens_cuda as permute_tokens, 
+    apply_weights_and_permute_tokens_cuda as apply_weights_and_permute_tokens,
+)
 from disagmoe.utils.logger import initialize_logger, get_logger
 from disagmoe.frontend.profiler import EngineProfilerMixin
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
@@ -188,11 +191,10 @@ class AttentionEngineMixin:
         expert_ids = expert_ids_cpu.tolist()
         new_meta_c.exp_ids = expert_ids
         
-        if self.model_config.top_k > 1:
-            expert_weights_cpu = torch.empty_like(result.expert_weights, device="cpu")
-            self.expert_weights_staging_buffer_gdr.copy_to_host_tensor(expert_weights_cpu)
-            expert_weights = expert_weights_cpu.tolist()
-            new_meta_c.topk_weights = expert_weights
+        expert_weights_cpu = torch.empty_like(result.expert_weights, device="cpu")
+        self.expert_weights_staging_buffer_gdr.copy_to_host_tensor(expert_weights_cpu)
+        expert_weights = expert_weights_cpu.tolist()
+        new_meta_c.topk_weights = expert_weights
 
         exp_mappings = new_meta_c.sort_by_expert()
         self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
@@ -414,16 +416,12 @@ class ExpertEngineMixin:
                 
             assert batch.num_tokens <= self.expert_max_batch_size
                 
-            if self.model_config.top_k > 1:
-                topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
-                self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
-                hiddens = result.hiddens * self.expert_weights_staging_buffer[:batch.num_tokens].view(-1, 1)
-            else:
-                hiddens = result.hiddens
-                
-            new_mappings = list(batch.meta_c.sort_by_attention()) # 20us
+            topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
+            self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
+            new_mappings = list(batch.meta_c.sort_by_attention())
             self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
-            hiddens = permute_tokens(hiddens, self.expert_token_mapping_buffer[:batch.num_tokens])
+            
+            hiddens = apply_weights_and_permute_tokens(result.hiddens, self.expert_weights_staging_buffer, self.expert_token_mapping_buffer)
             batch.meta_c.exp_ids = []
             batch.meta_c.topk_weights = []
             batch.meta_c.step_layer()

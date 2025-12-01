@@ -15,8 +15,12 @@
 #include "cuda_utils.h"
 #include "tensor_utils.hpp"
 
-template <class T, int CHUNK_SIZE>
-__device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
+using bf16 = __nv_bfloat16;
+using bf162 = __nv_bfloat162;
+
+template <int CHUNK_SIZE, bool apply_weights = false>
+__device__ void move_one_token_kernel(bf16 *dest, bf16 *src, const int hidden_size, bf16 token_weight = __float2bfloat16(.0f)) {
+
     constexpr int WARPSIZE = 32;
 
     int chunk_id = blockIdx.y;
@@ -28,15 +32,8 @@ __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
 
     int chunk_base = chunk_id * CHUNK_SIZE;
     
-    using VEC = __half;
-    if constexpr (CHUNK_SIZE == 1024) {
-        using VEC = __half2;
-    } else if constexpr (CHUNK_SIZE == 2048) {
-        using VEC = float2;
-    } else {
-        using VEC = float4;
-    }
-    constexpr int VEC_SIZE = sizeof(VEC) / sizeof(T);
+    using VEC = float2;
+    constexpr int VEC_SIZE = sizeof(VEC) / sizeof(bf16);
 
     VEC *src_vec = (VEC *)(src + chunk_base);
     VEC *dest_vec = (VEC *)(dest + chunk_base);
@@ -44,9 +41,18 @@ __device__ void move_one_token_kernel(T *dest, T *src, const int hidden_size) {
     int task_per_warp = CHUNK_SIZE / num_warps / VEC_SIZE;
     int warp_base = wid * task_per_warp;
 
+    const bf162 w2 = {token_weight, token_weight};
+
     #pragma unroll
     for (int i = id_in_warp; i < task_per_warp; i += WARPSIZE) {
-        dest_vec[warp_base + i] = src_vec[warp_base + i];
+        VEC val = src_vec[warp_base + i];
+        if constexpr (apply_weights) {
+            bf162 *v1 = reinterpret_cast<bf162 *>(&val.x);
+            *v1 = __hmul2(*v1, w2);
+            bf162 *v2 = reinterpret_cast<bf162 *>(&val.y);
+            *v2 = __hmul2(*v2, w2);
+        }
+        dest_vec[warp_base + i] = val;
     }
 }
 
@@ -54,7 +60,9 @@ template <class T, int CHUNK_SIZE>
 __global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const int topk, const int hidden_size) {
     int token_id = blockIdx.x;
     int p = mappings[token_id];
-    move_one_token_kernel<T, CHUNK_SIZE>(d_out + p * hidden_size, d_in + (token_id / topk) * hidden_size, hidden_size);
+    bf16 *out = reinterpret_cast<bf16 *>(d_out + p * hidden_size);
+    bf16 *src = reinterpret_cast<bf16 *>(d_in + (token_id / topk) * hidden_size);
+    move_one_token_kernel<CHUNK_SIZE>(out, src, hidden_size);
 }
 
 #define LAUNCH_PERMUTE_KERNEL_(SIZE) \
@@ -71,13 +79,7 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, 
     constexpr int num_threads = 128;
     int topk = num_output_tokens / num_input_tokens;
     dim3 block(num_threads, 1, 1);
-    if (num_output_tokens <= 80) {
-        LAUNCH_PERMUTE_KERNEL_(512);
-    } else if (num_output_tokens <= 160) {
-        LAUNCH_PERMUTE_KERNEL_(1024);
-    } else {
-        LAUNCH_PERMUTE_KERNEL_(2048);
-    }
+    LAUNCH_PERMUTE_KERNEL_(2048);
 }
 
 // This kernel is used to permute the tokens in the hidden states
@@ -85,25 +87,72 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, 
 // 2. if num of tokens is smaller than size of mappings, do topk token scatter
 torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor mappings) {
 
-    assert(tokens.dim() == 2);
-    assert(mappings.dim() == 1);
+    TORCH_CHECK(tokens.dim() == 2, "tokens must be a 2D tensor");
+    TORCH_CHECK(mappings.dim() == 1, "mappings must be a 1D tensor");
+    TORCH_CHECK(tokens.device() == mappings.device(), "tokens and mappings must be on the same device");
+    TORCH_CHECK(tokens.scalar_type() == at::kBFloat16, "tokens must be a BFloat16 tensor");
 
     int num_input_tokens = tokens.size(0);
     int num_output_tokens = mappings.size(0);
     int hidden_size = tokens.size(1);
 
-    assert(num_output_tokens % num_input_tokens == 0);
+    TORCH_CHECK(num_output_tokens % num_input_tokens == 0, "num_output_tokens must be divisible by num_input_tokens");
 
     torch::Tensor out = torch::empty({num_output_tokens, hidden_size}, tokens.options());
+    
+    using scalar_t = c10::BFloat16;
+    _permute_tokens_cuda<scalar_t>(
+        out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
+        num_input_tokens, num_output_tokens, hidden_size
+    );
 
-    // torch::cuda::synchronize(); // "cuda illegal memory access" without this line, seems to in a different stream with pytorch
-   
-    AT_DISPATCH_REDUCED_FLOATING_TYPES(tokens.scalar_type(), "permute_tokens_cuda", [&] {
-        _permute_tokens_cuda<scalar_t>(
-            out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
-            num_input_tokens, num_output_tokens, hidden_size
-        );
-    });
+    return out;
+}
+
+template <class T, int CHUNK_SIZE>
+__global__ void apply_weights_and_permute_tokens_kernel(T *d_out, T *d_in, T *d_weights, int *mappings, const int hidden_size) {
+    int token_id = blockIdx.x;
+    int p = mappings[token_id];
+    bf16 *out = reinterpret_cast<bf16 *>(d_out + p * hidden_size);
+    bf16 *src = reinterpret_cast<bf16 *>(d_in + token_id * hidden_size);
+    bf16 *weights = reinterpret_cast<bf16 *>(d_weights + token_id);
+    move_one_token_kernel<CHUNK_SIZE>(out, src, hidden_size, weights[token_id]);
+}
+
+#define LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(SIZE) \
+do { \
+    constexpr int chunk_size = (SIZE); \
+    dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
+    apply_weights_and_permute_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src, weights, mappings, hidden_size); \
+} while(0)
+
+template <class T>
+void _apply_weights_and_permute_tokens_cuda(T *dest, T *src, T *weights, int *mappings, int num_tokens, int hidden_size) {
+    static_assert(sizeof(T) == 2);
+    assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
+    constexpr int num_threads = 128;
+    dim3 block(num_threads, 1, 1);
+    LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(2048);
+}
+
+torch::Tensor apply_weights_and_permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor weights, torch::Tensor mappings) {
+    // weights and mappings can be padded, paddings are ignored
+    TORCH_CHECK(tokens.dim() == 2, "tokens must be a 2D tensor");
+    TORCH_CHECK(weights.dim() == 1, "weights must be a 1D tensor");
+    TORCH_CHECK(mappings.dim() == 1, "mappings must be a 1D tensor");
+    TORCH_CHECK(tokens.scalar_type() == at::kBFloat16, "tokens must be a BFloat16 tensor");
+
+    int num_input_tokens = tokens.size(0);
+    int num_output_tokens = mappings.size(0);
+    int hidden_size = tokens.size(1);
+
+    torch::Tensor out = torch::empty_like(tokens);
+
+    using scalar_t = c10::BFloat16;
+    _apply_weights_and_permute_tokens_cuda<scalar_t>(
+        out.data_ptr<scalar_t>(), tokens.data_ptr<scalar_t>(), weights.data_ptr<scalar_t>(), mappings.data_ptr<int>(), 
+        num_input_tokens, hidden_size
+    );
 
     return out;
 }
@@ -111,10 +160,10 @@ torch::Tensor permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor m
 template <class T, int CHUNK_SIZE>
 __global__ void gather_tokens_kernel(T *d_out, uintptr_t *d_in_ptr, const int hidden_size) {
     int token_id = blockIdx.x;
-    T *d_in = (T *)d_in_ptr[token_id];
-    move_one_token_kernel<T, CHUNK_SIZE>(d_out + token_id * hidden_size, d_in, hidden_size);
+    bf16 *out = reinterpret_cast<bf16 *>(d_out + token_id * hidden_size);
+    bf16 *src = reinterpret_cast<bf16 *>(d_in_ptr[token_id]);
+    move_one_token_kernel<CHUNK_SIZE>(out, src, hidden_size);
 }
-
 
 #define LAUNCH_GATHER_KERNEL_(SIZE) \
 do { \
@@ -129,15 +178,8 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
-    if (num_tokens <= 80) {
-        LAUNCH_GATHER_KERNEL_(512);
-    } else if (num_tokens <= 160) {
-        LAUNCH_GATHER_KERNEL_(1024);
-    } else {
-        LAUNCH_GATHER_KERNEL_(2048);
-    }
+    LAUNCH_GATHER_KERNEL_(2048);
 }
-
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
 gdr_context_t gather_src_ptrs_gdr = nullptr;
@@ -158,9 +200,8 @@ void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t nu
     gather_src_ptrs_gdr->copy_from_host(src_ptr_host, num_tokens * sizeof(uintptr_t));
     auto src_tensor = gather_src_ptrs_gdr->get_tensor();
     src_tensor = src_tensor.narrow(0, 0, num_tokens);
-    AT_DISPATCH_REDUCED_FLOATING_TYPES(dest.scalar_type(), "gather_tokens_cuda", [&] {
-        _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
-    });
+    using scalar_t = c10::BFloat16;
+    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
@@ -169,4 +210,7 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
 
     m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> ()");
     m.impl("gather_tokens", torch::kCUDA, gather_tokens_cuda_dispatch);
+
+    m.def("apply_weights_and_permute_tokens(Tensor tokens, Tensor weights, Tensor mappings) -> Tensor");
+    m.impl("apply_weights_and_permute_tokens", torch::kCUDA, apply_weights_and_permute_tokens_cuda_dispatch);
 }

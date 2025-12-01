@@ -93,5 +93,12 @@ def permute_tokens_cuda(
     tokens: torch.Tensor, 
     mappings: torch.Tensor,
 ) -> torch.Tensor:
-
     return torch.ops.disag_ops.permute_tokens(tokens, mappings)
+
+@nvtx_range("memory.apply_weights_and_permute_tokens_cuda")
+def apply_weights_and_permute_tokens_cuda(
+    tokens: torch.Tensor,
+    weights: torch.Tensor,
+    mappings: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops.disag_ops.apply_weights_and_permute_tokens(tokens, weights, mappings)
