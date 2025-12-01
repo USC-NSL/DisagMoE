@@ -1,5 +1,6 @@
 #include <torch/all.h>
 #include <c10/cuda/CUDAStream.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda_fp16.h>
 #include "indices_copy_pad.cuh"
 
@@ -104,8 +105,10 @@ void launch_copy_and_pad_cuda(
     int num_ctas = (num_tokens + TOKENS_PER_BLOCK - 1) / TOKENS_PER_BLOCK;
     int grid = 1 + num_ctas;  // last block deals with m_indices
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     copy_and_pad_kernel<TOKENS_PER_BLOCK>
-        <<<grid, THREADS>>>(
+        <<<grid, THREADS, 0, stream>>>(
             (const bfloat16_t*)in_hiddens.data_ptr<at::BFloat16>(),
             in_m_indices.data_ptr<int>(),
             (bfloat16_t*)out_hiddens.data_ptr<at::BFloat16>(),
