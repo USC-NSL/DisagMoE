@@ -212,13 +212,7 @@ def cuda_graph_preprocess_cuda(
     static_seq_start_loc: Tensor,
     
     tokens_per_block: int = 2,
-    stream: torch.cuda.Stream | None = None,
 ):
-    if stream is None:
-        stream_ptr = torch.cuda.current_stream().cuda_stream
-    else:
-        stream_ptr = stream.cuda_stream
-        
     torch.ops.disag_ops.cuda_graph_preprocess_fused(
         hidden_states,
         positions,
@@ -236,8 +230,19 @@ def cuda_graph_preprocess_cuda(
         static_context_lens,
         static_seq_start_loc,
         tokens_per_block,
-        stream_ptr,
     )
+    
+def copy_graph_results_cuda(
+    tokens: Tensor,
+    topk_ids: Tensor,
+    topk_weights: Tensor,
+    out_tokens: Tensor,
+    out_topk_ids: Tensor,
+    out_topk_weights: Tensor,
+    num_tokens: int = 0,
+):
+    torch.ops.disag_ops.copy_graph_results_fused(
+        tokens, topk_ids, topk_weights, out_tokens, out_topk_ids, out_topk_weights, num_tokens)
     
 def fused_copy_and_pad_cuda(
     hidden_states: Tensor,

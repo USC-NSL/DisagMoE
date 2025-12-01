@@ -13,7 +13,12 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda
 from disagmoe.frontend.engine_utils import get_global_engine_config
-from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
+from disagmoe.utils.tensor_utils import (
+    get_cuda_aligned_tensor,
+    make_tensor_view,
+    bind_tensor_view_1d,
+    bind_tensor_view_2d,
+)
 
 STATIC_BUFFER_ALIGNMENT = 16 # float4/int4 alignment
 
@@ -28,8 +33,8 @@ class CUDAGraphAttnExecutor:
     def create_cuda_graph_buffers(self):
         assert get_global_engine_config().enable_cuda_graph_attn
         batch_size = get_global_engine_config().max_attn_graph_bsz
-        self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {}
-        self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {}
+        self.graphs: Dict[int, List[torch.cuda.CUDAGraph]] = {} # batch size -> graph list (one graph for each layer)
+        self.static_outputs: Dict[int, List[Tuple[Tensor]]] = {} # batch size -> output list (one output for each layer)
 
         self.static_input = get_cuda_aligned_tensor(batch_size * self.model_config.hidden_size, self.model_config.dtype, alignment=STATIC_BUFFER_ALIGNMENT, device="cuda")
         self.static_input = self.static_input.reshape(batch_size, self.model_config.hidden_size)
@@ -52,12 +57,14 @@ class CUDAGraphAttnExecutor:
 
         self.graph_batch_sizes = self.get_graph_batch_sizes(batch_size)
 
-        for layer_id in self.model_config.layer_ids:
-            self.graphs[layer_id] = [torch.cuda.CUDAGraph() for _ in self.graph_batch_sizes]
-            self.static_outputs[layer_id] = []
-        
         for bs in self.graph_batch_sizes:
+            self.graphs[bs] = [torch.cuda.CUDAGraph() for _ in self.model_config.layer_ids]
+            self.static_outputs[bs] = []
             self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1) + (bs + 1)), dtype=torch.int32, device="cuda")
+            
+        self.output_view = make_tensor_view(dtype=self.model_config.dtype)
+        self.topk_ids_view = make_tensor_view(dtype=torch.int32)
+        self.topk_weights_view = make_tensor_view(dtype=torch.float32)
             
     def get_graph_batch_sizes(self, graph_max_batch_size: int):
         assert graph_max_batch_size <= 1024
@@ -103,14 +110,17 @@ class CUDAGraphAttnExecutor:
         layer_time_elapse = []
         layer_memory_elapse = []
         get_logger().info(f"Capturing CUDA graphs for attention, bsz {self.graph_batch_sizes}")
-        for layer_id in self.model_config.layer_ids:
-            layer_start_time = time.perf_counter()
+        
+        for graph_batch_size in self.graph_batch_sizes:
+            graph_list = self.graphs[graph_batch_size]
+            batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
+            attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
+            self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
+            graph_attn_meta = self.prepare_metadata_for_capture(attn_meta)
+            bsz_start_time = time.perf_counter()
             free_memory_before, _ = torch.cuda.mem_get_info()
-            for graph, graph_batch_size in zip(self.graphs[layer_id], self.graph_batch_sizes):
-                batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
-                attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
-                self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
-                graph_attn_meta = self.prepare_metadata_for_capture(attn_meta)
+            for layer_id in self.model_config.layer_ids:
+                graph = graph_list[layer_id]
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
                     # Provide dummy request IDs from the synthetic batch to satisfy profile-driven gating.
@@ -120,18 +130,29 @@ class CUDAGraphAttnExecutor:
                         request_ids=batch.req_ids
                     )
 
+                # warmup
                 for _ in range(2):
-                    # warmup
                     run_once()
-
-                with torch.cuda.graph(graph):
-                    outputs = run_once()
                     
-                self.static_outputs[layer_id].append(outputs)
-            layer_end_time = time.perf_counter()
-            layer_time_elapse.append(layer_end_time - layer_start_time)
+                time_before_capture = time.perf_counter()
+                    
+                if layer_id == 0:
+                    with torch.cuda.graph(graph):
+                        outputs = run_once()
+                else:
+                    with torch.cuda.graph(graph, pool=graph_list[0].pool()):
+                        outputs = run_once()
+                        
+                time_after_capture = time.perf_counter()
+                if layer_id == 0 and graph_batch_size > 1:
+                    get_logger().info(f"Time taken to capture graph: {time_after_capture - time_before_capture} seconds")
+                    
+                self.static_outputs[graph_batch_size].append(outputs)
+                
+            bsz_end_time = time.perf_counter()
+            layer_time_elapse.append(bsz_end_time - bsz_start_time)
             free_memory_after, _ = torch.cuda.mem_get_info()
-            layer_memory_elapse.append(round(((free_memory_after - free_memory_before) / (1024 ** 3)), 2))
+            layer_memory_elapse.append(round((free_memory_before - free_memory_after) / (1024 ** 3), 2))
         torch.cuda.synchronize()
         end_time = time.perf_counter()
         get_logger().info(f"cuda graph captured in {end_time - start_time} seconds")
@@ -148,9 +169,9 @@ class CUDAGraphAttnExecutor:
         torch.cuda.synchronize()
 
     def _get_graph_by_batch_size(self, batch_size: int):
-        for i, size in enumerate(self.graph_batch_sizes):
+        for size in self.graph_batch_sizes:
             if size >= batch_size:
-                return i, size
+                return size
         assert False, f"No available graph for batch size={batch_size}"
         
     def cuda_graph_preprocess(self, hidden_states: torch.Tensor, positions: torch.Tensor, meta: FlashAttentionMetadata):
@@ -190,16 +211,27 @@ class CUDAGraphAttnExecutor:
         
         try:
             num_tokens = hidden_states.shape[0]
-            graph_id, batch_size = self._get_graph_by_batch_size(num_tokens)
+            batch_size = self._get_graph_by_batch_size(num_tokens)
             
             self.cuda_graph_preprocess(hidden_states, positions, meta)
-            self.graphs[layer_id][graph_id].replay()
+            self.graphs[batch_size][layer_id].replay()
 
-            outputs, topk_weights, topk_ids = self.static_outputs[layer_id][graph_id]
+            outputs, topk_weights, topk_ids = self.static_outputs[batch_size][layer_id]
             
         except Exception as e:
-            get_logger().error(f"Error in run: {e}, layer_id {layer_id}, batch_size {num_tokens}, graph_bsz {self.graph_batch_sizes[graph_id]}")
+            get_logger().error(f"Error in run: {e}, layer_id {layer_id}, batch_size {num_tokens}, graph_bsz {batch_size}")
             raise e
-
-        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]
         
+        hidden_size = self.model_config.hidden_size
+        topk = self.model_config.top_k
+        
+        use_view = True
+        if use_view:
+            bind_tensor_view_2d(self.output_view, outputs, 0, num_tokens, hidden_size, hidden_size)
+            bind_tensor_view_2d(self.topk_ids_view, topk_ids, 0, num_tokens, topk, topk)
+            bind_tensor_view_2d(self.topk_weights_view, topk_weights, 0, num_tokens, topk, topk)
+            
+            return self.output_view, self.topk_weights_view, self.topk_ids_view
+        
+        else:
+            return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 /**
  * @brief RAII wrapper around a GPU memory region registered with GDRCopy.
@@ -51,6 +52,8 @@ public:
     // Core APIs
     // ============================================================
 
+    inline torch::Tensor get_tensor() const { return tensor_; }
+
     /// Copy from host memory into GPU buffer via BAR1
     inline void copy_from_host(const void* src, size_t nbytes, size_t dst_offset = 0) {
         if (!src) throw std::runtime_error("GdrContext::copy_from_host: src == nullptr");
@@ -58,6 +61,28 @@ public:
             throw std::runtime_error("GdrContext::copy_from_host overflow");
         void* dst = static_cast<char*>(cpu_ptr_) + dst_offset;
         std::memcpy(dst, src, nbytes);
+    }
+    
+    inline void copy_from_host_tensor(const torch::Tensor& src, size_t nbytes) {
+        if (nbytes == 0) {
+            nbytes = src.nbytes();
+        }
+        this->copy_from_host(src.data_ptr(), nbytes);
+    }
+
+    inline void copy_from_host_int32(const std::vector<int>& src) {
+        size_t nbytes = src.size() * sizeof(int);
+        this->copy_from_host(src.data(), nbytes);
+    }
+
+    inline void copy_from_host_float(const std::vector<float>& src) {
+        size_t nbytes = src.size() * sizeof(float);
+        this->copy_from_host(src.data(), nbytes);
+    }
+
+    inline void copy_from_host_int64(const std::vector<int64_t>& src) {
+        size_t nbytes = src.size() * sizeof(int64_t);
+        this->copy_from_host(src.data(), nbytes);
     }
 
     /// Copy data back from GPU memory (BAR1 → host)
@@ -67,6 +92,31 @@ public:
             throw std::runtime_error("GdrContext::copy_to_host overflow");
         const void* src = static_cast<const char*>(cpu_ptr_) + src_offset;
         std::memcpy(dst, src, nbytes);
+    }
+
+    inline void copy_to_host_tensor(torch::Tensor& dst, size_t nbytes) {
+        if (nbytes == 0) {
+            nbytes = dst.nbytes();
+        }
+        this->copy_to_host(dst.data_ptr(), nbytes);
+    }
+
+    inline std::vector<int> copy_to_host_int32(int nelems) {
+        std::vector<int> result(nelems);
+        this->copy_to_host(result.data(), nelems * sizeof(int));
+        return result;
+    }
+
+    inline std::vector<float> copy_to_host_float(int nelems) {
+        std::vector<float> result(nelems);
+        this->copy_to_host(result.data(), nelems * sizeof(float));
+        return result;
+    }
+
+    inline std::vector<int64_t> copy_to_host_int64(int nelems) {
+        std::vector<int64_t> result(nelems);
+        this->copy_to_host(result.data(), nelems * sizeof(int64_t));
+        return result;
     }
 
     /// Fill GPU buffer with a byte value
@@ -169,3 +219,5 @@ private:
 
     torch::Tensor tensor_;
 };
+
+using gdr_context_t = std::shared_ptr<GdrContext>;
