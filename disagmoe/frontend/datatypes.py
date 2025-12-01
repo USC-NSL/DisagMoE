@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Callable
 import torch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-
+from disagmoe.utils.gdr_context import GdrContext
 from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
@@ -236,6 +236,8 @@ class AttentionForwardBatch(ForwardBatch):
     output_buffer: Optional[torch.Tensor] = None
     expert_ids_buffer: Optional[torch.Tensor] = None
     expert_weights_buffer: Optional[torch.Tensor] = None
+    expert_ids_buffer_gdr: Optional[GdrContext] = None
+    expert_weights_buffer_gdr: Optional[GdrContext] = None
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):

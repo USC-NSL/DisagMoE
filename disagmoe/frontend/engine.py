@@ -180,6 +180,8 @@ class AttentionEngineMixin:
             post_proc_func=self.postprocess_batch_attn,
             expert_ids_buffer=self.expert_ids_staging_buffer,
             expert_weights_buffer=self.expert_weights_staging_buffer,
+            expert_ids_buffer_gdr=self.expert_ids_staging_buffer_gdr,
+            expert_weights_buffer_gdr=self.expert_weights_staging_buffer_gdr,
         )
         self.swap_staging_buffers()
         return forward_batch
@@ -201,10 +203,10 @@ class AttentionEngineMixin:
         topk_expanded_num_tokens = batch.num_tokens * self.model_config.top_k
         
         new_meta_c.duplicate_topk(self.model_config.top_k)
-        expert_ids = self.expert_ids_staging_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
+        expert_ids = batch.expert_ids_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
         new_meta_c.exp_ids = expert_ids
         
-        expert_weights = self.expert_weights_staging_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
+        expert_weights = batch.expert_weights_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
         new_meta_c.topk_weights = expert_weights
         
         exp_mappings = new_meta_c.sort_by_expert()
