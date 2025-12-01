@@ -63,8 +63,10 @@ public:
         std::memcpy(dst, src, nbytes);
     }
     
-    inline void copy_from_host_tensor(const torch::Tensor& src) {
-        size_t nbytes = src.nbytes();
+    inline void copy_from_host_tensor(const torch::Tensor& src, size_t nbytes) {
+        if (nbytes == 0) {
+            nbytes = src.nbytes();
+        }
         this->copy_from_host(src.data_ptr(), nbytes);
     }
 
@@ -87,8 +89,10 @@ public:
         std::memcpy(dst, src, nbytes);
     }
 
-    inline void copy_to_host_tensor(torch::Tensor& dst) {
-        size_t nbytes = dst.nbytes();
+    inline void copy_to_host_tensor(torch::Tensor& dst, size_t nbytes) {
+        if (nbytes == 0) {
+            nbytes = dst.nbytes();
+        }
         this->copy_to_host(dst.data_ptr(), nbytes);
     }
 

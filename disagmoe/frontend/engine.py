@@ -84,7 +84,6 @@ class AttentionEngineMixin:
             
         self.req_tracker: Dict[int, int] = {}
         
-        
         post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.max_seq_len
         self.attn_token_mapping_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
         self.attn_token_mapping_buffer_gdr = GdrContext(self.attn_token_mapping_buffer)
@@ -94,7 +93,10 @@ class AttentionEngineMixin:
         
         self.expert_ids_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
         self.expert_ids_staging_buffer_gdr = GdrContext(self.expert_ids_staging_buffer)
-
+        
+        self.expert_ids_cpu = torch.empty(post_process_max_num_tokens, dtype=torch.int32, device="cpu")
+        self.expert_weights_cpu = torch.empty(post_process_max_num_tokens, dtype=torch.bfloat16, device="cpu")
+        
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
         self, 
@@ -160,7 +162,7 @@ class AttentionEngineMixin:
         return AttentionForwardBatch(
             layer_id=schedule_batch.layer_id,
             data=schedule_batch.data,
-            num_tokens=schedule_batch.num_decode_tokens,
+            num_tokens=schedule_batch.num_tokens(),
             positions=positions,
             metadata=attn_meta,
             req_ids=schedule_batch.req_ids,
@@ -185,21 +187,21 @@ class AttentionEngineMixin:
             
         new_meta_c = batch.meta_c
         
+        topk_expanded_num_tokens = batch.num_tokens * self.model_config.top_k
+        
         new_meta_c.duplicate_topk(self.model_config.top_k)
-        expert_ids_cpu = torch.empty_like(result.expert_ids, device="cpu")
-        self.expert_ids_staging_buffer_gdr.copy_to_host_tensor(expert_ids_cpu)
-        expert_ids = expert_ids_cpu.tolist()
+        self.expert_ids_staging_buffer_gdr.copy_to_host_tensor(self.expert_ids_cpu, nbytes=topk_expanded_num_tokens * torch.int32.itemsize)
+        expert_ids = self.expert_ids_cpu.narrow(0, 0, topk_expanded_num_tokens).tolist()
         new_meta_c.exp_ids = expert_ids
         
-        expert_weights_cpu = torch.empty_like(result.expert_weights, device="cpu")
-        self.expert_weights_staging_buffer_gdr.copy_to_host_tensor(expert_weights_cpu)
-        expert_weights = expert_weights_cpu.tolist()
+        self.expert_weights_staging_buffer_gdr.copy_to_host_tensor(self.expert_weights_cpu, nbytes=topk_expanded_num_tokens * torch.bfloat16.itemsize)
+        expert_weights = self.expert_weights_cpu.narrow(0, 0, topk_expanded_num_tokens).tolist()
         new_meta_c.topk_weights = expert_weights
-
+        
         exp_mappings = new_meta_c.sort_by_expert()
         self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
-        hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer[:len(exp_mappings)])
+        hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer.narrow(0, 0, len(exp_mappings)))
 
         return TokenBatchCWrapper(data=hiddens, metadata=new_meta_c)
     

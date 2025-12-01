@@ -11,14 +11,14 @@ class GdrContext:
     def copy_from_host(self, src: int, nbytes: int, dst_offset: int = 0) -> None:
         self.gdr_context.copy_from_host(src, nbytes, dst_offset)
         
-    def copy_from_host_tensor(self, src: torch.Tensor) -> None:
-        self.gdr_context.copy_from_host_tensor(src)
+    def copy_from_host_tensor(self, src: torch.Tensor, nbytes: int = 0) -> None:
+        self.gdr_context.copy_from_host_tensor(src, nbytes)
         
     def copy_to_host(self, dest: int, nbytes: int, src_offset: int = 0) -> None:
         self.gdr_context.copy_to_host(dest, nbytes, src_offset)
         
-    def copy_to_host_tensor(self, dst: torch.Tensor) -> None:
-        self.gdr_context.copy_to_host_tensor(dst)
+    def copy_to_host_tensor(self, dst: torch.Tensor, nbytes: int = 0) -> None:
+        self.gdr_context.copy_to_host_tensor(dst, nbytes)
         
     def fill(self, value: int, nbytes: int, dst_offset: int = 0) -> None:
         self.gdr_context.fill(value, nbytes, dst_offset)

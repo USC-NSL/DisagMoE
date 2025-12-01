@@ -1,4 +1,5 @@
 import torch
+from disagmoe_c import rebind_1d_tensor, rebind_2d_tensor
 
 GPU_PAGE_SIZE = 1 << 16
 
@@ -34,3 +35,20 @@ def get_cuda_aligned_tensor(numel: int, dtype: torch.dtype, alignment: int = GPU
     assert aligned_tensor.data_ptr() % alignment == 0, "Alignment failed!"
 
     return aligned_tensor
+
+def make_tensor_view(dtype: torch.dtype, device: str = "cuda") -> torch.Tensor:
+    return torch.empty(0, dtype=dtype, device=device)
+
+def bind_tensor_view_1d(output: torch.Tensor, base: torch.Tensor, length: int) -> torch.Tensor:
+    rebind_1d_tensor(output, base, 0, length)
+    
+def bind_tensor_view_2d(
+    output: torch.Tensor, 
+    base: torch.Tensor, 
+    offset: int,
+    rows: int,
+    cols: int,
+    row_stride: int,
+    col_stride: int = 1
+) -> torch.Tensor:
+    rebind_2d_tensor(output, base, 0, rows, cols, row_stride, col_stride)

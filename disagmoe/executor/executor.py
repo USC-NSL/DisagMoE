@@ -297,8 +297,8 @@ class AttnExecutor(Executor):
             
         if batch.expert_ids_buffer is not None:
             nelems = staging_topk_ids.numel()
-            topk_weights = batch.expert_weights_buffer[:nelems]
-            topk_ids = batch.expert_ids_buffer[:nelems]
+            topk_weights = batch.expert_weights_buffer.narrow(0, 0, nelems)
+            topk_ids = batch.expert_ids_buffer.narrow(0, 0, nelems)
             
             topk_weights.copy_(staging_topk_weights.view(-1))
             topk_ids.copy_(staging_topk_ids.view(-1))

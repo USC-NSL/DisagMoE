@@ -182,6 +182,9 @@ class AttentionScheduleBatch:
     seq_lens: Optional[List[int]] = None
     seq_lens_tensor: Optional[torch.Tensor] = None
     
+    def num_tokens(self) -> int:
+        return self.num_decode_tokens + self.num_prefill_tokens
+    
     @staticmethod
     def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionScheduleBatch":
         return AttentionScheduleBatch(
@@ -230,6 +233,7 @@ class AttentionForwardBatch(ForwardBatch):
     positions: torch.Tensor
     metadata: FlashAttentionMetadata
     req_ids: Optional[List[int]] = None
+    output_buffer: Optional[torch.Tensor] = None
     expert_ids_buffer: Optional[torch.Tensor] = None
     expert_weights_buffer: Optional[torch.Tensor] = None
 

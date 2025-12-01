@@ -13,7 +13,12 @@ from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda
 from disagmoe.frontend.engine_utils import get_global_engine_config
-from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
+from disagmoe.utils.tensor_utils import (
+    get_cuda_aligned_tensor,
+    make_tensor_view,
+    bind_tensor_view_1d,
+    bind_tensor_view_2d,
+)
 
 STATIC_BUFFER_ALIGNMENT = 16 # float4/int4 alignment
 
@@ -56,6 +61,10 @@ class CUDAGraphAttnExecutor:
             self.graphs[bs] = [torch.cuda.CUDAGraph() for _ in self.model_config.layer_ids]
             self.static_outputs[bs] = []
             self.static_batch_infos[bs] = torch.zeros((bs + bs + (bs + 1) + (bs + 1)), dtype=torch.int32, device="cuda")
+            
+        self.output_view = make_tensor_view(dtype=self.model_config.dtype)
+        self.topk_ids_view = make_tensor_view(dtype=torch.int32)
+        self.topk_weights_view = make_tensor_view(dtype=self.model_config.dtype)
             
     def get_graph_batch_sizes(self, graph_max_batch_size: int):
         assert graph_max_batch_size <= 1024
@@ -212,6 +221,12 @@ class CUDAGraphAttnExecutor:
         except Exception as e:
             get_logger().error(f"Error in run: {e}, layer_id {layer_id}, batch_size {num_tokens}, graph_bsz {batch_size}")
             raise e
-
-        return outputs[ : num_tokens], topk_weights[ : num_tokens], topk_ids[ : num_tokens]
         
+        hidden_size = self.model_config.hidden_size
+        topk = self.model_config.top_k
+        
+        bind_tensor_view_2d(self.output_view, outputs, 0, num_tokens, hidden_size, hidden_size)
+        bind_tensor_view_2d(self.topk_ids_view, topk_ids, 0, num_tokens, topk, topk)
+        bind_tensor_view_2d(self.topk_weights_view, topk_weights, 0, num_tokens, topk, topk)
+        
+        return self.output_view, self.topk_weights_view, self.topk_ids_view
