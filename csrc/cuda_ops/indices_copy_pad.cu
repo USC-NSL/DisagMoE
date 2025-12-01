@@ -125,7 +125,7 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
         fused_copy_and_pad(
             Tensor in_hiddens, Tensor in_m_indices, 
             Tensor out_hiddens, Tensor out_m_indices, 
-            int num_tokens, int padded_bsz, int tokens_per_block
+            int padded_bsz, int tokens_per_block
         ) -> ()
     )");
     m.impl("fused_copy_and_pad", torch::kCUDA, fused_copy_and_pad_dispatch);
