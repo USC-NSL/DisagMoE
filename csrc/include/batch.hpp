@@ -208,7 +208,7 @@ struct TokenBatch: ScheduleUnit {
         // TODO: Fuse gather and sum
         int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
         int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
-        get_op_gather_tokens().call(gathered_topk_tensor, src_ptr, meta->num_tokens(), meta->token_hidden_dim(), raw_cuda_stream);
+        get_op_gather_tokens().call(gathered_topk_tensor, src_ptr, meta->num_tokens() * topk, meta->token_hidden_dim(), raw_cuda_stream);
         auto aggregated_tokens_tensor = torch::sum(gathered_topk_tensor.view({n, topk, -1}), 1);
         return TokenBatch{aggregated_tokens_tensor, meta};
     }

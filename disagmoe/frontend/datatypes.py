@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Callable
 import torch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-
+from disagmoe.utils.gdr_context import GdrContext
 from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
@@ -182,6 +182,9 @@ class AttentionScheduleBatch:
     seq_lens: Optional[List[int]] = None
     seq_lens_tensor: Optional[torch.Tensor] = None
     
+    def num_tokens(self) -> int:
+        return self.num_decode_tokens + self.num_prefill_tokens
+    
     @staticmethod
     def build(meta: BatchMetadata, data: torch.Tensor) -> "AttentionScheduleBatch":
         return AttentionScheduleBatch(
@@ -230,6 +233,11 @@ class AttentionForwardBatch(ForwardBatch):
     positions: torch.Tensor
     metadata: FlashAttentionMetadata
     req_ids: Optional[List[int]] = None
+    output_buffer: Optional[torch.Tensor] = None
+    expert_ids_buffer: Optional[torch.Tensor] = None
+    expert_weights_buffer: Optional[torch.Tensor] = None
+    expert_ids_buffer_gdr: Optional[GdrContext] = None
+    expert_weights_buffer_gdr: Optional[GdrContext] = None
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):
@@ -242,8 +250,8 @@ class ForwardResult:
 
 @dataclass
 class AttentionForwardResult(ForwardResult):
-    expert_weights: List[float]
-    expert_ids: List[int]
+    expert_weights: Optional[torch.Tensor]
+    expert_ids: Optional[torch.Tensor]
 
 @dataclass
 class ExpertForwardResult(ForwardResult):
