@@ -78,19 +78,11 @@ __global__ void copy_and_pad_kernel(
     }
 
     // --- Part 2: Copy Hidden States ---
-    
-    using hidden_vec_t = float4;
-    constexpr int VEC_SIZE = sizeof(hidden_vec_t) / sizeof(bfloat16_t); // 8 elements
+    // element-wise copy
+    int total_elements = num_tokens * hidden_size;
 
-    // Calculate total vectorized elements to copy based on valid tokens
-    int num_vecs_per_row = hidden_size / VEC_SIZE;
-    int total_vecs = num_tokens * num_vecs_per_row;
-
-    const hidden_vec_t* in_vec = reinterpret_cast<const hidden_vec_t*>(in_hiddens);
-    hidden_vec_t* out_vec = reinterpret_cast<hidden_vec_t*>(out_hiddens);
-
-    for (int i = tid; i < total_vecs; i += stride) {
-        out_vec[i] = in_vec[i];
+    for (int i = tid; i < total_elements; i += stride) {
+        out_hiddens[i] = in_hiddens[i];
     }
 }
 
