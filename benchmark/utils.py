@@ -15,6 +15,7 @@ def add_runtime_arguments(parser: ArgumentParser):
     parser.add_argument("--transport", type=str, default="zmq", choices=["zmq", "ucx"], help="inter-worker transport backend")
     
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
+    parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
     parser.add_argument("--max-attn-graph-bsz", type=int, default=160, help="max batch size for attention cuda graph")
     parser.add_argument("--graph-stride", type=int, default=8, help="CUDA graph batch size stride")
     

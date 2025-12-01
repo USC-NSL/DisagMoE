@@ -50,7 +50,7 @@ if [ $placement == "colocate" ]; then
 fi
 
 ENABLE_CUDA_GRAPH_ATTN=1
-
+ENABLE_CUDA_GRAPH_EXPERT=1
 ENABLE_TORCH_PROFILE=0
 
 USE_SERIAL_GEMM_MOE=0
@@ -73,6 +73,11 @@ fi
 CUDA_GRAPH_ATTN_ARGS=""
 if [ "$ENABLE_CUDA_GRAPH_ATTN" -eq 1 ]; then
     CUDA_GRAPH_ATTN_ARGS="--cuda-graph-attn"
+fi
+
+CUDA_GRAPH_EXPERT_ARGS=""
+if [ "$ENABLE_CUDA_GRAPH_EXPERT" -eq 1 ]; then
+    CUDA_GRAPH_EXPERT_ARGS="--cuda-graph-expert"
 fi
 
 SERIAL_GEMM_ARGS=""
@@ -98,6 +103,7 @@ python benchmark/server.py \
     --transport $transport_backend \
     $SERIAL_GEMM_ARGS \
     $CUDA_GRAPH_ATTN_ARGS \
+    $CUDA_GRAPH_EXPERT_ARGS \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \

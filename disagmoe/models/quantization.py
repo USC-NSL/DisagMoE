@@ -106,6 +106,8 @@ def sglang_per_token_group_quant_fp8(
     fuse_silu_and_mul: bool = False,
     masked_m: Optional[torch.Tensor] = None,
     enable_v2: Optional[bool] = None,
+    out_q: Optional[torch.Tensor] = None,
+    out_s: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert (
         x.shape[-1] % group_size == 0
@@ -114,15 +116,22 @@ def sglang_per_token_group_quant_fp8(
 
     out_shape = (*x.shape[:-1], x.shape[-1] // (2 if fuse_silu_and_mul else 1))
 
-    x_q = torch.empty(out_shape, device=x.device, dtype=fp8_dtype)
-    x_s = create_per_token_group_quant_fp8_output_scale(
-        x_shape=out_shape,
-        device=x.device,
-        group_size=group_size,
-        column_major_scales=column_major_scales,
-        scale_tma_aligned=scale_tma_aligned,
-        scale_ue8m0=scale_ue8m0,
-    )
+    if out_q is None:
+        x_q = torch.empty(out_shape, device=x.device, dtype=fp8_dtype)
+    else:
+        x_q = out_q
+
+    if out_s is None:
+        x_s = create_per_token_group_quant_fp8_output_scale(
+            x_shape=out_shape,
+            device=x.device,
+            group_size=group_size,
+            column_major_scales=column_major_scales,
+            scale_tma_aligned=scale_tma_aligned,
+            scale_ue8m0=scale_ue8m0,
+        )
+    else:
+        x_s = out_s
 
     quant_op = _get_native_quant_op()
 

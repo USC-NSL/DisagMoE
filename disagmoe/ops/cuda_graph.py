@@ -243,3 +243,20 @@ def copy_graph_results_cuda(
 ):
     torch.ops.disag_ops.copy_graph_results_fused(
         tokens, topk_ids, topk_weights, out_tokens, out_topk_ids, out_topk_weights, num_tokens)
+    
+def fused_copy_and_pad_cuda(
+    hidden_states: Tensor,
+    m_indices: Tensor,
+    out_hiddens: Tensor,
+    out_m_indices: Tensor,
+    padded_bsz: int,
+    tokens_per_block: int = 2,
+):
+    torch.ops.disag_ops.fused_copy_and_pad(
+        hidden_states,
+        m_indices,
+        out_hiddens,
+        out_m_indices,
+        padded_bsz,
+        tokens_per_block,
+    )
