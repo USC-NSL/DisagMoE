@@ -28,7 +28,7 @@ __global__ void copy_and_pad_kernel(
             if (i < num_tokens) {
                 out_m_indices[i] = in_m_indices[i];
             } else {
-                out_m_indices[i] = -1;
+                out_m_indices[i] = 0;
             }
         }
     } else {
