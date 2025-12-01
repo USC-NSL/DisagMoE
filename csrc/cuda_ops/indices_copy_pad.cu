@@ -8,56 +8,6 @@ using namespace at;
 
 using bfloat16_t = __nv_bfloat16;
 
-// template<int TOKENS_PER_BLOCK>
-// __global__ void copy_and_pad_kernel(
-//     const bfloat16_t* __restrict__ in_hiddens,
-//     const int* __restrict__ in_m_indices,
-//     bfloat16_t* __restrict__ out_hiddens,
-//     int* __restrict__ out_m_indices,
-//     int num_tokens, int padded_bsz, int hidden_size
-// ) {
-//     int num_blocks = gridDim.x;
-//     int block_id = blockIdx.x;
-//     int thread_id = threadIdx.x;
-//     int num_threads = blockDim.x;
-
-//     if (block_id == num_blocks - 1) {
-//         // Last block deals with m_indices
-//         #pragma unroll
-//         for (int i = thread_id; i < padded_bsz; i += num_threads) {
-//             if (i < num_tokens) {
-//                 out_m_indices[i] = in_m_indices[i];
-//             } else {
-//                 out_m_indices[i] = -1;
-//             }
-//         }
-//     } else {
-//         // Other blocks deal with hidden states
-//         using hidden_vec_t = float4;
-//         constexpr int VEC_SIZE_HIDDEN = sizeof(hidden_vec_t) / sizeof(bfloat16_t);
-
-//         int start_row = block_id * TOKENS_PER_BLOCK;
-
-//         for (int r = 0; r < TOKENS_PER_BLOCK; r++) {
-//             int row = start_row + r;
-//             if (row >= num_tokens) return;
-
-//             const bfloat16_t* src_hidden = in_hiddens + row * hidden_size;
-//             bfloat16_t* dst_hidden = out_hiddens + row * hidden_size;
-
-//             int vec_end = (hidden_size / VEC_SIZE_HIDDEN) * VEC_SIZE_HIDDEN;
-
-//             #pragma unroll
-//             for (int i = thread_id * VEC_SIZE_HIDDEN; i < vec_end; i += num_threads * VEC_SIZE_HIDDEN) {
-//                 int offset = i / VEC_SIZE_HIDDEN;
-//                 hidden_vec_t v = reinterpret_cast<const hidden_vec_t*>(src_hidden)[offset];
-//                 reinterpret_cast<hidden_vec_t*>(dst_hidden)[offset] = v;
-//             }
-//         }
-//     }
-// }
-
-// Much simpler version, as the above one is buggy
 template<int TOKENS_PER_BLOCK>
 __global__ void copy_and_pad_kernel(
     const bfloat16_t* __restrict__ in_hiddens,
@@ -66,26 +16,76 @@ __global__ void copy_and_pad_kernel(
     int* __restrict__ out_m_indices,
     int num_tokens, int padded_bsz, int hidden_size
 ) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = gridDim.x * blockDim.x;
+    int num_blocks = gridDim.x;
+    int block_id = blockIdx.x;
+    int thread_id = threadIdx.x;
+    int num_threads = blockDim.x;
 
-    // --- Part 1: Copy and Pad Indices ---
-    for (int i = tid; i < padded_bsz; i += stride) {
-        if (i < num_tokens) {
-            out_m_indices[i] = in_m_indices[i];
-        } else {
-            out_m_indices[i] = -1;
+    if (block_id == num_blocks - 1) {
+        // Last block deals with m_indices
+        #pragma unroll
+        for (int i = thread_id; i < padded_bsz; i += num_threads) {
+            if (i < num_tokens) {
+                out_m_indices[i] = in_m_indices[i];
+            } else {
+                out_m_indices[i] = -1;
+            }
+        }
+    } else {
+        // Other blocks deal with hidden states
+        using hidden_vec_t = float4;
+        constexpr int VEC_SIZE_HIDDEN = sizeof(hidden_vec_t) / sizeof(bfloat16_t);
+
+        int start_row = block_id * TOKENS_PER_BLOCK;
+
+        for (int r = 0; r < TOKENS_PER_BLOCK; r++) {
+            int row = start_row + r;
+            if (row >= num_tokens) return;
+
+            const bfloat16_t* src_hidden = in_hiddens + row * hidden_size;
+            bfloat16_t* dst_hidden = out_hiddens + row * hidden_size;
+
+            int vec_end = (hidden_size / VEC_SIZE_HIDDEN) * VEC_SIZE_HIDDEN;
+
+            #pragma unroll
+            for (int i = thread_id * VEC_SIZE_HIDDEN; i < vec_end; i += num_threads * VEC_SIZE_HIDDEN) {
+                int offset = i / VEC_SIZE_HIDDEN;
+                hidden_vec_t v = reinterpret_cast<const hidden_vec_t*>(src_hidden)[offset];
+                reinterpret_cast<hidden_vec_t*>(dst_hidden)[offset] = v;
+            }
         }
     }
-
-    // --- Part 2: Copy Hidden States ---
-    // element-wise copy
-    int total_elements = num_tokens * hidden_size;
-
-    for (int i = tid; i < total_elements; i += stride) {
-        out_hiddens[i] = in_hiddens[i];
-    }
 }
+
+// // Much simpler version
+// template<int TOKENS_PER_BLOCK>
+// __global__ void copy_and_pad_kernel(
+//     const bfloat16_t* __restrict__ in_hiddens,
+//     const int* __restrict__ in_m_indices,
+//     bfloat16_t* __restrict__ out_hiddens,
+//     int* __restrict__ out_m_indices,
+//     int num_tokens, int padded_bsz, int hidden_size
+// ) {
+//     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+//     int stride = gridDim.x * blockDim.x;
+
+//     // --- Part 1: Copy and Pad Indices ---
+//     for (int i = tid; i < padded_bsz; i += stride) {
+//         if (i < num_tokens) {
+//             out_m_indices[i] = in_m_indices[i];
+//         } else {
+//             out_m_indices[i] = -1;
+//         }
+//     }
+
+//     // --- Part 2: Copy Hidden States ---
+//     // element-wise copy
+//     int total_elements = num_tokens * hidden_size;
+
+//     for (int i = tid; i < total_elements; i += stride) {
+//         out_hiddens[i] = in_hiddens[i];
+//     }
+// }
 
 template<int TOKENS_PER_BLOCK>
 void launch_copy_and_pad_cuda(

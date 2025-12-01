@@ -406,39 +406,22 @@ class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
             bucket_bs,
         )
 
-        # Check m_indices requirements (User requested hardcoded check)
-        m_idx = buffers["m_indices"].cpu()
-        neg_indices = (m_idx == -1).nonzero(as_tuple=True)[0]
-        if len(neg_indices) > 0:
-            first_neg = neg_indices[0].item()
-            if not torch.all(m_idx[first_neg:] == -1).item():
+        
+        # a simpler check
+        with torch.no_grad():
+            src_idx = m_indices.to("cpu")
+            dst_idx = buffers["m_indices"][: src_idx.numel()].to("cpu")
+            mismatches = (src_idx != dst_idx).nonzero(as_tuple=True)[0]
+            if mismatches.numel() > 0:
+                first_bad = mismatches[0].item()
                 raise RuntimeError(
-                    f"m_indices check failed: Found non -1 values after the first -1. "
-                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-                )
-            valid_m_idx = m_idx[:first_neg]
-        else:
-            valid_m_idx = m_idx
-
-        if valid_m_idx.numel() > 0:
-            if torch.any(valid_m_idx < 0).item():
-                raise RuntimeError(
-                    f"m_indices check failed: Found negative values in valid part. "
-                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-                )
-            if torch.any(valid_m_idx >= self.num_experts).item():
-                raise RuntimeError(
-                    f"m_indices check failed: Found values >= num_experts ({self.num_experts}). "
-                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-                )
-            if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
-                raise RuntimeError(
-                    f"m_indices check failed: Valid part is not monotonically increasing. "
-                    f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-                    f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
+                    "m_indices copy check failed: destination buffer does not match source "
+                    f"at position {first_bad}. "
+                    f"bs={bs}, bucket_bs={bucket_bs}, "
+                    f"src_val={int(src_idx[first_bad])}, "
+                    f"dst_val={int(dst_idx[first_bad])}, "
+                    f"src={src_idx.tolist()}, "
+                    f"dst={dst_idx.tolist()}"
                 )
 
         # 3. Replay Graph
