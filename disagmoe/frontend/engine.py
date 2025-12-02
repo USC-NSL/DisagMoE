@@ -399,28 +399,27 @@ class ExpertEngineMixin:
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch)
             
+        topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
+        self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
+        new_mappings = list(batch.meta_c.sort_by_attention())
+        self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
+        
+        permuted_tokens = apply_weights_and_permute_tokens(hiddens, self.expert_weights_staging_buffer, self.expert_token_mapping_buffer)
+        batch.meta_c.exp_ids = []
+        batch.meta_c.topk_weights = []
+        batch.meta_c.step_layer()
+            
         sync_event = torch.cuda.Event()
         sync_event.record(self.stream)
-        return ExpertForwardResult(hiddens=hiddens, sync_event=sync_event)
+        return ExpertForwardResult(hiddens=permuted_tokens, sync_event=sync_event)
         
     def postprocess_batch_expert(self, batch: ExpertForwardBatch, result: ExpertForwardResult) -> TokenBatchCWrapper:
         with self._timer.range("postprocess"):
             if result.sync_event is not None:
                 result.sync_event.synchronize()
                 result.sync_event = None
-                
-            assert batch.num_tokens <= self.expert_max_batch_size
-                
-            topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
-            self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
-            new_mappings = list(batch.meta_c.sort_by_attention())
-            self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
-            
-            hiddens = apply_weights_and_permute_tokens(result.hiddens, self.expert_weights_staging_buffer, self.expert_token_mapping_buffer)
-            batch.meta_c.exp_ids = []
-            batch.meta_c.topk_weights = []
-            batch.meta_c.step_layer()
-        return TokenBatchCWrapper(data=hiddens, metadata=batch.meta_c)
+
+        return TokenBatchCWrapper(data=result.hiddens, metadata=batch.meta_c)
     
     @nvtx_range("expert_engine.process_batch_expert")
     def process_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[TokenBatchCWrapper]:
