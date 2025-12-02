@@ -150,17 +150,26 @@ struct BatchMetadata {
         return batches;
     }
 
-    void get_expert_batch_sizes_cuda(int n_expert, const std::vector<int> &inner_exp_rank, torch::Tensor tensor_cuda, uintptr_t stream_ptr) {
+    void get_expert_batch_sizes_cuda(int n_expert, const std::vector<int> &local_to_global_expert_rank, torch::Tensor tensor_cuda, uintptr_t stream_ptr) {
         AUTO_TX_RANGE;
         ASSERT(n_expert > 0);
         auto batch_sizes = get_expert_batch_sizes(n_expert);
         int64_t batches[MAX_N_EXPERTS];
-        int m = inner_exp_rank.size();
+        int m = local_to_global_expert_rank.size();
         for (int i = 0; i < m; i ++) {
-            ASSERT(0 <= inner_exp_rank[i] && inner_exp_rank[i] < n_expert);
-            batches[i] = batch_sizes[inner_exp_rank[i]];
+            ASSERT(0 <= local_to_global_expert_rank[i] && local_to_global_expert_rank[i] < n_expert);
+            batches[i] = batch_sizes[local_to_global_expert_rank[i]];
         }
         CUDACHECK(cudaMemcpyAsync(tensor_cuda.data_ptr(), batches, m * sizeof(int64_t), cudaMemcpyHostToDevice, cudaStream_t(stream_ptr)));
+    }
+
+    std::vector<int> get_token_expert_indices(int n_expert, const std::vector<int> &global_to_local_expert_rank) {
+        std::vector<int> token_expert_indices(num_tokens());
+        for (int i = 0; i < num_tokens(); i ++) {
+            ASSERT(global_to_local_expert_rank[exp_ids[i]] != -1);
+            token_expert_indices[i] = global_to_local_expert_rank[exp_ids[i]];
+        }
+        return token_expert_indices;
     }
 
     std::vector<int> get_finished_indices() {

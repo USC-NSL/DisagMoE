@@ -26,6 +26,8 @@ from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor
 from disagmoe.ops.cuda_graph import copy_graph_results_cuda
 from disagmoe.frontend.datatypes import BatchMetadata
+from disagmoe.utils.gdr_context import GdrContext
+from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.ops.indices import get_m_indices
 
 def get_module_param_memory(module, unit='GB'):
@@ -324,14 +326,18 @@ class AttnExecutor(Executor):
         
 class ExpertsExecutor(Executor):
 
-    def __init__(self, model_config: ModelConfig, inner_exp_rank: List[int]):
+    def __init__(self, model_config: ModelConfig, local_to_global_expert_rank: List[int], global_to_local_expert_rank: List[int]):
         super().__init__(model_config)
         self.type = ExecutorType.EXPERTS_EXEC
         # Build quantization config for MoE experts (Serial only) if requested
         moe_quant_config = None
         self.use_deep_gemm_fp8 = False
         self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
-        self.inner_exp_rank = inner_exp_rank
+        self.local_to_global_expert_rank = local_to_global_expert_rank
+        self.global_to_local_expert_rank = global_to_local_expert_rank
+        
+        self.token_m_indices_buffer = get_cuda_aligned_tensor(get_global_engine_config().max_batch_size_expert, torch.int32, device="cuda")
+        self.token_m_indices_buffer_gdr = GdrContext(self.token_m_indices_buffer)
         
         try:
             method = getattr(self.model_config, "moe_linear_quant", None)
@@ -436,27 +442,26 @@ class ExpertsExecutor(Executor):
         
         if self.expert_cls is MoEExpertsSerial:
             batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            batch_sizes = [batch_sizes[i] for i in self.inner_exp_rank]
+            batch_sizes = [batch_sizes[i] for i in self.local_to_global_expert_rank]
             
         if self.expert_cls is MoEExperts:
             if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
                 meta_c.get_expert_batch_sizes_cuda(
-                    self.model_config.num_experts, self.inner_exp_rank,
+                    self.model_config.num_experts, self.local_to_global_expert_rank,
                     self._static_bs_cuda, self.stream.cuda_stream
                 )
                 batch_sizes = self._static_bs_cuda
             else:
                 batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
                 batch_sizes = torch.tensor(
-                    [batch_sizes[i] for i in self.inner_exp_rank],
+                    [batch_sizes[i] for i in self.local_to_global_expert_rank],
                     dtype=torch.int64, device="cuda"
                 )
         
         if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
-            all_batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            local_batch_sizes = [all_batch_sizes[i] for i in self.inner_exp_rank]
-            batch_sizes = torch.tensor(local_batch_sizes, dtype=torch.int64, device="cpu")
-            m_indices = get_m_indices(batch_sizes, self.expert_ids)
+            m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
+            self.token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
+            m_indices = self.token_m_indices_buffer[:len(m_indices_list)]
 
         return batch_sizes, m_indices
     

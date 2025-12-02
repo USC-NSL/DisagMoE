@@ -366,10 +366,12 @@ class ExpertEngineMixin:
     
     def build_expert_executor(self):
         # prepare map from global exp rank to inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-        self.inner_exp_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+        self.local_to_gloabl_expert_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+        self.global_to_local_expert_rank = [-1 for _ in range(self.model_config.num_experts)]
         for i in range(self.model_config.num_experts_per_rank):
-            self.inner_exp_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
-        self.expert_executor = ExpertsExecutor(self.model_config, self.inner_exp_rank)
+            self.local_to_gloabl_expert_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+            self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
+        self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
         self.expert_executor.warmup(self.expert_max_batch_size)
         _log_memory_usage("After building expert executor")
         
@@ -451,7 +453,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         
         self.profiler = None
         self.profile_dir = None
-        self.inner_exp_rank = []
+        self.local_to_gloabl_expert_rank = []
+        self.global_to_local_expert_rank = []
         self.device_group_ids = []
         self.handles = []
         self.rank_in_group = 0 # EP rank in expert worker, TP rank in attention worker

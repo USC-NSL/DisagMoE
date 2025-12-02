@@ -87,13 +87,14 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("set_finish_signal", &BatchMetadata::set_finish_signal)
         .def("get_expert_batch_sizes", &BatchMetadata::get_expert_batch_sizes)
         .def("get_expert_batch_sizes_cuda", &BatchMetadata::get_expert_batch_sizes_cuda)
+        .def("get_token_expert_indices", &BatchMetadata::get_token_expert_indices)
         .def("get_finished_indices", &BatchMetadata::get_finished_indices)
         .def("permute_token_infos", &BatchMetadata::permute_token_infos)
         .def("duplicate_topk", &BatchMetadata::duplicate_topk)
         .def("sort_by_attention", &BatchMetadata::sort_by_attention)
         .def("sort_by_expert", &BatchMetadata::sort_by_expert)
         .def("index_select", &BatchMetadata::index_select);
-
+        
     py::class_<TokenBatch>(m, "TokenBatch")
         .def(py::init<>())
         .def_readwrite("data", &TokenBatch::data)
