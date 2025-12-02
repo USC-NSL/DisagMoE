@@ -225,7 +225,7 @@ class CUDAGraphAttnExecutor:
         hidden_size = self.model_config.hidden_size
         topk = self.model_config.top_k
         
-        use_view = True
+        use_view = False
         if use_view:
             bind_tensor_view_2d(self.output_view, outputs, 0, num_tokens, hidden_size, hidden_size)
             bind_tensor_view_2d(self.topk_ids_view, topk_ids, 0, num_tokens, topk, topk)

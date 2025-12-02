@@ -290,28 +290,28 @@ class AttnExecutor(Executor):
     def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
             staging_outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
-            # TODO: if overlap schedule is enabled, we need to copy results out to leave the output buffer free for the next batch
-            # The copy process can be optimized by using a buffer pool
         else:
             staging_outputs, staging_topk_weights, staging_topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
             
         if batch.expert_ids_buffer is not None:
             outputs = torch.empty_like(staging_outputs)
+            expert_ids = torch.empty_like(staging_topk_ids)
+            expert_weights = torch.empty_like(staging_topk_weights)
             copy_graph_results_cuda(
                 staging_outputs, 
                 staging_topk_ids, 
                 staging_topk_weights, 
                 outputs, 
-                batch.expert_ids_buffer, 
-                batch.expert_weights_buffer, 
+                expert_ids, 
+                expert_weights, 
                 batch.num_tokens,
             )
         
         # NOTE: expert weights and ids are stored in static buffers, we don't need to copy them back
         return AttentionForwardResult(
             hiddens=outputs,
-            expert_weights=None,
-            expert_ids=None,
+            expert_weights=expert_weights,
+            expert_ids=expert_ids,
             sync_event=None,
         )
     

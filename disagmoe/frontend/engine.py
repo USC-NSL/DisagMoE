@@ -203,10 +203,12 @@ class AttentionEngineMixin:
         topk_expanded_num_tokens = batch.num_tokens * self.model_config.top_k
         
         new_meta_c.duplicate_topk(self.model_config.top_k)
-        expert_ids = batch.expert_ids_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
+        # expert_ids = batch.expert_ids_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
+        expert_ids = result.expert_ids.flatten().tolist()
         new_meta_c.exp_ids = expert_ids
         
-        expert_weights = batch.expert_weights_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
+        # expert_weights = batch.expert_weights_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
+        expert_weights = result.expert_weights.flatten().tolist()
         new_meta_c.topk_weights = expert_weights
         
         exp_mappings = new_meta_c.sort_by_expert()

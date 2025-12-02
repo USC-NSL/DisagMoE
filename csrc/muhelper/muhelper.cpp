@@ -122,7 +122,6 @@ void MuDispatcher::run() {
 
 void MuDispatcher::put(TokenBatch batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
-    batch.data = batch.data.clone().detach();
     this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
 }
