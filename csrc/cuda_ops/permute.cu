@@ -169,11 +169,11 @@ __global__ void gather_tokens_kernel(T *d_out, uintptr_t *d_in_ptr, const int hi
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    gather_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, hidden_size); \
+    gather_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, hidden_size); \
 } while(0)
 
 template <class T>
-void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
+void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
@@ -192,23 +192,22 @@ gdr_context_t get_gather_src_ptrs_gdr() {
     return gather_src_ptrs_gdr;
 }
 
-void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size, int64_t raw_cuda_stream) {
+void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
-    cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
     uintptr_t* src_ptr_host = reinterpret_cast<uintptr_t*>(src_ptr);
     gdr_context_t gather_src_ptrs_gdr = get_gather_src_ptrs_gdr();
     gather_src_ptrs_gdr->copy_from_host(src_ptr_host, num_tokens * sizeof(uintptr_t));
     auto src_tensor = gather_src_ptrs_gdr->get_tensor();
     src_tensor = src_tensor.narrow(0, 0, num_tokens);
     using scalar_t = c10::BFloat16;
-    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
+    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
     m.def("permute_tokens(Tensor tokens, Tensor mappings) -> Tensor");
     m.impl("permute_tokens", torch::kCUDA, permute_tokens_cuda_dispatch);
 
-    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> ()");
+    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size) -> ()");
     m.impl("gather_tokens", torch::kCUDA, gather_tokens_cuda_dispatch);
 
     m.def("apply_weights_and_permute_tokens(Tensor tokens, Tensor weights, Tensor mappings) -> Tensor");
