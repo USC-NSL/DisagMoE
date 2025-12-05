@@ -183,13 +183,24 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
 gdr_context_t gather_src_ptrs_gdr = nullptr;
+gdr_context_t gather_src_ptrs_gdr_alt = nullptr;
 
 gdr_context_t get_gather_src_ptrs_gdr() {
+    static int enter_count = 0;
     if (gather_src_ptrs_gdr == nullptr) {
         auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
         gather_src_ptrs_gdr = std::make_shared<GdrContext>(src_tensor);
     }
-    return gather_src_ptrs_gdr;
+    if (gather_src_ptrs_gdr_alt == nullptr) {
+        auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
+        gather_src_ptrs_gdr_alt = std::make_shared<GdrContext>(src_tensor);
+    }
+    enter_count++;
+    if (enter_count & 1) {
+        return gather_src_ptrs_gdr;
+    } else {
+        return gather_src_ptrs_gdr_alt;
+    }
 }
 
 void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size) {

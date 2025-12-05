@@ -341,6 +341,9 @@ class ExpertsExecutor(Executor):
         self.token_m_indices_buffer = get_cuda_aligned_tensor(get_global_engine_config().max_batch_size_expert, torch.int32, device="cuda")
         self.token_m_indices_buffer_gdr = GdrContext(self.token_m_indices_buffer)
         
+        self.token_m_indices_buffer_alt = get_cuda_aligned_tensor(get_global_engine_config().max_batch_size_expert, torch.int32, device="cuda")
+        self.token_m_indices_buffer_alt_gdr = GdrContext(self.token_m_indices_buffer_alt)
+        
         try:
             method = getattr(self.model_config, "moe_linear_quant", None)
             if method and method != "none":
@@ -429,6 +432,10 @@ class ExpertsExecutor(Executor):
                             quant_method, "process_weights_after_loading"):
                         quant_method.process_weights_after_loading(module)
                         
+    def swap_m_indices_buffers(self):
+        self.token_m_indices_buffer, self.token_m_indices_buffer_alt = self.token_m_indices_buffer_alt, self.token_m_indices_buffer
+        self.token_m_indices_buffer_gdr, self.token_m_indices_buffer_alt_gdr = self.token_m_indices_buffer_alt_gdr, self.token_m_indices_buffer_gdr
+                        
     def get_expert_cls(self):
         expert_cls = MoEExperts if get_global_engine_config().enable_grouped_gemm else MoEExpertsSerial
         if self.use_deep_gemm_fp8:
@@ -436,6 +443,7 @@ class ExpertsExecutor(Executor):
                 expert_cls = MoEExpertsDeepGemmFP8Graph
             else:
                 expert_cls = MoEExpertsDeepGemmFP8
+        get_logger().info(f"Using expert class: {expert_cls.__name__}")
         return expert_cls
     
     def prepare_bsz_and_indices(self, meta_c: BatchMetadata) -> Tuple[Optional[Union[Tensor, List[int]]], Optional[Tensor]]:
@@ -448,6 +456,7 @@ class ExpertsExecutor(Executor):
             
         if self.expert_cls is MoEExperts:
             if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                assert False, "This path is deprecated"
                 meta_c.get_expert_batch_sizes_cuda(
                     self.model_config.num_experts, self.local_to_global_expert_rank,
                     self._static_bs_cuda, self.stream.cuda_stream
@@ -461,6 +470,7 @@ class ExpertsExecutor(Executor):
                 )
         
         if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
+            self.swap_m_indices_buffers()
             m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
             self.token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
             m_indices = self.token_m_indices_buffer[:len(m_indices_list)]

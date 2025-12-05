@@ -251,7 +251,7 @@ class ExpertForwardBatch(ForwardBatch):
     m_indices: Optional[torch.Tensor]
     
     def to_string(self) -> str:
-        return f"ExpertForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape}, {self.batch_sizes})"
+        return f"ExpertForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape})"
 
 @dataclass
 class ForwardResult:

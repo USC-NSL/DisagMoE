@@ -14,6 +14,8 @@ from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocat
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
 from disagmoe.frontend.engine_utils import get_global_engine_config
 
+from disagmoe.utils.gdr_context import GdrContext
+
 @dataclass
 class BatchTensorBuffer:
     
@@ -31,6 +33,12 @@ class BatchTensorBuffer:
     seq_start_loc_view: torch.Tensor
     query_start_loc_view: torch.Tensor
     
+    block_table_gdr: GdrContext
+    slot_mapping_gdr: GdrContext
+    seq_lens_gdr: GdrContext
+    context_lens_gdr: GdrContext
+    seq_start_loc_gdr: GdrContext
+    
     def __init__(self, max_batch_size: int, max_num_pages: int, device: str = "cuda"):
         self.block_table = get_cuda_aligned_tensor(max_batch_size * max_num_pages, torch.int32, device=device)
         self.slot_mapping = get_cuda_aligned_tensor(max_batch_size, torch.int64, device=device)
@@ -38,6 +46,12 @@ class BatchTensorBuffer:
         self.context_lens = get_cuda_aligned_tensor(max_batch_size, torch.int32, device=device)
         self.seq_start_loc = get_cuda_aligned_tensor(max_batch_size + 1, torch.int32, device=device)
         self.query_start_loc = torch.arange(max_batch_size + 1, dtype=torch.int32, device=device)
+        
+        self.block_table_gdr = GdrContext(self.block_table)
+        self.slot_mapping_gdr = GdrContext(self.slot_mapping)
+        self.seq_lens_gdr = GdrContext(self.seq_lens)
+        self.context_lens_gdr = GdrContext(self.context_lens)
+        self.seq_start_loc_gdr = GdrContext(self.seq_start_loc)
         
         self.block_table_view = torch.empty(0, dtype=torch.int32, device=device)
         self.slot_mapping_view = torch.empty(0, dtype=torch.int64, device=device)
@@ -174,9 +188,7 @@ class CPUBlockManager(BaseBlockManager):
         max_pages_per_req = self.model_config.max_seq_len // self.cache_config.block_size
         
         self.batch_tensor_buffer = BatchTensorBuffer(get_global_engine_config().max_batch_size_attn, max_pages_per_req)
-        
-        self._block_mgr.register_gdr_context(self.batch_tensor_buffer.block_table, self.batch_tensor_buffer.slot_mapping)
-        self._block_mgr.register_seq_info_gdr(self.batch_tensor_buffer.seq_lens, self.batch_tensor_buffer.context_lens, self.batch_tensor_buffer.seq_start_loc)
+        self.batch_tensor_buffer_alt = BatchTensorBuffer(get_global_engine_config().max_batch_size_attn, max_pages_per_req)
     
     def reset_state(self):
         self.release_seqs(list(self.req_manager.get_active_req_ids()))
@@ -211,8 +223,12 @@ class CPUBlockManager(BaseBlockManager):
             
         batch.seq_lens = decode_seq_lens
         
+    def swap_batch_tensor_buffer(self):
+        self.batch_tensor_buffer, self.batch_tensor_buffer_alt = self.batch_tensor_buffer_alt, self.batch_tensor_buffer
+        
     @nvtx_range("CPUBlockManager.pack_flash_attn_metadata")
     def pack_flash_attn_metadata(self, meta_c: BatchMetadata_C, batch: AttentionScheduleBatch, dummy_cache: bool = False) -> FlashAttentionMetadata:
+        self.swap_batch_tensor_buffer()
         if self.use_rebind and self.use_gdr_copy and not dummy_cache:
             return self.pack_flash_attn_metadata_opt(meta_c, batch)
         else:
@@ -226,10 +242,18 @@ class CPUBlockManager(BaseBlockManager):
     ) -> FlashAttentionMetadata:
         """Pack FlashAttention metadata using CPU approach - follows original implementation"""
         num_tokens = batch.num_decode_tokens + batch.num_prefill_tokens
-        num_seqs = batch.num_prefill_seqs + batch.num_decode_tokens
         
-        num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
-        self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
+        num_pages_per_token = self._block_mgr.prepare_block_table_gdr(
+            meta_c, batch.seq_lens,
+            self.batch_tensor_buffer.block_table_gdr.gdr_context, 
+            self.batch_tensor_buffer.slot_mapping_gdr.gdr_context
+        )
+        self._block_mgr.prepare_seq_info_gdr(
+            meta_c, batch.seq_lens, 
+            self.batch_tensor_buffer.seq_lens_gdr.gdr_context, 
+            self.batch_tensor_buffer.context_lens_gdr.gdr_context, 
+            self.batch_tensor_buffer.seq_start_loc_gdr.gdr_context
+        )
         self.batch_tensor_buffer.create_view(num_tokens, num_pages_per_token)
 
         max_decode_seq_len = max(batch.seq_lens) if len(batch.seq_lens) > 0 else 0
@@ -274,7 +298,11 @@ class CPUBlockManager(BaseBlockManager):
             slot_mapping_cuda = torch.zeros(num_tokens, dtype=torch.int64, device=self.device)
         else:
             if self.use_gdr_copy:
-                num_pages_per_token = self._block_mgr.prepare_block_table_gdr(meta_c, batch.seq_lens)
+                num_pages_per_token = self._block_mgr.prepare_block_table_gdr(
+                    meta_c, batch.seq_lens, 
+                    self.batch_tensor_buffer.block_table_gdr.gdr_context, 
+                    self.batch_tensor_buffer.slot_mapping_gdr.gdr_context
+                )
                 block_table_cuda = self.batch_tensor_buffer.block_table[ : num_pages_per_token * num_tokens].view(num_tokens, -1)
                 slot_mapping_cuda = self.batch_tensor_buffer.slot_mapping[ : num_tokens]
             else:
@@ -285,7 +313,12 @@ class CPUBlockManager(BaseBlockManager):
         # 2. prepare seqlens and start_locs
         # pack (seq_lens, context_lens, seq_start_loc) in the same tensor
         if self.use_gdr_copy:
-            self._block_mgr.prepare_seq_info_gdr(meta_c, batch.seq_lens)
+            self._block_mgr.prepare_seq_info_gdr(
+                meta_c, batch.seq_lens, 
+                self.batch_tensor_buffer.seq_lens_gdr.gdr_context, 
+                self.batch_tensor_buffer.context_lens_gdr.gdr_context, 
+                self.batch_tensor_buffer.seq_start_loc_gdr.gdr_context
+            )
             seq_lens_cuda = self.batch_tensor_buffer.seq_lens[:num_seqs]
             context_lens_cuda = self.batch_tensor_buffer.context_lens[:num_seqs]
             seq_start_loc_cuda = self.batch_tensor_buffer.seq_start_loc[:num_seqs + 1]

@@ -100,7 +100,7 @@ class AttentionEngineMixin:
         self.expert_ids_staging_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
         self.expert_ids_staging_buffer_alt_gdr = GdrContext(self.expert_ids_staging_buffer_alt)
         
-    def swap_staging_buffers(self):
+    def swap_attn_staging_buffers(self):
         self.expert_weights_staging_buffer, self.expert_weights_staging_buffer_alt = self.expert_weights_staging_buffer_alt, self.expert_weights_staging_buffer
         self.expert_weights_staging_buffer_gdr, self.expert_weights_staging_buffer_alt_gdr = self.expert_weights_staging_buffer_alt_gdr, self.expert_weights_staging_buffer_gdr
         self.expert_ids_staging_buffer, self.expert_ids_staging_buffer_alt = self.expert_ids_staging_buffer_alt, self.expert_ids_staging_buffer
@@ -165,6 +165,8 @@ class AttentionEngineMixin:
             self.pool.put_batch(batch_wrapper.to_c())
             return None
         
+        self.swap_attn_staging_buffers()
+        
         attn_meta = self._attn_driver_preprocess(schedule_batch.meta_c, schedule_batch)
         positions = schedule_batch.seq_lens_tensor.to(torch.int64)
             
@@ -183,7 +185,6 @@ class AttentionEngineMixin:
             expert_ids_buffer_gdr=self.expert_ids_staging_buffer_gdr,
             expert_weights_buffer_gdr=self.expert_weights_staging_buffer_gdr,
         )
-        self.swap_staging_buffers()
         return forward_batch
         
     def execute_batch_attn(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
@@ -383,9 +384,21 @@ class ExpertEngineMixin:
         self.expert_token_mapping_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
         self.expert_token_mapping_buffer_gdr = GdrContext(self.expert_token_mapping_buffer)
         
+        self.expert_token_mapping_buffer_alt = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
+        self.expert_token_mapping_buffer_alt_gdr = GdrContext(self.expert_token_mapping_buffer_alt)
+        
         self.expert_weights_staging_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.bfloat16, device="cuda")
         self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
         
+        self.expert_weights_staging_buffer_alt = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.bfloat16, device="cuda")
+        self.expert_weights_staging_buffer_alt_gdr = GdrContext(self.expert_weights_staging_buffer_alt)
+    
+    def swap_expert_staging_buffers(self):
+        self.expert_token_mapping_buffer, self.expert_token_mapping_buffer_alt = self.expert_token_mapping_buffer_alt, self.expert_token_mapping_buffer
+        self.expert_token_mapping_buffer_gdr, self.expert_token_mapping_buffer_alt_gdr = self.expert_token_mapping_buffer_alt_gdr, self.expert_token_mapping_buffer_gdr
+        self.expert_weights_staging_buffer, self.expert_weights_staging_buffer_alt = self.expert_weights_staging_buffer_alt, self.expert_weights_staging_buffer
+        self.expert_weights_staging_buffer_gdr, self.expert_weights_staging_buffer_alt_gdr = self.expert_weights_staging_buffer_alt_gdr, self.expert_weights_staging_buffer_gdr
+    
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
         input_tensor = batch.data
@@ -405,6 +418,8 @@ class ExpertEngineMixin:
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch)
+            
+        self.swap_expert_staging_buffers()
             
         topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.bfloat16, device="cpu")
         self.expert_weights_staging_buffer_gdr.copy_from_host_tensor(topk_weights)
@@ -798,10 +813,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         forward_batch = None
         last_batch = None
         idle_conunt = 0
-        inflight_req = dict()
         
         try:
-        
             while not self.end_flag:
                 self.recv_new_request()
                 batch = self.scheduler.schedule()
@@ -823,6 +836,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                         pass
                     else:
                         if tmp_result.sync_event is not None:
+                            # sleep_time = 50 * (10 ** (-6)) # 50 us
+                            # timed = 0
+                            # while tmp_result.sync_event.query() == False:
+                            #     time.sleep(sleep_time)
+                            #     timed += sleep_time
+                            #     if timed > 10: # 1 s
+                            #         raise TimeoutError("Timeout waiting for sync event")
+                            
                             tmp_result.sync_event.synchronize()
                             tmp_result.sync_event = None
                         final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
@@ -834,7 +855,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 last_batch = forward_batch
         except Exception as e:
             get_logger().error(f"Exception in single_module_loop_overlap: {e}")
-            with open(f"engine-{self.device_id}.err", "a") as f:
+            with open(f"engine-{self.device_id}.err", "wt") as f:
                 # write this batch and last batch to file
                 str1 = forward_batch.to_string() if forward_batch is not None else "None"
                 str2 = last_batch.to_string() if last_batch is not None else "None"
