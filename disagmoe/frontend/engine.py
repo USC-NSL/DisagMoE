@@ -215,6 +215,9 @@ class AttentionEngineMixin:
         self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
         hiddens = permute_tokens(result.hiddens, self.attn_token_mapping_buffer.narrow(0, 0, len(exp_mappings)))
+        
+        result.sync_event = torch.cuda.Event()
+        result.sync_event.record(self.stream)
 
         return TokenBatchCWrapper(data=hiddens, metadata=new_meta_c)
     
@@ -614,11 +617,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         initialize_logger(f"engine{self.device_id}")
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
-        if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
-            self.device = "cuda:0" # only one visible devices for one worker
-            torch.set_default_device(self.device)
-            self.stream = torch.cuda.current_stream()
-            set_tensor_model_parallel_config(model_config)
+        self.device = torch.device("cuda:0") # only one visible devices for one worker, set by ray
+        torch.cuda.set_device(self.device)
+        torch.set_default_device(self.device)
+        self.stream = torch.cuda.current_stream()
+        set_tensor_model_parallel_config(model_config)
             
         self.engine_type = engine_type
         self.model_config = model_config
@@ -662,12 +665,20 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self.handles.append(handle)
 
     @nvtx_range("Engine.post_process")
-    def post_process(self, batch: TokenBatchCWrapper) -> None:
+    def post_process(
+        self, 
+        batch: TokenBatchCWrapper,
+        sync_event: Optional[torch.cuda.Event] = None,
+        sync_stream: Optional[torch.cuda.Stream] = None,
+    ) -> None:
         assert not self.is_attn_worker
 
         range_push("Engine.stream_sync")
         with self._timer.range("stream_sync"):
-            self.stream.synchronize()
+            if sync_event is not None:
+                sync_event.synchronize()
+            if sync_stream is not None:
+                sync_stream.synchronize()
         range_pop()
         self.dispatcher.put(batch.to_c(), 0)
 
@@ -777,52 +788,66 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     def single_module_loop_overlap(self):
         # should be used with cuda graph, some concerns
         # 1. copy results out to another buffer
-        get_logger().info("starting single_module_loop_overlap")
+        get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
-        torch.set_default_device("cuda:0")
+        torch.cuda.set_device(self.device)
+        torch.set_default_device(self.device)
         torch.cuda.set_stream(self.stream)
         
         result_queue: Deque[Tuple[Optional[ForwardBatch], Optional[ForwardResult]]] = deque()
+        forward_batch = None
         last_batch = None
         idle_conunt = 0
         inflight_req = dict()
         
-        while not self.end_flag:
-            self.recv_new_request()
-            batch = self.scheduler.schedule()
-            forward_batch = None
-            if batch.data is not None:
-                idle_conunt = 0
-                batch_wrapper = TokenBatchCWrapper.from_c(batch)
-                forward_batch = self.preprocess_batch(batch_wrapper)
-                if forward_batch is None:
-                    pass
-                else:
-                    result = forward_batch.proc_func(forward_batch)
-                    result_queue.append((forward_batch, result)) # forward_batch.copy?
-                self.step_profile(batch.metadata.num_tokens())
-                
-            if last_batch:
-                tmp_batch, tmp_result = result_queue.popleft()
-                if tmp_batch is None:
-                    pass
-                else:
-                    if tmp_result.sync_event is not None:
-                        tmp_result.sync_event.synchronize()
-                        tmp_result.sync_event = None
-                    final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
-                    self.post_process(final_result)
-            elif batch.data is None:
-                # do idle check
-                idle_conunt += 1
-                
-            last_batch = forward_batch
+        try:
+        
+            while not self.end_flag:
+                self.recv_new_request()
+                batch = self.scheduler.schedule()
+                forward_batch = None
+                if batch.data is not None:
+                    idle_conunt = 0
+                    batch_wrapper = TokenBatchCWrapper.from_c(batch)
+                    forward_batch = self.preprocess_batch(batch_wrapper)
+                    if forward_batch is None:
+                        pass
+                    else:
+                        result = forward_batch.proc_func(forward_batch)
+                        result_queue.append((forward_batch, result)) # forward_batch.copy?
+                    self.step_profile(batch.metadata.num_tokens())
+                    
+                if last_batch:
+                    tmp_batch, tmp_result = result_queue.popleft()
+                    if tmp_batch is None:
+                        pass
+                    else:
+                        if tmp_result.sync_event is not None:
+                            tmp_result.sync_event.synchronize()
+                            tmp_result.sync_event = None
+                        final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
+                        self.post_process(final_result, sync_event=tmp_result.sync_event)
+                elif batch.data is None:
+                    # do idle check
+                    idle_conunt += 1
+                    
+                last_batch = forward_batch
+        except Exception as e:
+            get_logger().error(f"Exception in single_module_loop_overlap: {e}")
+            with open(f"engine-{self.device_id}.err", "a") as f:
+                # write this batch and last batch to file
+                str1 = forward_batch.to_string() if forward_batch is not None else "None"
+                str2 = last_batch.to_string() if last_batch is not None else "None"
+                f.write(f"batch: {str1}\n")
+                f.write(f"last_batch: {str2}\n")
+            raise e
         
     @torch.inference_mode()
     def single_module_loop(self):
         get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
-        torch.set_default_device("cuda:0")
+        torch.cuda.set_device(self.device)
+        torch.set_default_device(self.device)
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
         
@@ -858,7 +883,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             batch_wrapper = self.process_batch(batch_wrapper)
             if batch_wrapper is None:
                 continue
-            self.post_process(batch_wrapper)
+            self.post_process(batch_wrapper, sync_stream=self.stream)
             # self.stats_post_process(batch)
     
     def fetch_step_stats(self) -> Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]:

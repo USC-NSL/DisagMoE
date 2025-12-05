@@ -496,6 +496,7 @@ class ExpertsExecutor(Executor):
 
     @nvtx_range("ExpertsExecutor.execute")
     def execute(self, batch: ExpertForwardBatch) -> Tensor:
+        assert batch.num_tokens <= get_global_engine_config().max_batch_size_expert, f"batch size {batch.num_tokens} exceeds max batch size {get_global_engine_config().max_batch_size_expert}"
         vid = self.layer_mappings[batch.layer_id]
         operator = self.operators[vid]
         if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
