@@ -28,6 +28,8 @@ private:
 
     std::deque<TokenBatch> batch_queue;
 
+    std::deque<TokenTopKInfo> token_queue;
+
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
 
@@ -55,6 +57,14 @@ public:
 
     std::vector<TokenBatch> get_batches_restricted(int token_threshold);
 
+    void add_token(const TokenTopKInfo &token);
+
+    void add_tokens(const std::vector<TokenTopKInfo> &tokens);
+
+    std::vector<TokenTopKInfo> get_all_tokens();
+
+    std::vector<TokenTopKInfo> get_tokens_restricted(int token_threshold);
+
 };
 
 
@@ -76,16 +86,19 @@ private:
     int num_attn_layers;
     int num_expert_layers;
 
+    bool attn_use_token_queue;
+
     std::vector<unified_layer_t> layers; // attn layer first, then expert layers
 
     std::vector<unified_layer_t> attn_layers;
+
     std::vector<unified_layer_t> expert_layers;
 
 public:
 
-    UnifiedLayerScheduler(int num_layers);
+    UnifiedLayerScheduler(int num_layers, bool use_token_queue);
 
-    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers);
+    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, bool use_token_queue);
 
     bool is_attn_layer(int layer_id);
 
@@ -94,6 +107,8 @@ public:
     int schedule() override;
 
     void add_tokens_to_layer(int layer_id, int num_tokens) override;
+
+    void attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens);
 
     void add_batch(const TokenBatch &batch);
 
@@ -104,6 +119,8 @@ public:
     TokenBatch get_batch_from_layer(int layer_id);
 
     TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold);
+
+    bool layer_uses_token_queue(int layer_id);
 };
 
 using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerScheduler>;

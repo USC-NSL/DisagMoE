@@ -185,9 +185,6 @@ struct TokenBatch: ScheduleUnit {
             }
         );
 
-        at::cuda::CUDAStream stream = at::cuda::getDefaultCUDAStream();
-        at::cuda::CUDAStreamGuard guard(stream);
-
         int n = tokens.size();
         int topk = tokens[0].count();
 

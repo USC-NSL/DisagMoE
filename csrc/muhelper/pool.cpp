@@ -8,7 +8,7 @@ UnifiedPool::UnifiedPool(
     int top_k
 ):
     MuPool(layer_ids, device_id, channels, num_groups), top_k(top_k) {
-    this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size() + 1);
+    this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size() + 1, top_k > 1);
     if (top_k > 1) {
         this->topk_pools = std::vector<TokenTopKPool>(layer_ids.size() + 1, TokenTopKPool(top_k));
     }
@@ -29,9 +29,8 @@ void UnifiedPool::process_attn_batch_topk(torch::Tensor tensor, batch_metadata_t
     if (batched_tokens == 0) {
         return;
     }
-    auto attn_batch = TokenBatch::pack_topk_tokens(meta->layer_id, ready_tokens);
     std::lock_guard<std::mutex> lock(this->batch_mutex);
-    this->layer_scheduler->add_batch(attn_batch.data, attn_batch.metadata);
+    this->layer_scheduler->attn_add_tokens(meta->layer_id, ready_tokens);
 }
 
 void UnifiedPool::process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta) {

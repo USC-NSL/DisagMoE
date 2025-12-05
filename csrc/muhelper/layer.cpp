@@ -67,14 +67,48 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
     return result;
 }
 
+void UnifiedLayer::add_token(const TokenTopKInfo &token) {
+    this->token_queue.push_back(token);
+    this->num_tokens ++;
+}
+
+void UnifiedLayer::add_tokens(const std::vector<TokenTopKInfo> &tokens) {
+    for (auto &token: tokens) {
+        this->add_token(token);
+    }
+}
+
+std::vector<TokenTopKInfo> UnifiedLayer::get_all_tokens() {
+    std::vector<TokenTopKInfo> result{};
+    while (!this->token_queue.empty()) {
+        result.emplace_back(std::move(this->token_queue.front()));
+        this->token_queue.pop_front();
+    }
+    this->num_tokens = 0;
+    return result;
+}
+
+std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_threshold) {
+    std::vector<TokenTopKInfo> result{};
+    int total_tokens = 0;
+    while (!this->token_queue.empty() && total_tokens < token_threshold) {
+        auto first_token = this->token_queue.front();
+        result.emplace_back(std::move(first_token));
+        this->token_queue.pop_front();
+        total_tokens ++;
+    }
+    this->num_tokens -= total_tokens;
+    return result;
+}
+
 /*
 
     Layer-wise scheduler
 
 */
 
-UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers):
-    num_attn_layers(num_attn_layers), num_expert_layers(num_expert_layers) {
+UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, bool attn_use_token_queue):
+    num_attn_layers(num_attn_layers), num_expert_layers(num_expert_layers), attn_use_token_queue(attn_use_token_queue) {
     for (int i = 0; i < num_attn_layers; i++) {
         auto attn_layer = UnifiedLayer::create_attention_layer(i);
         this->attn_layers.push_back(attn_layer);
@@ -88,8 +122,8 @@ UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert
     }
 }
 
-UnifiedLayerScheduler::UnifiedLayerScheduler(int num_layers):
-    UnifiedLayerScheduler(num_layers, num_layers) { }
+UnifiedLayerScheduler::UnifiedLayerScheduler(int num_layers, bool attn_use_token_queue):
+    UnifiedLayerScheduler(num_layers, num_layers, attn_use_token_queue) { }
 
 bool UnifiedLayerScheduler::is_attn_layer(int layer_id) {
     return layer_id < this->num_attn_layers;
@@ -99,6 +133,9 @@ bool UnifiedLayerScheduler::is_expert_layer(int layer_id) {
     return layer_id >= this->num_attn_layers;
 }
 
+bool UnifiedLayerScheduler::layer_uses_token_queue(int layer_id) {
+    return this->attn_use_token_queue && this->is_attn_layer(layer_id) && layer_id > 0;
+}
 int UnifiedLayerScheduler::schedule() {
     // TODO: this is fisrt-layer-first-serve, implement other policies
     for (int i = 0; i < this->num_attn_layers; i++) {
@@ -117,21 +154,33 @@ TokenBatch UnifiedLayerScheduler::get_batch_from_layer(int layer_id) {
     if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
         return TokenBatch {};
     }
-    auto batches = this->layers[layer_id]->get_all_batches();
-    auto batch = TokenBatch::merge(batches);
-    return batch;
+    if (this->layer_uses_token_queue(layer_id)) {
+        auto tokens = this->layers[layer_id]->get_all_tokens();
+        auto batch = TokenBatch::pack_topk_tokens(layer_id, tokens);
+        return batch;
+    } else {
+        auto batches = this->layers[layer_id]->get_all_batches();
+        auto batch = TokenBatch::merge(batches);
+        return batch;
+    }
 }
 
 TokenBatch UnifiedLayerScheduler::get_batch_from_layer_restricted(int layer_id, int token_threshold) {
     if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
         return TokenBatch {};
     }
-    if (token_threshold > 0 && this->layers[layer_id]->get_num_tokens() > token_threshold) {
+    if (token_threshold <= 0 || this->layers[layer_id]->get_num_tokens() <= token_threshold) {
+        return this->get_batch_from_layer(layer_id);
+    }
+    if (this->layer_uses_token_queue(layer_id)) {
+        auto tokens = this->layers[layer_id]->get_tokens_restricted(token_threshold);
+        auto batch = TokenBatch::pack_topk_tokens(layer_id, tokens);
+        return batch;
+    } else {
         auto batches = this->layers[layer_id]->get_batches_restricted(token_threshold);
         auto batch = TokenBatch::merge(batches);
         return batch;
-    } 
-    return this->get_batch_from_layer(layer_id);
+    }
 }
 
 std::vector<int> UnifiedLayerScheduler::get_pool_snapshot() {
@@ -147,6 +196,10 @@ std::vector<int> UnifiedLayerScheduler::get_pool_snapshot() {
 
 void UnifiedLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
     throw std::runtime_error("add_tokens_to_layer is not supported for UnifiedLayerScheduler");
+}
+
+void UnifiedLayerScheduler::attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens) {
+    this->attn_layers[layer_id]->add_tokens(tokens);
 }
 
 void UnifiedLayerScheduler::add_batch(const TokenBatch &batch) {

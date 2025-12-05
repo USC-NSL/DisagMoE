@@ -208,3 +208,13 @@ def _log_memory_usage(prefix: str = ""):
     
 def next_power_of_2(n: int):
     return 1 << (n - 1).bit_length() if n > 0 else 1
+
+def sync_event_timeout(event: torch.cuda.Event, timeout: float = 10.0):
+    timed = 0
+    timed = 50 * (10 ** (-6)) # 50 us
+    while event.query() == False:
+        time.sleep(timed)
+        timed += timed
+        if timed > timeout:
+            raise TimeoutError("Timeout waiting for sync event")
+    event.synchronize()
