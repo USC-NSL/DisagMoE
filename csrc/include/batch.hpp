@@ -21,6 +21,14 @@ inline auto& get_op_gather_tokens() {
     return op;
 }
 
+inline auto& get_op_gather_and_sum_tokens() {
+    static auto op =
+        torch::Dispatcher::singleton()
+            .findSchemaOrThrow("disag_ops::gather_and_sum_tokens", "")
+            .typed<void(torch::Tensor, long, long, long, long)>();
+    return op;
+}
+
 // TODO: have a dedicated CUDA stream to deal with GPU memory copy.
 struct TokenBatch: ScheduleUnit {
     torch::Tensor data;
@@ -187,10 +195,12 @@ struct TokenBatch: ScheduleUnit {
 
         ASSERT_MSG(meta->num_tokens() == n, "num_tokens is not equal to n");
 
-        torch::Tensor gathered_topk_tensor = torch::empty(
-            {n * topk, meta->token_hidden_dim()}, 
+        // Allocate output tensor for aggregated tokens [n, hidden_size]
+        torch::Tensor aggregated_tokens_tensor = torch::empty(
+            {n, meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+        
         // NOTE: tensor memory layout: [num_tokens, topk] flattened as 1D tensor
         std::vector<uintptr_t> src_ptrs(n * topk);
 
@@ -199,10 +209,10 @@ struct TokenBatch: ScheduleUnit {
                 src_ptrs[i * topk + k] = (uintptr_t) tokens[i].topk_tensors[k].data_ptr();
             }
         }
-        // TODO: Fuse gather and sum
+        
+        // Fused gather and sum operation
         int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
-        get_op_gather_tokens().call(gathered_topk_tensor, src_ptr, n * topk, meta->token_hidden_dim());
-        auto aggregated_tokens_tensor = torch::sum(gathered_topk_tensor.view({n, topk, -1}), 1);
+        get_op_gather_and_sum_tokens().call(aggregated_tokens_tensor, src_ptr, n, topk, meta->token_hidden_dim());
         return TokenBatch{aggregated_tokens_tensor, meta};
     }
 };
