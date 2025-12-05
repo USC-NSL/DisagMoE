@@ -297,8 +297,10 @@ class AttnExecutor(Executor):
             
         if batch.expert_ids_buffer is not None:
             outputs = torch.empty_like(staging_outputs)
-            expert_ids = torch.empty_like(staging_topk_ids)
-            expert_weights = torch.empty_like(staging_topk_weights)
+            # expert_ids = torch.empty_like(staging_topk_ids)
+            # expert_weights = torch.empty_like(staging_topk_weights)
+            expert_ids = batch.expert_ids_buffer
+            expert_weights = batch.expert_weights_buffer
             copy_graph_results_cuda(
                 staging_outputs, 
                 staging_topk_ids, 
