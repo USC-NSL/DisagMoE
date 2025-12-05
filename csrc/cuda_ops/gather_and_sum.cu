@@ -17,7 +17,6 @@ using bf16 = __nv_bfloat16;
 using bf162 = __nv_bfloat162;
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
-using gdr_context_t = std::shared_ptr<GdrContext>;
 
 // Global GDR contexts for source pointers (shared with permute.cu pattern)
 gdr_context_t gather_and_sum_src_ptrs_gdr = nullptr;
@@ -143,11 +142,13 @@ void gather_and_sum_tokens_cuda_dispatch(
     // dest is a cuda ptr with shape [n, hidden_size]
     // src_ptr is a cpu ptr to array of n*topk uintptr_t pointers
     uintptr_t* src_ptr_host = reinterpret_cast<uintptr_t*>(src_ptr);
+    using scalar_t = c10::BFloat16;
+    
+#if KERNEL_USE_GDRCOPY == 1
     gdr_context_t gather_src_ptrs_gdr = get_gather_and_sum_src_ptrs_gdr();
     gather_src_ptrs_gdr->copy_from_host(src_ptr_host, n * topk * sizeof(uintptr_t));
     auto src_tensor = gather_src_ptrs_gdr->get_tensor();
     src_tensor = src_tensor.narrow(0, 0, n * topk);
-    using scalar_t = c10::BFloat16;
     _gather_and_sum_tokens_cuda<scalar_t>(
         dest.data_ptr<scalar_t>(), 
         src_tensor.data_ptr<uintptr_t>(), 
@@ -155,6 +156,21 @@ void gather_and_sum_tokens_cuda_dispatch(
         topk, 
         hidden_size
     );
+#else
+    // Create a torch tensor and copy from host
+    auto src_tensor = torch::empty({n * topk}, torch::TensorOptions()
+        .dtype(torch::kUInt64)
+        .device(torch::kCUDA));
+    cudaMemcpy(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
+               n * topk * sizeof(uintptr_t), cudaMemcpyHostToDevice);
+    _gather_and_sum_tokens_cuda<scalar_t>(
+        dest.data_ptr<scalar_t>(), 
+        src_tensor.data_ptr<uintptr_t>(), 
+        n, 
+        topk, 
+        hidden_size
+    );
+#endif
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
