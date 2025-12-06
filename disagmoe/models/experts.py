@@ -176,6 +176,12 @@ class MoEExpertsDeepGemmBF16(torch.nn.Module):
 
     def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
 
+        assert isinstance(hiddens, torch.Tensor), f"hiddens type: {type(hiddens)}"
+        assert isinstance(self.w13, torch.Tensor), f"w13 type: {type(self.w13)}"
+        assert isinstance(m_indices, torch.Tensor), f"m_indices type: {type(m_indices)}"
+        assert m_indices.dtype == torch.int32, f"m_indices dtype: {m_indices.dtype}"
+        assert m_indices.device.type == "cuda", f"m_indices device: {m_indices.device}"
+
         # Output buffer for w13 (BF16), shape: [total_tokens, intermediate_size * 2]
         intermediate_size_2 = self.intermediate_size * 2
         up_out = torch.empty(
