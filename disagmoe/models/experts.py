@@ -14,7 +14,7 @@ try:
 except ImportError:
     dg = None
 
-class MoEExperts(torch.nn.Module):
+class MoEExpertsCUTLASS(torch.nn.Module):
     def __init__(
         self, 
         hidden_size: int, 
@@ -107,8 +107,9 @@ class MoEExperts(torch.nn.Module):
             self.gmm_with_cache = _gmm
 
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        use_cache = bs <= self.gmm_cache_max_batch_size and self.gmm_with_cache is not None
         output = None
-        if bs < self.gmm_cache_max_batch_size and self.gmm_with_cache is not None:
+        if use_cache:
             up = self.gmm_with_cache(hiddens, self.w13_weight, batch_sizes, c=self.cache_up)
             up = self.act_fn(up[:bs, : self.intermediate_size]) * up[:bs, self.intermediate_size :]
             down = self.gmm_with_cache(up, self.w2_weight, batch_sizes, c=self.cache_down)
@@ -119,6 +120,99 @@ class MoEExperts(torch.nn.Module):
             down = self.gmm(up, self.w2_weight, batch_sizes)
             output = down
         return output
+
+class MoEExpertsDeepGemmBF16(torch.nn.Module):
+    """DeepGEMM-based BF16 grouped experts."""
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int,
+        tp_size: int = 1,
+        max_batch_size: int = MAX_BATCH_SIZE,
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_experts = num_experts
+        self.tp_size = tp_size
+        self.max_batch_size = max_batch_size
+        assert tp_size == 1, "Not implemented TP for experts yet"
+
+        if dg is None:
+            raise ImportError("deep_gemm is not available!")
+        # Initialize weights directly in the layout expected by DeepGEMM kernels.
+        self.create_weights()
+
+        self.expert_ids = torch.arange(self.num_experts, device="cpu", dtype=torch.int32)
+
+    def create_weights(self):
+        self.act_fn = torch.nn.SiLU(inplace=True)
+
+        # For w13: K = hidden_size, N = intermediate_size * 2
+        k_w13 = self.hidden_size
+        n_w13 = self.intermediate_size * 2
+        # DeepGEMM expects weights shaped [E, N, K] with per-[128x128] block scales.
+        self.w13 = torch.randn(
+            self.num_experts,
+            n_w13,
+            k_w13,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+
+        # w2
+        # For w2: K = intermediate_size, N = hidden_size
+        k_w2 = self.intermediate_size
+        n_w2 = self.hidden_size
+        self.w2 = torch.randn(
+            self.num_experts,
+            n_w2,
+            k_w2,
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+
+    def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
+
+        # Output buffer for w13 (BF16), shape: [total_tokens, intermediate_size * 2]
+        intermediate_size_2 = self.intermediate_size * 2
+        up_out = torch.empty(
+            bs,
+            intermediate_size_2,
+            device=hiddens.device,
+            dtype=torch.bfloat16,
+        )
+
+        # Run w13 kernel (non-masked, contiguous)
+        dg.m_grouped_bf16_gemm_nt_contiguous(
+            hiddens,
+            self.w13,
+            up_out,
+            m_indices,
+        )
+
+        # Activation and gating
+        up = self.act_fn(up_out[:, : self.intermediate_size]) * up_out[:, self.intermediate_size :]
+
+        # Output buffer for w2 (BF16), shape: [M, hidden_size]
+        down_out = torch.empty(
+            bs,
+            self.hidden_size,
+            device=hiddens.device,
+            dtype=torch.bfloat16,
+        )
+
+        # Run w2 kernel (non-masked, contiguous)
+        dg.m_grouped_bf16_gemm_nt_contiguous(
+            up,
+            self.w2,
+            down_out,
+            m_indices,
+        )
+
+        return down_out
 
 
 class MoEExpertsDeepGemmFP8(torch.nn.Module):
@@ -714,7 +808,7 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
             self.static_bs
         )
 
-class MoEExpertsSerial(MoEExperts):
+class MoEExpertsSerial(MoEExpertsCUTLASS):
     
     def __init__(self, hidden_size, intermediate_size, num_experts, tp_size = 1, 
                  max_batch_size: int = MAX_BATCH_SIZE,

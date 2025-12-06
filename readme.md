@@ -8,6 +8,7 @@ See `.gitmodules`.
 * nvtx
 * grouped_gemm
 * ucx (not included as submodule)
+* deep_gemm (not included as submodule)
 
 ## Install dependencies
 
@@ -18,6 +19,8 @@ sudo apt-get install libzmq3-dev libcereal-dev libucx-dev
 git submodule update --init --recursive
 pip install -r requirements.txt
 ```
+
+For `deep_gemm`, their pip install is currently broken. So please use their repo's `install.sh` on `v2.1.1` branch.
 
 ### Apply patch to vLLM
 

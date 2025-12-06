@@ -78,7 +78,7 @@ class AttentionEngineMixin:
             self._create_attn_broadcast_buffers()
             
         self.attn_executor.warmup(self.engine_config.max_batch_size_attn)
-            
+
         if self.engine_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
             
@@ -374,7 +374,13 @@ class ExpertEngineMixin:
             self.local_to_gloabl_expert_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
             self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
         self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
-        self.expert_executor.warmup(self.expert_max_batch_size)
+
+        # TODO: later should make fp8 experts to use this paths as well
+        if self.engine_config.enable_cuda_graph_expert and self.model_config.dtype == torch.bfloat16:
+            self.expert_executor.build_cuda_graph_executor()
+        else:
+            self.expert_executor.warmup(self.expert_max_batch_size)
+
         _log_memory_usage("After building expert executor")
         
         self.expert_token_mapping_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")

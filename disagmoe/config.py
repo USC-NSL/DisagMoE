@@ -39,6 +39,7 @@ class EngineConfig:
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
     enable_grouped_gemm: bool = False
+    less_than_sm90: bool = False
     
     max_batch_size_attn: int = 160
     max_batch_size_expert: int = 512

@@ -8,8 +8,8 @@ WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
 # model config
 
 MODEL_NAME="qwen3_235b"  # options: mixtral | qwen3_235b
-ATTN_QKV_QUANT="fp8" # options: none | fp8
-MOE_LINEAR_QUANT="fp8" # options: none | fp8
+ATTN_QKV_QUANT="none" # options: none | fp8
+MOE_LINEAR_QUANT="none" # options: none | fp8
 
 MODEL_ARGS="--model $MODEL_NAME"
 if [ ! -z $NUM_LAYERS ]; then
@@ -49,6 +49,7 @@ if [ $placement == "colocate" ]; then
     ep_size=$WORLD_SIZE
 fi
 
+LESS_THAN_SM90=0 # Set to 1 for less than sm90 GPUs like A100, to disable deep_gemm
 ENABLE_CUDA_GRAPH_ATTN=1
 ENABLE_CUDA_GRAPH_EXPERT=1
 ENABLE_TORCH_PROFILE=0
@@ -80,6 +81,11 @@ if [ "$ENABLE_CUDA_GRAPH_EXPERT" -eq 1 ]; then
     CUDA_GRAPH_EXPERT_ARGS="--cuda-graph-expert"
 fi
 
+LESS_THAN_SM90_ARGS=""
+if [ "$LESS_THAN_SM90" -eq 1 ]; then
+    LESS_THAN_SM90_ARGS="--less-than-sm90"
+fi
+
 SERIAL_GEMM_ARGS=""
 if [ "$USE_SERIAL_GEMM_MOE" -eq 1 ]; then
     SERIAL_GEMM_ARGS="--serial-gemm"
@@ -102,6 +108,7 @@ python benchmark/server.py \
     --ep-size $ep_size \
     --transport $transport_backend \
     $SERIAL_GEMM_ARGS \
+    $LESS_THAN_SM90_ARGS \
     $CUDA_GRAPH_ATTN_ARGS \
     $CUDA_GRAPH_EXPERT_ARGS \
     --file $REPORT_TABLE \
