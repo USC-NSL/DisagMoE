@@ -1,4 +1,3 @@
-from benchmark.ops.grouped_experts import batch_sizes
 from disagmoe.frontend.datatypes import ExpertForwardBatch
 import torch
 
