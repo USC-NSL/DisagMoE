@@ -92,8 +92,8 @@ class AttnExecutor(Executor):
         self.init_kv_cache()
         
     def init_model(self):
-        _, total_memory = torch.cuda.mem_get_info()
-        self.init_gpu_memory = total_memory
+        free_memory, _ = torch.cuda.mem_get_info()
+        self.init_gpu_memory = free_memory
         
         # Build quantization config for attention QKV if requested
         qkv_quant_config = None
@@ -482,7 +482,8 @@ class ExpertsExecutor(Executor):
                     dtype=torch.int64, device="cuda"
                 )
         
-        if self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
+        # DeepGEMM-based experts (both BF16 and FP8) expect m_indices
+        if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
             m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
             self.token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
             m_indices = self.token_m_indices_buffer[:len(m_indices_list)]
@@ -492,7 +493,7 @@ class ExpertsExecutor(Executor):
     def warmup(self, batch_size: int):
         self._static_bs_cuda = torch.zeros((self.model_config.num_experts_per_rank, ), dtype=torch.int64, device="cuda")
 
-        need_m_indices = self.expert_cls in [MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]
+        need_m_indices = self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]
         hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
             batch_size=batch_size,
             hidden_size=self.model_config.hidden_size,

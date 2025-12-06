@@ -304,7 +304,6 @@ class CUDAGraphExpertsExecutor:
             graph_list = self.graphs[graph_batch_size]
             
             bsz_start_time = time.perf_counter()
-            free_memory_before, _ = torch.cuda.mem_get_info()
 
             hiddens, _, m_indices = make_expert_dummy_inputs(
                 batch_size=graph_batch_size,
