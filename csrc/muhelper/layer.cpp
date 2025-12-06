@@ -2,10 +2,10 @@
 #include "batch.hpp"
 
 UnifiedLayer::UnifiedLayer(LayerType layer_type, int layer_id): 
-    layer_type(layer_type), layer_id(layer_id), expert_id(-1), num_tokens(0), num_batches(0) {}
+    layer_type(layer_type), layer_id(layer_id), expert_id(-1), num_tokens(0) {}
 
 UnifiedLayer::UnifiedLayer(LayerType layer_type, int layer_id, int expert_id): 
-    layer_type(layer_type), layer_id(layer_id), expert_id(expert_id), num_tokens(0), num_batches(0) {}
+    layer_type(layer_type), layer_id(layer_id), expert_id(expert_id), num_tokens(0) {}
 
 unified_layer_t UnifiedLayer::create_attention_layer(int layer_id) {
     return std::make_shared<UnifiedLayer>(LayerType::ATTENTION, layer_id);
@@ -18,13 +18,11 @@ unified_layer_t UnifiedLayer::create_expert_layer(int layer_id) {
 void UnifiedLayer::add_batch(const TokenBatch &batch) {
     this->batch_queue.push_back(batch);
     this->num_tokens += batch.metadata->num_tokens();
-    this->num_batches += 1;
 }
 
 void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
     this->batch_queue.emplace_back(data, meta);
     this->num_tokens += meta->num_tokens();
-    this->num_batches += 1;
 }
 
 std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
@@ -34,7 +32,6 @@ std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
         this->batch_queue.pop_front();
     }
     this->num_tokens = 0;
-    this->num_batches = 0;
     return result;
 }
 
@@ -50,7 +47,8 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
             auto batches = first_batch.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
             tokens_in_batch = batches[0].metadata->num_tokens();
             result.emplace_back(std::move(batches[0]));
-            this->batch_queue.front() = std::move(batches[1]);
+            this->batch_queue.pop_front();
+            this->batch_queue.push_front(std::move(batches[1]));
         } else {
             result.emplace_back(std::move(this->batch_queue.front()));
             this->batch_queue.pop_front();
@@ -59,7 +57,6 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
         num_batches += 1;
     }
     this->num_tokens -= total_tokens;
-    this->num_batches -= num_batches;
     ASSERT_MSG(total_tokens > 0 && num_batches > 0, "Got nothing from layer" + std::to_string(this->layer_id) + \
     " under token threshold, total tokens in layer: " + std::to_string(this->num_tokens) + \
     ", num tokens in next batch in layer: " + std::to_string(this->batch_queue.front().metadata->num_tokens()) + \

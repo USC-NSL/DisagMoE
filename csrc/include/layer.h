@@ -24,7 +24,6 @@ private:
     int layer_id;
     int expert_id; // >= 0 if is an individual expert
     int num_tokens;
-    int num_batches;
 
     std::deque<TokenBatch> batch_queue;
 
@@ -46,8 +45,6 @@ public:
     inline int get_layer_id() const { return layer_id; }
 
     inline int get_num_tokens() const { return num_tokens; }
-
-    inline int get_num_batches() const { return num_batches; }
 
     void add_batch(const TokenBatch &batch);
 
