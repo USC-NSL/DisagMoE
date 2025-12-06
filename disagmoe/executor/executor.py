@@ -92,8 +92,8 @@ class AttnExecutor(Executor):
         self.init_kv_cache()
         
     def init_model(self):
-        free_memory, _ = torch.cuda.mem_get_info()
-        self.init_gpu_memory = free_memory
+        free_memory, total_memory = torch.cuda.mem_get_info()
+        self.init_gpu_memory = total_memory
         
         # Build quantization config for attention QKV if requested
         qkv_quant_config = None

@@ -252,7 +252,7 @@ class CUDAGraphExpertsExecutor:
         assert self.model_config.dtype == torch.bfloat16
 
         max_batch_size = get_global_engine_config().max_batch_size_expert
-        self.static_outputs: Dict[int, Tensor] = {} # callee allocated, no need to pre-allocate
+        self.static_outputs: Dict[int, List[Tensor]] = {} # callee allocated, no need to pre-allocate
         
         # Allocate respecting max batch size, small batches can use slices of this
         self.static_input_hiddens = torch.empty((max_batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype, device="cuda")
@@ -264,6 +264,7 @@ class CUDAGraphExpertsExecutor:
         # initialize graphs
         for bs in self.graph_batch_sizes:
             self.graphs[bs] = [torch.cuda.CUDAGraph() for _ in self.model_config.layer_ids] # graphs of all layers
+            self.static_outputs[bs] = []
         
     def get_graph_batch_sizes(self, graph_max_batch_size: int) -> List[int]:
         assert graph_max_batch_size > 0
@@ -344,6 +345,7 @@ class CUDAGraphExpertsExecutor:
                     with torch.cuda.graph(graph, pool=graph_list[0].pool()):
                         outputs = self.experts_executor.execute_eager(batch)
                 
+                self.static_outputs[graph_batch_size].append(outputs)
                 time_after_capture = time.perf_counter()
                 if layer_id == 0 and graph_batch_size > 1:
                     get_logger().info(f"Time taken to capture graph: {time_after_capture - time_before_capture} seconds.")
