@@ -52,7 +52,7 @@ class DPScheduler:
         try:
             await self._log_task
         except asyncio.CancelledError:
-            raise
+            pass
         
     async def log_status(self):
         while not self.end_flag:
@@ -85,7 +85,7 @@ class DPScheduler:
                 try:
                     await f
                 except asyncio.CancelledError:
-                    raise
+                    pass
             
             request_item: RequestItem = done.pop().result()
             rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
