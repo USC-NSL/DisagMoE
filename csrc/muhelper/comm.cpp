@@ -63,7 +63,7 @@ void NcclChannel::send(const TokenBatch& batch) {
     // Keep the tensor alive on the comm stream until the send completes.
     int device_index = batch.data.get_device();
     auto stream_view = c10::cuda::getStreamFromExternal(this->stream, device_index);
-    c10::cuda::CUDACachingAllocator::recordStream(batch.data, stream_view);
+    c10::cuda::CUDACachingAllocator::recordStream(batch.data.storage().data_ptr(), stream_view);
     // CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }

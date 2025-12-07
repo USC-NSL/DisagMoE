@@ -21,11 +21,8 @@ class PyChannel: Channel {
 public:
     using Channel::Channel;
 
-    void send(uintptr_t data, const BatchMetadata& metadata) override {
-        PYBIND11_OVERRIDE_PURE(void, Channel, send);
-    }
+    // Not used; provided to satisfy the abstract interface.
+    void send(const TokenBatch& /*batch*/) override {}
     
-    void recv(uintptr_t data, const BatchMetadata& metadata) override {
-        PYBIND11_OVERRIDE_PURE(void, Channel, recv);
-    }
+    void recv(uintptr_t /*data*/, const BatchMetadata& /*metadata*/) override {}
 };
