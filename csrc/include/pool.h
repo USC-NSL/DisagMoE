@@ -8,6 +8,7 @@
 #include "metadata.hpp"
 #include "batch.hpp"
 #include "layer.h"
+#include <string>
 
 class UnifiedPool: public MuPool {
 
@@ -37,8 +38,12 @@ public:
         std::vector<int> layer_ids,
         int device_id,
         std::vector<Channel_t> channels,
-        int num_groups = 1,
-        int top_k = 1
+        int num_groups,
+        int top_k,
+        const std::string &unified_scheduler_type,
+        float defrag_weight_decay,
+        int defrag_lookahead_steps,
+        int defrag_lookback_steps
     );
 
     void set_attn_schedule_token_threshold(int token_threshold);

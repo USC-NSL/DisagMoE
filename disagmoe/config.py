@@ -36,6 +36,12 @@ class ModelConfig:
     
 @dataclass
 class EngineConfig:
+    # Unified (colocate) scheduler configuration.
+    unified_scheduler_type: str
+    defrag_weight_decay: float
+    defrag_lookahead_steps: int
+    defrag_lookback_steps: int
+
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
     enable_grouped_gemm: bool = False
@@ -91,7 +97,7 @@ duo_expert_mixtral = ModelConfig(
 
 qwen3_235b_config = ModelConfig(
     hidden_size = 4096,
-    num_layers = 94,
+    num_layers = 32,
     num_heads = 64,
     num_kv_heads = 4,
     num_experts = 128,

@@ -70,7 +70,7 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
 
 std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     int world_size,
-    int local_id, 
+    int local_id,
     int local_attn_dp_rank,
     int top_k,
     bool has_attn,
@@ -82,8 +82,11 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_disaggregated_engine(
     const std::vector<int> &out_device_ids,
     std::map<int, std::string> inbound_nccl_ids,
     std::map<int, std::string> outbound_nccl_ids,
-    const std::vector<ChannelInfo> &out_channel_infos
-) {
+    const std::vector<ChannelInfo> &out_channel_infos,
+    const std::string &unified_scheduler_type,
+    float defrag_weight_decay,
+    int defrag_lookahead_steps,
+    int defrag_lookback_steps) {
     ASSERT ((has_attn ^ has_expert) == true);
 
     auto [in_channels, out_channels] = init_all_channels(
@@ -142,8 +145,11 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     const std::vector<int> &out_device_ids,
     std::map<int, std::string> inbound_nccl_ids,
     std::map<int, std::string> outbound_nccl_ids,
-    const std::vector<ChannelInfo> &out_channel_infos
-) {
+    const std::vector<ChannelInfo> &out_channel_infos,
+    const std::string &unified_scheduler_type,
+    float defrag_weight_decay,
+    int defrag_lookahead_steps,
+    int defrag_lookback_steps) {
     // TODO: support expert wise schedule
     int num_groups = 1;
     int num_layers = layer_ids.size();
@@ -155,8 +161,18 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
         global_rank
     );
 
-    auto unified_dispatcher = std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
-    auto unified_pool = std::make_shared<UnifiedPool>(layer_ids, local_id, in_channels, num_groups, top_k);
+    auto unified_dispatcher =
+        std::make_shared<UnifiedDispatcher>(layer_ids, local_id, cfg, out_channels, out_channel_infos);
+    auto unified_pool = std::make_shared<UnifiedPool>(
+        layer_ids,
+        local_id,
+        in_channels,
+        num_groups,
+        top_k,
+        unified_scheduler_type,
+        defrag_weight_decay,
+        defrag_lookahead_steps,
+        defrag_lookback_steps);
     auto scheduler = std::make_shared<Scheduler>(unified_pool);
 
     auto casted_pool = std::static_pointer_cast<MuPool>(unified_pool);

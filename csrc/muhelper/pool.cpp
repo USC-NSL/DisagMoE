@@ -1,14 +1,30 @@
 #include "pool.h"
 
 UnifiedPool::UnifiedPool(
-    std::vector<int> layer_ids, 
-    int device_id, 
-    std::vector<Channel_t> channels, 
+    std::vector<int> layer_ids,
+    int device_id,
+    std::vector<Channel_t> channels,
     int num_groups,
-    int top_k
+    int top_k,
+    const std::string &unified_scheduler_type,
+    float defrag_weight_decay,
+    int defrag_lookahead_steps,
+    int defrag_lookback_steps
 ):
     MuPool(layer_ids, device_id, channels, num_groups), top_k(top_k) {
-    this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(layer_ids.size() + 1);
+    if (unified_scheduler_type == "defrag") {
+        this->layer_scheduler = std::make_shared<UnifiedDefraggingLayerScheduler>(
+            static_cast<int>(layer_ids.size()) + 1,
+            top_k,
+            defrag_lookback_steps,
+            defrag_lookahead_steps,
+            defrag_weight_decay
+        );
+    } else {
+        this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(
+            static_cast<int>(layer_ids.size()) + 1
+        );
+    }
     if (top_k > 1) {
         this->topk_pools = std::vector<TokenTopKPool>(layer_ids.size() + 1, TokenTopKPool(top_k));
     }

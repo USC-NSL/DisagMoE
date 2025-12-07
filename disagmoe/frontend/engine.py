@@ -542,7 +542,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         else:
             get_logger().info("launching disaggregated engine")
             init_engine = init_disaggregated_engine
-            
+
         self.pool, self.scheduler, self.dispatcher = init_engine(
             core_args.world_size,
             self.device_id,
@@ -552,12 +552,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.has_expert,
             core_args.expert_wise_schedule,
             ParallelConfig.to_c(
-                1, # control the init of attn_scheduler
+                1,  # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.dp_size,
                 self.model_config.num_experts_per_rank,
                 core_args.expert_ranks,
-            ), # parallel config
+            ),  # parallel config
             core_args.layer_ids,
             # P2P Channels
             core_args.in_device_ids,
@@ -565,6 +565,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             core_args.inbound_nccl_ids,
             core_args.outbound_nccl_ids,
             [info.to_c() for info in core_args.out_channel_infos],
+            # Unified scheduler configuration (only used for unified/colocate engine).
+            self.engine_config.unified_scheduler_type,
+            self.engine_config.defrag_weight_decay,
+            self.engine_config.defrag_lookahead_steps,
+            self.engine_config.defrag_lookback_steps,
         )
         
         self.scheduler.set_schedule_token_threshold(self.engine_config.max_batch_size_attn, self.engine_config.max_batch_size_expert)

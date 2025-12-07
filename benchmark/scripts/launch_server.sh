@@ -44,6 +44,12 @@ ep_size=$WORLD_SIZE
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
 
+# UNIFIED_SCHEDULER_TYPE: flfs | defrag; only valid for colocate mode
+UNIFIED_SCHEDULER_TYPE="flfs"
+DEFRAG_WEIGHT_DECAY=0.8
+DEFRAG_LOOKAHEAD_STEPS=4
+DEFRAG_LOOKBACK_STEPS=4
+
 if [ $placement == "colocate" ]; then
     dp_size=$WORLD_SIZE
     ep_size=$WORLD_SIZE
@@ -91,13 +97,21 @@ if [ "$USE_SERIAL_GEMM_MOE" -eq 1 ]; then
     SERIAL_GEMM_ARGS="--serial-gemm"
 fi
 
+UNIFIED_SCHEDULER_ARGS=""
+if [ "$placement" == "colocate" ]; then
+    UNIFIED_SCHEDULER_ARGS="--unified-scheduler-type $UNIFIED_SCHEDULER_TYPE \
+ --defrag-weight-decay $DEFRAG_WEIGHT_DECAY \
+ --defrag-lookahead-steps $DEFRAG_LOOKAHEAD_STEPS \
+ --defrag-lookback-steps $DEFRAG_LOOKBACK_STEPS"
+fi
+
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
 
 python benchmark/server.py \
     $PROFILE_ARGS \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
-    -u 0.7 \
+    -u 0.98 \
     $MODEL_ARGS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-attn-graph-bsz $MAX_BATCH_SIZE_ATTN \
@@ -107,6 +121,7 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
+    $UNIFIED_SCHEDULER_ARGS \
     $SERIAL_GEMM_ARGS \
     $LESS_THAN_SM90_ARGS \
     $CUDA_GRAPH_ATTN_ARGS \
