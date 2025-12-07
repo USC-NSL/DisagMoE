@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <cuda_runtime.h>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -56,12 +57,22 @@ protected:
 
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
+    struct PendingSend {
+        torch::Tensor tensor;
+        cudaEvent_t event;
+    };
+
+    std::vector<std::vector<PendingSend>> pending_sends;
+
+    void reap_completed();
+    void add_pending_tensor(int cid, const TokenBatch& batch);
+
 
     ParallelConfig cfg;
 
     virtual void _send_once(TokenBatch batch) = 0;
 
-    void _send_batch(int cid, uintptr_t buf, const BatchMetadata& meta);
+    void _send_batch(int cid, const TokenBatch& batch);
 
     void run() override;
 

@@ -79,19 +79,48 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id,
     for (int i = 0; i < channels.size(); i ++) {
         peer_mq[i] = disagmoe::mq_factory()(/*isPush=*/ true);
     }
+    pending_sends.resize(channels.size());
 }
 
-void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta) {
+void MuDispatcher::reap_completed() {
+    for (auto &pending : pending_sends) {
+        auto it = pending.begin();
+        while (it != pending.end()) {
+            auto status = cudaEventQuery(it->event);
+            if (status == cudaSuccess) {
+                cudaEventDestroy(it->event);
+                it = pending.erase(it);
+            } else if (status == cudaErrorNotReady) {
+                ++it;
+            } else {
+                CUDACHECK(status);
+            }
+        }
+    }
+}
+
+void MuDispatcher::add_pending_tensor(int cid, const TokenBatch& batch) {
+    auto stream = this->channels[cid]->get_stream();
+    if (stream == nullptr) return;
+    if (this->channels[cid]->is_local()) return;
+    cudaEvent_t ev;
+    CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+    CUDACHECK(cudaEventRecord(ev, stream));
+    pending_sends[cid].push_back(PendingSend{batch.data, ev});
+}
+
+void MuDispatcher::_send_batch(int cid, const TokenBatch& batch) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
     // Pack peer_id and metadata into a single message
     MetadataWithPeerId packed_data;
     packed_data.peer_id = this->device_id;
-    packed_data.metadata = meta;
+    packed_data.metadata = *batch.metadata;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
-    this->channels[cid]->send(buf, meta);
+    this->channels[cid]->send(batch);
+    add_pending_tensor(cid, batch);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -104,6 +133,7 @@ void MuDispatcher::run() {
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
+        reap_completed();
         // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         TokenBatch batch;
         {
@@ -118,6 +148,7 @@ void MuDispatcher::run() {
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
     }
+    reap_completed();
 }
 
 void MuDispatcher::put(TokenBatch batch, int rank) {
@@ -201,23 +232,16 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
         int cid = _encode(lid, batch.metadata->exp_ids[i]);
         if (i == 0 && j == n) {
             // a faster path
-            this->_send_batch(
-                this->exp_channels[cid],
-                (uintptr_t)batch.data.data_ptr(),
-                *batch.metadata
-            );
+            this->_send_batch(this->exp_channels[cid], batch);
             NCCLCHECK(ncclGroupEnd());
             return;
         }
 
         auto sliced_meta = batch.metadata->slice(i, j);
 
-        auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), batch.metadata, i);
-        this->_send_batch(
-            this->exp_channels[cid],
-            buf,
-            sliced_meta
-        );
+        auto sliced_tensor = batch.data.narrow(0, i, j - i);
+        TokenBatch sliced_batch{sliced_tensor, std::make_shared<BatchMetadata>(std::move(sliced_meta))};
+        this->_send_batch(this->exp_channels[cid], sliced_batch);
         i = j;
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
@@ -292,20 +316,16 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
 
         // a faster path
         if (i == 0 && j == n) {
-            this->_send_batch(
-                channel_id,
-                (uintptr_t) batch.data.data_ptr(),
-                *meta
-            );
+            this->_send_batch(channel_id, batch);
             NCCLCHECK(ncclGroupEnd());
             return;
         } else {
-            auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
-            this->_send_batch(
-                channel_id,
-                buf,
-                batch.metadata->slice(i, j)
-            );
+            auto sliced_tensor = batch.data.narrow(0, i, j - i);
+            TokenBatch sliced_batch{
+                sliced_tensor,
+                std::make_shared<BatchMetadata>(batch.metadata->slice(i, j))
+            };
+            this->_send_batch(channel_id, sliced_batch);
         }
     }
     NCCLCHECK(ncclGroupEnd());

@@ -33,7 +33,7 @@ protected:
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
-    virtual void send(uintptr_t data, const BatchMetadata& metadata) = 0;
+    virtual void send(const TokenBatch& batch) = 0;
     virtual void recv(uintptr_t data, const BatchMetadata& metadata) = 0;
 
     void _debug_print() {
@@ -47,6 +47,11 @@ public:
     virtual void initialize() {}
 
     virtual void sync() {}
+
+    // Expose the CUDA stream used for transfers so callers can tie lifetimes to it.
+    virtual cudaStream_t get_stream() const { return nullptr; }
+
+    virtual bool is_local() const { return false; }
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -66,30 +71,36 @@ protected:
 public:
     NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream = nullptr);
 
-    void send(uintptr_t data, const BatchMetadata& metadata) override;
+    void send(const TokenBatch& batch) override;
 
     void recv(uintptr_t data, const BatchMetadata& metadata) override;
 
     void sync() override;
 
     void initialize() override;
+
+    cudaStream_t get_stream() const override { return this->stream; }
 };
 
 class TensorLocalChannel: public Channel {
     protected:
         cudaStream_t stream;
-        std::queue<uintptr_t> data_buffer{};
+        std::queue<torch::Tensor> data_buffer{};
         mutable std::mutex m;
         std::condition_variable c;
     
     public:
         TensorLocalChannel(int device_id, cudaStream_t stream = nullptr);
     
-        void send(uintptr_t data, const BatchMetadata& metadata) override;
+        void send(const TokenBatch& batch) override;
     
         void recv(uintptr_t data, const BatchMetadata& metadata) override;
     
         void sync() override;
+
+        cudaStream_t get_stream() const override { return this->stream; }
+
+        bool is_local() const override { return true; }
 };
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);

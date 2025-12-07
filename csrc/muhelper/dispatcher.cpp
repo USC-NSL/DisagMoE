@@ -50,8 +50,12 @@ void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
         while (j < n && this->_expert_get_channel_id(batch.metadata->exp_ids[j]) == cid)
             j ++;
 
-        auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), batch.metadata, i);
-        this->_send_batch(cid, buf, batch.metadata->slice(i, j));
+        auto sliced_tensor = batch.data.narrow(0, i, j - i);
+        TokenBatch sliced_batch{
+            sliced_tensor,
+            std::make_shared<BatchMetadata>(batch.metadata->slice(i, j))
+        };
+        this->_send_batch(cid, sliced_batch);
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << batch.metadata->slice(i, j) << LEND;
     }
 }
@@ -66,8 +70,12 @@ void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
         while (j < n && batch.metadata->attn_dp_ranks[j] == rank)
             j ++;
 
-        auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
-        this->_send_batch(cid, buf, batch.metadata->slice(i, j));
+        auto sliced_tensor = batch.data.narrow(0, i, j - i);
+        TokenBatch sliced_batch{
+            sliced_tensor,
+            std::make_shared<BatchMetadata>(batch.metadata->slice(i, j))
+        };
+        this->_send_batch(cid, sliced_batch);
         // DMOE_LOG(INFO) << "expert send a batch to attn: " << batch.metadata->slice(i, j) << LEND;
     }
 }

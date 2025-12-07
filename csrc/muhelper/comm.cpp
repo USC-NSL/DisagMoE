@@ -4,6 +4,9 @@
 #include "distributed.hpp"
 #include "metadata.hpp"
 #include "batch.hpp"
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAStream.h>
 
 #include <iomanip>
 #include <mutex>
@@ -44,10 +47,11 @@ void debug_print_environ() {
     }
 }
 
-void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
+void NcclChannel::send(const TokenBatch& batch) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
-    void* data = reinterpret_cast<void*>(data_ptr);
+    const BatchMetadata& metadata = *batch.metadata;
+    void* data = reinterpret_cast<void*>(batch.data.data_ptr());
     NCCLCHECK(ncclSend(
         data, 
         /*count=*/ metadata.num_element(),
@@ -56,6 +60,10 @@ void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
         this->comm,
         this->stream
     ));
+    // Keep the tensor alive on the comm stream until the send completes.
+    int device_index = batch.data.get_device();
+    auto stream_view = c10::cuda::getStreamFromExternal(this->stream, device_index);
+    c10::cuda::CUDACachingAllocator::recordStream(batch.data, stream_view);
     // CUDACHECK(cudaStreamSynchronize(this->stream));
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
@@ -84,12 +92,13 @@ TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
     #endif
     if (stream == nullptr) {
         CUDACHECK(cudaStreamCreate(&this->stream));
-    } 
+    }
 }
 
-void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
+void TensorLocalChannel::send(const TokenBatch& batch) {
     std::lock_guard<std::mutex> lock(m);
-    data_buffer.push(data);
+    // Keep a tensor reference alive until the receiver copies it out.
+    data_buffer.push(batch.data);
     c.notify_one();
 }
 
@@ -98,9 +107,9 @@ void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     while (data_buffer.empty()) {
         c.wait(lock);
     }
-    uintptr_t data_to_recv = data_buffer.front();
+    auto tensor = data_buffer.front();
     data_buffer.pop();
-    cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+    cudaMemcpy((void *)data, tensor.data_ptr(), metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
 }
 
 void TensorLocalChannel::sync() {
