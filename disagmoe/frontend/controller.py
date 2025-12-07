@@ -307,15 +307,28 @@ class Controller:
         
     async def poll_finished_results(self) -> List[SloStat]:
         print(f"master start polling request")
-        while not self.end_flag:
+        while self.is_polling:
             results = ray.get(self.detokenizer.fetch_finished_results.remote())
             if len(results) != 0:
                 asyncio.create_task(self.process_finished_results(results))
-            await asyncio.sleep(0.1)
+            try:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                break
     
     def start_polling_results(self):
         self.is_polling = True
-        asyncio.create_task(self.poll_finished_results())
+        self._polling_task = asyncio.create_task(self.poll_finished_results())
+
+    async def stop_polling_results(self):
+        self.is_polling = False
+        if hasattr(self, '_polling_task') and self._polling_task:
+            self._polling_task.cancel()
+            try:
+                await self._polling_task
+            except asyncio.CancelledError:
+                pass
+            self._polling_task = None
             
     def put_single_request(self, input_len: int, output_len: int) -> AsyncResult:
         req_id = self.get_new_req_id()

@@ -36,9 +36,16 @@ class ModelConfig:
     
 @dataclass
 class EngineConfig:
+    # Unified (colocate) scheduler configuration.
+    unified_scheduler_type: str
+    defrag_weight_decay: float
+    defrag_lookahead_steps: int
+    defrag_lookback_steps: int
+
     enable_cuda_graph_attn: bool = False
     enable_cuda_graph_expert: bool = False
     enable_grouped_gemm: bool = False
+    less_than_sm90: bool = False
     
     max_batch_size_attn: int = 160
     max_batch_size_expert: int = 512

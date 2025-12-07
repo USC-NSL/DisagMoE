@@ -60,6 +60,7 @@ def run_once_endpoint():
         metrics = await benchmark_serving(master, new_args, is_api_server=True)
         print("Metrics:", metrics)
         await master.stop_scheduler()
+        await master.stop_polling_results()
         return metrics
     
     loop = asyncio.new_event_loop()
@@ -138,6 +139,7 @@ async def init(master: Controller, args):
     await master.start_scheduler()
     await benchmark_warmup(master, args)
     await master.stop_scheduler()
+    await master.stop_polling_results()
 
 def main():
     global master, args

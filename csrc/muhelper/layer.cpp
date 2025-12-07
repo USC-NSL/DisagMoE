@@ -29,6 +29,7 @@ void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
 
 std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
     std::vector<TokenBatch> result{};
+    result.reserve(this->batch_queue.size());
     while (!this->batch_queue.empty()) {
         result.emplace_back(std::move(this->batch_queue.front()));
         this->batch_queue.pop_front();
@@ -168,6 +169,259 @@ void UnifiedLayerScheduler::add_batch(const torch::Tensor& tensor, const batch_m
         ASSERT_MSG(false, "Invalid batch metadata");
     }
 }
+
+/*
+
+    Unified defragging layer scheduler
+
+*/
+
+UnifiedDefraggingLayerScheduler::UnifiedDefraggingLayerScheduler(
+    int num_attn_layers, int num_expert_layers, int top_k,
+    int lookback_steps, int lookahead_steps, float weight_decay):
+    num_attn_layers(num_attn_layers),
+    num_expert_layers(num_expert_layers),
+    num_layers(num_attn_layers + num_expert_layers),
+    top_k(top_k > 0 ? top_k : 1),
+    lookback_steps(lookback_steps),
+    lookahead_steps(lookahead_steps),
+    weight_decay(weight_decay) {
+
+    this->layers.reserve(num_layers);
+
+    for (int i = 0; i < num_attn_layers; i++) {
+        auto attn_layer = UnifiedLayer::create_attention_layer(i);
+        this->attn_layers.push_back(attn_layer);
+        this->layers.push_back(attn_layer);
+    }
+
+    for (int i = 0; i < num_expert_layers; i++) {
+        auto expert_layer = UnifiedLayer::create_expert_layer(i);
+        this->expert_layers.push_back(expert_layer);
+        this->layers.push_back(expert_layer);
+    }
+
+    if (this->lookback_steps > 0) {
+        this->history_tokens_in_layer = std::vector<std::queue<int>>(this->num_layers, std::queue<int>());
+        this->sum_history_tokens_in_layer = std::vector<int>(this->num_layers, 0);
+    }
+}
+
+UnifiedDefraggingLayerScheduler::UnifiedDefraggingLayerScheduler(
+    int num_layers, int top_k, int lookback_steps,
+    int lookahead_steps, float weight_decay):
+    UnifiedDefraggingLayerScheduler(
+        num_layers, num_layers, top_k, lookback_steps, lookahead_steps, weight_decay) { }
+
+bool UnifiedDefraggingLayerScheduler::is_attn_layer(int layer_id) {
+    return layer_id < this->num_attn_layers;
+}
+
+bool UnifiedDefraggingLayerScheduler::is_expert_layer(int layer_id) {
+    return layer_id >= this->num_attn_layers;
+}
+
+void UnifiedDefraggingLayerScheduler::step_end(const std::vector<int> &effective_tokens_snapshot) {
+    if (lookback_steps == 0) {
+        return;
+    }
+    if (history_tokens_in_layer.empty()) {
+        history_tokens_in_layer = std::vector<std::queue<int>>(num_layers, std::queue<int>());
+        sum_history_tokens_in_layer = std::vector<int>(num_layers, 0);
+    }
+
+    for (int i = 0; i < num_layers; i++) {
+        auto &hist_q = history_tokens_in_layer[i];
+        if (static_cast<int>(hist_q.size()) >= lookback_steps) {
+            sum_history_tokens_in_layer[i] -= hist_q.front();
+            hist_q.pop();
+        }
+        hist_q.push(effective_tokens_snapshot[i]);
+        sum_history_tokens_in_layer[i] += effective_tokens_snapshot[i];
+    }
+}
+
+int UnifiedDefraggingLayerScheduler::schedule() {
+    std::vector<int> raw_tokens(num_layers, 0);
+    std::vector<float> effective_tokens(num_layers, 0.0f);
+    for (int i = 0; i < num_layers; i++) {
+        int tokens = layers[i]->get_num_tokens();
+        raw_tokens[i] = tokens;
+        effective_tokens[i] = get_effective_tokens(i, tokens);
+    }
+
+    // Early exit if there is no work to schedule.
+    int total_raw = 0;
+    for (int t : raw_tokens) total_raw += t;
+    if (total_raw == 0) {
+        return -1;
+    }
+
+    std::vector<float> scores(num_layers, 0.0f);
+
+    // Compute scores for attention layers (indices 0 to num_attn_layers - 1)
+    for (int i = 0; i < num_attn_layers; i++) {
+        float lookahead_score = 0.0f;
+        float decay = weight_decay;
+
+        for (int k = 1; k < lookahead_steps && k < num_attn_layers; k++) {
+            int cur_layer = (i + k) % num_attn_layers;
+            float num_tokens_cur_layer = effective_tokens[cur_layer];
+            float history_score = 0.0f;
+
+            if (lookback_steps > 0 &&
+                !history_tokens_in_layer.empty() &&
+                !history_tokens_in_layer[cur_layer].empty() &&
+                sum_history_tokens_in_layer[cur_layer] > 0) {
+                int window_size =
+                    static_cast<int>(history_tokens_in_layer[cur_layer].size());
+                if (window_size > 0) {
+                    history_score =
+                        static_cast<float>(sum_history_tokens_in_layer[cur_layer]) /
+                        static_cast<float>(window_size);
+                }
+            }
+
+            lookahead_score += (num_tokens_cur_layer + history_score) * decay;
+            decay *= weight_decay;
+        }
+
+        float immediate = effective_tokens[i];
+        if (immediate > 0.0f) {
+            scores[i] = lookahead_score + immediate;
+        } else {
+            scores[i] = 0.0f;
+        }
+    }
+
+    // Compute scores for expert layers (indices num_attn_layers to num_layers - 1)
+    for (int i = num_attn_layers; i < num_layers; i++) {
+        float lookahead_score = 0.0f;
+        float decay = weight_decay;
+
+        for (int k = 1; k < lookahead_steps && k < num_expert_layers; k++) {
+            // Wrap within expert layer range
+            int offset_in_expert = i - num_attn_layers;
+            int cur_offset = (offset_in_expert + k) % num_expert_layers;
+            int cur_layer = num_attn_layers + cur_offset;
+            float num_tokens_cur_layer = effective_tokens[cur_layer];
+            float history_score = 0.0f;
+
+            if (lookback_steps > 0 &&
+                !history_tokens_in_layer.empty() &&
+                !history_tokens_in_layer[cur_layer].empty() &&
+                sum_history_tokens_in_layer[cur_layer] > 0) {
+                int window_size =
+                    static_cast<int>(history_tokens_in_layer[cur_layer].size());
+                if (window_size > 0) {
+                    history_score =
+                        static_cast<float>(sum_history_tokens_in_layer[cur_layer]) /
+                        static_cast<float>(window_size);
+                }
+            }
+
+            lookahead_score += (num_tokens_cur_layer + history_score) * decay;
+            decay *= weight_decay;
+        }
+
+        float immediate = effective_tokens[i];
+        if (immediate > 0.0f) {
+            scores[i] = lookahead_score + immediate;
+        } else {
+            scores[i] = 0.0f;
+        }
+    }
+
+    // Choose the layer with the largest score.
+    float max_score = 0.0f;
+    int best_layer = -1;
+    for (int i = 0; i < num_layers; i++) {
+        if (scores[i] > max_score) {
+            max_score = scores[i];
+            best_layer = i;
+        }
+    }
+
+    // Update history windows with the effective token snapshot.
+    std::vector<int> effective_snapshot_int(num_layers, 0);
+    for (int i = 0; i < num_layers; i++) {
+        // We store integer approximations for history, consistent with
+        // LegacyLayerScheduler.
+        effective_snapshot_int[i] = static_cast<int>(effective_tokens[i]);
+    }
+    step_end(effective_snapshot_int);
+
+    return best_layer;
+}
+
+void UnifiedDefraggingLayerScheduler::add_tokens_to_layer(int layer_id, int num_tokens) {
+    throw std::runtime_error("add_tokens_to_layer is not supported for UnifiedDefraggingLayerScheduler");
+}
+
+void UnifiedDefraggingLayerScheduler::add_batch(const TokenBatch &batch) {
+    if (batch.metadata->is_attention()) {
+        this->attn_layers[batch.metadata->layer_id]->add_batch(batch);
+    } else if (batch.metadata->is_expert()) {
+        this->expert_layers[batch.metadata->layer_id]->add_batch(batch);
+    } else {
+        ASSERT_MSG(false, "Invalid batch metadata");
+    }
+}
+
+void UnifiedDefraggingLayerScheduler::add_batch(
+    const torch::Tensor &tensor,
+    const batch_metadata_t &meta
+) {
+    if (meta->is_attention()) {
+        this->attn_layers[meta->layer_id]->add_batch(tensor, meta);
+    } else if (meta->is_expert()) {
+        this->expert_layers[meta->layer_id]->add_batch(tensor, meta);
+    } else {
+        ASSERT_MSG(false, "Invalid batch metadata");
+    }
+}
+
+std::vector<int> UnifiedDefraggingLayerScheduler::get_pool_snapshot() {
+    std::vector<int> snapshot(this->num_layers, 0);
+    for (int i = 0; i < this->num_attn_layers; i++) {
+        snapshot[i] = this->attn_layers[i]->get_num_tokens();
+    }
+    for (int i = 0; i < this->num_expert_layers; i++) {
+        snapshot[i + this->num_attn_layers] =
+            this->expert_layers[i]->get_num_tokens();
+    }
+    return snapshot;
+}
+
+TokenBatch UnifiedDefraggingLayerScheduler::get_batch_from_layer(int layer_id) {
+    if (layer_id < 0 || layer_id >= this->num_layers) {
+        return TokenBatch {};
+    }
+    auto batches = this->layers[layer_id]->get_all_batches();
+    auto batch = TokenBatch::merge(batches);
+    return batch;
+}
+
+TokenBatch UnifiedDefraggingLayerScheduler::get_batch_from_layer_restricted(
+    int layer_id, int token_threshold) {
+    if (layer_id < 0 || layer_id >= this->num_layers) {
+        return TokenBatch {};
+    }
+    if (token_threshold > 0 &&
+        this->layers[layer_id]->get_num_tokens() > token_threshold) {
+        auto batches =
+            this->layers[layer_id]->get_batches_restricted(token_threshold);
+        auto batch = TokenBatch::merge(batches);
+        return batch;
+    }
+    return this->get_batch_from_layer(layer_id);
+}
+
+/*
+
+    Legacy layer scheduler
+
+*/
 
 LegacyLayerScheduler::LegacyLayerScheduler(int n_layers): 
     LegacyLayerScheduler(n_layers, LayerScheduleType::FLFS) { }

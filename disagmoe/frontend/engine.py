@@ -32,6 +32,7 @@ from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.utils.utils import _log_memory_usage
 from disagmoe.models.distributed import set_tensor_model_parallel_config
+from disagmoe.models.experts import MoEExpertsDeepGemmBF16
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -78,7 +79,7 @@ class AttentionEngineMixin:
             self._create_attn_broadcast_buffers()
             
         self.attn_executor.warmup(self.engine_config.max_batch_size_attn)
-            
+
         if self.engine_config.enable_cuda_graph_attn:
             self.attn_executor.build_cuda_graph_executor()
             
@@ -374,7 +375,13 @@ class ExpertEngineMixin:
             self.local_to_gloabl_expert_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
             self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
         self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
-        self.expert_executor.warmup(self.expert_max_batch_size)
+
+        # TODO: later should make fp8 experts to use this paths as well
+        if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls is MoEExpertsDeepGemmBF16:
+            self.expert_executor.build_cuda_graph_executor()
+        else:
+            self.expert_executor.warmup(self.expert_max_batch_size)
+
         _log_memory_usage("After building expert executor")
         
         self.expert_token_mapping_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
@@ -535,7 +542,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         else:
             get_logger().info("launching disaggregated engine")
             init_engine = init_disaggregated_engine
-            
+
         self.pool, self.scheduler, self.dispatcher = init_engine(
             core_args.world_size,
             self.device_id,
@@ -545,12 +552,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.has_expert,
             core_args.expert_wise_schedule,
             ParallelConfig.to_c(
-                1, # control the init of attn_scheduler
+                1,  # control the init of attn_scheduler
                 self.model_config.ep_size,
                 self.model_config.dp_size,
                 self.model_config.num_experts_per_rank,
                 core_args.expert_ranks,
-            ), # parallel config
+            ),  # parallel config
             core_args.layer_ids,
             # P2P Channels
             core_args.in_device_ids,
@@ -558,6 +565,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             core_args.inbound_nccl_ids,
             core_args.outbound_nccl_ids,
             [info.to_c() for info in core_args.out_channel_infos],
+            # Unified scheduler configuration (only used for unified/colocate engine).
+            self.engine_config.unified_scheduler_type,
+            self.engine_config.defrag_weight_decay,
+            self.engine_config.defrag_lookahead_steps,
+            self.engine_config.defrag_lookback_steps,
         )
         
         self.scheduler.set_schedule_token_threshold(self.engine_config.max_batch_size_attn, self.engine_config.max_batch_size_expert)
@@ -779,6 +791,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # 1. copy results out to another buffer
         get_logger().info("starting single_module_loop_overlap")
         torch.set_default_dtype(torch.bfloat16)
+
+        torch.cuda.set_device(0)
+        torch.cuda.synchronize() 
+        
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
         
@@ -822,6 +838,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     def single_module_loop(self):
         get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
+
+        torch.cuda.set_device(0)
+        torch.cuda.synchronize()
+        
         torch.set_default_device("cuda:0")
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
@@ -920,7 +940,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     #         self.attn_scheduler.set_schedule_block(step)
     #     if self.has_expert:
     #         self.expert_scheduler.set_schedule_block(step)
-
+    
 class DummySampler:
     
     def __init__(self):
