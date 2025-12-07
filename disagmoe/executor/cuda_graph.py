@@ -324,13 +324,13 @@ class CUDAGraphExpertsExecutor:
 
                 batch = ExpertForwardBatch(
                             layer_id=layer_id,
-                            data=hiddens,
+                            data=self.static_input_hiddens,
                             num_tokens=graph_batch_size,
                             meta_c=None,
                             proc_func=None,
                             post_proc_func=None,
                             batch_sizes=None,
-                            m_indices=m_indices
+                            m_indices=self.static_input_m_indices
                         )
                 
                 for _ in range(2):
