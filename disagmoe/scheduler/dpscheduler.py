@@ -87,18 +87,20 @@ class DPScheduler:
                 except asyncio.CancelledError:
                     raise
             
-            request_item: RequestItem = done.pop().result()
-            rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
-            
-            while rank < 0:
-                await self.sch_event.wait()
-                self.sch_event.clear()
+            try:
+                request_item: RequestItem = done.pop().result()
                 rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
-            
-            # self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
-            
-            # submit the request
-            request_item.func(request_item.req_id, request_item.prefill_len, request_item.output_len, rank)
+                
+                while rank < 0:
+                    self._logger.warning(f"Request {request_item.req_id} (len {request_item.seq_len}) waiting for resources. Stats: {self.kv_cache_stats}")
+                    await self.sch_event.wait()
+                    self.sch_event.clear()
+                    rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
+                
+                # submit the request
+                request_item.func(request_item.req_id, request_item.prefill_len, request_item.output_len, rank)
+            except Exception as e:
+                self._logger.error(f"Error in waiting loop: {e}", exc_info=True)
     
     def init_kv_cache_stats(self, stats: Dict[int, int]):
         for rank, num_blocks in stats.items():
