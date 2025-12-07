@@ -48,6 +48,11 @@ class DPScheduler:
         self.end_flag = True
         self.end_event.set()
         await self._loop_task
+        self._log_task.cancel()
+        try:
+            await self._log_task
+        except asyncio.CancelledError:
+            raise
         
     async def log_status(self):
         while not self.end_flag:
@@ -77,6 +82,10 @@ class DPScheduler:
             
             for f in pending:
                 f.cancel()
+                try:
+                    await f
+                except asyncio.CancelledError:
+                    raise
             
             request_item: RequestItem = done.pop().result()
             rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
@@ -107,8 +116,7 @@ class DPScheduler:
         self.seq_ranks.pop(seq_id)
         self.kv_cache_stats[rank] += self.required_blocks(self.seq_max_len[seq_id])
         self.seq_max_len.pop(seq_id)
-        if len(self.sch_event._waiters) > 0:
-            self.sch_event.set()
+        self.sch_event.set()
         # self._logger.info(f"Delete seq {seq_id}, rank {rank}, current cache stats {self.kv_cache_stats}")
         
     def _schedule(self, seq_len: int) -> int:
