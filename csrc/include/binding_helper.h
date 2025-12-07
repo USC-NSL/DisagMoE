@@ -21,7 +21,7 @@ class PyChannel: Channel {
 public:
     using Channel::Channel;
 
-    // Not used; provided to satisfy the abstract interface.
+    // Not currently used; provided to satisfy the abstract interface.
     void send(const TokenBatch& /*batch*/) override {}
     
     void recv(uintptr_t /*data*/, const BatchMetadata& /*metadata*/) override {}
