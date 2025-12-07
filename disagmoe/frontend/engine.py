@@ -786,8 +786,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # 1. copy results out to another buffer
         get_logger().info("starting single_module_loop_overlap")
         torch.set_default_dtype(torch.bfloat16)
+
+        torch.cuda.set_device(0)
+        torch.cuda.synchronize() 
+        
         torch.set_default_device("cuda:0")
-        torch.cuda.set_device(self.device)
         torch.cuda.set_stream(self.stream)
         
         result_queue: Deque[Tuple[Optional[ForwardBatch], Optional[ForwardResult]]] = deque()
@@ -830,8 +833,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     def single_module_loop(self):
         get_logger().info("starting single_module_loop")
         torch.set_default_dtype(torch.bfloat16)
+
+        torch.cuda.set_device(0)
+        torch.cuda.synchronize()
+        
         torch.set_default_device("cuda:0")
-        torch.cuda.set_device(self.device)
         torch.cuda.set_stream(self.stream)
         disagmoe_recorder_create()
         
