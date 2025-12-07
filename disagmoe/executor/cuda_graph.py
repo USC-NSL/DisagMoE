@@ -71,7 +71,7 @@ class CUDAGraphAttnExecutor:
         assert graph_max_batch_size <= 1024
         graph_bsz = [1]
         bsz_stage = [8, 128, 256, 512, 1024]
-        bsz_inc = [0, 8, 16, 32, 64]
+        bsz_inc = [0, 32, 64, 128, 256]
         
         for i in range(1, len(bsz_stage)):
             if graph_max_batch_size > bsz_stage[i]:
