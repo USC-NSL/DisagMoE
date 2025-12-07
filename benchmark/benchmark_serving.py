@@ -117,9 +117,14 @@ def launch(args):
         enable_cuda_graph_attn=args.cuda_graph_attn,
         enable_cuda_graph_expert=args.cuda_graph_expert,
         enable_grouped_gemm=not args.serial_gemm and not args.expert_wise_schedule,
+        less_than_sm90=getattr(args, "less_than_sm90", False),
         max_batch_size_attn=args.max_batch_size_attn,
         max_attn_graph_bsz=args.max_attn_graph_bsz,
         max_batch_size_expert=args.max_batch_size_expert,
+        unified_scheduler_type=getattr(args, "unified_scheduler_type", "flfs"),
+        defrag_weight_decay=getattr(args, "defrag_weight_decay"),
+        defrag_lookahead_steps=getattr(args, "defrag_lookahead_steps"),
+        defrag_lookback_steps=getattr(args, "defrag_lookback_steps"),
     )
 
     mp = get_model_placement(model_config, cluster_config, args.placement, 

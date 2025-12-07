@@ -30,9 +30,19 @@ def add_runtime_arguments(parser: ArgumentParser):
     parser.add_argument("--block-size", type=int, default=16, help="block size in cache")
     
     parser.add_argument("--serial-gemm", action="store_true", default=False, help="use serial gemm for experts")
+    parser.add_argument("--less-than-sm90", action="store_true", default=False)
     parser.add_argument("--layer-scheduler-type", type=str, default="mbfs", help="layer scheduler type, including 'mbfs', 'flfs', and 'mbflfs'.")
     parser.add_argument("--layer-scheduler-step", type=int, default=1, help="layer scheduler block step, should be factor of num_layers")
     parser.add_argument("--expert-wise-schedule", action="store_true", default=False, help="enable expert-wise schedule")
+
+    parser.add_argument("--unified-scheduler-type", type=str, default="flfs", choices=["flfs", "defrag"],
+                        help="unified scheduler type for colocate mode: 'flfs' or 'defrag'")
+    parser.add_argument("--defrag-weight-decay", type=float, default=0.8,
+                        help="weight decay factor for unified defragging scheduler")
+    parser.add_argument("--defrag-lookahead-steps", type=int, default=4,
+                        help="lookahead steps for unified defragging scheduler")
+    parser.add_argument("--defrag-lookback-steps", type=int, default=4,
+                        help="lookback steps for unified defragging scheduler")
 
 def add_placement_arguments(parser: ArgumentParser):
     parser.add_argument("--placement", type=str, default="colocate", help="placement strategy")
