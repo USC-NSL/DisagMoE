@@ -97,7 +97,7 @@ duo_expert_mixtral = ModelConfig(
 
 qwen3_235b_config = ModelConfig(
     hidden_size = 4096,
-    num_layers = 32,
+    num_layers = 94,
     num_heads = 64,
     num_kv_heads = 4,
     num_experts = 128,

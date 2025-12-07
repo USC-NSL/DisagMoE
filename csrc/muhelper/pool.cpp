@@ -12,9 +12,13 @@ UnifiedPool::UnifiedPool(
     int defrag_lookback_steps
 ):
     MuPool(layer_ids, device_id, channels, num_groups), top_k(top_k) {
+    int num_layers = static_cast<int>(layer_ids.size());
+    int num_attn_layers = num_layers + 1;
+    int num_expert_layers = num_layers;
     if (unified_scheduler_type == "defrag") {
         this->layer_scheduler = std::make_shared<UnifiedDefraggingLayerScheduler>(
-            static_cast<int>(layer_ids.size()) + 1,
+            num_attn_layers,
+            num_expert_layers,
             top_k,
             defrag_lookback_steps,
             defrag_lookahead_steps,
@@ -22,11 +26,12 @@ UnifiedPool::UnifiedPool(
         );
     } else {
         this->layer_scheduler = std::make_shared<UnifiedLayerScheduler>(
-            static_cast<int>(layer_ids.size()) + 1
+            num_attn_layers,
+            num_expert_layers
         );
     }
     if (top_k > 1) {
-        this->topk_pools = std::vector<TokenTopKPool>(layer_ids.size() + 1, TokenTopKPool(top_k));
+        this->topk_pools = std::vector<TokenTopKPool>(num_attn_layers, TokenTopKPool(top_k));
     }
 }
 

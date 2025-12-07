@@ -259,12 +259,51 @@ int UnifiedDefraggingLayerScheduler::schedule() {
 
     std::vector<float> scores(num_layers, 0.0f);
 
-    for (int i = 0; i < num_layers; i++) {
+    // Compute scores for attention layers (indices 0 to num_attn_layers - 1)
+    for (int i = 0; i < num_attn_layers; i++) {
         float lookahead_score = 0.0f;
         float decay = weight_decay;
 
-        for (int k = 1; k < lookahead_steps; k++) {
-            int cur_layer = (i + k) % num_layers;
+        for (int k = 1; k < lookahead_steps && k < num_attn_layers; k++) {
+            int cur_layer = (i + k) % num_attn_layers;
+            float num_tokens_cur_layer = effective_tokens[cur_layer];
+            float history_score = 0.0f;
+
+            if (lookback_steps > 0 &&
+                !history_tokens_in_layer.empty() &&
+                !history_tokens_in_layer[cur_layer].empty() &&
+                sum_history_tokens_in_layer[cur_layer] > 0) {
+                int window_size =
+                    static_cast<int>(history_tokens_in_layer[cur_layer].size());
+                if (window_size > 0) {
+                    history_score =
+                        static_cast<float>(sum_history_tokens_in_layer[cur_layer]) /
+                        static_cast<float>(window_size);
+                }
+            }
+
+            lookahead_score += (num_tokens_cur_layer + history_score) * decay;
+            decay *= weight_decay;
+        }
+
+        float immediate = effective_tokens[i];
+        if (immediate > 0.0f) {
+            scores[i] = lookahead_score + immediate;
+        } else {
+            scores[i] = 0.0f;
+        }
+    }
+
+    // Compute scores for expert layers (indices num_attn_layers to num_layers - 1)
+    for (int i = num_attn_layers; i < num_layers; i++) {
+        float lookahead_score = 0.0f;
+        float decay = weight_decay;
+
+        for (int k = 1; k < lookahead_steps && k < num_expert_layers; k++) {
+            // Wrap within expert layer range
+            int offset_in_expert = i - num_attn_layers;
+            int cur_offset = (offset_in_expert + k) % num_expert_layers;
+            int cur_layer = num_attn_layers + cur_offset;
             float num_tokens_cur_layer = effective_tokens[cur_layer];
             float history_score = 0.0f;
 
