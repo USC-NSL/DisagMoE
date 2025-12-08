@@ -129,16 +129,11 @@ void MuDispatcher::put(TokenBatch batch, int rank) {
     this->cv.notify_one();
 }
 
-void MuDispatcher::wait_for_bounded_backlog() {
-    // Wait until at most one batch is in-flight from the engine's
-    // perspective: i.e., the number of enqueued batches exceeds the
-    // number of completed sends by at most 1.
-    while (true) {
-        const auto enq = enqueued_count.load(std::memory_order_acquire);
-        const auto deq = completed_count.load(std::memory_order_acquire);
-        if (enq <= deq + 1) {
-            break;
-        }
+void MuDispatcher::flush() {
+    // Wait until the dispatcher thread has finished processing all
+    // batches that were enqueued up to this point.
+    const auto target = enqueued_count.load(std::memory_order_acquire);
+    while (completed_count.load(std::memory_order_acquire) < target) {
         std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
 }
