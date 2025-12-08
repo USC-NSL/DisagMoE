@@ -90,7 +90,18 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     packed_data.peer_id = this->device_id;
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
-    this->peer_mq[cid]->send(data.c_str(), data.size());
+    static long warn_block_us = 5000;//
+    auto t0 = t_now();//
+    this->peer_mq[cid]->send(data.c_str(), data.size());//
+    auto block_us = static_cast<long long>(t_now()) - static_cast<long long>(t0);//
+    if (warn_block_us > 0 && block_us > warn_block_us) {//
+        DMOE_LOG(WARNING) << "[ZMQ] metadata send blocked " << block_us << "us"//
+                          << " cid=" << cid//
+                          << " peer=" << this->channels[cid]->get_peer_id()//
+                          << " tokens=" << meta.num_tokens()//
+                          << " layer=" << meta.layer_id//
+                          << LEND;//
+    }//
     this->channels[cid]->send(buf, meta);
 
     // Record event to track completion
