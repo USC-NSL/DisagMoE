@@ -47,6 +47,8 @@ public:
     virtual void initialize() {}
 
     virtual void sync() {}
+
+    virtual cudaStream_t get_stream() { return nullptr; }
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -73,6 +75,8 @@ public:
     void sync() override;
 
     void initialize() override;
+
+    cudaStream_t get_stream() override { return stream; }
 };
 
 class TensorLocalChannel: public Channel {
@@ -90,6 +94,8 @@ class TensorLocalChannel: public Channel {
         void recv(uintptr_t data, const BatchMetadata& metadata) override;
     
         void sync() override;
+
+    cudaStream_t get_stream() override { return stream; }
 };
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);

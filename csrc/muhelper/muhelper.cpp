@@ -93,6 +93,15 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     this->peer_mq[cid]->send(data.c_str(), data.size());
     this->channels[cid]->send(buf, meta);
 
+    // Record event to track completion
+    cudaStream_t s = this->channels[cid]->get_stream();
+    if (s) {
+        cudaEvent_t e;
+        CUDACHECK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
+        CUDACHECK(cudaEventRecord(e, s));
+        this->current_events.push_back(e);
+    }
+
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
@@ -104,19 +113,50 @@ void MuDispatcher::run() {
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
+        // Check for completed batches and release them
+        while (!this->inflight_batches.empty()) {
+            bool all_done = true;
+            auto & item = this->inflight_batches.front();
+            for (auto e : item.events) {
+                if (cudaEventQuery(e) != cudaSuccess) {
+                    all_done = false;
+                    break;
+                }
+            }
+            if (all_done) {
+                 for (auto e : item.events) cudaEventDestroy(e);
+                 this->inflight_batches.pop_front();
+            } else {
+                break;
+            }
+        }
+
         // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         TokenBatch batch;
         {
             // Fetch a batch from the queue, lock required (for the send_queue).
             std::unique_lock<std::mutex> lock(this->mtx);
-            this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+            if (this->send_queue.empty()) {
+                if (this->inflight_batches.empty()) {
+                    this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+                } else {
+                    this->cv.wait_for(lock, std::chrono::microseconds(50), [&] { return !this->send_queue.empty(); });
+                }
+            }
+            if (this->send_queue.empty()) continue;
+
             // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
             auto pr = this->send_queue.front();
             batch = pr.first;
             this->send_queue.pop();
         }
+        
+        this->current_events.clear();
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
+        
+        this->inflight_batches.push_back({batch, this->current_events});
+
         // One more batch has completed its send path (metadata + NCCL).
         completed_count.fetch_add(1, std::memory_order_release);
     }

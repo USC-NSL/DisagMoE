@@ -56,6 +56,13 @@ protected:
 
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
+    struct InflightBatch {
+        TokenBatch batch;
+        std::vector<cudaEvent_t> events;
+    };
+    std::deque<InflightBatch> inflight_batches;
+    std::vector<cudaEvent_t> current_events;
+
     // Counters to track how many batches have been enqueued to and
     std::atomic<uint64_t> enqueued_count{0};
     std::atomic<uint64_t> completed_count{0};

@@ -100,7 +100,7 @@ void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     }
     uintptr_t data_to_recv = data_buffer.front();
     data_buffer.pop();
-    cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+    CUDACHECK(cudaMemcpyAsync((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice, this->stream));
 }
 
 void TensorLocalChannel::sync() {
