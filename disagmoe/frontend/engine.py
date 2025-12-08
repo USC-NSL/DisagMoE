@@ -758,22 +758,22 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     @nvtx_range("Engine.post_process")
     def post_process(self, batch: TokenBatchCWrapper) -> None:
         assert not self.is_attn_worker
-        if self._debug_logger is not None:
-            meta = batch.metadata
-            self._debug_logger.log(
-                f"post_process: start; tag={self._debug_meta_tag(meta)}, layer_id={getattr(meta, 'layer_id', None)}, "
-                f"num_tokens={meta.num_tokens() if hasattr(meta, 'num_tokens') else None}, "
-                f"attn_dp_rank={getattr(meta, 'attn_dp_ranks', None)}"
-            )
+        # if self._debug_logger is not None:
+        #     meta = batch.metadata
+        #     self._debug_logger.log(
+        #         f"post_process: start; tag={self._debug_meta_tag(meta)}, layer_id={getattr(meta, 'layer_id', None)}, "
+        #         f"num_tokens={meta.num_tokens() if hasattr(meta, 'num_tokens') else None}, "
+        #         f"attn_dp_rank={getattr(meta, 'attn_dp_ranks', None)}"
+        #     )
         range_push("Engine.stream_sync")
         with self._timer.range("stream_sync"):
             self.stream.synchronize()
         range_pop()
-        if self._debug_logger is not None:
-            self._debug_logger.log("post_process: stream synchronized, dispatching to C++ dispatcher.put()")
+        # if self._debug_logger is not None:
+        #     self._debug_logger.log("post_process: stream synchronized, dispatching to C++ dispatcher.put()")
         self.dispatcher.put(batch.to_c(), 0)
-        if self._debug_logger is not None:
-            self._debug_logger.log("post_process: dispatcher.put() returned")
+        # if self._debug_logger is not None:
+        #     self._debug_logger.log("post_process: dispatcher.put() returned")
 
     def stats_pre_process(self, batch: TokenBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
