@@ -61,7 +61,10 @@ class EngineDebugLogger:
         self._device_id = device_id
         self._lock = Lock()
         if base_dir is None:
-            base_dir = os.environ.get("DISAGMOE_ENGINE_LOG_DIR", "/tmp/disagmoe_engine_logs")
+            # Default to a debug_logs directory under the user's home so it's
+            # always accessible on the target machines.
+            default_dir = os.path.join(os.path.expanduser("~"), "debug_logs")
+            base_dir = os.environ.get("DISAGMOE_ENGINE_LOG_DIR", default_dir)
         os.makedirs(base_dir, exist_ok=True)
         pid = os.getpid()
         dev_str = f"dev{device_id}" if device_id is not None else "devNA"
