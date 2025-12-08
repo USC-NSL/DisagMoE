@@ -859,13 +859,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     def recv_new_request(self):
         try:
             new_request: TokenizedRequest = self.tokenizer_socket.recv_pyobj(zmq.NOBLOCK)
-            if self._debug_logger is not None:
-                self._debug_logger.log(
-                    f"recv_new_request: got new request "
-                    f"req_id={new_request.req_id}, "
-                    f"init_prefill_len={new_request.init_prefill_len}, "
-                    f"max_output_len={new_request.max_output_len}"
-                )
+            # if self._debug_logger is not None:
+            #     self._debug_logger.log(
+            #         f"recv_new_request: got new request "
+            #         f"req_id={new_request.req_id}, "
+            #         f"init_prefill_len={new_request.init_prefill_len}, "
+            #         f"max_output_len={new_request.max_output_len}"
+            #     )
             meta = BatchMetadata(
                 shape=[1, self.model_config.hidden_size],
                 dtype="bfloat16",
@@ -881,14 +881,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             batch.data = torch.rand((1, self.model_config.hidden_size), dtype=torch.bfloat16, device=self.device)
             batch.metadata = meta.to_c()
             self.pool.put_batch(batch)
-            if self._debug_logger is not None:
-                self._debug_logger.log(
-                    f"recv_new_request: enqueued initial batch for req_id={new_request.req_id} "
-                    f"into pool; pool_snapshot={self.scheduler.get_pool_snapshot()}"
-                )
+            # if self._debug_logger is not None:
+            #     self._debug_logger.log(
+            #         f"recv_new_request: enqueued initial batch for req_id={new_request.req_id} "
+            #         f"into pool; pool_snapshot={self.scheduler.get_pool_snapshot()}"
+            #     )
         except zmq.Again:
-            if self._debug_logger is not None:
-                self._debug_logger.log("recv_new_request: no pending request (zmq.Again)")
+            pass
+            # if self._debug_logger is not None:
+            #     self._debug_logger.log("recv_new_request: no pending request (zmq.Again)")
         
     @torch.inference_mode()
     def single_module_loop_overlap(self):
