@@ -14,7 +14,7 @@ from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocat
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
 from disagmoe.frontend.engine_utils import get_global_engine_config
 
-from disagmoe.utils.gdr_context import GdrContext
+from disagmoe.utils.gdr_context import GdrContext, use_gdrcopy_optimization
 
 @dataclass
 class BatchTensorBuffer:
@@ -172,7 +172,6 @@ class CPUBlockManager(BaseBlockManager):
         cache_config: CacheConfig, 
         max_running_reqs: int, 
         device: str = "cuda",
-        use_gdr_copy: bool = True,
         use_rebind: bool = True,
     ):
         super().__init__(model_config, cache_config, max_running_reqs, device)
@@ -180,7 +179,8 @@ class CPUBlockManager(BaseBlockManager):
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
         
-        self.use_gdr_copy = use_gdr_copy
+        self.use_gdr_copy = use_gdrcopy_optimization
+        assert not self.use_gdr_copy, "GDR copy is banned for debugging"
         self.use_rebind = use_rebind
         
         self.req_manager = ReqManager(max_running_reqs)

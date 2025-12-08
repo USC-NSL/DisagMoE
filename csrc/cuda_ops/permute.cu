@@ -206,12 +206,22 @@ gdr_context_t get_gather_src_ptrs_gdr() {
 void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
     uintptr_t* src_ptr_host = reinterpret_cast<uintptr_t*>(src_ptr);
+    using scalar_t = c10::BFloat16;
+#if KERNEL_USE_GDRCOPY == 1
     gdr_context_t gather_src_ptrs_gdr = get_gather_src_ptrs_gdr();
     gather_src_ptrs_gdr->copy_from_host(src_ptr_host, num_tokens * sizeof(uintptr_t));
     auto src_tensor = gather_src_ptrs_gdr->get_tensor();
     src_tensor = src_tensor.narrow(0, 0, num_tokens);
-    using scalar_t = c10::BFloat16;
     _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
+#else
+    // Create a torch tensor and copy from host
+    auto src_tensor = torch::empty({num_tokens}, torch::TensorOptions()
+        .dtype(torch::kUInt64)
+        .device(torch::kCUDA));
+    cudaMemcpy(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
+               num_tokens * sizeof(uintptr_t), cudaMemcpyHostToDevice);
+    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
+#endif
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {

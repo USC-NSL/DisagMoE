@@ -10,6 +10,7 @@ import torch
 import pickle
 from typing import List, Any, Optional
 import numpy as np
+from disagmoe.ops.indices import get_m_indices
 
 def pack_flash_attn_meta(buffer_meta: torch.Tensor,
                          buffer_locs: torch.Tensor,
@@ -174,6 +175,28 @@ def make_attention_dummy_batch(
         data=torch.zeros((bs, hidden_size), dtype=torch.bfloat16),
     )
     return batch
+
+
+def make_expert_dummy_inputs(
+    batch_size: int,
+    hidden_size: int,
+    num_experts_per_rank: int,
+    expert_ids: torch.Tensor,
+    need_m_indices: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    assert expert_ids is not None
+    hiddens = torch.zeros((batch_size, hidden_size), device="cuda")
+    batch_sizes = torch.tensor(
+        [batch_size // num_experts_per_rank] * num_experts_per_rank,
+        dtype=torch.int64,
+        device="cpu",
+    )
+
+    m_indices: Optional[torch.Tensor] = None
+    if need_m_indices:
+        m_indices = get_m_indices(batch_sizes, expert_ids)
+
+    return hiddens, batch_sizes, m_indices
 
 @dataclass
 class CudaGraphContext:

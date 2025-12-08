@@ -38,6 +38,7 @@ TMPDIR=os.environ.get("TMPDIR", "/tmp/disagmoe/")
 GDRCOPY_HOME = os.environ.get("GDRCOPY_HOME", "/usr/local/gdrcopy")
 GDRCOPY_INCLUDE_DIR = os.path.join(GDRCOPY_HOME, "include")
 GDRCOPY_LIBRARY_DIR = os.path.join(GDRCOPY_HOME, "lib")
+KERNEL_USE_GDRCOPY = os.environ.get("KERNEL_USE_GDRCOPY", "0")
 
 def find_all_c_targets(path):
     res = []
@@ -90,6 +91,7 @@ ext_modules = [
             ("D_ENABLE_NVTX", "1"),
             ("D_GROUP_NCCL_RECV", "0"),
             ("TEMP_DIR", f'"{TMPDIR}"'),
+            ("KERNEL_USE_GDRCOPY", KERNEL_USE_GDRCOPY),
         ],
         language='c++',
     ),

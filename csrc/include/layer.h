@@ -24,7 +24,6 @@ private:
     int layer_id;
     int expert_id; // >= 0 if is an individual expert
     int num_tokens;
-    int num_batches;
 
     std::deque<TokenBatch> batch_queue;
 
@@ -46,8 +45,6 @@ public:
     inline int get_layer_id() const { return layer_id; }
 
     inline int get_num_tokens() const { return num_tokens; }
-
-    inline int get_num_batches() const { return num_batches; }
 
     void add_batch(const TokenBatch &batch);
 
@@ -78,52 +75,109 @@ public:
     
 };
 
-// TODO: support expert-wise scheduling
-class UnifiedLayerScheduler: public LayerSchedulerBase {
+/*
+ * Base class for unified (attention + MoE collocated) layer schedulers used by UnifiedPool.
+ */
+class UnifiedLayerSchedulerBase : public LayerSchedulerBase {
 
-private:
+protected:
 
     int num_attn_layers;
     int num_expert_layers;
+    int num_layers;  // num_attn_layers + num_expert_layers
 
     bool attn_use_token_queue;
 
-    std::vector<unified_layer_t> layers; // attn layer first, then expert layers
+    int top_k;
 
+    std::vector<unified_layer_t> layers; // attn layers first, then expert layers
     std::vector<unified_layer_t> attn_layers;
-
     std::vector<unified_layer_t> expert_layers;
+
+    virtual bool layer_uses_token_queue(int layer_id);
 
 public:
 
-    UnifiedLayerScheduler(int num_layers, bool use_token_queue);
+    UnifiedLayerSchedulerBase(int num_attn_layers, int num_expert_layers, int topk);
 
-    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, bool use_token_queue);
+    virtual ~UnifiedLayerSchedulerBase() = default;
 
-    bool is_attn_layer(int layer_id);
+    // Query whether a given global layer id corresponds to an attention layer
+    // or an expert layer. Semantics are defined by unified schedulers.
 
-    bool is_expert_layer(int layer_id);
+    virtual bool is_attn_layer(int layer_id);
+
+    virtual bool is_expert_layer(int layer_id);
+
+    virtual void attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens);
+
+    virtual void add_batch(const TokenBatch &batch);
+
+    virtual void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta);
+
+    virtual std::vector<int> get_pool_snapshot();
+
+    virtual TokenBatch get_batch_from_layer(int layer_id);
+
+    // Get a batch from `layer_id` but cap the number of tokens to `token_threshold`
+    // (<= 0 means no restriction). Implemented by unified schedulers that support
+    // partial draining.
+    virtual TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold);
+
+    void add_tokens_to_layer(int layer_id, int num_tokens) override;
+};
+
+// TODO: support expert-wise scheduling
+class UnifiedLayerScheduler: public UnifiedLayerSchedulerBase {
+
+public:
+
+    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, int topk);
 
     int schedule() override;
 
-    void add_tokens_to_layer(int layer_id, int num_tokens) override;
-
-    void attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens);
-
-    void add_batch(const TokenBatch &batch);
-
-    void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta);
-
-    std::vector<int> get_pool_snapshot();
-
-    TokenBatch get_batch_from_layer(int layer_id);
-
-    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold);
-
-    bool layer_uses_token_queue(int layer_id);
 };
 
-using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerScheduler>;
+using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerSchedulerBase>;
+
+
+class UnifiedDefraggingLayerScheduler : public UnifiedLayerSchedulerBase {
+
+private:
+
+    int lookback_steps;
+    int lookahead_steps;
+    float weight_decay;
+
+
+    std::vector<std::queue<int>> history_tokens_in_layer;
+    std::vector<int> sum_history_tokens_in_layer;
+
+    // Advance history windows with the latest effective token snapshot.
+    void step_end(const std::vector<int> &effective_tokens_snapshot);
+
+    // Helper to convert raw token counts into "fair" effective tokens
+    // (MoE layers scaled by 1 / top_k). Attn kept as is.
+    inline float get_effective_tokens(int layer_idx, int raw_tokens) const {
+        if (raw_tokens <= 0) return 0.0f;
+        bool is_attn = (layer_idx < num_attn_layers);
+        if (is_attn || top_k <= 1) {
+            return static_cast<float>(raw_tokens);
+        }
+        return static_cast<float>(raw_tokens) / static_cast<float>(top_k);
+    }
+
+public:
+    UnifiedDefraggingLayerScheduler(int num_attn_layers,
+                                    int num_expert_layers,
+                                    int top_k,
+                                    int lookback_steps,
+                                    int lookahead_steps,
+                                    float weight_decay);
+
+    int schedule() override;
+
+};
 
 
 /*

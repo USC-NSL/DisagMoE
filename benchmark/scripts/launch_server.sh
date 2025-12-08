@@ -8,8 +8,8 @@ WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
 # model config
 
 MODEL_NAME="qwen3_235b"  # options: mixtral | qwen3_235b
-ATTN_QKV_QUANT="fp8" # options: none | fp8
-MOE_LINEAR_QUANT="fp8" # options: none | fp8
+ATTN_QKV_QUANT="none" # options: none | fp8
+MOE_LINEAR_QUANT="none" # options: none | fp8
 
 MODEL_ARGS="--model $MODEL_NAME"
 if [ ! -z $NUM_LAYERS ]; then
@@ -44,11 +44,18 @@ ep_size=$WORLD_SIZE
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
 
+# UNIFIED_SCHEDULER_TYPE: flfs | defrag; only valid for colocate mode
+UNIFIED_SCHEDULER_TYPE="flfs"
+DEFRAG_WEIGHT_DECAY=0.8
+DEFRAG_LOOKAHEAD_STEPS=4
+DEFRAG_LOOKBACK_STEPS=4
+
 if [ $placement == "colocate" ]; then
     dp_size=$WORLD_SIZE
     ep_size=$WORLD_SIZE
 fi
 
+LESS_THAN_SM90=0 # Set to 1 for less than sm90 GPUs like A100, to disable deep_gemm
 ENABLE_CUDA_GRAPH_ATTN=1
 ENABLE_CUDA_GRAPH_EXPERT=1
 ENABLE_TORCH_PROFILE=0
@@ -80,9 +87,22 @@ if [ "$ENABLE_CUDA_GRAPH_EXPERT" -eq 1 ]; then
     CUDA_GRAPH_EXPERT_ARGS="--cuda-graph-expert"
 fi
 
+LESS_THAN_SM90_ARGS=""
+if [ "$LESS_THAN_SM90" -eq 1 ]; then
+    LESS_THAN_SM90_ARGS="--less-than-sm90"
+fi
+
 SERIAL_GEMM_ARGS=""
 if [ "$USE_SERIAL_GEMM_MOE" -eq 1 ]; then
     SERIAL_GEMM_ARGS="--serial-gemm"
+fi
+
+UNIFIED_SCHEDULER_ARGS=""
+if [ "$placement" == "colocate" ]; then
+    UNIFIED_SCHEDULER_ARGS="--unified-scheduler-type $UNIFIED_SCHEDULER_TYPE \
+ --defrag-weight-decay $DEFRAG_WEIGHT_DECAY \
+ --defrag-lookahead-steps $DEFRAG_LOOKAHEAD_STEPS \
+ --defrag-lookback-steps $DEFRAG_LOOKBACK_STEPS"
 fi
 
 REPORT_TABLE=$REPORT_DIR/benchmark.csv
@@ -91,7 +111,7 @@ python benchmark/server.py \
     $PROFILE_ARGS \
     -N $N_NODE \
     -g $N_GPU_PER_NODE \
-    -u 0.7 \
+    -u 0.98 \
     $MODEL_ARGS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-attn-graph-bsz $MAX_BATCH_SIZE_ATTN \
@@ -101,7 +121,9 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
+    $UNIFIED_SCHEDULER_ARGS \
     $SERIAL_GEMM_ARGS \
+    $LESS_THAN_SM90_ARGS \
     $CUDA_GRAPH_ATTN_ARGS \
     $CUDA_GRAPH_EXPERT_ARGS \
     --file $REPORT_TABLE \
