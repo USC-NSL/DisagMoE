@@ -911,35 +911,35 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         inflight_req = dict()
         
         while not self.end_flag:
-            if self._debug_logger is not None:
-                try:
-                    pool_snapshot = self.scheduler.get_pool_snapshot()
-                except Exception as e:
-                    pool_snapshot = f"<error getting pool snapshot: {e}>"
-                self._debug_logger.log(
-                    f"single_module_loop_overlap: loop start; "
-                    f"pool_snapshot={pool_snapshot}, idle_count={idle_conunt}, "
-                    f"result_queue_len={len(result_queue)}"
-                )
+            # if self._debug_logger is not None:
+            #     try:
+            #         pool_snapshot = self.scheduler.get_pool_snapshot()
+            #     except Exception as e:
+            #         pool_snapshot = f"<error getting pool snapshot: {e}>"
+            #     self._debug_logger.log(
+            #         f"single_module_loop_overlap: loop start; "
+            #         f"pool_snapshot={pool_snapshot}, idle_count={idle_conunt}, "
+            #         f"result_queue_len={len(result_queue)}"
+            #     )
             self.recv_new_request()
             batch = self.scheduler.schedule()
-            if self._debug_logger is not None:
-                if batch.data is None:
-                    self._debug_logger.log("single_module_loop_overlap: scheduler returned empty batch")
-                else:
-                    try:
-                        meta = batch.metadata
-                        tag = self._debug_meta_tag(meta)
-                        layer_id = getattr(meta, "layer_id", None)
-                        num_tokens = meta.num_tokens() if hasattr(meta, "num_tokens") else None
-                    except Exception:
-                        tag = "<unknown>"
-                        layer_id = "<unknown>"
-                        num_tokens = "<unknown>"
-                    self._debug_logger.log(
-                        f"single_module_loop_overlap: scheduler returned batch "
-                        f"tag={tag}, layer_id={layer_id}, num_tokens={num_tokens}"
-                    )
+            # if self._debug_logger is not None:
+            #     if batch.data is None:
+            #         self._debug_logger.log("single_module_loop_overlap: scheduler returned empty batch")
+            #     else:
+            #         try:
+            #             meta = batch.metadata
+            #             tag = self._debug_meta_tag(meta)
+            #             layer_id = getattr(meta, "layer_id", None)
+            #             num_tokens = meta.num_tokens() if hasattr(meta, "num_tokens") else None
+            #         except Exception:
+            #             tag = "<unknown>"
+            #             layer_id = "<unknown>"
+            #             num_tokens = "<unknown>"
+            #         self._debug_logger.log(
+            #             f"single_module_loop_overlap: scheduler returned batch "
+            #             f"tag={tag}, layer_id={layer_id}, num_tokens={num_tokens}"
+            #         )
             forward_batch = None
             if batch.data is not None:
                 idle_conunt = 0
