@@ -971,16 +971,17 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             if last_batch:
                 tmp_batch, tmp_result = result_queue.popleft()
                 if tmp_batch is None:
-                    if self._debug_logger is not None:
-                        self._debug_logger.log(
-                            "single_module_loop_overlap: dequeued empty tmp_batch, skipping"
-                        )
+                    pass
+                    # if self._debug_logger is not None:
+                    #     self._debug_logger.log(
+                    #         "single_module_loop_overlap: dequeued empty tmp_batch, skipping"
+                    #     )
                 else:
-                    if self._debug_logger is not None:
-                        self._debug_logger.log(
-                            "single_module_loop_overlap: about to synchronize tmp_result.sync_event "
-                            f"for layer_id={getattr(tmp_batch, 'layer_id', None)}"
-                        )
+                    # if self._debug_logger is not None:
+                    #     self._debug_logger.log(
+                    #         "single_module_loop_overlap: about to synchronize tmp_result.sync_event "
+                    #         f"for layer_id={getattr(tmp_batch, 'layer_id', None)}"
+                    #     )
                     if tmp_result.sync_event is not None:
                         tmp_result.sync_event.synchronize()
                         tmp_result.sync_event = None
