@@ -195,7 +195,7 @@ gdr_context_t get_gather_src_ptrs_gdr() {
         auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
         gather_src_ptrs_gdr_alt = std::make_shared<GdrContext>(src_tensor);
     }
-    enter_count++;
+    enter_count = (enter_count + 1) & 1;
     if (enter_count & 1) {
         return gather_src_ptrs_gdr;
     } else {

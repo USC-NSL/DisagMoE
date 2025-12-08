@@ -4,7 +4,7 @@ from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
-from disagmoe.models.quantization import sglang_per_token_group_quant_fp8
+from disagmoe.ops.quantization import sglang_per_token_group_quant_fp8
 from disagmoe.utils.logger import get_logger
 from disagmoe.ops.cuda_graph import fused_copy_and_pad_cuda
 
