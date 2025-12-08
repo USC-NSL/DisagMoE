@@ -946,25 +946,26 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 forward_batch = self.preprocess_batch(batch_wrapper)
                 if forward_batch is None:
-                    if self._debug_logger is not None:
-                        self._debug_logger.log(
-                            "single_module_loop_overlap: preprocess_batch returned None "
-                            "(e.g., sampling-only attention batch)"
-                        )
+                    pass
+                    # if self._debug_logger is not None:
+                    #     self._debug_logger.log(
+                    #         "single_module_loop_overlap: preprocess_batch returned None "
+                    #         "(e.g., sampling-only attention batch)"
+                    #     )
                 else:
-                    if self._debug_logger is not None:
-                        self._debug_logger.log(
-                            f"single_module_loop_overlap: executing forward_batch "
-                            f"layer_id={getattr(forward_batch, 'layer_id', None)}, "
-                            f"num_tokens={getattr(forward_batch, 'num_tokens', None)}"
-                        )
+                    # if self._debug_logger is not None:
+                    #     self._debug_logger.log(
+                    #         f"single_module_loop_overlap: executing forward_batch "
+                    #         f"layer_id={getattr(forward_batch, 'layer_id', None)}, "
+                    #         f"num_tokens={getattr(forward_batch, 'num_tokens', None)}"
+                    #     )
                     result = forward_batch.proc_func(forward_batch)
                     result_queue.append((forward_batch, result)) # forward_batch.copy?
-                    if self._debug_logger is not None:
-                        self._debug_logger.log(
-                            f"single_module_loop_overlap: enqueued forward result; "
-                            f"result_queue_len={len(result_queue)}"
-                        )
+                    # if self._debug_logger is not None:
+                    #     self._debug_logger.log(
+                    #         f"single_module_loop_overlap: enqueued forward result; "
+                    #         f"result_queue_len={len(result_queue)}"
+                    #     )
                 self.step_profile(batch.metadata.num_tokens())
                 
             if last_batch:
