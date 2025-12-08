@@ -4,6 +4,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <torch/torch.h>
+#include "cuda_utils.h"
 
 #include <iostream>
 #include <cstddef>
@@ -61,6 +62,7 @@ public:
             throw std::runtime_error("GdrContext::copy_from_host overflow");
         void* dst = static_cast<char*>(cpu_ptr_) + dst_offset;
         std::memcpy(dst, src, nbytes);
+        this->sync();
     }
     
     inline void copy_from_host_tensor(const torch::Tensor& src, size_t nbytes) {
@@ -195,6 +197,13 @@ private:
                 mh_.h = 0;
             }
         }
+    }
+
+    void sync() {
+        CUDACHECK(cudaDeviceFlushGPUDirectRDMAWrites(
+            cudaFlushGPUDirectRDMAWritesTarget::cudaFlushGPUDirectRDMAWritesTargetCurrentDevice,
+            cudaFlushGPUDirectRDMAWritesScope::cudaFlushGPUDirectRDMAWritesToOwner
+        ));
     }
 
     static void ensure_gdr_open() {
