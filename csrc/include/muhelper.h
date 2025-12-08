@@ -56,6 +56,13 @@ protected:
 
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
+    // Counters to track how many batches have been enqueued to and
+    // fully processed by the dispatcher thread. Used to implement a
+    // flush() that allows the Python engine to wait until all
+    // previously submitted work has been handed off to NCCL/transport.
+    std::atomic<uint64_t> enqueued_count{0};
+    std::atomic<uint64_t> completed_count{0};
+
 
     ParallelConfig cfg;
 
@@ -73,6 +80,12 @@ public:
                  std::vector<Channel_t> channels);
 
     void put(TokenBatch batch, int rank = 0);
+
+    // Block until all batches enqueued up to this point have been
+    // processed by the dispatcher thread (i.e., _send_once has
+    // completed for each of them). This provides a stronger ordering
+    // guarantee than naive sleeps in Python.
+    void flush();
 
 };
 

@@ -682,7 +682,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.stream.synchronize()
         range_pop()
         self.dispatcher.put(batch.to_c(), 0)
-        time.sleep(0.01)
+        self.dispatcher.flush()
 
     def stats_pre_process(self, batch: TokenBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()

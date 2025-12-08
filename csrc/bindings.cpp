@@ -45,7 +45,8 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("schedule", &Scheduler::schedule);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
-        .def("put", &MuDispatcher::put);
+        .def("put", &MuDispatcher::put)
+        .def("flush", &MuDispatcher::flush);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())
