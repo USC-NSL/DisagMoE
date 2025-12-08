@@ -11,6 +11,8 @@ MODEL_NAME="qwen3_235b"  # options: mixtral | qwen3_235b
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
 
+NUM_LAYERS=16
+
 MODEL_ARGS="--model $MODEL_NAME"
 if [ ! -z $NUM_LAYERS ]; then
     MODEL_ARGS="$MODEL_ARGS --num-layers $NUM_LAYERS"
@@ -45,7 +47,7 @@ MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
 
 # UNIFIED_SCHEDULER_TYPE: flfs | defrag; only valid for colocate mode
-UNIFIED_SCHEDULER_TYPE="flfs"
+UNIFIED_SCHEDULER_TYPE="defrag"
 DEFRAG_WEIGHT_DECAY=0.8
 DEFRAG_LOOKAHEAD_STEPS=4
 DEFRAG_LOOKBACK_STEPS=4
@@ -56,7 +58,7 @@ if [ $placement == "colocate" ]; then
 fi
 
 LESS_THAN_SM90=0 # Set to 1 for less than sm90 GPUs like A100, to disable deep_gemm
-ENABLE_CUDA_GRAPH_ATTN=1
+ENABLE_CUDA_GRAPH_ATTN=0
 ENABLE_CUDA_GRAPH_EXPERT=1
 ENABLE_TORCH_PROFILE=0
 

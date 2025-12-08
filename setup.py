@@ -84,7 +84,7 @@ ext_modules = [
             "/usr/local/lib",
             "/usr/lib",
         ], 
-        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
+        libraries=["cudart", "cuda", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),

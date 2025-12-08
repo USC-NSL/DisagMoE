@@ -77,6 +77,44 @@ void NcclChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
+void NcclChannel::sync_timeout() {
+    constexpr int timeout_ms = 10000; // 10 seconds
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+        // 2. Check if CUDA stream finished
+        cudaError_t q = cudaStreamQuery(this->stream);
+        if (q == cudaSuccess) {
+            // Completed normally
+            return ;
+        }
+        if (q != cudaErrorNotReady) {
+            ASSERT_MSG(false, "CUDA error during streamQuery: " + std::string(cudaGetErrorString(q)));
+            return ;
+        }
+
+        // 3. Check NCCL asynchronous errors
+        ncclResult_t  asyncErr;
+        ncclCommGetAsyncError(this->comm, &asyncErr);
+        if (asyncErr != ncclSuccess) {
+            ASSERT_MSG(false, "NCCL async error detected: " + std::to_string(asyncErr));
+            ncclCommAbort(this->comm);
+            return ;
+        }
+
+        // 4. Check timeout
+        auto now = std::chrono::steady_clock::now();
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
+        if (ms > timeout_ms) {
+            ASSERT_MSG(false, "NCCL timed out after " + std::to_string(ms) + " ms, aborting communicator.");
+            ncclCommAbort(this->comm);
+            return ;
+        }
+
+        // Avoid busy spinning
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
+    }
+}
+
 TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
     Channel(device_id, device_id), stream(stream) {
     #ifndef D_ENABLE_RAY
@@ -101,10 +139,6 @@ void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     uintptr_t data_to_recv = data_buffer.front();
     data_buffer.pop();
     cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
-}
-
-void TensorLocalChannel::sync() {
-    CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
 std::mutex global_mutex;

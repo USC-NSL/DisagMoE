@@ -44,9 +44,11 @@ public:
         return this->other;
     }
 
+    virtual void sync_timeout() {}
+
     virtual void initialize() {}
 
-    virtual void sync() {}
+    virtual void sync() { }
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -72,6 +74,8 @@ public:
 
     void sync() override;
 
+    void sync_timeout() override;
+
     void initialize() override;
 };
 
@@ -88,8 +92,6 @@ class TensorLocalChannel: public Channel {
         void send(uintptr_t data, const BatchMetadata& metadata) override;
     
         void recv(uintptr_t data, const BatchMetadata& metadata) override;
-    
-        void sync() override;
 };
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);

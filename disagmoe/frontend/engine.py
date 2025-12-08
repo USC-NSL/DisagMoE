@@ -44,7 +44,7 @@ from collections import deque
 import torch.distributed as dist
 
 from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
-                        start_engine, set_hosts,
+                        start_engine, set_hosts, print_current_context,
                         BatchMetadata as BatchMetadata_C,
                         TokenBatch as TokenBatch_C,
                         recorder_create as disagmoe_recorder_create,
@@ -649,6 +649,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             
         self.build_executor()
         get_logger().info("core launched")
+        
+        print_current_context("init_core")
     
     def start(self):
         # attention TP is deprecated
@@ -712,6 +714,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.expert_max_batch_size = engine_config.max_batch_size_expert
         
         get_logger().info(f"engine setup. {self.engine_type, engine_config}")
+        
+        print_current_context("setup_engine")
 
     # Accepts bytes uploaded via Ray object store and retains them for later
     # consumption by attention operators/gates.
@@ -861,6 +865,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)
         torch.cuda.set_stream(self.stream)
+        torch.cuda.synchronize()
+        
+        print_current_context("single_module_loop_overlap")
         
         result_queue: Deque[Tuple[Optional[ForwardBatch], Optional[ForwardResult]]] = deque()
         forward_batch = None
@@ -915,7 +922,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)
         torch.cuda.set_stream(self.stream)
+        torch.cuda.synchronize()
         disagmoe_recorder_create()
+        
+        print_current_context("single_module_loop")
         
         prev_schedule_empty = True
         self._step_start_timestamp_ms = time_ms()

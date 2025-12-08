@@ -1,5 +1,8 @@
 #pragma once
 
+#ifndef CUDA_UTILS_H_
+#define CUDA_UTILS_H_
+
 #include "logging.h"
 #include "cuda_runtime.h"
 #include "nccl.h"
@@ -8,11 +11,11 @@
 #include "c10/cuda/CUDAStream.h"
 #include "c10/cuda/CUDAGuard.h"
 
+#include <cuda.h>
 #include <execinfo.h>
 #include <cstdlib>
 #include <unistd.h>
 #include <cstdio>
-
 
 static void print_back_trace() {
     // void *array[16];
@@ -105,6 +108,16 @@ inline void log_gpu_memory_usage(const char* tag) {
     DMOE_LOG(INFO) << tag << " free " << free_gb << " GB / total " << total_gb << " GB" << LEND;
 }
 
+inline void print_current_context(const char* msg) {
+    CUcontext ctx;
+    CUresult res = cuCtxGetCurrent(&ctx);
+    if (res != CUDA_SUCCESS) {
+        DMOE_LOG(WARNING) << ">>>>>>>>>>>>>>>>>> [" << msg << "] cuCtxGetCurrent failed: " << res << LEND;
+        return;
+    }
+    DMOE_LOG(WARNING) << ">>>>>>>>>>>>>>>>>> [" << msg << "] Current CUcontext = " << (void*)ctx << LEND;
+}
+
 #ifdef D_ENABLE_NVTX
 
 #include "nvtx3/nvtx3.hpp"
@@ -120,5 +133,7 @@ using tx_range = ScopedRange;
 using tx_range = std::string;
 
 #define AUTO_TX_RANGE
+
+#endif
 
 #endif

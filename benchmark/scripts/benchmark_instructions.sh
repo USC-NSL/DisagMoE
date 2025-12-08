@@ -3,8 +3,8 @@
 curl -X POST http://localhost:6699/run_once \
         -H "Content-Type: application/json" \
         -d '{
-            "rate": 10,
-            "time": 10,
+            "rate": 250,
+            "time": 20,
             "distribution": "poisson",
             "min_input_len": 200,
             "max_input_len": 500,

@@ -154,6 +154,8 @@ std::tuple<mu_pool_t, scheduler_t, mu_dispatcher_t> init_unified_engine(
     int num_groups = 1;
     int num_layers = layer_ids.size();
 
+    print_current_context("init_unified_engine");
+
     auto [in_channels, out_channels] = init_all_channels(
         world_size, local_id, true, 
         inbound_nccl_ids, outbound_nccl_ids, 

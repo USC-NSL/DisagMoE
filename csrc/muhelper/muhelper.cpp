@@ -92,7 +92,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
     this->channels[cid]->send(buf, meta);
-
+    this->channels[cid]->sync_timeout();
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
@@ -101,6 +101,11 @@ void MuDispatcher::run() {
     for (int i = 0; i < this->channels.size(); i ++) {
         this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1));
     }
+
+    cudaDeviceSynchronize();
+    print_current_context("initialize MuDispatcher::run");
+
+    bool first_print_context = false;
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
@@ -115,8 +120,14 @@ void MuDispatcher::run() {
             batch = pr.first;
             this->send_queue.pop();
         }
+
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
+
+        if (!first_print_context) {
+            print_current_context("MuDispatcher::run first print context after a cuda op");
+            first_print_context = true;
+        }
     }
 }
 
@@ -432,7 +443,11 @@ void MuPool::run() {
 
     auto last = t_now();
     auto start = last;
+    
+    cudaDeviceSynchronize();
+    print_current_context("initialize MuPool::run");
 
+    bool first_print_context = false;
     // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
         std::vector<MuPoolPendingRecv> pending;
@@ -449,6 +464,11 @@ void MuPool::run() {
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
         pending.push_back(MuPoolPendingRecv{peer_id, meta, tensor});
+
+        if (!first_print_context) {
+            print_current_context("MuPool::run first print context after a cuda op");
+            first_print_context = true;
+        }
 
         #if D_GROUP_NCCL_RECV
         // Call non-blocking recvs to drain any simultaneous recvs
@@ -481,8 +501,8 @@ void MuPool::run() {
 
         // process the incoming batch and sync the NCCL CUDA streams
         for (auto &p : pending) {
+            this->peer_channels[p.peer_id]->sync_timeout();
             this->process_batch(p.tensor, p.meta);
-            this->peer_channels[p.peer_id]->sync();
         }
     }
 }

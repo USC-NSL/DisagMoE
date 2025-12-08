@@ -147,12 +147,14 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("range_push", &Recorder::push);
     m.def("range_pop", &Recorder::pop);
 
+
     py::class_<TraceContext>(m, "TraceContext")
         .def_readwrite("msg", &TraceContext::msg)
         .def_readwrite("t_start", &TraceContext::t_start)
         .def_readwrite("t_dur", &TraceContext::t_dur)
         .def_readwrite("track_id", &TraceContext::track_id);
 
+    REGISTER_FUNC(print_current_context);
     REGISTER_FUNC(get_nccl_unique_id);
     REGISTER_FUNC(init_disaggregated_engine);
     REGISTER_FUNC(init_unified_engine);
