@@ -108,7 +108,19 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_thresho
 UnifiedLayerSchedulerBase::UnifiedLayerSchedulerBase(int num_attn_layers, int num_expert_layers, int topk):
     num_attn_layers(num_attn_layers), num_expert_layers(num_expert_layers), 
     num_layers(num_attn_layers + num_expert_layers),
-    top_k(topk > 0 ? topk : 1), attn_use_token_queue(topk > 1) { }
+    top_k(topk > 0 ? topk : 1), attn_use_token_queue(topk > 1) {
+    for (int i = 0; i < num_attn_layers; i++) {
+        auto attn_layer = UnifiedLayer::create_attention_layer(i);
+        this->attn_layers.push_back(attn_layer);
+        this->layers.push_back(attn_layer);
+    }
+
+    for (int i = 0; i < num_expert_layers; i++) {
+        auto expert_layer = UnifiedLayer::create_expert_layer(i);
+        this->expert_layers.push_back(expert_layer);
+        this->layers.push_back(expert_layer);
+    }
+}
 
 bool UnifiedLayerSchedulerBase::layer_uses_token_queue(int layer_id) {
     return this->attn_use_token_queue && this->is_attn_layer(layer_id) && layer_id > 0;
@@ -202,17 +214,7 @@ FLFS layer scheduler
 
 UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, int topk):
     UnifiedLayerSchedulerBase(num_attn_layers, num_expert_layers, topk) {
-    for (int i = 0; i < num_attn_layers; i++) {
-        auto attn_layer = UnifiedLayer::create_attention_layer(i);
-        this->attn_layers.push_back(attn_layer);
-        this->layers.push_back(attn_layer);
-    }
 
-    for (int i = 0; i < num_expert_layers; i++) {
-        auto expert_layer = UnifiedLayer::create_expert_layer(i);
-        this->expert_layers.push_back(expert_layer);
-        this->layers.push_back(expert_layer);
-    }
 }
 
 int UnifiedLayerScheduler::schedule() {
