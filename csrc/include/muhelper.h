@@ -85,8 +85,6 @@ public:
 
     void put(TokenBatch batch, int rank = 0);
 
-    void flush();
-
 };
 
 

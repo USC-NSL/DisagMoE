@@ -169,15 +169,6 @@ void MuDispatcher::put(TokenBatch batch, int rank) {
     this->cv.notify_one();
 }
 
-void MuDispatcher::flush() {
-    // Wait until the dispatcher thread has finished processing all
-    // batches that were enqueued up to this point.
-    const auto target = enqueued_count.load(std::memory_order_acquire);
-    while (completed_count.load(std::memory_order_acquire) < target) {
-        std::this_thread::sleep_for(std::chrono::microseconds(50));
-    }
-}
-
 /*
     MuAttnDispatcher
 */
@@ -334,8 +325,7 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
 
     auto &channels = this->attn_channel[layer_id];
 
-    // NCCLCHECK(ncclGroupStart());
-    int enqueued_in_group = 0;
+    NCCLCHECK(ncclGroupStart());
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
         int rank = meta->attn_dp_ranks[i];
         auto channel_id = this->_get_attn_channel(layer_id, rank);
@@ -361,14 +351,8 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
             );
         }
 
-        enqueued_in_group++;
-        if (enqueued_in_group >= MU_POOL_GROUP_RECV_LIMIT) {
-            // NCCLCHECK(ncclGroupEnd());
-            // NCCLCHECK(ncclGroupStart());
-            enqueued_in_group = 0;
-        }
     }
-    // NCCLCHECK(ncclGroupEnd());
+    NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
