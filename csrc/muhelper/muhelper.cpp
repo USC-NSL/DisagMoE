@@ -294,7 +294,7 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
 
     auto &channels = this->attn_channel[layer_id];
 
-    NCCLCHECK(ncclGroupStart());
+    // NCCLCHECK(ncclGroupStart());
     int enqueued_in_group = 0;
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
         int rank = meta->attn_dp_ranks[i];
@@ -310,7 +310,7 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t) batch.data.data_ptr(),
                 *meta
             );
-            NCCLCHECK(ncclGroupEnd());
+            // NCCLCHECK(ncclGroupEnd());
             return;
         } else {
             auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
@@ -323,12 +323,12 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
 
         enqueued_in_group++;
         if (enqueued_in_group >= MU_POOL_GROUP_RECV_LIMIT) {
-            NCCLCHECK(ncclGroupEnd());
-            NCCLCHECK(ncclGroupStart());
+            // NCCLCHECK(ncclGroupEnd());
+            // NCCLCHECK(ncclGroupStart());
             enqueued_in_group = 0;
         }
     }
-    NCCLCHECK(ncclGroupEnd());
+    // NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
