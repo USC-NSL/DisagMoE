@@ -866,9 +866,6 @@ class MoEExpertsSerial(MoEExpertsCUTLASS):
                 down = torch.matmul(up, self.w2_weight[local_expert_id])
                 return down
         
-        if len(batch_sizes) == 1:
-            return calc(hiddens, 0)
-        
         s = 0
         results = []
         for i, bs in enumerate(batch_sizes):
@@ -877,7 +874,5 @@ class MoEExpertsSerial(MoEExpertsCUTLASS):
             cur_hiddens = hiddens[s: s + bs]
             results.append(calc(cur_hiddens, i))
             s += bs
-        
-        if len(results) == 1:
-            return results[0]
+            
         return torch.cat(results)

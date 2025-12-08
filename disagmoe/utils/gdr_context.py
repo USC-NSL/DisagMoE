@@ -2,6 +2,8 @@ from disagmoe_c import GdrContext as GdrContextImpl
 
 import torch
 
+use_gdrcopy_optimization = False
+
 class GdrContext:
     
     def __init__(self, tensor: torch.Tensor):

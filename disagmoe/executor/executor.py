@@ -26,7 +26,7 @@ from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor, CUDAGraphExpertsExecutor
 from disagmoe.ops.cuda_graph import copy_graph_results_cuda
 from disagmoe.frontend.datatypes import BatchMetadata
-from disagmoe.utils.gdr_context import GdrContext
+from disagmoe.utils.gdr_context import GdrContext, use_gdrcopy_optimization
 from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.ops.indices import get_m_indices
 
@@ -269,15 +269,16 @@ class AttnExecutor(Executor):
             # get_logger().info(f"Attention warmup layer {layer_id} done")
                 
         get_logger().info("Attention warmup done")
-    
+        
     def execute_eager(
-        self,
-        layer_id: int,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        attn_metadata: FlashAttentionMetadata,
+        self, 
+        layer_id: int, 
+        positions: Tensor, 
+        hidden_states: Tensor, 
+        attn_metadata: FlashAttentionMetadata, 
         request_ids: Optional[List[int]] = None
     ) -> Tuple[Tensor, Tensor, Tensor]:
+        
         vid = self.layer_mappings[layer_id]
         outputs, topk_weights, topk_ids = self.operators[vid].forward(
             positions, 
@@ -287,35 +288,51 @@ class AttnExecutor(Executor):
             request_ids=request_ids,
         )
         return outputs, topk_weights, topk_ids
-
-    @nvtx_range("AttnExecutor.execute")
-    def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
-        if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
-            staging_outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
-        else:
-            staging_outputs, staging_topk_weights, staging_topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
-            
+    
+    def execute_normal(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
+        assert batch.expert_ids_buffer is None and batch.expert_weights_buffer is None, "Expert buffers should be None for eager execution"
+        return AttentionForwardResult(
+            hiddens=outputs,
+            expert_weights=topk_weights,
+            expert_ids=topk_ids,
+            sync_event=None,
+        )
+    
+    def execute_graph(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        staging_outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
+        outputs = torch.empty_like(staging_outputs)
+        
         if batch.expert_ids_buffer is not None:
-            outputs = torch.empty_like(staging_outputs)
+            expert_ids = batch.expert_ids_buffer
+            expert_weights = batch.expert_weights_buffer
+        else:
             expert_ids = torch.empty_like(staging_topk_ids)
             expert_weights = torch.empty_like(staging_topk_weights)
-            copy_graph_results_cuda(
-                staging_outputs, 
-                staging_topk_ids, 
-                staging_topk_weights, 
-                outputs, 
-                expert_ids, 
-                expert_weights, 
-                batch.num_tokens,
-            )
+            
+        copy_graph_results_cuda(
+            staging_outputs, 
+            staging_topk_ids, 
+            staging_topk_weights, 
+            outputs, 
+            expert_ids, 
+            expert_weights, 
+            batch.num_tokens,
+        )
         
-        # NOTE: expert weights and ids are stored in static buffers, we don't need to copy them back
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=expert_weights,
             expert_ids=expert_ids,
             sync_event=None,
         )
+
+    @nvtx_range("AttnExecutor.execute")
+    def execute(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
+        if self.enable_cuda_graph and batch.metadata.num_decode_tokens <= get_global_engine_config().max_attn_graph_bsz:
+            return self.execute_graph(batch)
+        else:
+            return self.execute_normal(batch)
     
     @staticmethod
     def build(model_config: ModelConfig, cache_config: DmoeCacheConfig, gate_profile_bytes: Optional[bytes] = None) -> "Executor":
@@ -339,6 +356,9 @@ class ExpertsExecutor(Executor):
         
         self.token_m_indices_buffer = get_cuda_aligned_tensor(get_global_engine_config().max_batch_size_expert, torch.int32, device="cuda")
         self.token_m_indices_buffer_gdr = GdrContext(self.token_m_indices_buffer)
+        
+        self.token_m_indices_buffer_alt = get_cuda_aligned_tensor(get_global_engine_config().max_batch_size_expert, torch.int32, device="cuda")
+        self.token_m_indices_buffer_alt_gdr = GdrContext(self.token_m_indices_buffer_alt)
         
         try:
             method = getattr(self.model_config, "moe_linear_quant", None)
@@ -428,6 +448,10 @@ class ExpertsExecutor(Executor):
                             quant_method, "process_weights_after_loading"):
                         quant_method.process_weights_after_loading(module)
                         
+    def swap_m_indices_buffers(self):
+        self.token_m_indices_buffer, self.token_m_indices_buffer_alt = self.token_m_indices_buffer_alt, self.token_m_indices_buffer
+        self.token_m_indices_buffer_gdr, self.token_m_indices_buffer_alt_gdr = self.token_m_indices_buffer_alt_gdr, self.token_m_indices_buffer_gdr
+                        
     def get_expert_cls(self):
         cfg = get_global_engine_config()
         if not cfg.enable_grouped_gemm:
@@ -448,6 +472,7 @@ class ExpertsExecutor(Executor):
         if expert_cls is MoEExpertsCUTLASS and cfg.enable_cuda_graph_expert:
             raise AssertionError("MoEExpertsCUTLASS does not support CUDA graphs.")
         
+        get_logger().info(f"Using expert class: {expert_cls.__name__}")
         return expert_cls
     
     def build_cuda_graph_executor(self):
@@ -470,6 +495,7 @@ class ExpertsExecutor(Executor):
             
         if self.expert_cls is MoEExpertsCUTLASS:
             if ENV_VARS["GROUPED_GEMM_CUTLASS"]:
+                assert False, "This path is deprecated"
                 meta_c.get_expert_batch_sizes_cuda(
                     self.model_config.num_experts, self.local_to_global_expert_rank,
                     self._static_bs_cuda, self.stream.cuda_stream
@@ -484,9 +510,18 @@ class ExpertsExecutor(Executor):
         
         # DeepGEMM-based experts (both BF16 and FP8) expect m_indices
         if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsDeepGemmFP8Graph]:
-            m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
-            self.token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
-            m_indices = self.token_m_indices_buffer[:len(m_indices_list)]
+            if use_gdrcopy_optimization:
+                self.swap_m_indices_buffers()
+                m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
+                self.token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
+                m_indices = self.token_m_indices_buffer[:len(m_indices_list)]
+            else:
+                batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+                batch_sizes = torch.tensor(
+                    [batch_sizes[i] for i in self.local_to_global_expert_rank],
+                    dtype=torch.int32, device="cpu"
+                )
+                m_indices = get_m_indices(batch_sizes, self.expert_ids)
 
         return batch_sizes, m_indices
     
@@ -518,6 +553,7 @@ class ExpertsExecutor(Executor):
 
     @nvtx_range("ExpertsExecutor.execute")
     def execute(self, batch: ExpertForwardBatch) -> Tensor:
+        assert batch.num_tokens <= get_global_engine_config().max_batch_size_expert, f"batch size {batch.num_tokens} exceeds max batch size {get_global_engine_config().max_batch_size_expert}"
         vid = self.layer_mappings[batch.layer_id]
         if self.expert_cls is MoEExpertsDeepGemmBF16:
             if get_global_engine_config().enable_cuda_graph_expert:

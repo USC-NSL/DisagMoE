@@ -169,11 +169,11 @@ __global__ void gather_tokens_kernel(T *d_out, uintptr_t *d_in_ptr, const int hi
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    gather_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, hidden_size); \
+    gather_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, hidden_size); \
 } while(0)
 
 template <class T>
-void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size, cudaStream_t stream) {
+void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
@@ -183,32 +183,52 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
 gdr_context_t gather_src_ptrs_gdr = nullptr;
+gdr_context_t gather_src_ptrs_gdr_alt = nullptr;
 
 gdr_context_t get_gather_src_ptrs_gdr() {
+    static int enter_count = 0;
     if (gather_src_ptrs_gdr == nullptr) {
         auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
         gather_src_ptrs_gdr = std::make_shared<GdrContext>(src_tensor);
     }
-    return gather_src_ptrs_gdr;
+    if (gather_src_ptrs_gdr_alt == nullptr) {
+        auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
+        gather_src_ptrs_gdr_alt = std::make_shared<GdrContext>(src_tensor);
+    }
+    enter_count++;
+    if (enter_count & 1) {
+        return gather_src_ptrs_gdr;
+    } else {
+        return gather_src_ptrs_gdr_alt;
+    }
 }
 
-void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size, int64_t raw_cuda_stream) {
+void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
-    cudaStream_t stream = reinterpret_cast<cudaStream_t>(raw_cuda_stream);
     uintptr_t* src_ptr_host = reinterpret_cast<uintptr_t*>(src_ptr);
+    using scalar_t = c10::BFloat16;
+#if KERNEL_USE_GDRCOPY == 1
     gdr_context_t gather_src_ptrs_gdr = get_gather_src_ptrs_gdr();
     gather_src_ptrs_gdr->copy_from_host(src_ptr_host, num_tokens * sizeof(uintptr_t));
     auto src_tensor = gather_src_ptrs_gdr->get_tensor();
     src_tensor = src_tensor.narrow(0, 0, num_tokens);
-    using scalar_t = c10::BFloat16;
-    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size, stream);
+    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
+#else
+    // Create a torch tensor and copy from host
+    auto src_tensor = torch::empty({num_tokens}, torch::TensorOptions()
+        .dtype(torch::kUInt64)
+        .device(torch::kCUDA));
+    cudaMemcpy(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
+               num_tokens * sizeof(uintptr_t), cudaMemcpyHostToDevice);
+    _gather_tokens_cuda<scalar_t>(dest.data_ptr<scalar_t>(), src_tensor.data_ptr<uintptr_t>(), num_tokens, hidden_size);
+#endif
 }
 
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
     m.def("permute_tokens(Tensor tokens, Tensor mappings) -> Tensor");
     m.impl("permute_tokens", torch::kCUDA, permute_tokens_cuda_dispatch);
 
-    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size, int stream) -> ()");
+    m.def("gather_tokens(Tensor dest, int src_ptr, int num_tokens, int hidden_size) -> ()");
     m.impl("gather_tokens", torch::kCUDA, gather_tokens_cuda_dispatch);
 
     m.def("apply_weights_and_permute_tokens(Tensor tokens, Tensor weights, Tensor mappings) -> Tensor");

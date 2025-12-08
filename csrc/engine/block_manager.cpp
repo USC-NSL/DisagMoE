@@ -22,24 +22,8 @@ BlockManager::~BlockManager() {
     close();
 }
 
-void BlockManager::close() {
-    if (block_table_gdr_) {
-        block_table_gdr_.reset();
-    }
-    if (slot_mapping_gdr_) {
-        slot_mapping_gdr_.reset();
-    }
-    if (seq_lens_gdr_) {
-        seq_lens_gdr_.reset();
-    }
-    if (context_lens_gdr_) {
-        context_lens_gdr_.reset();
-    }
-    if (seq_start_loc_gdr_) {
-        seq_start_loc_gdr_.reset();
-    }
-    GdrContext::ensure_gdr_closed();
-}
+void BlockManager::close() { }
+
 int BlockManager::get_one_free_block() {
     std::lock_guard<std::mutex> lock(free_blocks_lock_);
     ASSERT (free_blocks_.size() > 0);
@@ -190,15 +174,12 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
     return block_table_1d_pinned.to(torch::kCUDA, true);
 }
 
-void BlockManager::register_gdr_context(const torch::Tensor &block_table, const torch::Tensor &slot_mapping) {
-    block_table_gdr_.emplace(block_table);
-    slot_mapping_gdr_.emplace(slot_mapping);
-}
-
-int BlockManager::prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
-    if (!block_table_gdr_ || !slot_mapping_gdr_) {
-        throw std::runtime_error("block_table_gdr_ or slot_mapping_gdr_ is not registered");
-    }
+int BlockManager::prepare_block_table_gdr(
+    batch_metadata_t meta, 
+    const std::vector<int> &decode_seq_lens,
+    GdrContext &block_table_gdr,
+    GdrContext &slot_mapping_gdr
+) {
     int n = meta->num_tokens(); // decode seqs are already allocated in previous steps
     size_t m = 0;
     for (int i = 0; i < n; i++) {
@@ -216,7 +197,7 @@ int BlockManager::prepare_block_table_gdr(batch_metadata_t meta, const std::vect
         }
     }
 
-    block_table_gdr_->copy_from_host(block_table.data(), n * m * sizeof(int));
+    block_table_gdr.copy_from_host(block_table.data(), n * m * sizeof(int));
 
     std::vector<int64_t> slot_mapping(n);
     for (int i = 0; i < n; i++) {
@@ -225,7 +206,7 @@ int BlockManager::prepare_block_table_gdr(batch_metadata_t meta, const std::vect
         int id_in_block = last_idx % block_size_;
         slot_mapping[i] = static_cast<int64_t>(block_table[i * m + block_id] * block_size_ + id_in_block);
     }
-    slot_mapping_gdr_->copy_from_host(slot_mapping.data(), n * sizeof(int64_t));
+    slot_mapping_gdr.copy_from_host(slot_mapping.data(), n * sizeof(int64_t));
 
     return m;
 }
@@ -252,16 +233,13 @@ torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::v
     return torch::tensor(batch_infos, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
 }
 
-void BlockManager::register_seq_info_gdr(const torch::Tensor &seq_lens, const torch::Tensor &context_lens, const torch::Tensor &seq_start_loc) {
-    seq_lens_gdr_.emplace(seq_lens);
-    context_lens_gdr_.emplace(context_lens);
-    seq_start_loc_gdr_.emplace(seq_start_loc);
-}
-
-void BlockManager::prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
-    if (!seq_lens_gdr_ || !context_lens_gdr_ || !seq_start_loc_gdr_) {
-        throw std::runtime_error("seq_lens_gdr_ or context_lens_gdr_ or seq_start_loc_gdr_ is not registered");
-    }
+void BlockManager::prepare_seq_info_gdr(
+    batch_metadata_t meta, 
+    const std::vector<int> &decode_seq_lens,
+    GdrContext &seq_lens_gdr,
+    GdrContext &context_lens_gdr,
+    GdrContext &seq_start_loc_gdr
+) {
     int num_tokens = meta->num_tokens();
     int num_seqs = num_tokens;
 
@@ -275,9 +253,9 @@ void BlockManager::prepare_seq_info_gdr(batch_metadata_t meta, const std::vector
         seq_start_loc[i] = seq_start_loc[i - 1] + decode_seq_lens[i - 1];
     }
 
-    seq_lens_gdr_->copy_from_host(decode_seq_lens.data(), num_seqs * sizeof(int));
-    context_lens_gdr_->copy_from_host(context_lens.data(), num_seqs * sizeof(int));
-    seq_start_loc_gdr_->copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
+    seq_lens_gdr.copy_from_host(decode_seq_lens.data(), num_seqs * sizeof(int));
+    context_lens_gdr.copy_from_host(context_lens.data(), num_seqs * sizeof(int));
+    seq_start_loc_gdr.copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
 }
 
 void rebind_batch_info_tensor(

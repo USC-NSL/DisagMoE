@@ -29,12 +29,6 @@ private:
 
     std::unordered_map<int , block_list_t> block_tables_{};
 
-    std::optional<GdrContext> block_table_gdr_;
-    std::optional<GdrContext> slot_mapping_gdr_;
-    std::optional<GdrContext> seq_lens_gdr_;
-    std::optional<GdrContext> context_lens_gdr_;
-    std::optional<GdrContext> seq_start_loc_gdr_;
-
     int get_one_free_block(); 
 
 public:
@@ -69,16 +63,12 @@ public:
 
     torch::Tensor prepare_block_table(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 
-    void register_gdr_context(const torch::Tensor &block_table, const torch::Tensor &slot_mapping);
-
-    int prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    int prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens, GdrContext &block_table_gdr, GdrContext &slot_mapping_gdr);
 
     // this function is not related to block manager, but we just put it here for convenience
     torch::Tensor prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 
-    void register_seq_info_gdr(const torch::Tensor &seq_lens, const torch::Tensor &context_lens, const torch::Tensor &seq_start_loc);
-
-    void prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
+    void prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens, GdrContext &seq_lens_gdr, GdrContext &context_lens_gdr, GdrContext &seq_start_loc_gdr);
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;

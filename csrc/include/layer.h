@@ -24,9 +24,10 @@ private:
     int layer_id;
     int expert_id; // >= 0 if is an individual expert
     int num_tokens;
-    int num_batches;
 
     std::deque<TokenBatch> batch_queue;
+
+    std::deque<TokenTopKInfo> token_queue;
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
@@ -45,8 +46,6 @@ public:
 
     inline int get_num_tokens() const { return num_tokens; }
 
-    inline int get_num_batches() const { return num_batches; }
-
     void add_batch(const TokenBatch &batch);
 
     void add_batch(torch::Tensor tensor, const batch_metadata_t &meta);
@@ -54,6 +53,14 @@ public:
     std::vector<TokenBatch> get_all_batches();
 
     std::vector<TokenBatch> get_batches_restricted(int token_threshold);
+
+    void add_token(const TokenTopKInfo &token);
+
+    void add_tokens(const std::vector<TokenTopKInfo> &tokens);
+
+    std::vector<TokenTopKInfo> get_all_tokens();
+
+    std::vector<TokenTopKInfo> get_tokens_restricted(int token_threshold);
 
 };
 
@@ -73,65 +80,62 @@ public:
  */
 class UnifiedLayerSchedulerBase : public LayerSchedulerBase {
 
+protected:
+
+    int num_attn_layers;
+    int num_expert_layers;
+    int num_layers;  // num_attn_layers + num_expert_layers
+
+    bool attn_use_token_queue;
+
+    int top_k;
+
+    std::vector<unified_layer_t> layers; // attn layers first, then expert layers
+    std::vector<unified_layer_t> attn_layers;
+    std::vector<unified_layer_t> expert_layers;
+
+    virtual bool layer_uses_token_queue(int layer_id);
+
 public:
+
+    UnifiedLayerSchedulerBase(int num_attn_layers, int num_expert_layers, int topk);
+
     virtual ~UnifiedLayerSchedulerBase() = default;
 
     // Query whether a given global layer id corresponds to an attention layer
     // or an expert layer. Semantics are defined by unified schedulers.
-    virtual bool is_attn_layer(int layer_id) = 0;
 
-    virtual bool is_expert_layer(int layer_id) = 0;
+    virtual bool is_attn_layer(int layer_id);
 
-    virtual void add_batch(const TokenBatch &batch) = 0;
+    virtual bool is_expert_layer(int layer_id);
 
-    virtual void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta) = 0;
+    virtual void attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens);
 
-    virtual std::vector<int> get_pool_snapshot() = 0;
+    virtual void add_batch(const TokenBatch &batch);
 
-    virtual TokenBatch get_batch_from_layer(int layer_id) = 0;
+    virtual void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta);
+
+    virtual std::vector<int> get_pool_snapshot();
+
+    virtual TokenBatch get_batch_from_layer(int layer_id);
 
     // Get a batch from `layer_id` but cap the number of tokens to `token_threshold`
     // (<= 0 means no restriction). Implemented by unified schedulers that support
     // partial draining.
-    virtual TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) = 0;
+    virtual TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold);
+
+    void add_tokens_to_layer(int layer_id, int num_tokens) override;
 };
 
 // TODO: support expert-wise scheduling
 class UnifiedLayerScheduler: public UnifiedLayerSchedulerBase {
 
-private:
-
-    int num_attn_layers;
-    int num_expert_layers;
-
-    std::vector<unified_layer_t> layers; // attn layer first, then expert layers
-
-    std::vector<unified_layer_t> attn_layers;
-    std::vector<unified_layer_t> expert_layers;
-
 public:
 
-    UnifiedLayerScheduler(int num_layers);
-
-    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers);
-
-    bool is_attn_layer(int layer_id) override;
-
-    bool is_expert_layer(int layer_id) override;
+    UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, int topk);
 
     int schedule() override;
 
-    void add_tokens_to_layer(int layer_id, int num_tokens) override;
-
-    void add_batch(const TokenBatch &batch) override;
-
-    void add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta) override;
-
-    std::vector<int> get_pool_snapshot() override;
-
-    TokenBatch get_batch_from_layer(int layer_id) override;
-
-    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) override;
 };
 
 using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerSchedulerBase>;
@@ -140,18 +144,11 @@ using unified_layer_scheduler_t = std::shared_ptr<UnifiedLayerSchedulerBase>;
 class UnifiedDefraggingLayerScheduler : public UnifiedLayerSchedulerBase {
 
 private:
-    int num_attn_layers;
-    int num_expert_layers;
-    int num_layers;  // num_attn_layers + num_expert_layers
 
-    int top_k;
     int lookback_steps;
     int lookahead_steps;
     float weight_decay;
 
-    std::vector<unified_layer_t> layers; // attn layers first, then expert layers
-    std::vector<unified_layer_t> attn_layers;
-    std::vector<unified_layer_t> expert_layers;
 
     std::vector<std::queue<int>> history_tokens_in_layer;
     std::vector<int> sum_history_tokens_in_layer;
@@ -178,31 +175,8 @@ public:
                                     int lookahead_steps,
                                     float weight_decay);
 
-    // Convenience constructor when #attn layers == #expert layers.
-    UnifiedDefraggingLayerScheduler(int num_layers,
-                                    int top_k,
-                                    int lookback_steps,
-                                    int lookahead_steps,
-                                    float weight_decay);
-
     int schedule() override;
 
-    bool is_attn_layer(int layer_id) override;
-
-    bool is_expert_layer(int layer_id) override;
-
-    // Not supported
-    void add_tokens_to_layer(int layer_id, int num_tokens) override;
-
-    void add_batch(const TokenBatch &batch) override;
-
-    void add_batch(const torch::Tensor &tensor, const batch_metadata_t &meta) override;
-
-    std::vector<int> get_pool_snapshot() override;
-
-    TokenBatch get_batch_from_layer(int layer_id) override;
-
-    TokenBatch get_batch_from_layer_restricted(int layer_id, int token_threshold) override;
 };
 
 

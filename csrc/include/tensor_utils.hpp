@@ -8,6 +8,7 @@
 #include <vector>
 #include <cassert>
 #include <cstdint>
+#include "constants.h"
 
 #define GPU_PAGE_SIZE (1 << 16)
 

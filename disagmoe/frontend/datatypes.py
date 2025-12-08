@@ -227,6 +227,9 @@ class ForwardBatch:
     
     proc_func: Optional[Callable[["ForwardBatch"], "ForwardResult"]]
     post_proc_func: Optional[Callable[["ForwardBatch", "ForwardResult"], TokenBatchCWrapper]]
+    
+    def to_string(self) -> str:
+        return f"ForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape})"
 
 @dataclass
 class AttentionForwardBatch(ForwardBatch):
@@ -238,11 +241,17 @@ class AttentionForwardBatch(ForwardBatch):
     expert_weights_buffer: Optional[torch.Tensor] = None
     expert_ids_buffer_gdr: Optional[GdrContext] = None
     expert_weights_buffer_gdr: Optional[GdrContext] = None
+    
+    def to_string(self) -> str:
+        return f"AttentionForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape}, {self.req_ids})"
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):
     batch_sizes: Optional[Union[List[int], torch.Tensor]]
     m_indices: Optional[torch.Tensor]
+    
+    def to_string(self) -> str:
+        return f"ExpertForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape})"
 
 @dataclass
 class ForwardResult:

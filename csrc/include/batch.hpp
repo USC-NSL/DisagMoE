@@ -17,6 +17,14 @@ inline auto& get_op_gather_tokens() {
     static auto op =
         torch::Dispatcher::singleton()
             .findSchemaOrThrow("disag_ops::gather_tokens", "")
+            .typed<void(torch::Tensor, long, long, long)>();
+    return op;
+}
+
+inline auto& get_op_gather_and_sum_tokens() {
+    static auto op =
+        torch::Dispatcher::singleton()
+            .findSchemaOrThrow("disag_ops::gather_and_sum_tokens", "")
             .typed<void(torch::Tensor, long, long, long, long)>();
     return op;
 }
@@ -60,9 +68,6 @@ struct TokenBatch: ScheduleUnit {
             return batches[0];
         }
 
-        at::cuda::CUDAStream stream = get_new_torch_stream();
-        at::cuda::CUDAStreamGuard guard(stream);
-
         std::vector<batch_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
             metas[i] = batches[i].metadata;
@@ -93,9 +98,8 @@ struct TokenBatch: ScheduleUnit {
             }
         }
 
-        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
         int64_t src_ptr = reinterpret_cast<int64_t>(srcs.data());
-        get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
+        get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim());
 
         return TokenBatch {merged_tokens, merged_meta};
     }
@@ -108,9 +112,6 @@ struct TokenBatch: ScheduleUnit {
             return batches[0];
         }
         AUTO_TX_RANGE;
-
-        at::cuda::CUDAStream stream = get_new_torch_stream();
-        at::cuda::CUDAStreamGuard guard(stream);
 
         std::vector<batch_metadata_t> metas(batches.size());
         for (size_t i = 0; i < batches.size(); i ++) {
@@ -151,10 +152,9 @@ struct TokenBatch: ScheduleUnit {
             }
         }
 
-        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
         int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
 
-        get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
+        get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim());
 
         return TokenBatch {merged_tokens, merged_meta};
     }
@@ -185,31 +185,31 @@ struct TokenBatch: ScheduleUnit {
             }
         );
 
-        at::cuda::CUDAStream stream = get_new_torch_stream();
-        at::cuda::CUDAStreamGuard guard(stream);
-
         int n = tokens.size();
         int topk = tokens[0].count();
 
         auto meta = BatchMetadata::pack_topk_tokens(layer_id, tokens);
 
-        torch::Tensor gathered_topk_tensor = torch::empty(
-            {n * topk, meta->token_hidden_dim()}, 
+        ASSERT_MSG(meta->num_tokens() == n, "num_tokens is not equal to n");
+
+        // Allocate output tensor for aggregated tokens [n, hidden_size]
+        torch::Tensor aggregated_tokens_tensor = torch::empty(
+            {n, meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+        
         // NOTE: tensor memory layout: [num_tokens, topk] flattened as 1D tensor
         std::vector<uintptr_t> src_ptrs(n * topk);
 
         for (int i = 0; i < n; i++) {
             for (int k = 0; k < topk; k++) {
-                src_ptrs[k * n + i] = (uintptr_t) tokens[i].topk_tensors[k].data_ptr();
+                src_ptrs[i * topk + k] = (uintptr_t) tokens[i].topk_tensors[k].data_ptr();
             }
         }
-        // TODO: Fuse gather and sum
-        int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
+        
+        // Fused gather and sum operation
         int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
-        get_op_gather_tokens().call(gathered_topk_tensor, src_ptr, meta->num_tokens() * topk, meta->token_hidden_dim(), raw_cuda_stream);
-        auto aggregated_tokens_tensor = torch::sum(gathered_topk_tensor.view({n, topk, -1}), 1);
+        get_op_gather_and_sum_tokens().call(aggregated_tokens_tensor, src_ptr, n, topk, meta->token_hidden_dim());
         return TokenBatch{aggregated_tokens_tensor, meta};
     }
 };
