@@ -352,21 +352,32 @@ async def run_benchmark(master: Controller, args,
     tasks = []
     req_submit_timestamps = []
     req_finish_timestamps = []
-    logger.info(f"generating requests at rate {args.rate} s/req, in total {args.num_requests} requests")
+    logger.info(
+        f"run_benchmark: generator_type={generator_type}, "
+        f"num_requests={num_requests}, rate={rate}, "
+        f"input_len=[{min_input_len},{max_input_len}], "
+        f"output_len=[{min_output_len},{max_output_len}], warmup={warmup}"
+    )
     for i in range(num_requests):
         t_elapsed = time.perf_counter() - t_start
         arrival, input_len, output_len = workload[i]
         if t_elapsed < arrival:
             await asyncio.sleep(arrival - t_elapsed)
         req_submit_timestamps.append(time.perf_counter() - t_start)
+        logger.info(
+            f"run_benchmark: submitting request {i} "
+            f"arrival={arrival:.4f}s, input_len={input_len}, output_len={output_len}"
+        )
         resp = master.put_single_request(input_len, output_len)
         tasks.append(asyncio.create_task(process_response(resp, req_finish_timestamps, pbar)))
     
+    logger.info("run_benchmark: all requests submitted, waiting for responses")
     results: List[SloStat] = await asyncio.gather(*tasks)
     t_duration = time.perf_counter() - t_start
     pbar.close()
     
     if warmup:
+        logger.info("run_benchmark: warmup run complete; skipping analysis")
         return None
     
     logger.info("Benchmark finished, now analyznig results ...")

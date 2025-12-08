@@ -38,7 +38,7 @@ from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 
 from typing import Optional, List, Dict, Callable, Tuple, Any, Deque
-from threading import Thread
+from threading import Thread, Lock
 from torch import Tensor
 from collections import deque
 import torch.distributed as dist
@@ -52,7 +52,49 @@ from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
 
 from disagmoe.frontend.engine_utils import EngineType, set_global_engine_config
 from disagmoe.utils.gdr_context import GdrContext
+
+
+class EngineDebugLogger:
     
+    def __init__(self, name: str, device_id: Optional[int] = None, base_dir: Optional[str] = None):
+        self._name = name
+        self._device_id = device_id
+        self._lock = Lock()
+        if base_dir is None:
+            base_dir = os.environ.get("DISAGMOE_ENGINE_LOG_DIR", "/tmp/disagmoe_engine_logs")
+        os.makedirs(base_dir, exist_ok=True)
+        pid = os.getpid()
+        dev_str = f"dev{device_id}" if device_id is not None else "devNA"
+        filename = os.path.join(base_dir, f"{name}_{dev_str}_pid{pid}.log")
+        # Line-buffered text file; we'll still flush + fsync explicitly.
+        self._fh = open(filename, "a", buffering=1)
+        self.log(f"EngineDebugLogger initialized for {name}, device_id={device_id}, pid={pid}, file={filename}")
+
+    def log(self, msg: str):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        line = f"[{ts}] [{self._name}] {msg}\n"
+        with self._lock:
+            try:
+                self._fh.write(line)
+                self._fh.flush()
+                os.fsync(self._fh.fileno())
+            except Exception:
+                # Logging must never crash the engine; swallow all exceptions.
+                pass
+
+    def close(self):
+        with self._lock:
+            try:
+                self._fh.flush()
+                os.fsync(self._fh.fileno())
+            except Exception:
+                pass
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+    
+
 class AttentionEngineMixin:
     
     _timer: Timer
@@ -479,6 +521,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self.gate_profile_bytes: Optional[bytes] = None
         self.tokenizer_socket = None
         self.detokenizer_socket = None
+
+        # Dedicated per-engine debug logger that writes to its own file and flushes on every line.
+        self._debug_logger: Optional[EngineDebugLogger] = None
         
     @property
     def has_attn(self):
@@ -595,8 +640,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # attention TP is deprecated
         # if self.is_attn_worker:
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
+        if self._debug_logger is not None:
+            self._debug_logger.log("Engine.start: calling C++ start_engine()")
         start_engine(self.scheduler, self.dispatcher)
         
+        if self._debug_logger is not None:
+            self._debug_logger.log("Engine.start: starting single_module_loop_overlap thread")
         self.loop_thread = Thread(target=self.single_module_loop_overlap)
             
         self.loop_thread.start()
@@ -624,6 +673,17 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         ):
         
         initialize_logger(f"engine{self.device_id}")
+        # Create a per-engine debug log file. This is separate from the standard logger
+        # and is intended specifically for high-fidelity progress tracing under Ray.
+        self._debug_logger = EngineDebugLogger(
+            name=f"engine{self.device_id}",
+            device_id=self.device_id,
+        )
+        if self._debug_logger is not None:
+            self._debug_logger.log(
+                f"setup_engine: engine_type={engine_type}, rank={rank}, "
+                f"tokenizer_addr={tokenizer_addr}, detokenizer_addr={detokenizer_addr}"
+            )
         self.rank_in_group = rank
         torch.set_default_dtype(torch.bfloat16)
         if engine_type in [EngineType.ATTENTION, EngineType.EXPERT, EngineType.HYBRID]:
@@ -653,6 +713,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.expert_max_batch_size = engine_config.max_batch_size_expert
         
         get_logger().info(f"engine setup. {self.engine_type, engine_config}")
+        if self._debug_logger is not None:
+            self._debug_logger.log(f"setup_engine: finished; has_attn={self.has_attn}, has_expert={self.has_expert}")
 
     # Accepts bytes uploaded via Ray object store and retains them for later
     # consumption by attention operators/gates.
@@ -676,12 +738,21 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     @nvtx_range("Engine.post_process")
     def post_process(self, batch: TokenBatchCWrapper) -> None:
         assert not self.is_attn_worker
-
+        if self._debug_logger is not None:
+            meta = batch.metadata
+            self._debug_logger.log(
+                f"post_process: start; tag={meta.batch_tag}, layer_id={meta.layer_id}, "
+                f"num_tokens={meta.num_tokens()}, attn_dp_rank={getattr(meta, 'attn_dp_ranks', None)}"
+            )
         range_push("Engine.stream_sync")
         with self._timer.range("stream_sync"):
             self.stream.synchronize()
         range_pop()
+        if self._debug_logger is not None:
+            self._debug_logger.log("post_process: stream synchronized, dispatching to C++ dispatcher.put()")
         self.dispatcher.put(batch.to_c(), 0)
+        if self._debug_logger is not None:
+            self._debug_logger.log("post_process: dispatcher.put() returned")
 
     def stats_pre_process(self, batch: TokenBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
@@ -767,6 +838,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     def recv_new_request(self):
         try:
             new_request: TokenizedRequest = self.tokenizer_socket.recv_pyobj(zmq.NOBLOCK)
+            if self._debug_logger is not None:
+                self._debug_logger.log(
+                    f"recv_new_request: got new request "
+                    f"req_id={new_request.req_id}, "
+                    f"init_prefill_len={new_request.init_prefill_len}, "
+                    f"max_output_len={new_request.max_output_len}"
+                )
             meta = BatchMetadata(
                 shape=[1, self.model_config.hidden_size],
                 dtype="bfloat16",
@@ -782,14 +860,22 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             batch.data = torch.rand((1, self.model_config.hidden_size), dtype=torch.bfloat16, device=self.device)
             batch.metadata = meta.to_c()
             self.pool.put_batch(batch)
+            if self._debug_logger is not None:
+                self._debug_logger.log(
+                    f"recv_new_request: enqueued initial batch for req_id={new_request.req_id} "
+                    f"into pool; pool_snapshot={self.scheduler.get_pool_snapshot()}"
+                )
         except zmq.Again:
-            pass
+            if self._debug_logger is not None:
+                self._debug_logger.log("recv_new_request: no pending request (zmq.Again)")
         
     @torch.inference_mode()
     def single_module_loop_overlap(self):
         # should be used with cuda graph, some concerns
         # 1. copy results out to another buffer
         get_logger().info("starting single_module_loop_overlap")
+        if self._debug_logger is not None:
+            self._debug_logger.log("single_module_loop_overlap: entering main loop")
         torch.set_default_dtype(torch.bfloat16)
 
         torch.cuda.set_device(0)
@@ -804,39 +890,100 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         inflight_req = dict()
         
         while not self.end_flag:
+            if self._debug_logger is not None:
+                try:
+                    pool_snapshot = self.scheduler.get_pool_snapshot()
+                except Exception as e:
+                    pool_snapshot = f"<error getting pool snapshot: {e}>"
+                self._debug_logger.log(
+                    f"single_module_loop_overlap: loop start; "
+                    f"pool_snapshot={pool_snapshot}, idle_count={idle_conunt}, "
+                    f"result_queue_len={len(result_queue)}"
+                )
             self.recv_new_request()
             batch = self.scheduler.schedule()
+            if self._debug_logger is not None:
+                if batch.data is None:
+                    self._debug_logger.log("single_module_loop_overlap: scheduler returned empty batch")
+                else:
+                    try:
+                        meta = batch.metadata
+                        tag = meta.batch_tag
+                        layer_id = meta.layer_id
+                        num_tokens = meta.num_tokens()
+                    except Exception:
+                        tag = "<unknown>"
+                        layer_id = "<unknown>"
+                        num_tokens = "<unknown>"
+                    self._debug_logger.log(
+                        f"single_module_loop_overlap: scheduler returned batch "
+                        f"tag={tag}, layer_id={layer_id}, num_tokens={num_tokens}"
+                    )
             forward_batch = None
             if batch.data is not None:
                 idle_conunt = 0
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 forward_batch = self.preprocess_batch(batch_wrapper)
                 if forward_batch is None:
-                    pass
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            "single_module_loop_overlap: preprocess_batch returned None "
+                            "(e.g., sampling-only attention batch)"
+                        )
                 else:
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            f"single_module_loop_overlap: executing forward_batch "
+                            f"layer_id={getattr(forward_batch, 'layer_id', None)}, "
+                            f"num_tokens={getattr(forward_batch, 'num_tokens', None)}"
+                        )
                     result = forward_batch.proc_func(forward_batch)
                     result_queue.append((forward_batch, result)) # forward_batch.copy?
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            f"single_module_loop_overlap: enqueued forward result; "
+                            f"result_queue_len={len(result_queue)}"
+                        )
                 self.step_profile(batch.metadata.num_tokens())
                 
             if last_batch:
                 tmp_batch, tmp_result = result_queue.popleft()
                 if tmp_batch is None:
-                    pass
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            "single_module_loop_overlap: dequeued empty tmp_batch, skipping"
+                        )
                 else:
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            "single_module_loop_overlap: about to synchronize tmp_result.sync_event "
+                            f"for layer_id={getattr(tmp_batch, 'layer_id', None)}"
+                        )
                     if tmp_result.sync_event is not None:
                         tmp_result.sync_event.synchronize()
                         tmp_result.sync_event = None
                     final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
+                    if self._debug_logger is not None:
+                        self._debug_logger.log(
+                            "single_module_loop_overlap: post_proc_func finished, "
+                            "calling post_process()"
+                        )
                     self.post_process(final_result)
             elif batch.data is None:
                 # do idle check
                 idle_conunt += 1
+                if self._debug_logger is not None and idle_conunt % 100 == 0:
+                    self._debug_logger.log(
+                        f"single_module_loop_overlap: idle loop, idle_count={idle_conunt}"
+                    )
                 
             last_batch = forward_batch
         
     @torch.inference_mode()
     def single_module_loop(self):
         get_logger().info("starting single_module_loop")
+        if self._debug_logger is not None:
+            self._debug_logger.log("single_module_loop: entering main loop")
         torch.set_default_dtype(torch.bfloat16)
 
         torch.cuda.set_device(0)
@@ -856,6 +1003,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 if not prev_schedule_empty:
                     prev_schedule_empty = True
                     self._step_start_timestamp_ms = time_ms()
+                if self._debug_logger is not None:
+                    self._debug_logger.log("single_module_loop: scheduler returned empty batch")
                 continue
             
             if prev_schedule_empty:
@@ -872,12 +1021,30 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             
             batch_wrapper = TokenBatchCWrapper.from_c(batch)
             meta: BatchMetadata = batch_wrapper.metadata
+            if self._debug_logger is not None:
+                self._debug_logger.log(
+                    f"single_module_loop: got batch from scheduler; "
+                    f"tag={meta.batch_tag}, layer_id={meta.layer_id}, "
+                    f"num_tokens={meta.num_tokens()}, pool_snapshot={self.scheduler.get_pool_snapshot()}"
+                )
             
             # self.stats_pre_process(batch)
             self.step_profile(meta.num_tokens())
             batch_wrapper = self.process_batch(batch_wrapper)
             if batch_wrapper is None:
+                if self._debug_logger is not None:
+                    self._debug_logger.log(
+                        "single_module_loop: process_batch returned None "
+                        "(e.g., sampling-only attention batch)"
+                    )
                 continue
+            if self._debug_logger is not None:
+                out_meta: BatchMetadata = batch_wrapper.metadata
+                self._debug_logger.log(
+                    f"single_module_loop: process_batch finished; "
+                    f"out_tag={out_meta.batch_tag}, out_layer_id={out_meta.layer_id}, "
+                    f"out_num_tokens={out_meta.num_tokens()}"
+                )
             self.post_process(batch_wrapper)
             # self.stats_post_process(batch)
     

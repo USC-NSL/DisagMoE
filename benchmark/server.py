@@ -52,13 +52,21 @@ def run_once_endpoint():
     new_args.min_output_len = min_output_len
     new_args.max_output_len = max_output_len
     print(f"put {new_args.num_requests} requests")
+    logger.info(
+        f"/run_once: rate={rate}, duration={duration}, distribution={distribution}, "
+        f"num_requests={new_args.num_requests}, "
+        f"input_len=[{min_input_len},{max_input_len}], "
+        f"output_len=[{min_output_len},{max_output_len}]"
+    )
     
     async def _runner():
         global master
+        logger.info("_runner: starting scheduler + polling for benchmark run")
         master.start_polling_results()
         await master.start_scheduler()
         metrics = await benchmark_serving(master, new_args, is_api_server=True)
         print("Metrics:", metrics)
+        logger.info(f"_runner: benchmark_serving finished with metrics={metrics}")
         await master.stop_scheduler()
         await master.stop_polling_results()
         return metrics
@@ -135,9 +143,11 @@ def get_topk_pool_snapshot_endpoint():
     return f"get_topk_pool_snapshot executed successfully\n{res_str}\n", 200
 
 async def init(master: Controller, args):
+    logger.info("init: starting warmup (start_polling_results + start_scheduler)")
     master.start_polling_results()
     await master.start_scheduler()
     await benchmark_warmup(master, args)
+    logger.info("init: warmup finished, stopping scheduler + polling")
     await master.stop_scheduler()
     await master.stop_polling_results()
 
@@ -156,6 +166,7 @@ def main():
         raise
 
     master = launch(args)
+    logger.info("Controller launch complete, running warmup init()")
     asyncio.run(init(master, args))
     if args.profile_dir is not None:
         master.init_profile(profile_dir=args.profile_dir)
