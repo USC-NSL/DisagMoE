@@ -524,6 +524,23 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
 
         # Dedicated per-engine debug logger that writes to its own file and flushes on every line.
         self._debug_logger: Optional[EngineDebugLogger] = None
+
+    def _debug_meta_tag(self, meta: BatchMetadata_C) -> str:
+        """Best-effort human-readable tag for a C++ BatchMetadata object."""
+        try:
+            if hasattr(meta, "is_attention") and meta.is_attention():
+                return "ATTENTION"
+            if hasattr(meta, "is_expert") and meta.is_expert():
+                return "EXPERT"
+            if hasattr(meta, "is_tokenizer") and meta.is_tokenizer():
+                return "TOKENIZER"
+        except Exception:
+            # Fall through to attribute-based fallback.
+            pass
+        try:
+            return getattr(meta, "batch_tag", "<unknown>")
+        except Exception:
+            return "<unknown>"
         
     @property
     def has_attn(self):
@@ -741,8 +758,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         if self._debug_logger is not None:
             meta = batch.metadata
             self._debug_logger.log(
-                f"post_process: start; tag={meta.batch_tag}, layer_id={meta.layer_id}, "
-                f"num_tokens={meta.num_tokens()}, attn_dp_rank={getattr(meta, 'attn_dp_ranks', None)}"
+                f"post_process: start; tag={self._debug_meta_tag(meta)}, layer_id={getattr(meta, 'layer_id', None)}, "
+                f"num_tokens={meta.num_tokens() if hasattr(meta, 'num_tokens') else None}, "
+                f"attn_dp_rank={getattr(meta, 'attn_dp_ranks', None)}"
             )
         range_push("Engine.stream_sync")
         with self._timer.range("stream_sync"):
@@ -908,9 +926,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 else:
                     try:
                         meta = batch.metadata
-                        tag = meta.batch_tag
-                        layer_id = meta.layer_id
-                        num_tokens = meta.num_tokens()
+                        tag = self._debug_meta_tag(meta)
+                        layer_id = getattr(meta, "layer_id", None)
+                        num_tokens = meta.num_tokens() if hasattr(meta, "num_tokens") else None
                     except Exception:
                         tag = "<unknown>"
                         layer_id = "<unknown>"
@@ -1024,8 +1042,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             if self._debug_logger is not None:
                 self._debug_logger.log(
                     f"single_module_loop: got batch from scheduler; "
-                    f"tag={meta.batch_tag}, layer_id={meta.layer_id}, "
-                    f"num_tokens={meta.num_tokens()}, pool_snapshot={self.scheduler.get_pool_snapshot()}"
+                    f"tag={self._debug_meta_tag(meta)}, layer_id={getattr(meta, 'layer_id', None)}, "
+                    f"num_tokens={meta.num_tokens() if hasattr(meta, 'num_tokens') else None}, "
+                    f"pool_snapshot={self.scheduler.get_pool_snapshot()}"
                 )
             
             # self.stats_pre_process(batch)
@@ -1042,8 +1061,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 out_meta: BatchMetadata = batch_wrapper.metadata
                 self._debug_logger.log(
                     f"single_module_loop: process_batch finished; "
-                    f"out_tag={out_meta.batch_tag}, out_layer_id={out_meta.layer_id}, "
-                    f"out_num_tokens={out_meta.num_tokens()}"
+                    f"out_tag={self._debug_meta_tag(out_meta)}, out_layer_id={getattr(out_meta, 'layer_id', None)}, "
+                    f"out_num_tokens={out_meta.num_tokens() if hasattr(out_meta, 'num_tokens') else None}"
                 )
             self.post_process(batch_wrapper)
             # self.stats_post_process(batch)
