@@ -114,6 +114,8 @@ void MuDispatcher::run() {
             auto pr = this->send_queue.front();
             batch = pr.first;
             this->send_queue.pop();
+            // One more batch has been dequeued from the dispatch queue.
+            completed_count.fetch_add(1, std::memory_order_release);
         }
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
@@ -123,7 +125,22 @@ void MuDispatcher::run() {
 void MuDispatcher::put(TokenBatch batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
     this->send_queue.push(std::make_pair(batch, rank));
+    enqueued_count.fetch_add(1, std::memory_order_release);
     this->cv.notify_one();
+}
+
+void MuDispatcher::wait_for_bounded_backlog() {
+    // Wait until the backlog in the dispatch queue is at most 1
+    // batch. This bounds how far the engine can get ahead of the
+    // dispatcher thread without fully serializing all sends.
+    while (true) {
+        const auto enq = enqueued_count.load(std::memory_order_acquire);
+        const auto deq = completed_count.load(std::memory_order_acquire);
+        if (enq <= deq + 1) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
 }
 
 /*

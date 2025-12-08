@@ -56,6 +56,13 @@ protected:
 
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
+    // Counters to track how many batches have been enqueued to and
+    // dequeued from the dispatcher queue. Used to implement a bounded
+    // backlog: the engine can wait until the outstanding queue size
+    // is small before proceeding.
+    std::atomic<uint64_t> enqueued_count{0};
+    std::atomic<uint64_t> completed_count{0};
+
 
     ParallelConfig cfg;
 
@@ -73,6 +80,12 @@ public:
                  std::vector<Channel_t> channels);
 
     void put(TokenBatch batch, int rank = 0);
+
+    // Block until the backlog in the dispatch queue is bounded
+    // (currently: at most 1 outstanding batch). This prevents the
+    // engine from getting arbitrarily far ahead of the dispatcher
+    // thread while still allowing async operation.
+    void wait_for_bounded_backlog();
 
 };
 
