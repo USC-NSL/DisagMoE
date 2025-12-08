@@ -1,8 +1,8 @@
 from disagmoe_c import GdrContext as GdrContextImpl
-
+from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 import torch
 
-use_gdrcopy_optimization = False
+use_gdrcopy_optimization = True
 
 class GdrContext:
     
@@ -42,3 +42,14 @@ class GdrContext:
         
     def copy_to_host_int64(self, nelems: int) -> list[int]:
         return self.gdr_context.copy_to_host_int64(nelems)
+    
+class GdrDoubleBuffer:
+    
+    def __init__(self, nelems: int, dtype: torch.dtype, device: str = "cuda"):
+        self.buffers = [get_cuda_aligned_tensor(nelems, dtype, device=device), get_cuda_aligned_tensor(nelems, dtype, device=device)]
+        self.gdr_contexts = [GdrContext(self.buffers[0]), GdrContext(self.buffers[1])]
+        self.internal_index = 0
+        
+    def get_one_handle(self) -> GdrContext:
+        self.internal_index = (self.internal_index + 1) & 1
+        return self.gdr_contexts[self.internal_index]

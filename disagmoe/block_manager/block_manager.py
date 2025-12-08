@@ -180,7 +180,6 @@ class CPUBlockManager(BaseBlockManager):
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
         
         self.use_gdr_copy = use_gdrcopy_optimization
-        assert not self.use_gdr_copy, "GDR copy is banned for debugging"
         self.use_rebind = use_rebind
         
         self.req_manager = ReqManager(max_running_reqs)

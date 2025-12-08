@@ -26,7 +26,6 @@ from disagmoe.frontend.profiler import EngineProfilerMixin
 from disagmoe.utils.utils import (get_ip, get_nccl_url_from_uid, time_ms, Timer,
                                   make_seqlens_cuda_tensor, get_graph_batch_size, StepInfo, 
                                   nvtx_range, range_push, range_pop, CudaRangeEvent, sync_event_timeout)
-from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.utils.metrics import Metric
 from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
@@ -51,7 +50,7 @@ from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
                         recorder_output as disagmoe_recorder_output)
 
 from disagmoe.frontend.engine_utils import EngineType, set_global_engine_config
-from disagmoe.utils.gdr_context import GdrContext, use_gdrcopy_optimization
+from disagmoe.utils.gdr_context import use_gdrcopy_optimization, GdrDoubleBuffer
     
 class AttentionEngineMixin:
     
@@ -86,31 +85,9 @@ class AttentionEngineMixin:
         self.req_tracker: Dict[int, int] = {}
         
         post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.max_seq_len
-        self.attn_token_mapping_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
-        self.attn_token_mapping_buffer_gdr = GdrContext(self.attn_token_mapping_buffer)
-        
-        self.attn_token_mapping_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
-        self.attn_token_mapping_buffer_alt_gdr = GdrContext(self.attn_token_mapping_buffer_alt)
-        
-        self.expert_weights_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.float32, device="cuda")
-        self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
-        
-        self.expert_weights_staging_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.float32, device="cuda")
-        self.expert_weights_staging_buffer_alt_gdr = GdrContext(self.expert_weights_staging_buffer_alt)
-
-        self.expert_ids_staging_buffer = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
-        self.expert_ids_staging_buffer_gdr = GdrContext(self.expert_ids_staging_buffer)
-
-        self.expert_ids_staging_buffer_alt = get_cuda_aligned_tensor(post_process_max_num_tokens, torch.int32, device="cuda")
-        self.expert_ids_staging_buffer_alt_gdr = GdrContext(self.expert_ids_staging_buffer_alt)
-        
-    def swap_attn_staging_buffers(self):
-        self.expert_weights_staging_buffer, self.expert_weights_staging_buffer_alt = self.expert_weights_staging_buffer_alt, self.expert_weights_staging_buffer
-        self.expert_weights_staging_buffer_gdr, self.expert_weights_staging_buffer_alt_gdr = self.expert_weights_staging_buffer_alt_gdr, self.expert_weights_staging_buffer_gdr
-        self.expert_ids_staging_buffer, self.expert_ids_staging_buffer_alt = self.expert_ids_staging_buffer_alt, self.expert_ids_staging_buffer
-        self.expert_ids_staging_buffer_gdr, self.expert_ids_staging_buffer_alt_gdr = self.expert_ids_staging_buffer_alt_gdr, self.expert_ids_staging_buffer_gdr
-        self.attn_token_mapping_buffer, self.attn_token_mapping_buffer_alt = self.attn_token_mapping_buffer_alt, self.attn_token_mapping_buffer
-        self.attn_token_mapping_buffer_gdr, self.attn_token_mapping_buffer_alt_gdr = self.attn_token_mapping_buffer_alt_gdr, self.attn_token_mapping_buffer_gdr
+        self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+        self.expert_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
+        self.expert_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -175,11 +152,10 @@ class AttentionEngineMixin:
         positions = schedule_batch.seq_lens_tensor.to(torch.int64)
         
         if use_gdrcopy_optimization:
-            self.swap_attn_staging_buffers()
-            expert_ids_buffer = self.expert_ids_staging_buffer
-            expert_weights_buffer = self.expert_weights_staging_buffer
-            expert_ids_buffer_gdr = self.expert_ids_staging_buffer_gdr
-            expert_weights_buffer_gdr = self.expert_weights_staging_buffer_gdr
+            expert_ids_buffer_gdr = self.expert_ids_staging_gdr.get_one_handle()
+            expert_weights_buffer_gdr = self.expert_weights_staging_gdr.get_one_handle()
+            expert_ids_buffer = expert_ids_buffer_gdr.get_tensor()
+            expert_weights_buffer = expert_weights_buffer_gdr.get_tensor()
         else:
             expert_ids_buffer = None
             expert_ids_buffer_gdr = None
@@ -234,8 +210,9 @@ class AttentionEngineMixin:
         exp_mappings = new_meta_c.sort_by_expert()
         
         if use_gdrcopy_optimization:
-            self.attn_token_mapping_buffer_gdr.copy_from_host_int32(exp_mappings)
-            token_mapping_tensor = self.attn_token_mapping_buffer[:len(exp_mappings)]
+            attn_token_mapping_gdr = self.attn_token_mapping_gdr.get_one_handle()
+            attn_token_mapping_gdr.copy_from_host_int32(exp_mappings)
+            token_mapping_tensor = attn_token_mapping_gdr.get_tensor()[:len(exp_mappings)]
         else:
             token_mapping_tensor = torch.tensor(exp_mappings, dtype=torch.int32, device="cuda")
             
@@ -412,23 +389,8 @@ class ExpertEngineMixin:
 
         _log_memory_usage("After building expert executor")
         
-        self.expert_token_mapping_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
-        self.expert_token_mapping_buffer_gdr = GdrContext(self.expert_token_mapping_buffer)
-        
-        self.expert_token_mapping_buffer_alt = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.int32, device="cuda")
-        self.expert_token_mapping_buffer_alt_gdr = GdrContext(self.expert_token_mapping_buffer_alt)
-        
-        self.expert_weights_staging_buffer = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.float, device="cuda")
-        self.expert_weights_staging_buffer_gdr = GdrContext(self.expert_weights_staging_buffer)
-        
-        self.expert_weights_staging_buffer_alt = get_cuda_aligned_tensor(self.expert_max_batch_size, torch.float, device="cuda")
-        self.expert_weights_staging_buffer_alt_gdr = GdrContext(self.expert_weights_staging_buffer_alt)
-    
-    def swap_expert_staging_buffers(self):
-        self.expert_token_mapping_buffer, self.expert_token_mapping_buffer_alt = self.expert_token_mapping_buffer_alt, self.expert_token_mapping_buffer
-        self.expert_token_mapping_buffer_gdr, self.expert_token_mapping_buffer_alt_gdr = self.expert_token_mapping_buffer_alt_gdr, self.expert_token_mapping_buffer_gdr
-        self.expert_weights_staging_buffer, self.expert_weights_staging_buffer_alt = self.expert_weights_staging_buffer_alt, self.expert_weights_staging_buffer
-        self.expert_weights_staging_buffer_gdr, self.expert_weights_staging_buffer_alt_gdr = self.expert_weights_staging_buffer_alt_gdr, self.expert_weights_staging_buffer_gdr
+        self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
+        self.expert_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
     
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
@@ -454,11 +416,12 @@ class ExpertEngineMixin:
         new_mappings = list(batch.meta_c.sort_by_attention())
             
         if use_gdrcopy_optimization:
-            self.swap_expert_staging_buffers()
-            self.expert_weights_staging_buffer_gdr.copy_from_host_float(topk_weights)
-            self.expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
-            expert_weights_tensor = self.expert_weights_staging_buffer
-            expert_token_mapping_tensor = self.expert_token_mapping_buffer
+            expert_weights_buffer_gdr = self.expert_weights_staging_gdr.get_one_handle()
+            expert_token_mapping_buffer_gdr = self.expert_token_mapping_gdr.get_one_handle()
+            expert_weights_buffer_gdr.copy_from_host_float(topk_weights)
+            expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
+            expert_weights_tensor = expert_weights_buffer_gdr.get_tensor()
+            expert_token_mapping_tensor = expert_token_mapping_buffer_gdr.get_tensor()
         else:
             topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.float32, device="cuda")
             new_mappings = torch.tensor(new_mappings, dtype=torch.int32, device="cuda")
@@ -656,7 +619,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.scheduler, self.dispatcher)
         
-        self.loop_thread = Thread(target=self.single_module_loop)
+        self.loop_thread = Thread(target=self.single_module_loop_overlap)
             
         self.loop_thread.start()
 
@@ -688,7 +651,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self.device = torch.device("cuda:0") # only one visible devices for one worker, set by ray
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)
+        torch.cuda.synchronize()
         self.stream = torch.cuda.current_stream()
+        get_logger().info(f"stream: {self.stream.cuda_stream}")
         set_tensor_model_parallel_config(model_config)
             
         self.engine_type = engine_type
@@ -857,6 +822,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # should be used with cuda graph, some concerns
         # 1. copy results out to another buffer
         get_logger().info("starting single_module_loop")
+        torch.cuda.synchronize()
         torch.set_default_dtype(torch.bfloat16)
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)
@@ -911,6 +877,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     @torch.inference_mode()
     def single_module_loop(self):
         get_logger().info("starting single_module_loop")
+        torch.cuda.synchronize()
         torch.set_default_dtype(torch.bfloat16)
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)

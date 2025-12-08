@@ -97,6 +97,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
 }
 
 void MuDispatcher::run() {
+    cudaDeviceSynchronize();
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
         this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1));
@@ -424,6 +425,7 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
 }
 
 void MuPool::run() {
+    cudaDeviceSynchronize();
     if (this->channels.empty()) {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
