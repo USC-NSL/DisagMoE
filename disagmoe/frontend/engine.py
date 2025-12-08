@@ -772,8 +772,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # if self._debug_logger is not None:
         #     self._debug_logger.log("post_process: stream synchronized, dispatching to C++ dispatcher.put()")
         self.dispatcher.put(batch.to_c(), 0)
-        # if self._debug_logger is not None:
-        #     self._debug_logger.log("post_process: dispatcher.put() returned")
+        if self._debug_logger is not None:
+            self._debug_logger.log("post_process: dispatcher.put() returned")
 
     def stats_pre_process(self, batch: TokenBatch):
         self._pool_snapshot = self.scheduler.get_pool_snapshot()
