@@ -45,6 +45,11 @@ void UnifiedDispatcher::_send_once(TokenBatch batch) {
 void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
     tx_range _{"UnifiedDispatcher::_send_to_expert_once"};
     // DMOE_LOG(INFO) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
+    // Track which channels are used in this call so we can explicitly
+    // synchronize them before returning. This helps avoid unbounded
+    // in-flight sends per communicator, which has been observed to
+    // cause ordering-related hangs under heavy load.
+    std::vector<int> used_channels;
     for (int i = 0, j = 1, n = batch.metadata->exp_ids.size(); i < n; i = j) {
         int cid = this->_expert_get_channel_id(batch.metadata->exp_ids[i]);
         while (j < n && this->_expert_get_channel_id(batch.metadata->exp_ids[j]) == cid)
@@ -52,7 +57,11 @@ void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
 
         auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), batch.metadata, i);
         this->_send_batch(cid, buf, batch.metadata->slice(i, j));
+        used_channels.push_back(cid);
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << batch.metadata->slice(i, j) << LEND;
+    }
+    for (int cid : used_channels) {
+        this->channels[cid]->sync();
     }
 }
 
@@ -60,6 +69,7 @@ void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
     tx_range _{"UnifiedDispatcher::_send_to_attn_once"};
     // DMOE_LOG(INFO) << "expert " << device_id << " sending a batch: " << *batch.metadata << ", n_ele=" << batch.data.numel()  << LEND;
 
+    std::vector<int> used_channels;
     for (int i = 0, j = 1, n = batch.metadata->attn_dp_ranks.size(); i < n; i = j) {
         int rank = batch.metadata->attn_dp_ranks[i];
         auto cid = this->_attn_get_channel_id(rank);
@@ -68,6 +78,10 @@ void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
 
         auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
         this->_send_batch(cid, buf, batch.metadata->slice(i, j));
+        used_channels.push_back(cid);
         // DMOE_LOG(INFO) << "expert send a batch to attn: " << batch.metadata->slice(i, j) << LEND;
+    }
+    for (int cid : used_channels) {
+        this->channels[cid]->sync();
     }
 }
