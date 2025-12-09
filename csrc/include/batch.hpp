@@ -60,6 +60,8 @@ struct TokenBatch: ScheduleUnit {
             return batches[0];
         }
 
+        auto t_start = t_now();
+
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
 
@@ -97,6 +99,12 @@ struct TokenBatch: ScheduleUnit {
         int64_t src_ptr = reinterpret_cast<int64_t>(srcs.data());
         get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
 
+        auto dur_us = static_cast<long long>(t_now()) - static_cast<long long>(t_start);
+        if (dur_us > 1000) {
+            DMOE_LOG(WARNING) << "[merge_by_expert] took " << dur_us << "us for "
+                              << merged_meta->num_tokens() << " tokens ("
+                              << batches.size() << " batches)" << LEND;
+        }
         return TokenBatch {merged_tokens, merged_meta};
     }
 
@@ -108,6 +116,8 @@ struct TokenBatch: ScheduleUnit {
             return batches[0];
         }
         AUTO_TX_RANGE;
+
+        auto t_start = t_now();
 
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
@@ -156,6 +166,12 @@ struct TokenBatch: ScheduleUnit {
 
         get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
 
+        auto dur_us = static_cast<long long>(t_now()) - static_cast<long long>(t_start);
+        if (dur_us > 1000) {
+            DMOE_LOG(WARNING) << "[merge_by_attention] took " << dur_us << "us for "
+                              << merged_meta->num_tokens() << " tokens ("
+                              << batches.size() << " batches)" << LEND;
+        }
         return TokenBatch {merged_tokens, merged_meta};
     }
 
