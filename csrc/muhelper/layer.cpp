@@ -48,6 +48,10 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
         int tokens_in_batch = first_batch.metadata->num_tokens();
         if (total_tokens + tokens_in_batch > token_threshold) {
             int need_tokens = token_threshold - total_tokens;
+            // If we cannot fit even one token from the next batch, break to avoid livelock.
+            if (need_tokens <= 0) {
+                break;
+            }
             auto batches = first_batch.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
             tokens_in_batch = batches[0].metadata->num_tokens();
             result.emplace_back(std::move(batches[0]));
