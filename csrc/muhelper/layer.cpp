@@ -77,7 +77,7 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
     // CRITICAL FIX: Directly update num_batches from the source of truth
     this->num_batches = this->batch_queue.size(); 
 
-    ASSERT_MSG(total_tokens_collected > 0, "Got nothing from layer" + std::to_string(this->layer_id) + ...);
+    ASSERT_MSG(total_tokens_collected > 0, "Got nothing from layer" + std::to_string(this->layer_id));
     
     return result;
 }
