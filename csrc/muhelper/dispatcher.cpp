@@ -48,7 +48,8 @@ void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
     std::vector<int> split_sizes{};
     for (int i = 0, j = 1, n = batch.metadata->exp_ids.size(); i < n; i = j) {
         int rank = batch.metadata->exp_ids[i];
-        while (j < n && batch.metadata->exp_ids[j] == rank)
+        int channel_id = this->_expert_get_channel_id(rank);
+        while (j < n && this->_expert_get_channel_id(batch.metadata->exp_ids[j]) == channel_id)
             j ++;
         split_sizes.push_back(j - i);
     }
