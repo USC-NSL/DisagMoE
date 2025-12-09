@@ -9,7 +9,98 @@
 #include <memory>
 #include <vector>
 #include <deque>
+#include <atomic>
+#include <array>
 #include <torch/torch.h>
+
+// Simple single-producer/single-consumer ring buffer.
+// - One writer thread (producer) may push()
+// - One reader thread (consumer) may front()/pop_front()/try_pop()
+// This is used by UnifiedLayer so that the MuPool receive thread and
+// the unified Scheduler thread do not need to share a mutex.
+template <typename T, size_t Capacity>
+class SPSCQueue {
+public:
+    SPSCQueue() : head_(0), tail_(0) {
+        static_assert(Capacity > 1, "SPSCQueue capacity must be > 1");
+    }
+
+    bool push(const T &value) {
+        auto tail = tail_.load(std::memory_order_relaxed);
+        auto next_tail = increment(tail);
+        if (next_tail == head_.load(std::memory_order_acquire)) {
+            // queue is full
+            return false;
+        }
+        buffer_[tail] = value;
+        tail_.store(next_tail, std::memory_order_release);
+        return true;
+    }
+
+    bool push(T &&value) {
+        auto tail = tail_.load(std::memory_order_relaxed);
+        auto next_tail = increment(tail);
+        if (next_tail == head_.load(std::memory_order_acquire)) {
+            // queue is full
+            return false;
+        }
+        buffer_[tail] = std::move(value);
+        tail_.store(next_tail, std::memory_order_release);
+        return true;
+    }
+
+    bool empty() const {
+        auto head = head_.load(std::memory_order_acquire);
+        auto tail = tail_.load(std::memory_order_acquire);
+        return head == tail;
+    }
+
+    // Approximate size (can be stale under concurrency, but fine for stats).
+    size_t size() const {
+        auto head = head_.load(std::memory_order_acquire);
+        auto tail = tail_.load(std::memory_order_acquire);
+        return (tail + Capacity - head) % Capacity;
+    }
+
+    // Access the element at the head. Caller must ensure !empty().
+    T &front() {
+        auto head = head_.load(std::memory_order_acquire);
+        return buffer_[head];
+    }
+
+    const T &front() const {
+        auto head = head_.load(std::memory_order_acquire);
+        return buffer_[head];
+    }
+
+    // Remove the element at the head. Caller must ensure !empty().
+    void pop_front() {
+        auto head = head_.load(std::memory_order_relaxed);
+        head_.store(increment(head), std::memory_order_release);
+    }
+
+    // Convenience: pop into `out`, returns false if empty.
+    bool try_pop(T &out) {
+        auto head = head_.load(std::memory_order_relaxed);
+        if (head == tail_.load(std::memory_order_acquire)) {
+            return false; // empty
+        }
+        out = std::move(buffer_[head]);
+        head_.store(increment(head), std::memory_order_release);
+        return true;
+    }
+
+private:
+    static constexpr size_t kCapacity = Capacity;
+
+    static size_t increment(size_t idx) {
+        return (idx + 1) % kCapacity;
+    }
+
+    std::array<T, kCapacity> buffer_;
+    std::atomic<size_t> head_;
+    std::atomic<size_t> tail_;
+};
 
 enum class LayerType { ATTENTION, EXPERT };
 
@@ -23,11 +114,16 @@ private:
     LayerType layer_type;
     int layer_id;
     int expert_id; // >= 0 if is an individual expert
-    int num_tokens;
+    std::atomic<int> num_tokens;
 
-    std::deque<TokenBatch> batch_queue;
+    // Single-producer (MuPool receive thread) / single-consumer (Scheduler)
+    // queues for per-layer batches/tokens.
+    static constexpr size_t kBatchQueueCapacity = 8192;
+    static constexpr size_t kTokenQueueCapacity = 8192;
 
-    std::deque<TokenTopKInfo> token_queue;
+    SPSCQueue<TokenBatch, kBatchQueueCapacity> batch_queue;
+
+    SPSCQueue<TokenTopKInfo, kTokenQueueCapacity> token_queue;
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
@@ -44,7 +140,7 @@ public:
 
     inline int get_layer_id() const { return layer_id; }
 
-    inline int get_num_tokens() const { return num_tokens; }
+    inline int get_num_tokens() const { return num_tokens.load(std::memory_order_relaxed); }
 
     void add_batch(const TokenBatch &batch);
 

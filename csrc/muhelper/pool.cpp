@@ -51,7 +51,6 @@ void UnifiedPool::process_attn_batch_topk(torch::Tensor tensor, batch_metadata_t
     if (batched_tokens == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
     this->layer_scheduler->attn_add_tokens(meta->layer_id, ready_tokens);
 }
 
@@ -75,7 +74,6 @@ void UnifiedPool::process_attn_batch(torch::Tensor tensor, batch_metadata_t &met
     meta->num_prefill_tokens = num_prefill_tokens;
     meta->num_decode_tokens = num_decode_tokens;
 
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
     this->layer_scheduler->add_batch(tensor, meta);
 }
 
@@ -84,7 +82,6 @@ void UnifiedPool::process_expert_batch(torch::Tensor tensor, batch_metadata_t &m
     if (this->num_groups > 1) {
         throw std::runtime_error("Expert pool does not support multiple groups at this time");
     } else {
-        std::lock_guard<std::mutex> lock(this->batch_mutex);
         this->layer_scheduler->add_batch(tensor, meta);
     }
 }
@@ -106,8 +103,6 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
 }
 
 TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
-
     int token_threshold = -1;
     if (this->layer_scheduler->is_attn_layer(layer_id)) {
         token_threshold = this->attn_schedule_token_threshold;
@@ -122,7 +117,6 @@ std::shared_ptr<LayerSchedulerBase> UnifiedPool::get_layer_scheduler() {
 }
 
 std::vector<int> UnifiedPool::get_pool_snapshot() {
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
     return this->layer_scheduler->get_pool_snapshot();
 }
 
