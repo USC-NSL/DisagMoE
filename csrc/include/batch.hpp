@@ -61,6 +61,9 @@ struct TokenBatch: ScheduleUnit {
         }
 
         auto t_start = t_now();
+        long long t_alloc = 0;
+        long long t_srcprep = 0;
+        long long t_gather = 0;
 
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
@@ -73,10 +76,12 @@ struct TokenBatch: ScheduleUnit {
         std::vector<int> mappings{};
         batch_metadata_t merged_meta = BatchMetadata::merge_by_expert(metas, mappings);
 
+        auto t1 = t_now();
         torch::Tensor merged_tokens = torch::empty(
             {merged_meta->num_tokens(), merged_meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+        t_alloc = static_cast<long long>(t_now()) - static_cast<long long>(t1);
 
         std::vector<uintptr_t> srcs(merged_meta->num_tokens());
 
@@ -94,16 +99,23 @@ struct TokenBatch: ScheduleUnit {
                 }
             }
         }
+        t_srcprep = static_cast<long long>(t_now()) - static_cast<long long>(t1) - t_alloc;
 
         int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
         int64_t src_ptr = reinterpret_cast<int64_t>(srcs.data());
+        auto t2 = t_now();
         get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
+        t_gather = static_cast<long long>(t_now()) - static_cast<long long>(t2);
 
         auto dur_us = static_cast<long long>(t_now()) - static_cast<long long>(t_start);
         if (dur_us > 1000) {
             DMOE_LOG(WARNING) << "[merge_by_expert] took " << dur_us << "us for "
                               << merged_meta->num_tokens() << " tokens ("
-                              << batches.size() << " batches)" << LEND;
+                              << batches.size() << " batches)"
+                              << " alloc=" << t_alloc << "us"
+                              << " prep=" << t_srcprep << "us"
+                              << " gather=" << t_gather << "us"
+                              << LEND;
         }
         return TokenBatch {merged_tokens, merged_meta};
     }
@@ -118,6 +130,9 @@ struct TokenBatch: ScheduleUnit {
         AUTO_TX_RANGE;
 
         auto t_start = t_now();
+        long long t_alloc = 0;
+        long long t_srcprep = 0;
+        long long t_gather = 0;
 
         at::cuda::CUDAStream stream = get_new_torch_stream();
         at::cuda::CUDAStreamGuard guard(stream);
@@ -132,10 +147,12 @@ struct TokenBatch: ScheduleUnit {
         int prefill_data_size = merged_meta->prefill_data_size();
         int decode_data_size = merged_meta->decode_data_size();
 
+        auto t1 = t_now();
         torch::Tensor merged_tokens = torch::empty(
             {merged_meta->num_tokens(), merged_meta->token_hidden_dim()}, 
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
+        t_alloc = static_cast<long long>(t_now()) - static_cast<long long>(t1);
 
         int prefill_idx = 0;
         int decode_idx = merged_meta->num_prefill_tokens.value();
@@ -160,17 +177,24 @@ struct TokenBatch: ScheduleUnit {
                 decode_idx ++;
             }
         }
+        t_srcprep = static_cast<long long>(t_now()) - static_cast<long long>(t1) - t_alloc;
 
         int64_t raw_cuda_stream = reinterpret_cast<int64_t>(stream.stream());
         int64_t src_ptr = reinterpret_cast<int64_t>(src_ptrs.data());
 
+        auto t2 = t_now();
         get_op_gather_tokens().call(merged_tokens, src_ptr, merged_meta->num_tokens(), merged_meta->token_hidden_dim(), raw_cuda_stream);
+        t_gather = static_cast<long long>(t_now()) - static_cast<long long>(t2);
 
         auto dur_us = static_cast<long long>(t_now()) - static_cast<long long>(t_start);
         if (dur_us > 1000) {
             DMOE_LOG(WARNING) << "[merge_by_attention] took " << dur_us << "us for "
                               << merged_meta->num_tokens() << " tokens ("
-                              << batches.size() << " batches)" << LEND;
+                              << batches.size() << " batches)"
+                              << " alloc=" << t_alloc << "us"
+                              << " prep=" << t_srcprep << "us"
+                              << " gather=" << t_gather << "us"
+                              << LEND;
         }
         return TokenBatch {merged_tokens, merged_meta};
     }
