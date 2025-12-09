@@ -2,7 +2,6 @@
 #include <c10/cuda/CUDAStream.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_fp16.h>
-#include "indices_copy_pad.cuh"
 
 using namespace at;
 
