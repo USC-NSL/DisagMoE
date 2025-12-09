@@ -193,7 +193,7 @@ TokenBatch UnifiedLayerSchedulerBase::get_batch_from_layer_restricted(int layer_
     if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
         return TokenBatch {};
     }
-    if (token_threshold <= 0 || this->layers[layer_id]->get_num_tokens() <= token_threshold) {
+    if (token_threshold <= 0) {
         return this->get_batch_from_layer(layer_id);
     }
     if (this->layer_uses_token_queue(layer_id)) {
