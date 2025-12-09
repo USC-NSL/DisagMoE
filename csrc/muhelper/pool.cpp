@@ -1,4 +1,22 @@
 #include "pool.h"
+#include "utils.hpp"
+#include "logging.h"
+
+namespace {
+constexpr long kLockWarnUs = 5000; // warn if waiting/holding batch_mutex longer than this (us)
+
+inline void warn_lock_wait(long long waited_us, const char* where) {
+    if (waited_us > kLockWarnUs) {
+        DMOE_LOG(WARNING) << "[Pool] waited " << waited_us << "us for batch_mutex in " << where << LEND;
+    }
+}
+
+inline void warn_lock_hold(long long held_us, const char* where) {
+    if (held_us > kLockWarnUs) {
+        DMOE_LOG(WARNING) << "[Pool] held batch_mutex " << held_us << "us in " << where << LEND;
+    }
+}
+} // namespace
 
 UnifiedPool::UnifiedPool(
     std::vector<int> layer_ids,
@@ -51,8 +69,12 @@ void UnifiedPool::process_attn_batch_topk(torch::Tensor tensor, batch_metadata_t
         return;
     }
     auto attn_batch = TokenBatch::pack_topk_tokens(meta->layer_id, ready_tokens);
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    auto t0 = t_now();
+    std::unique_lock<std::mutex> lock(this->batch_mutex);
+    warn_lock_wait(static_cast<long long>(t_now()) - static_cast<long long>(t0), "process_attn_batch_topk(wait)");
+    auto hold_start = t_now();
     this->layer_scheduler->add_batch(attn_batch.data, attn_batch.metadata);
+    warn_lock_hold(static_cast<long long>(t_now()) - static_cast<long long>(hold_start), "process_attn_batch_topk(hold)");
 }
 
 void UnifiedPool::process_attn_batch(torch::Tensor tensor, batch_metadata_t &meta) {
@@ -75,8 +97,12 @@ void UnifiedPool::process_attn_batch(torch::Tensor tensor, batch_metadata_t &met
     meta->num_prefill_tokens = num_prefill_tokens;
     meta->num_decode_tokens = num_decode_tokens;
 
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    auto t0 = t_now();
+    std::unique_lock<std::mutex> lock(this->batch_mutex);
+    warn_lock_wait(static_cast<long long>(t_now()) - static_cast<long long>(t0), "process_attn_batch(wait)");
+    auto hold_start = t_now();
     this->layer_scheduler->add_batch(tensor, meta);
+    warn_lock_hold(static_cast<long long>(t_now()) - static_cast<long long>(hold_start), "process_attn_batch(hold)");
 }
 
 void UnifiedPool::process_expert_batch(torch::Tensor tensor, batch_metadata_t &meta) {
@@ -84,8 +110,12 @@ void UnifiedPool::process_expert_batch(torch::Tensor tensor, batch_metadata_t &m
     if (this->num_groups > 1) {
         throw std::runtime_error("Expert pool does not support multiple groups at this time");
     } else {
-        std::lock_guard<std::mutex> lock(this->batch_mutex);
+        auto t0 = t_now();
+        std::unique_lock<std::mutex> lock(this->batch_mutex);
+        warn_lock_wait(static_cast<long long>(t_now()) - static_cast<long long>(t0), "process_expert_batch(wait)");
+        auto hold_start = t_now();
         this->layer_scheduler->add_batch(tensor, meta);
+        warn_lock_hold(static_cast<long long>(t_now()) - static_cast<long long>(hold_start), "process_expert_batch(hold)");
     }
 }
 
@@ -106,7 +136,10 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
 }
 
 TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
-    std::lock_guard<std::mutex> lock(this->batch_mutex);
+    auto t0 = t_now();
+    std::unique_lock<std::mutex> lock(this->batch_mutex);
+    warn_lock_wait(static_cast<long long>(t_now()) - static_cast<long long>(t0), "get_batch_from_layer(wait)");
+    auto hold_start = t_now();
 
     int token_threshold = -1;
     if (this->layer_scheduler->is_attn_layer(layer_id)) {
@@ -114,7 +147,9 @@ TokenBatch UnifiedPool::get_batch_from_layer(int layer_id) {
     } else {
         token_threshold = this->expert_schedule_token_threshold;
     }
-    return this->layer_scheduler->get_batch_from_layer_restricted(layer_id, token_threshold);
+    auto batch = this->layer_scheduler->get_batch_from_layer_restricted(layer_id, token_threshold);
+    warn_lock_hold(static_cast<long long>(t_now()) - static_cast<long long>(hold_start), "get_batch_from_layer(hold)");
+    return batch;
 }
 
 std::shared_ptr<LayerSchedulerBase> UnifiedPool::get_layer_scheduler() {
