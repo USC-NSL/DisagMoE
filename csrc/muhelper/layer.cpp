@@ -63,12 +63,6 @@ std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
     }
     if (drained_tokens > 0) {
         this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
-        if (this->get_num_tokens() == 0) {
-            DMOE_LOG(WARNING) << "SPSC batch queue drained in UnifiedLayer (layer_id="
-                              << this->layer_id
-                              << "); scheduler consumed all queued batches."
-                              << LEND;
-        }
     }
     return result;
 }
