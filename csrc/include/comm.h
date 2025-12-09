@@ -52,6 +52,8 @@ public:
 
     virtual void warmup_recv(int *recv_buf, int count) {}
 
+    virtual void record_event(cudaEvent_t &event) {}
+
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -83,6 +85,7 @@ public:
 
     void warmup_recv(int *recv_buf, int count) override;
 
+    void record_event(cudaEvent_t &event) override;
 };
 
 class TensorLocalChannel: public Channel {
@@ -100,6 +103,8 @@ class TensorLocalChannel: public Channel {
         void recv(uintptr_t data, const BatchMetadata& metadata) override;
     
         void sync() override;
+
+        void record_event(cudaEvent_t &event) override;
 };
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);

@@ -45,29 +45,35 @@ void UnifiedDispatcher::_send_once(TokenBatch batch) {
 void UnifiedDispatcher::_send_to_expert_once(TokenBatch batch) {
     tx_range _{"UnifiedDispatcher::_send_to_expert_once"};
     // DMOE_LOG(INFO) << "attn " << this->device_id << " sending a batch: " << *batch.metadata << LEND;
+    std::vector<int> split_sizes{};
     for (int i = 0, j = 1, n = batch.metadata->exp_ids.size(); i < n; i = j) {
-        int cid = this->_expert_get_channel_id(batch.metadata->exp_ids[i]);
-        while (j < n && this->_expert_get_channel_id(batch.metadata->exp_ids[j]) == cid)
+        int rank = batch.metadata->exp_ids[i];
+        while (j < n && batch.metadata->exp_ids[j] == rank)
             j ++;
+        split_sizes.push_back(j - i);
+    }
 
-        auto buf = tensor_at((uintptr_t)batch.data.data_ptr(), batch.metadata, i);
-        this->_send_batch(cid, buf, batch.metadata->slice(i, j));
-        // DMOE_LOG(INFO) << "attn send a batch to expert: " << batch.metadata->slice(i, j) << LEND;
+    auto batches = batch.split_with_sizes(split_sizes);
+    for (auto &batch: batches) {
+        int channel_id = this->_expert_get_channel_id(batch.metadata->exp_ids[0]);
+        this->send_batch_nonblocking(channel_id, batch);
     }
 }
 
 void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
     tx_range _{"UnifiedDispatcher::_send_to_attn_once"};
     // DMOE_LOG(INFO) << "expert " << device_id << " sending a batch: " << *batch.metadata << ", n_ele=" << batch.data.numel()  << LEND;
-
+    std::vector<int> split_sizes{};
     for (int i = 0, j = 1, n = batch.metadata->attn_dp_ranks.size(); i < n; i = j) {
         int rank = batch.metadata->attn_dp_ranks[i];
-        auto cid = this->_attn_get_channel_id(rank);
         while (j < n && batch.metadata->attn_dp_ranks[j] == rank)
             j ++;
+        split_sizes.push_back(j - i);
+    }
 
-        auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
-        this->_send_batch(cid, buf, batch.metadata->slice(i, j));
-        // DMOE_LOG(INFO) << "expert send a batch to attn: " << batch.metadata->slice(i, j) << LEND;
+    auto batches = batch.split_with_sizes(split_sizes);
+    for (auto &batch: batches) {
+        int channel_id = this->_attn_get_channel_id(batch.metadata->attn_dp_ranks[0]);
+        this->send_batch_nonblocking(channel_id, batch);
     }
 }

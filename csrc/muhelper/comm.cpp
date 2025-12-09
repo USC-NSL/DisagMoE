@@ -97,6 +97,10 @@ void NcclChannel::warmup_recv(int *recv_buf, int count) {
     ));
 }
 
+void NcclChannel::record_event(cudaEvent_t &event) {
+    CUDACHECK(cudaEventRecord(event, this->stream));
+}
+
 void NcclChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
@@ -129,6 +133,10 @@ void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
 
 void TensorLocalChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
+}
+
+void TensorLocalChannel::record_event(cudaEvent_t &event) {
+    CUDACHECK(cudaEventRecord(event, this->stream));
 }
 
 std::mutex global_mutex;

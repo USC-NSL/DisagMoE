@@ -619,7 +619,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         start_engine(self.scheduler, self.dispatcher)
         
-        self.loop_thread = Thread(target=self.single_module_loop_overlap)
+        self.loop_thread = Thread(target=self.single_module_loop)
             
         self.loop_thread.start()
 
