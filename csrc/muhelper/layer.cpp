@@ -17,37 +17,36 @@ unified_layer_t UnifiedLayer::create_expert_layer(int layer_id) {
 }
 
 void UnifiedLayer::add_batch(const TokenBatch &batch) {
-    int tokens = batch.metadata->num_tokens();
-    // Block the receiver thread if the queue is full; this provides backpressure
-    // but does not contend on MuPool::batch_mutex.
-    while (!this->batch_queue.push(batch)) {
+    TokenBatch to_push = batch;
+    int n_tokens = batch.metadata->num_tokens();
+    while (!this->batch_queue.push(std::move(to_push))) {
         std::this_thread::yield();
+        to_push = batch;
     }
-    this->num_tokens.fetch_add(tokens, std::memory_order_relaxed);
+    this->num_tokens.fetch_add(n_tokens, std::memory_order_relaxed);
 }
 
 void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
     TokenBatch batch{data, meta};
-    int tokens = meta->num_tokens();
+    int n_tokens = meta->num_tokens();
     while (!this->batch_queue.push(std::move(batch))) {
         std::this_thread::yield();
+        batch = TokenBatch{data, meta};
     }
-    this->num_tokens.fetch_add(tokens, std::memory_order_relaxed);
+    this->num_tokens.fetch_add(n_tokens, std::memory_order_relaxed);
 }
 
 std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
     std::vector<TokenBatch> result{};
-    // Reserve a rough upper bound to avoid too many reallocations.
-    int cur_tokens = this->get_num_tokens();
-    if (cur_tokens > 0) {
-        result.reserve(cur_tokens);
+    TokenBatch batch;
+    int drained_tokens = 0;
+    while (this->batch_queue.pop(batch)) {
+        drained_tokens += batch.metadata->num_tokens();
+        result.emplace_back(std::move(batch));
     }
-    while (!this->batch_queue.empty()) {
-        TokenBatch &front = this->batch_queue.front();
-        result.emplace_back(std::move(front));
-        this->batch_queue.pop_front();
+    if (drained_tokens > 0) {
+        this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
     }
-    this->num_tokens.store(0, std::memory_order_relaxed);
     return result;
 }
 
@@ -55,36 +54,50 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
     std::vector<TokenBatch> result{};
     int total_tokens = 0;
     int num_batches = 0;
-    while (!this->batch_queue.empty() && total_tokens < token_threshold) {
-        TokenBatch &first_batch = this->batch_queue.front();
-        int tokens_in_batch = first_batch.metadata->num_tokens();
+    while (total_tokens < token_threshold && !this->batch_queue.empty()) {
+        TokenBatch *front_ptr = nullptr;
+        if (!this->batch_queue.empty()) {
+            front_ptr = &this->batch_queue.front();
+        }
+        if (front_ptr == nullptr) {
+            break;
+        }
+        int tokens_in_batch = front_ptr->metadata->num_tokens();
         if (total_tokens + tokens_in_batch > token_threshold) {
             int need_tokens = token_threshold - total_tokens;
-            auto batches = first_batch.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
-            tokens_in_batch = batches[0].metadata->num_tokens();
-            result.emplace_back(std::move(batches[0]));
-            // Keep the remaining part in-place at the front of the queue.
-            first_batch = std::move(batches[1]);
+            auto batches = front_ptr->split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
+            TokenBatch first_part = std::move(batches[0]);
+            TokenBatch remaining_part = std::move(batches[1]);
+            // Replace the front element in-place with the remaining part.
+            *front_ptr = std::move(remaining_part);
+            tokens_in_batch = first_part.metadata->num_tokens();
+            result.emplace_back(std::move(first_part));
         } else {
-            result.emplace_back(std::move(first_batch));
-            this->batch_queue.pop_front();
+            TokenBatch batch;
+            bool ok = this->batch_queue.pop(batch);
+            if (!ok) {
+                break;
+            }
+            result.emplace_back(std::move(batch));
         }
         total_tokens += tokens_in_batch;
         num_batches += 1;
     }
-    this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
-    ASSERT_MSG(
-        total_tokens > 0 && num_batches > 0,
-        "Got nothing from layer" + std::to_string(this->layer_id) +
-        " under token threshold, total tokens in layer: " + std::to_string(this->get_num_tokens()) +
-        ", token threshold: " + std::to_string(token_threshold)
-    );
+    if (total_tokens > 0) {
+        this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
+    }
+    ASSERT_MSG(total_tokens > 0 && num_batches > 0, "Got nothing from layer" + std::to_string(this->layer_id) + \
+    " under token threshold, total tokens in layer: " + std::to_string(this->get_num_tokens()) + \
+    ", token threshold: " + std::to_string(token_threshold) + \
+    ", token threshold: " + std::to_string(token_threshold));
     return result;
 }
 
 void UnifiedLayer::add_token(const TokenTopKInfo &token) {
-    while (!this->token_queue.push(token)) {
+    TokenTopKInfo to_push = token;
+    while (!this->token_queue.push(std::move(to_push))) {
         std::this_thread::yield();
+        to_push = token;
     }
     this->num_tokens.fetch_add(1, std::memory_order_relaxed);
 }
@@ -97,25 +110,32 @@ void UnifiedLayer::add_tokens(const std::vector<TokenTopKInfo> &tokens) {
 
 std::vector<TokenTopKInfo> UnifiedLayer::get_all_tokens() {
     std::vector<TokenTopKInfo> result{};
-    while (!this->token_queue.empty()) {
-        TokenTopKInfo &front = this->token_queue.front();
-        result.emplace_back(std::move(front));
-        this->token_queue.pop_front();
+    TokenTopKInfo token;
+    int drained_tokens = 0;
+    while (this->token_queue.pop(token)) {
+        drained_tokens++;
+        result.emplace_back(std::move(token));
     }
-    this->num_tokens.store(0, std::memory_order_relaxed);
+    if (drained_tokens > 0) {
+        this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
+    }
     return result;
 }
 
 std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_threshold) {
     std::vector<TokenTopKInfo> result{};
     int total_tokens = 0;
-    while (!this->token_queue.empty() && total_tokens < token_threshold) {
-        TokenTopKInfo &first_token = this->token_queue.front();
-        result.emplace_back(std::move(first_token));
-        this->token_queue.pop_front();
+    while (total_tokens < token_threshold) {
+        TokenTopKInfo token;
+        if (!this->token_queue.pop(token)) {
+            break;
+        }
+        result.emplace_back(std::move(token));
         total_tokens++;
     }
-    this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
+    if (total_tokens > 0) {
+        this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
+    }
     return result;
 }
 

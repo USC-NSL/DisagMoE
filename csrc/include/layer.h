@@ -6,81 +6,49 @@
 #include "datatypes.hpp"
 #include "metadata.hpp"
 #include "batch.hpp"
-#include <memory>
-#include <vector>
-#include <deque>
 #include <atomic>
 #include <array>
+#include <memory>
+#include <vector>
+#include <queue>
 #include <torch/torch.h>
 
-// Simple single-producer/single-consumer ring buffer.
-// - One writer thread (producer) may push()
-// - One reader thread (consumer) may front()/pop_front()/try_pop()
-// This is used by UnifiedLayer so that the MuPool receive thread and
-// the unified Scheduler thread do not need to share a mutex.
+enum class LayerType { ATTENTION, EXPERT };
+
+class UnifiedLayer;
+
+using unified_layer_t = std::shared_ptr<UnifiedLayer>;
+
 template <typename T, size_t Capacity>
 class SPSCQueue {
 public:
-    SPSCQueue() : head_(0), tail_(0) {
-        static_assert(Capacity > 1, "SPSCQueue capacity must be > 1");
+    SPSCQueue(): head_(0), tail_(0) {
+        static_assert(Capacity > 0, "Capacity must be greater than 0");
     }
 
-    bool push(const T &value) {
+    bool push(const T &item) {
         auto tail = tail_.load(std::memory_order_relaxed);
         auto next_tail = increment(tail);
         if (next_tail == head_.load(std::memory_order_acquire)) {
-            // queue is full
-            return false;
+            return false; // full
         }
-        buffer_[tail] = value;
+        buffer_[tail] = item;
         tail_.store(next_tail, std::memory_order_release);
         return true;
     }
 
-    bool push(T &&value) {
+    bool push(T &&item) {
         auto tail = tail_.load(std::memory_order_relaxed);
         auto next_tail = increment(tail);
         if (next_tail == head_.load(std::memory_order_acquire)) {
-            // queue is full
-            return false;
+            return false; // full
         }
-        buffer_[tail] = std::move(value);
+        buffer_[tail] = std::move(item);
         tail_.store(next_tail, std::memory_order_release);
         return true;
     }
 
-    bool empty() const {
-        auto head = head_.load(std::memory_order_acquire);
-        auto tail = tail_.load(std::memory_order_acquire);
-        return head == tail;
-    }
-
-    // Approximate size (can be stale under concurrency, but fine for stats).
-    size_t size() const {
-        auto head = head_.load(std::memory_order_acquire);
-        auto tail = tail_.load(std::memory_order_acquire);
-        return (tail + Capacity - head) % Capacity;
-    }
-
-    // Access the element at the head. Caller must ensure !empty().
-    T &front() {
-        auto head = head_.load(std::memory_order_acquire);
-        return buffer_[head];
-    }
-
-    const T &front() const {
-        auto head = head_.load(std::memory_order_acquire);
-        return buffer_[head];
-    }
-
-    // Remove the element at the head. Caller must ensure !empty().
-    void pop_front() {
-        auto head = head_.load(std::memory_order_relaxed);
-        head_.store(increment(head), std::memory_order_release);
-    }
-
-    // Convenience: pop into `out`, returns false if empty.
-    bool try_pop(T &out) {
+    bool pop(T &out) {
         auto head = head_.load(std::memory_order_relaxed);
         if (head == tail_.load(std::memory_order_acquire)) {
             return false; // empty
@@ -90,40 +58,46 @@ public:
         return true;
     }
 
-private:
-    static constexpr size_t kCapacity = Capacity;
-
-    static size_t increment(size_t idx) {
-        return (idx + 1) % kCapacity;
+    bool empty() const {
+        return head_.load(std::memory_order_acquire) ==
+               tail_.load(std::memory_order_acquire);
     }
 
-    std::array<T, kCapacity> buffer_;
+    bool full() const {
+        auto tail = tail_.load(std::memory_order_relaxed);
+        auto next_tail = increment(tail);
+        return next_tail == head_.load(std::memory_order_acquire);
+    }
+
+    // Only call when !empty(), from the consumer thread.
+    T &front() {
+        auto head = head_.load(std::memory_order_acquire);
+        return buffer_[head];
+    }
+
+private:
+    static constexpr size_t kBufferSize = Capacity + 1;
+    std::array<T, kBufferSize> buffer_;
     std::atomic<size_t> head_;
     std::atomic<size_t> tail_;
+
+    static size_t increment(size_t idx) {
+        return (idx + 1) % kBufferSize;
+    }
 };
-
-enum class LayerType { ATTENTION, EXPERT };
-
-class UnifiedLayer;
-
-using unified_layer_t = std::shared_ptr<UnifiedLayer>;
 
 class UnifiedLayer {
 
 private:
+    static constexpr size_t kMaxQueueLength = 8192;
+
     LayerType layer_type;
     int layer_id;
     int expert_id; // >= 0 if is an individual expert
     std::atomic<int> num_tokens;
 
-    // Single-producer (MuPool receive thread) / single-consumer (Scheduler)
-    // queues for per-layer batches/tokens.
-    static constexpr size_t kBatchQueueCapacity = 8192;
-    static constexpr size_t kTokenQueueCapacity = 8192;
-
-    SPSCQueue<TokenBatch, kBatchQueueCapacity> batch_queue;
-
-    SPSCQueue<TokenTopKInfo, kTokenQueueCapacity> token_queue;
+    SPSCQueue<TokenBatch, kMaxQueueLength> batch_queue;
+    SPSCQueue<TokenTopKInfo, kMaxQueueLength> token_queue;
 
 public:
     UnifiedLayer(LayerType layer_type, int layer_id);
@@ -137,10 +111,11 @@ public:
     inline bool is_attention() const { return layer_type == LayerType::ATTENTION; }
 
     inline bool is_expert() const { return layer_type == LayerType::EXPERT; }
-
     inline int get_layer_id() const { return layer_id; }
 
-    inline int get_num_tokens() const { return num_tokens.load(std::memory_order_relaxed); }
+    inline int get_num_tokens() const {
+        return num_tokens.load(std::memory_order_relaxed);
+    }
 
     void add_batch(const TokenBatch &batch);
 
