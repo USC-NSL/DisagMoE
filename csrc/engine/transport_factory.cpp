@@ -5,10 +5,14 @@
 
 #include "transport_factory.h"
 #include "distributed.hpp"
+#include "logging.h"
+#include "utils.hpp"
 
 #include <mutex>
 #include <stdexcept>
 #include <cstring>
+#include <thread>
+#include <chrono>
 
 static zmq::context_t& GlobalZmqContext() {
     static zmq::context_t ctx(4);
@@ -24,6 +28,10 @@ static bool g_selected = false;
 
 namespace {
 
+// Optional non-blocking ZMQ send with backoff for debugging stalls.
+static bool g_zmq_dontwait = true;      // always use non-blocking send with backoff
+static long g_zmq_send_warn_us = 5000;  // warn if we spin longer than this (microseconds)
+
 class ZmqSocketAdapter final : public MqSocket {
 public:
     ZmqSocketAdapter(bool isPush)
@@ -34,8 +42,8 @@ public:
     void bind(const std::string &endpoint) override { sock_.bind(endpoint); }
     void connect(const std::string &endpoint) override { sock_.connect(endpoint); }
     void send_multipart(const std::string &frame0, const void *data, size_t size) override {
-        sock_.send(zmq::buffer(frame0.data(), frame0.size()), zmq::send_flags::sndmore);
-        sock_.send(zmq::buffer(data, size));
+        send_frame(zmq::buffer(frame0.data(), frame0.size()), zmq::send_flags::sndmore);
+        send_frame(zmq::buffer(data, size), zmq::send_flags::none);
     }
     bool recv_multipart(std::string &frame0, std::vector<uint8_t> &frame1, bool non_blocking = false) override {
         zmq::message_t f0;
@@ -51,7 +59,7 @@ public:
         return true;
     }
     void send(const void *data, size_t size) override {
-        sock_.send(zmq::buffer(data, size));
+        send_frame(zmq::buffer(data, size), zmq::send_flags::none);
     }
     bool recv(std::vector<uint8_t> &data, bool non_blocking = false) override {
         zmq::message_t msg;
@@ -64,6 +72,32 @@ public:
     }
 
 private:
+    template <class Buffer>
+    void send_frame(const Buffer& buf, zmq::send_flags base_flags) {
+        if (!g_zmq_dontwait) {
+            auto t0 = t_now();
+            sock_.send(buf, base_flags);
+            auto dur = static_cast<long long>(t_now()) - static_cast<long long>(t0);
+            if (g_zmq_send_warn_us > 0 && dur > g_zmq_send_warn_us) {
+                DMOE_LOG(WARNING) << "[ZMQ] blocking send " << dur << "us" << LEND;
+            }
+            return;
+        }
+
+        auto start = t_now();
+        bool warned = false;
+        while (true) {
+            auto res = sock_.send(buf, base_flags | zmq::send_flags::dontwait);
+            if (res.has_value()) return;
+            auto waited = static_cast<long long>(t_now()) - static_cast<long long>(start);
+            if (!warned && g_zmq_send_warn_us > 0 && waited > g_zmq_send_warn_us) {
+                DMOE_LOG(WARNING) << "[ZMQ] send stalled " << waited << "us" << LEND;
+                warned = true;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+        }
+    }
+
     zmq::context_t &ctx_;
     zmq::socket_t sock_;
 };
@@ -138,5 +172,3 @@ const EndpointFactory &mq_endpoint_factory() {
 }
 
 } // namespace disagmoe
-
-
