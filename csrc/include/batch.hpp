@@ -82,9 +82,6 @@ struct TokenBatch: ScheduleUnit {
             torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
         );
         t_alloc = static_cast<long long>(t_now()) - static_cast<long long>(t1);
-        DMOE_LOG(INFO) << "[merge_by_expert] alloc took " << t_alloc << "us for "
-                       << merged_meta->num_tokens() << " tokens ("
-                       << batches.size() << " batches)" << LEND;
 
         std::vector<uintptr_t> srcs(merged_meta->num_tokens());
 
