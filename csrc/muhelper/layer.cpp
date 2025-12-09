@@ -1,5 +1,6 @@
 #include "layer.h"
 #include "batch.hpp"
+#include "logging.h"
 #include <thread>
 
 UnifiedLayer::UnifiedLayer(LayerType layer_type, int layer_id): 
@@ -19,7 +20,15 @@ unified_layer_t UnifiedLayer::create_expert_layer(int layer_id) {
 void UnifiedLayer::add_batch(const TokenBatch &batch) {
     TokenBatch to_push = batch;
     int n_tokens = batch.metadata->num_tokens();
+    bool warned_full = false;
     while (!this->batch_queue.push(std::move(to_push))) {
+        if (!warned_full) {
+            DMOE_LOG(WARNING) << "SPSC batch queue full in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "), receiver thread blocking until scheduler drains."
+                              << LEND;
+            warned_full = true;
+        }
         std::this_thread::yield();
         to_push = batch;
     }
@@ -29,7 +38,15 @@ void UnifiedLayer::add_batch(const TokenBatch &batch) {
 void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
     TokenBatch batch{data, meta};
     int n_tokens = meta->num_tokens();
+    bool warned_full = false;
     while (!this->batch_queue.push(std::move(batch))) {
+        if (!warned_full) {
+            DMOE_LOG(WARNING) << "SPSC batch queue full in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "), receiver thread blocking until scheduler drains."
+                              << LEND;
+            warned_full = true;
+        }
         std::this_thread::yield();
         batch = TokenBatch{data, meta};
     }
@@ -46,6 +63,12 @@ std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
     }
     if (drained_tokens > 0) {
         this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
+        if (this->get_num_tokens() == 0) {
+            DMOE_LOG(WARNING) << "SPSC batch queue drained in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "); scheduler consumed all queued batches."
+                              << LEND;
+        }
     }
     return result;
 }
@@ -95,7 +118,15 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
 
 void UnifiedLayer::add_token(const TokenTopKInfo &token) {
     TokenTopKInfo to_push = token;
+    bool warned_full = false;
     while (!this->token_queue.push(std::move(to_push))) {
+        if (!warned_full) {
+            DMOE_LOG(WARNING) << "SPSC token queue full in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "), receiver thread blocking until scheduler drains."
+                              << LEND;
+            warned_full = true;
+        }
         std::this_thread::yield();
         to_push = token;
     }
@@ -118,6 +149,12 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_all_tokens() {
     }
     if (drained_tokens > 0) {
         this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
+        if (this->get_num_tokens() == 0) {
+            DMOE_LOG(WARNING) << "SPSC token queue drained in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "); scheduler consumed all queued tokens."
+                              << LEND;
+        }
     }
     return result;
 }
@@ -135,6 +172,12 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_thresho
     }
     if (total_tokens > 0) {
         this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
+        if (this->get_num_tokens() == 0) {
+            DMOE_LOG(WARNING) << "SPSC token queue drained (restricted) in UnifiedLayer (layer_id="
+                              << this->layer_id
+                              << "); scheduler consumed all queued tokens up to threshold."
+                              << LEND;
+        }
     }
     return result;
 }
