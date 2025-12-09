@@ -41,44 +41,31 @@ std::vector<TokenBatch> UnifiedLayer::get_all_batches() {
 
 std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold) {
     std::vector<TokenBatch> result{};
-    int total_tokens_collected = 0; // Renamed to avoid confusion if needed
-    
-    // Safety check for empty queue
-    if (this->batch_queue.empty()) {
-        return result; 
-    }
-
-    while (!this->batch_queue.empty() && total_tokens_collected < token_threshold) {
-        // Use reference to avoid copy, but be careful with modification
-        auto& current_front = this->batch_queue.front();
-        int tokens_in_batch = current_front.metadata->num_tokens();
-
-        if (total_tokens_collected + tokens_in_batch > token_threshold) {
-            int need_tokens = token_threshold - total_tokens_collected;
-            // Split the batch: part 0 goes to result, part 1 stays in queue
-            auto batches = current_front.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
-            
+    int total_tokens = 0;
+    int num_batches_processed = 0;
+    while (!this->batch_queue.empty() && total_tokens < token_threshold) {
+        auto first_batch = this->batch_queue.front();
+        int tokens_in_batch = first_batch.metadata->num_tokens();
+        if (total_tokens + tokens_in_batch > token_threshold) {
+            int need_tokens = token_threshold - total_tokens;
+            auto batches = first_batch.split_with_sizes({need_tokens, tokens_in_batch - need_tokens});
+            tokens_in_batch = batches[0].metadata->num_tokens();
             result.emplace_back(std::move(batches[0]));
-            // Update the front of the queue with the remainder
-            this->batch_queue.front() = std::move(batches[1]);
-            
-            total_tokens_collected += need_tokens;
-            // Don't pop front here
+            this->batch_queue.pop_front();
+            this->batch_queue.push_front(std::move(batches[1]));
         } else {
-            // Take the whole batch
-            total_tokens_collected += tokens_in_batch;
             result.emplace_back(std::move(this->batch_queue.front()));
             this->batch_queue.pop_front();
         }
+        total_tokens += tokens_in_batch;
+        num_batches_processed += 1;
     }
-
-    // Update member variables
-    this->num_tokens -= total_tokens_collected;
-    // CRITICAL FIX: Directly update num_batches from the source of truth
-    this->num_batches = this->batch_queue.size(); 
-
-    ASSERT_MSG(total_tokens_collected > 0, "Got nothing from layer" + std::to_string(this->layer_id));
-    
+    this->num_tokens -= total_tokens;
+    this->num_batches = this->batch_queue.size();
+    ASSERT_MSG(total_tokens > 0 && num_batches_processed > 0, "Got nothing from layer" + std::to_string(this->layer_id) + \
+    " under token threshold, total tokens in layer: " + std::to_string(this->num_tokens) + \
+    ", num tokens in next batch in layer: " + std::to_string(this->batch_queue.front().metadata->num_tokens()) + \
+    ", token threshold: " + std::to_string(token_threshold));
     return result;
 }
 
