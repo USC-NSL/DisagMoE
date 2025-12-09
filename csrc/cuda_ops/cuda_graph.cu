@@ -133,8 +133,10 @@ void launch_preprocess_fused_cuda(
     int token_ctas = (T + TOKENS_PER_BLOCK - 1) / TOKENS_PER_BLOCK;
     int grid = 1 + token_ctas;  // last block deals with small tensors
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     preprocess_fused_cuda<TOKENS_PER_BLOCK>
-        <<<grid, THREADS>>>(
+        <<<grid, THREADS, 0, stream>>>(
             (const bfloat16_t*)hidden.data_ptr<at::BFloat16>(),
             block_tables.data_ptr<int>(),
             positions.data_ptr<long>(),
@@ -291,8 +293,10 @@ void copy_graph_results_fused_dispatch(
     int token_ctas = (num_tokens + TOKENS_PER_BLOCK - 1) / TOKENS_PER_BLOCK;
     int grid = 1 + token_ctas;  // last block deals with small tensors
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     copy_graph_results_fused_kernel<TOKENS_PER_BLOCK>
-        <<<grid, NUM_THREADS>>>(
+        <<<grid, NUM_THREADS, 0, stream>>>(
             (const bfloat16_t*)tokens.data_ptr<at::BFloat16>(),
             (const int*)topk_ids.data_ptr<int>(),
             (const float*)topk_weights.data_ptr<float>(),

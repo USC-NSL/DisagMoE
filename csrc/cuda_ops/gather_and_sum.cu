@@ -114,7 +114,7 @@ __global__ void gather_and_sum_tokens_kernel(
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(n, hidden_size / chunk_size, 1); \
-    gather_and_sum_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, n, topk, hidden_size); \
+    gather_and_sum_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, n, topk, hidden_size); \
 } while(0)
 
 template <class T>
@@ -129,6 +129,7 @@ void _gather_and_sum_tokens_cuda(
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     LAUNCH_GATHER_AND_SUM_KERNEL_(2048);
 }
 
