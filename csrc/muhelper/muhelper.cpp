@@ -91,7 +91,11 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
+    DMOE_LOG(DEBUG) << "MuDispatcher::_send_batch metadata sent to mq on channel "
+                    << cid << " for batch: " << meta << LEND;
     this->channels[cid]->send(buf, meta);
+    DMOE_LOG(DEBUG) << "MuDispatcher::_send_batch tensor payload sent on channel "
+                    << cid << " for batch: " << meta << LEND;
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -443,6 +447,8 @@ void MuPool::run() {
         batch_metadata_t meta;
         recv_metadata(peer_id, meta, /*non_blocking=*/ false);
         ASSERT_MSG(meta.get() != nullptr, "Metadata is nullptr while receiving from peer " + std::to_string(peer_id));
+        DMOE_LOG(DEBUG) << "MuPool::run received metadata from peer " << peer_id
+                        << ": " << *meta << LEND;
         
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
@@ -457,6 +463,8 @@ void MuPool::run() {
             batch_metadata_t m;
             recv_metadata(pid, m, /*non_blocking=*/ true);
             if (m.get() == nullptr) break; // nothing more to recv now
+            DMOE_LOG(DEBUG) << "MuPool::run received (non-blocking) metadata from peer "
+                            << pid << ": " << *m << LEND;
             
             torch::Tensor t = torch::empty(
                 {m->num_tokens(), m->token_hidden_dim()}, 
@@ -472,6 +480,8 @@ void MuPool::run() {
         #endif
         for (auto &p : pending) {
             this->peer_channels[p.peer_id]->recv((uintptr_t)p.tensor.data_ptr(), *p.meta);
+            DMOE_LOG(DEBUG) << "MuPool::run completed tensor recv from peer "
+                            << p.peer_id << " for batch: " << *p.meta << LEND;
         }
         #if D_GROUP_NCCL_RECV
         NCCLCHECK(ncclGroupEnd());
