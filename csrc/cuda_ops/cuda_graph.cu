@@ -28,7 +28,7 @@ __global__ void preprocess_fused_cuda(
     int* __restrict__ out_seq_start_loc,
     int out_block_table_stride,
 
-    int T, int H, int B
+    int T, int H, int B, int padded_batch_size
 ){
     int num_blocks = gridDim.x;
     int block_id = blockIdx.x;
@@ -38,15 +38,27 @@ __global__ void preprocess_fused_cuda(
     if (block_id == num_blocks - 1) {
         // Last block deals with metadata tensors
         #pragma unroll
-        for (int i = thread_id; i < T; i += num_threads) {
-            out_positions[i]    = positions[i];
-            out_slot_mapping[i] = slot_mapping[i];
-            out_seq_lens[i]     = seq_lens[i];
-            out_context_lens[i] = context_lens[i];
+        for (int i = thread_id; i < padded_batch_size; i += num_threads) {
+            if (i < T) {
+                out_positions[i]    = positions[i];
+                out_slot_mapping[i] = slot_mapping[i];
+                out_seq_lens[i]     = seq_lens[i];
+                out_context_lens[i] = context_lens[i];
+            } else {
+                out_positions[i]    = 0;
+                out_slot_mapping[i] = -1;
+                out_seq_lens[i]     = 0;
+                out_context_lens[i] = 0;
+            }
         }
+
         #pragma unroll
-        for (int i = thread_id; i < T+1; i += num_threads) {
-            out_seq_start_loc[i] = seq_start_loc[i];
+        for (int i = thread_id; i < padded_batch_size + 1; i += num_threads) {
+            if (i < T+1) {
+                out_seq_start_loc[i] = seq_start_loc[i];
+            } else {
+                out_seq_start_loc[i] = 0;
+            }
         }
     } else {
         // Other blocks deal with data tensors and block tables
@@ -107,7 +119,8 @@ void launch_preprocess_fused_cuda(
     at::Tensor& out_slot_mapping,
     at::Tensor& out_seq_lens,
     at::Tensor& out_context_lens,
-    at::Tensor& out_seq_start_loc
+    at::Tensor& out_seq_start_loc,
+    int padded_batch_size
 ){
     TORCH_CHECK(hidden.is_cuda(), "Input must be CUDA tensor");
 
@@ -140,7 +153,7 @@ void launch_preprocess_fused_cuda(
             out_seq_start_loc.data_ptr<int>(),
             out_block_tables.stride(0),
 
-            T, H, B
+            T, H, B, padded_batch_size
         );
 }
 
@@ -161,6 +174,7 @@ void cuda_graph_preprocess_fused_dispatch(
     torch::Tensor out_context_lens,
     torch::Tensor out_seq_start_loc,
 
+    int64_t padded_batch_size,
     int64_t tokens_per_block
 ){
     switch(tokens_per_block) {
@@ -170,7 +184,8 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc
+                out_seq_start_loc,
+                (int) padded_batch_size
             );
             break;
         case 2:
@@ -179,7 +194,8 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc
+                out_seq_start_loc,
+                (int) padded_batch_size
             );
             break;
         case 4:
@@ -188,7 +204,8 @@ void cuda_graph_preprocess_fused_dispatch(
                 seq_lens, context_lens, seq_start_loc,
                 out_hidden, out_block_tables, out_positions,
                 out_slot_mapping, out_seq_lens, out_context_lens,
-                out_seq_start_loc
+                out_seq_start_loc,
+                (int) padded_batch_size
             );
             break;
         default:
@@ -294,7 +311,7 @@ TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
             Tensor seq_lens, Tensor context_lens, Tensor seq_start_loc, 
             Tensor out_hidden, Tensor out_positions, Tensor out_block_tables, Tensor out_slot_mapping, 
             Tensor out_seq_lens, Tensor out_context_lens, Tensor out_seq_start_loc, 
-            int tokens_per_block
+            int padded_batch_size, int tokens_per_block
         ) -> ()
     )");
     m.impl("cuda_graph_preprocess_fused", torch::kCUDA, cuda_graph_preprocess_fused_dispatch);

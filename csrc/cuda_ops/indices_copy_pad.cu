@@ -11,10 +11,13 @@ using bfloat16_t = __nv_bfloat16;
 template<int TOKENS_PER_BLOCK>
 __global__ void copy_and_pad_kernel(
     const bfloat16_t* __restrict__ in_hiddens,
+    const long* __restrict__ in_batch_sizes,
     const int* __restrict__ in_m_indices,
     bfloat16_t* __restrict__ out_hiddens,
+    long* __restrict__ out_batch_sizes,
     int* __restrict__ out_m_indices,
-    int num_tokens, int padded_bsz, int hidden_size
+    int num_tokens, int num_experts, 
+    int padded_bsz, int hidden_size
 ) {
     int num_blocks = gridDim.x;
     int block_id = blockIdx.x;
@@ -22,15 +25,21 @@ __global__ void copy_and_pad_kernel(
     int num_threads = blockDim.x;
 
     if (block_id == num_blocks - 1) {
-        // Last block deals with m_indices
+        // Last block deals with batch sizes and m_indices
+        #pragma unroll
+        for (int i = thread_id; i < num_experts; i += num_threads) {
+            out_batch_sizes[i] = in_batch_sizes[i];
+        }
+
         #pragma unroll
         for (int i = thread_id; i < padded_bsz; i += num_threads) {
             if (i < num_tokens) {
                 out_m_indices[i] = in_m_indices[i];
             } else {
-                out_m_indices[i] = in_m_indices[num_tokens - 1];
+                out_m_indices[i] = 0;
             }
         }
+
     } else {
         // Other blocks deal with hidden states
         using hidden_vec_t = float4;
@@ -57,47 +66,20 @@ __global__ void copy_and_pad_kernel(
     }
 }
 
-// // Much simpler version
-// template<int TOKENS_PER_BLOCK>
-// __global__ void copy_and_pad_kernel(
-//     const bfloat16_t* __restrict__ in_hiddens,
-//     const int* __restrict__ in_m_indices,
-//     bfloat16_t* __restrict__ out_hiddens,
-//     int* __restrict__ out_m_indices,
-//     int num_tokens, int padded_bsz, int hidden_size
-// ) {
-//     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-//     int stride = gridDim.x * blockDim.x;
-
-//     // --- Part 1: Copy and Pad Indices ---
-//     for (int i = tid; i < padded_bsz; i += stride) {
-//         if (i < num_tokens) {
-//             out_m_indices[i] = in_m_indices[i];
-//         } else {
-//             out_m_indices[i] = -1;
-//         }
-//     }
-
-//     // --- Part 2: Copy Hidden States ---
-//     // element-wise copy
-//     int total_elements = num_tokens * hidden_size;
-
-//     for (int i = tid; i < total_elements; i += stride) {
-//         out_hiddens[i] = in_hiddens[i];
-//     }
-// }
-
 template<int TOKENS_PER_BLOCK>
 void launch_copy_and_pad_cuda(
     const at::Tensor& in_hiddens,
+    const at::Tensor& in_batch_sizes,
     const at::Tensor& in_m_indices,
     at::Tensor& out_hiddens,
+    at::Tensor& out_batch_sizes,
     at::Tensor& out_m_indices,
     int padded_bsz
 ) {
     TORCH_CHECK(in_hiddens.is_cuda(), "Input must be CUDA tensor");
 
     int num_tokens = in_hiddens.size(0);
+    int num_experts = in_batch_sizes.size(0);
     int hidden_size = in_hiddens.size(1);
 
     constexpr int THREADS = 128;
@@ -110,17 +92,21 @@ void launch_copy_and_pad_cuda(
     copy_and_pad_kernel<TOKENS_PER_BLOCK>
         <<<grid, THREADS, 0, stream>>>(
             (const bfloat16_t*)in_hiddens.data_ptr<at::BFloat16>(),
+            in_batch_sizes.data_ptr<long>(),
             in_m_indices.data_ptr<int>(),
             (bfloat16_t*)out_hiddens.data_ptr<at::BFloat16>(),
+            out_batch_sizes.data_ptr<long>(),
             out_m_indices.data_ptr<int>(),
-            num_tokens, padded_bsz, hidden_size
+            num_tokens, num_experts, padded_bsz, hidden_size
         );
 }
 
 void fused_copy_and_pad_dispatch(
     torch::Tensor in_hiddens,
+    torch::Tensor in_batch_sizes,
     torch::Tensor in_m_indices,
     torch::Tensor out_hiddens,
+    torch::Tensor out_batch_sizes,
     torch::Tensor out_m_indices,
     int64_t padded_bsz,
     int64_t tokens_per_block
@@ -128,22 +114,22 @@ void fused_copy_and_pad_dispatch(
     switch(tokens_per_block) {
         case 1:
             launch_copy_and_pad_cuda<1>(
-                in_hiddens, in_m_indices,
-                out_hiddens, out_m_indices,
+                in_hiddens, in_batch_sizes, in_m_indices,
+                out_hiddens, out_batch_sizes, out_m_indices,
                 (int)padded_bsz
             );
             break;
         case 2:
             launch_copy_and_pad_cuda<2>(
-                in_hiddens, in_m_indices,
-                out_hiddens, out_m_indices,
+                in_hiddens, in_batch_sizes, in_m_indices,
+                out_hiddens, out_batch_sizes, out_m_indices,
                 (int)padded_bsz
             );
             break;
         case 4:
             launch_copy_and_pad_cuda<4>(
-                in_hiddens, in_m_indices,
-                out_hiddens, out_m_indices,
+                in_hiddens, in_batch_sizes, in_m_indices,
+                out_hiddens, out_batch_sizes, out_m_indices,
                 (int)padded_bsz
             );
             break;
@@ -156,8 +142,8 @@ void fused_copy_and_pad_dispatch(
 TORCH_LIBRARY_FRAGMENT(disag_ops, m) {
     m.def(R"(
         fused_copy_and_pad(
-            Tensor in_hiddens, Tensor in_m_indices, 
-            Tensor out_hiddens, Tensor out_m_indices, 
+            Tensor in_hiddens, Tensor in_batch_sizes, Tensor in_m_indices, 
+            Tensor out_hiddens, Tensor out_batch_sizes, Tensor out_m_indices, 
             int padded_bsz, int tokens_per_block
         ) -> ()
     )");

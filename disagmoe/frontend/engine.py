@@ -154,8 +154,8 @@ class AttentionEngineMixin:
         if use_gdrcopy_optimization:
             expert_ids_buffer_gdr = self.expert_ids_staging_gdr.get_one_handle()
             expert_weights_buffer_gdr = self.expert_weights_staging_gdr.get_one_handle()
-            expert_ids_buffer = expert_ids_buffer_gdr.get_tensor()
-            expert_weights_buffer = expert_weights_buffer_gdr.get_tensor()
+            expert_ids_buffer = expert_ids_buffer_gdr.tensor
+            expert_weights_buffer = expert_weights_buffer_gdr.tensor
         else:
             expert_ids_buffer = None
             expert_ids_buffer_gdr = None
@@ -212,7 +212,7 @@ class AttentionEngineMixin:
         if use_gdrcopy_optimization:
             attn_token_mapping_gdr = self.attn_token_mapping_gdr.get_one_handle()
             attn_token_mapping_gdr.copy_from_host_int32(exp_mappings)
-            token_mapping_tensor = attn_token_mapping_gdr.get_tensor()[:len(exp_mappings)]
+            token_mapping_tensor = attn_token_mapping_gdr.tensor[:len(exp_mappings)]
         else:
             token_mapping_tensor = torch.tensor(exp_mappings, dtype=torch.int32, device="cuda")
             
@@ -420,8 +420,8 @@ class ExpertEngineMixin:
             expert_token_mapping_buffer_gdr = self.expert_token_mapping_gdr.get_one_handle()
             expert_weights_buffer_gdr.copy_from_host_float(topk_weights)
             expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
-            expert_weights_tensor = expert_weights_buffer_gdr.get_tensor()
-            expert_token_mapping_tensor = expert_token_mapping_buffer_gdr.get_tensor()
+            expert_weights_tensor = expert_weights_buffer_gdr.tensor
+            expert_token_mapping_tensor = expert_token_mapping_buffer_gdr.tensor
         else:
             topk_weights = torch.tensor(batch.meta_c.topk_weights, dtype=torch.float32, device="cuda")
             new_mappings = torch.tensor(new_mappings, dtype=torch.int32, device="cuda")

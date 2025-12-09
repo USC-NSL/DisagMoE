@@ -247,7 +247,7 @@ class AttentionForwardBatch(ForwardBatch):
 
 @dataclass
 class ExpertForwardBatch(ForwardBatch):
-    batch_sizes: Optional[Union[List[int], torch.Tensor]]
+    batch_sizes: Optional[torch.Tensor]
     m_indices: Optional[torch.Tensor]
     
     def to_string(self) -> str:

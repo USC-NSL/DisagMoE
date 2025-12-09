@@ -10,7 +10,6 @@ import torch
 import pickle
 from typing import List, Any, Optional
 import numpy as np
-from disagmoe.ops.indices import get_m_indices
 
 def pack_flash_attn_meta(buffer_meta: torch.Tensor,
                          buffer_locs: torch.Tensor,
@@ -182,19 +181,20 @@ def make_expert_dummy_inputs(
     hidden_size: int,
     num_experts_per_rank: int,
     expert_ids: torch.Tensor,
-    need_m_indices: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     assert expert_ids is not None
     hiddens = torch.zeros((batch_size, hidden_size), device="cuda")
     batch_sizes = torch.tensor(
         [batch_size // num_experts_per_rank] * num_experts_per_rank,
-        dtype=torch.int64,
-        device="cpu",
+        dtype=torch.int64, device="cuda",
     )
 
-    m_indices: Optional[torch.Tensor] = None
-    if need_m_indices:
-        m_indices = get_m_indices(batch_sizes, expert_ids)
+    m_indices = torch.cat(
+        [
+            torch.full((batch_size // num_experts_per_rank,), i, dtype=torch.int32, device="cuda") 
+            for i in range(num_experts_per_rank)
+        ]
+    ).flatten()
 
     return hiddens, batch_sizes, m_indices
 
