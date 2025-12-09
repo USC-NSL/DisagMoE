@@ -82,9 +82,10 @@ public:
 class TensorLocalChannel: public Channel {
     protected:
         cudaStream_t stream;
-        std::queue<uintptr_t> data_buffer{};
+        // Separate queues per batch type to avoid cross-direction mixups
+        std::queue<uintptr_t> data_buffers[3];
         mutable std::mutex m;
-        std::condition_variable c;
+        std::condition_variable c[3];
     
     public:
         TensorLocalChannel(int device_id, cudaStream_t stream = nullptr);

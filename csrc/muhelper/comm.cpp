@@ -87,32 +87,47 @@ TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
     } 
 }
 
+namespace {
+inline int queue_index(const BatchMetadata& metadata) {
+    switch (metadata.batch_tag) {
+        case BatchTag::ATTENTION: return 0;
+        case BatchTag::EXPERT: return 1;
+        case BatchTag::TOKENIZER: return 2;
+        default: return 0;
+    }
+}
+} // namespace
+
 void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
+    int idx = queue_index(metadata);
     std::lock_guard<std::mutex> lock(m);
-    data_buffer.push(data);
-    auto qsize = data_buffer.size();
-    c.notify_one();
+    data_buffers[idx].push(data);
+    auto qsize = data_buffers[idx].size();
+    c[idx].notify_one();
     if (qsize > 1024) {
         DMOE_LOG(WARNING) << "[TensorLocalChannel] queue backlog=" << qsize
                           << " elems for peer " << this->other
+                          << " tag=" << static_cast<int>(metadata.batch_tag)
                           << LEND;
     }
 }
 
 void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     std::unique_lock<std::mutex> lock(m);
+    int idx = queue_index(metadata);
     auto t0 = t_now();
-    while (data_buffer.empty()) {
-        c.wait(lock);
+    while (data_buffers[idx].empty()) {
+        c[idx].wait(lock);
     }
     auto waited = static_cast<long long>(t_now()) - static_cast<long long>(t0);
     if (waited > 5000) { // microseconds
         DMOE_LOG(WARNING) << "[TensorLocalChannel] recv waited " << waited
                           << "us for peer " << this->other
+                          << " tag=" << static_cast<int>(metadata.batch_tag)
                           << LEND;
     }
-    uintptr_t data_to_recv = data_buffer.front();
-    data_buffer.pop();
+    uintptr_t data_to_recv = data_buffers[idx].front();
+    data_buffers[idx].pop();
     CUDACHECK(cudaMemcpyAsync((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice, this->stream));
 }
 
