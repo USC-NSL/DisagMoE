@@ -84,10 +84,10 @@ class AttentionEngineMixin:
             
         self.req_tracker: Dict[int, int] = {}
         
-        post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.max_seq_len
+        post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.top_k
         self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
-        self.expert_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
-        self.expert_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+        self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
+        self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -152,8 +152,8 @@ class AttentionEngineMixin:
         positions = schedule_batch.seq_lens_tensor.to(torch.int64)
         
         if use_gdrcopy_optimization:
-            expert_ids_buffer_gdr = self.expert_ids_staging_gdr.get_one_handle()
-            expert_weights_buffer_gdr = self.expert_weights_staging_gdr.get_one_handle()
+            expert_ids_buffer_gdr = self.attn_topk_ids_staging_gdr.get_one_handle()
+            expert_weights_buffer_gdr = self.attn_topk_weights_staging_gdr.get_one_handle()
             expert_ids_buffer = expert_ids_buffer_gdr.tensor
             expert_weights_buffer = expert_weights_buffer_gdr.tensor
         else:
@@ -198,7 +198,7 @@ class AttentionEngineMixin:
         
         new_meta_c.duplicate_topk(self.model_config.top_k)
         
-        if use_gdrcopy_optimization:
+        if use_gdrcopy_optimization and batch.metadata.use_cuda_graph:
             expert_ids = batch.expert_ids_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
             expert_weights = batch.expert_weights_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
         else:
@@ -246,7 +246,7 @@ class AttentionEngineMixin:
     
     @nvtx_range("attn_engine.process_batch_attn")
     def process_batch_attn(self, batch: TokenBatchCWrapper) -> Optional[TokenBatchCWrapper]:
-        # get_logger().info(f"process_batch_attn: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}, input_tensor.shape {input_tensor.shape}")
+        # get_logger().info(f"process_batch_attn: layer_id {batch.metadata.layer_id}, req_ids {batch.metadata.req_ids}, input_tensor.shape {batch.data.shape}")
         forward_batch = self.preprocess_batch_attn(batch)
         if forward_batch is None:
             return None
@@ -390,7 +390,7 @@ class ExpertEngineMixin:
         _log_memory_usage("After building expert executor")
         
         self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
-        self.expert_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
+        self.expert_token_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
     
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
@@ -416,7 +416,7 @@ class ExpertEngineMixin:
         new_mappings = list(batch.meta_c.sort_by_attention())
             
         if use_gdrcopy_optimization:
-            expert_weights_buffer_gdr = self.expert_weights_staging_gdr.get_one_handle()
+            expert_weights_buffer_gdr = self.expert_token_weights_staging_gdr.get_one_handle()
             expert_token_mapping_buffer_gdr = self.expert_token_mapping_gdr.get_one_handle()
             expert_weights_buffer_gdr.copy_from_host_float(topk_weights)
             expert_token_mapping_buffer_gdr.copy_from_host_int32(new_mappings)
@@ -448,7 +448,7 @@ class ExpertEngineMixin:
     
     @nvtx_range("expert_engine.process_batch_expert")
     def process_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[TokenBatchCWrapper]:
-        # get_logger().info(f"process_batch_expert: layer_id {meta_c.layer_id}, req_ids {meta_c.req_ids}")
+        # get_logger().info(f"process_batch_expert: layer_id {batch.metadata.layer_id}, req_ids {batch.metadata.req_ids}")
         try:
             forward_batch = self.preprocess_batch_expert(batch)
             result = self.execute_batch_expert(forward_batch)
@@ -652,7 +652,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         torch.cuda.set_device(self.device)
         torch.set_default_device(self.device)
         torch.cuda.synchronize()
-        self.stream = torch.cuda.current_stream()
+        self.stream = torch.cuda.Stream(device=self.device, priority=-1)
+        torch.cuda.set_stream(self.stream)
         get_logger().info(f"stream: {self.stream.cuda_stream}")
         set_tensor_model_parallel_config(model_config)
             

@@ -289,7 +289,7 @@ class AttnExecutor(Executor):
     
     def execute_normal(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
         outputs, topk_weights, topk_ids = self.execute_eager(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=batch.req_ids)
-        assert batch.expert_ids_buffer is None and batch.expert_weights_buffer is None, "Expert buffers should be None for eager execution"
+        
         return AttentionForwardResult(
             hiddens=outputs,
             expert_weights=topk_weights,

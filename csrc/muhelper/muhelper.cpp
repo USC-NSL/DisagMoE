@@ -6,6 +6,7 @@
 #include <ctime>
 #include <utility>
 #include <atomic>
+#include <pthread.h>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -92,11 +93,13 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
     this->channels[cid]->send(buf, meta);
+    this->channels[cid]->sync();
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
+    pthread_setname_np(pthread_self(), "MuDispatcherThread");
     cudaDeviceSynchronize();
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
@@ -425,6 +428,7 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
 }
 
 void MuPool::run() {
+    pthread_setname_np(pthread_self(), "MuPoolThread");
     cudaDeviceSynchronize();
     if (this->channels.empty()) {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
@@ -483,8 +487,8 @@ void MuPool::run() {
 
         // process the incoming batch and sync the NCCL CUDA streams
         for (auto &p : pending) {
-            this->process_batch(p.tensor, p.meta);
             this->peer_channels[p.peer_id]->sync();
+            this->process_batch(p.tensor, p.meta);
         }
     }
 }

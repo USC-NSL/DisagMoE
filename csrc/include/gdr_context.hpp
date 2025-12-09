@@ -3,6 +3,7 @@
 #include <gdrapi.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <immintrin.h>
 #include <torch/torch.h>
 #include "cuda_utils.h"
 
@@ -62,7 +63,7 @@ public:
             throw std::runtime_error("GdrContext::copy_from_host overflow");
         void* dst = static_cast<char*>(cpu_ptr_) + dst_offset;
         std::memcpy(dst, src, nbytes);
-        this->sync();
+        this->h2d_sync();
     }
     
     inline void copy_from_host_tensor(const torch::Tensor& src, size_t nbytes) {
@@ -88,12 +89,13 @@ public:
     }
 
     /// Copy data back from GPU memory (BAR1 → host)
-    inline void copy_to_host(void* dst, size_t nbytes, size_t src_offset = 0) const {
+    inline void copy_to_host(void* dst, size_t nbytes, size_t src_offset = 0) {
         if (!dst) throw std::runtime_error("GdrContext::copy_to_host: dst == nullptr");
         if (src_offset + nbytes > size_)
             throw std::runtime_error("GdrContext::copy_to_host overflow");
         const void* src = static_cast<const char*>(cpu_ptr_) + src_offset;
         std::memcpy(dst, src, nbytes);
+        this->d2h_sync();
     }
 
     inline void copy_to_host_tensor(torch::Tensor& dst, size_t nbytes) {
@@ -199,11 +201,16 @@ private:
         }
     }
 
-    void sync() {
+    inline void h2d_sync() {
+        _mm_sfence();
         CUDACHECK(cudaDeviceFlushGPUDirectRDMAWrites(
             cudaFlushGPUDirectRDMAWritesTarget::cudaFlushGPUDirectRDMAWritesTargetCurrentDevice,
             cudaFlushGPUDirectRDMAWritesScope::cudaFlushGPUDirectRDMAWritesToOwner
         ));
+    }
+
+    inline void d2h_sync() {
+        _mm_lfence();
     }
 
     static void ensure_gdr_open() {

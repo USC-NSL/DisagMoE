@@ -29,7 +29,6 @@ inline auto& get_op_gather_and_sum_tokens() {
     return op;
 }
 
-// TODO: have a dedicated CUDA stream to deal with GPU memory copy.
 struct TokenBatch: ScheduleUnit {
     torch::Tensor data;
     batch_metadata_t metadata;
