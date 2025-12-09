@@ -536,8 +536,8 @@ void MuPool::run() {
 
         // process the incoming batch and sync the NCCL CUDA streams
         for (auto &p : pending) {
-            this->process_batch(p.tensor, p.meta);
             this->peer_channels[p.peer_id]->sync();
+            this->process_batch(p.tensor, p.meta);
         }
     }
 }
