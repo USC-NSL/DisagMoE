@@ -90,13 +90,26 @@ TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
 void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
     std::lock_guard<std::mutex> lock(m);
     data_buffer.push(data);
+    auto qsize = data_buffer.size();
     c.notify_one();
+    if (qsize > 1024) {
+        DMOE_LOG(WARNING) << "[TensorLocalChannel] queue backlog=" << qsize
+                          << " elems for peer " << this->other
+                          << LEND;
+    }
 }
 
 void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
     std::unique_lock<std::mutex> lock(m);
+    auto t0 = t_now();
     while (data_buffer.empty()) {
         c.wait(lock);
+    }
+    auto waited = static_cast<long long>(t_now()) - static_cast<long long>(t0);
+    if (waited > 5000) { // microseconds
+        DMOE_LOG(WARNING) << "[TensorLocalChannel] recv waited " << waited
+                          << "us for peer " << this->other
+                          << LEND;
     }
     uintptr_t data_to_recv = data_buffer.front();
     data_buffer.pop();
