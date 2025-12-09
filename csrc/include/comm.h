@@ -47,6 +47,11 @@ public:
     virtual void initialize() {}
 
     virtual void sync() {}
+
+    virtual void warmup_send(int *send_buf, int count) {}
+
+    virtual void warmup_recv(int *recv_buf, int count) {}
+
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -73,6 +78,11 @@ public:
     void sync() override;
 
     void initialize() override;
+
+    void warmup_send(int *send_buf, int count) override;
+
+    void warmup_recv(int *recv_buf, int count) override;
+
 };
 
 class TensorLocalChannel: public Channel {

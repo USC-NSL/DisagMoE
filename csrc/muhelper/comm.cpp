@@ -73,6 +73,30 @@ void NcclChannel::recv(uintptr_t data_ptr, const BatchMetadata& metadata) {
     ));
 }
 
+void NcclChannel::warmup_send(int *send_buf, int count) {
+    // do a simple all reduce to warm up the NCCL communication
+    NCCLCHECK(ncclSend(
+        send_buf,
+        /*count=*/ count,
+        /*datatype=*/ ncclInt,
+        /*peer=*/ this->m_other(),
+        this->comm,
+        this->stream
+    ));
+}
+
+void NcclChannel::warmup_recv(int *recv_buf, int count) {
+    // do a simple all reduce to warm up the NCCL communication
+    NCCLCHECK(ncclRecv(
+        recv_buf,
+        /*count=*/ count,
+        /*datatype=*/ ncclInt,
+        /*peer=*/ this->m_other(),
+        this->comm,
+        this->stream
+    ));
+}
+
 void NcclChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
