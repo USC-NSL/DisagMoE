@@ -60,7 +60,6 @@ void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
     tx_range _{"UnifiedDispatcher::_send_to_attn_once"};
     // DMOE_LOG(INFO) << "expert " << device_id << " sending a batch: " << *batch.metadata << ", n_ele=" << batch.data.numel()  << LEND;
 
-    NCCLCHECK(ncclGroupStart());
     for (int i = 0, j = 1, n = batch.metadata->attn_dp_ranks.size(); i < n; i = j) {
         int rank = batch.metadata->attn_dp_ranks[i];
         auto cid = this->_attn_get_channel_id(rank);
@@ -71,5 +70,4 @@ void UnifiedDispatcher::_send_to_attn_once(TokenBatch batch) {
         this->_send_batch(cid, buf, batch.metadata->slice(i, j));
         // DMOE_LOG(INFO) << "expert send a batch to attn: " << batch.metadata->slice(i, j) << LEND;
     }
-    NCCLCHECK(ncclGroupEnd());
-}
+}   

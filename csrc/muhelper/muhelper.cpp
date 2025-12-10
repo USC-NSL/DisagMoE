@@ -184,6 +184,9 @@ void MuDispatcher::run() {
         {
             // Fetch a batch from the queue, lock required (for the send_queue).
             std::unique_lock<std::mutex> lock(this->mtx);
+            if (this->comm_log_.is_open()) {
+                this->comm_log_ << "waiting for cv at rank " << this->device_id << " ..." << LEND;
+            }
             this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
             // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
             auto pr = this->send_queue.front();
