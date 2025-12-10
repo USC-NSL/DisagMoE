@@ -166,12 +166,12 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_thresho
     }
     if (total_tokens > 0) {
         this->num_tokens.fetch_sub(total_tokens, std::memory_order_relaxed);
-        if (this->get_num_tokens() == 0) {
-            DMOE_LOG(WARNING) << "SPSC token queue drained (restricted) in UnifiedLayer (layer_id="
-                              << this->layer_id
-                              << "); scheduler consumed all queued tokens up to threshold."
-                              << LEND;
-        }
+        // if (this->get_num_tokens() == 0) {
+        //     DMOE_LOG(WARNING) << "SPSC token queue drained (restricted) in UnifiedLayer (layer_id="
+        //                       << this->layer_id
+        //                       << "); scheduler consumed all queued tokens up to threshold."
+        //                       << LEND;
+        // }
     }
     return result;
 }
