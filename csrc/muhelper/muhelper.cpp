@@ -192,6 +192,7 @@ void MuDispatcher::run() {
             // log queue size after pop
             if (this->comm_log_.is_open()) {
                 this->comm_log_ << "queue size after pop: " << this->send_queue.size() << " for device " << this->device_id << std::endl;
+            }
         }
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
