@@ -90,12 +90,17 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     packed_data.peer_id = this->device_id;
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
+    int dst_rank = this->channels[cid]->get_peer_id();
+    int src_rank = this->device_id;
+
     this->peer_mq[cid]->send(data.c_str(), data.size());
-    DMOE_LOG(WARNING) << "MuDispatcher::_send_batch metadata sent to mq on channel "
-                      << cid << " for batch: " << meta << LEND;
+    DMOE_LOG(WARNING) << "MuDispatcher::_send_batch metadata sent ("
+                      << "src_rank=" << src_rank << " -> dst_rank=" << dst_rank
+                      << ", channel=" << cid << ") for batch: " << meta << LEND;
     this->channels[cid]->send(buf, meta);
-    DMOE_LOG(WARNING) << "MuDispatcher::_send_batch tensor payload sent on channel "
-                      << cid << " for batch: " << meta << LEND;
+    DMOE_LOG(WARNING) << "MuDispatcher::_send_batch tensor payload sent ("
+                      << "src_rank=" << src_rank << " -> dst_rank=" << dst_rank
+                      << ", channel=" << cid << ") for batch: " << meta << LEND;
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
