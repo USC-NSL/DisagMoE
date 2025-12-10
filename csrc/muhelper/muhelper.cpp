@@ -143,6 +143,14 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     uint64_t meta_hash = hash_batch_metadata(meta);
     const char* is_attn = meta.is_attention() ? "true" : "false";
 
+    if (this->comm_log_.is_open()) {
+        this->comm_log_ << "pre-meta: " << src_rank << " -> " << dst_rank
+                        << ", layer_id=" << layer_id
+                        << ", is_attn=" << is_attn
+                        << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash
+                        << std::dec << std::setfill(' ') << std::endl;
+    }
+
     this->peer_mq[cid]->send(data.c_str(), data.size());
     if (this->comm_log_.is_open()) {
         this->comm_log_ << "send meta: " << src_rank << " -> " << dst_rank
