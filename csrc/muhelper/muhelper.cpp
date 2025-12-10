@@ -189,6 +189,9 @@ void MuDispatcher::run() {
             auto pr = this->send_queue.front();
             batch = pr.first;
             this->send_queue.pop();
+            // log queue size after pop
+            if (this->comm_log_.is_open()) {
+                this->comm_log_ << "queue size after pop: " << this->send_queue.size() << " for device " << this->device_id << std::endl;
         }
         // Send the batch, no lock required, since send_queue won't be changed.
         this->_send_once(batch);
@@ -516,6 +519,9 @@ void MuPool::run() {
         pending.reserve(MU_POOL_GROUP_RECV_LIMIT);
 
         // Block for the first metadata
+        if (this->comm_log_.is_open()) {
+            this->comm_log_ << "block-meta, device_id=" << this->device_id << std::endl;
+        }
         int peer_id;
         batch_metadata_t meta;
         recv_metadata(peer_id, meta, /*non_blocking=*/ false);
