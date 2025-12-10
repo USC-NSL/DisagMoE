@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <fstream>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -26,6 +27,10 @@ protected:
 
     std::thread thread;
     std::vector<Channel_t> channels;
+
+    // Optional per-helper communication log file (e.g., dispatcher / pool).
+    // Only used by specific subclasses.
+    std::ofstream comm_log_;
 
     virtual void run() = 0;
 

@@ -6,6 +6,8 @@
 #include <ctime>
 #include <utility>
 #include <atomic>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -33,6 +35,23 @@ struct MetadataWithPeerId {
         archive(peer_id, metadata);
     }
 };
+
+// Helper to open a per-helper communication log under ~/coulson/comm_logs.
+static std::ofstream open_comm_log(const std::string &role, int rank) {
+    const char* home = std::getenv("HOME");
+    std::string base = home ? std::string(home) : std::string(".");
+    std::string dir = base + "/coulson/comm_logs";
+
+    struct stat st{};
+    if (stat(dir.c_str(), &st) != 0) {
+        // Best-effort mkdir; ignore errors if it already exists or cannot be created.
+        mkdir(dir.c_str(), 0755);
+    }
+
+    std::string path = dir + "/" + role + "_" + std::to_string(rank) + ".txt";
+    std::ofstream ofs(path, std::ios::app);
+    return ofs;
+}
 
 // MuHelper
 
@@ -79,6 +98,8 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id,
     for (int i = 0; i < channels.size(); i ++) {
         peer_mq[i] = disagmoe::mq_factory()(/*isPush=*/ true);
     }
+    // Open per-dispatcher communication log (one file per device_id).
+    this->comm_log_ = open_comm_log("dispatcher", this->device_id);
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta) {
@@ -96,13 +117,17 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     const char* is_attn = meta.is_attention() ? "true" : "false";
 
     this->peer_mq[cid]->send(data.c_str(), data.size());
-    DMOE_LOG(WARNING) << "send meta: " << src_rank << " -> " << dst_rank
-                      << ", req_id=" << req_id
-                      << ", is_attn=" << is_attn << LEND;
+    if (this->comm_log_.is_open()) {
+        this->comm_log_ << "send meta: " << src_rank << " -> " << dst_rank
+                        << ", req_id=" << req_id
+                        << ", is_attn=" << is_attn << std::endl;
+    }
     this->channels[cid]->send(buf, meta);
-    DMOE_LOG(WARNING) << "send tensor: " << src_rank << " -> " << dst_rank
-                      << ", req_id=" << req_id
-                      << ", is_attn=" << is_attn << LEND;
+    if (this->comm_log_.is_open()) {
+        this->comm_log_ << "send tensor: " << src_rank << " -> " << dst_rank
+                        << ", req_id=" << req_id
+                        << ", is_attn=" << is_attn << std::endl;
+    }
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -363,6 +388,8 @@ MuPool::MuPool(
     this->tokens_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
     this->num_batches_per_layer_ = std::vector<int>(num_layers * num_groups, 0);
     this->queueing_timers = std::map<int, clock_t>();
+    // Open per-pool communication log (one file per device_id).
+    this->comm_log_ = open_comm_log("pool", this->device_id);
 }
 
 MuPool::~MuPool() {}
@@ -458,9 +485,11 @@ void MuPool::run() {
         int src_rank = peer_id;
         int req_id = meta->req_ids.empty() ? -1 : meta->req_ids[0];
         const char* is_attn = meta->is_attention() ? "true" : "false";
-        DMOE_LOG(WARNING) << "recv meta: " << src_rank << " -> " << dst_rank
-                          << ", req_id=" << req_id
-                          << ", is_attn=" << is_attn << LEND;
+        if (this->comm_log_.is_open()) {
+            this->comm_log_ << "recv meta: " << src_rank << " -> " << dst_rank
+                            << ", req_id=" << req_id
+                            << ", is_attn=" << is_attn << std::endl;
+        }
         
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
@@ -479,9 +508,11 @@ void MuPool::run() {
             int src_rank_nb = pid;
             int req_id_nb = m->req_ids.empty() ? -1 : m->req_ids[0];
             const char* is_attn_nb = m->is_attention() ? "true" : "false";
-            DMOE_LOG(WARNING) << "recv meta: " << src_rank_nb << " -> " << dst_rank_nb
-                              << ", req_id=" << req_id_nb
-                              << ", is_attn=" << is_attn_nb << LEND;
+            if (this->comm_log_.is_open()) {
+                this->comm_log_ << "recv meta: " << src_rank_nb << " -> " << dst_rank_nb
+                                << ", req_id=" << req_id_nb
+                                << ", is_attn=" << is_attn_nb << std::endl;
+            }
             
             torch::Tensor t = torch::empty(
                 {m->num_tokens(), m->token_hidden_dim()}, 
@@ -501,9 +532,11 @@ void MuPool::run() {
             int src_rank_t = p.peer_id;
             int req_id_t = p.meta->req_ids.empty() ? -1 : p.meta->req_ids[0];
             const char* is_attn_t = p.meta->is_attention() ? "true" : "false";
-            DMOE_LOG(WARNING) << "recv tensor: " << src_rank_t << " -> " << dst_rank_t
-                              << ", req_id=" << req_id_t
-                              << ", is_attn=" << is_attn_t << LEND;
+            if (this->comm_log_.is_open()) {
+                this->comm_log_ << "recv tensor: " << src_rank_t << " -> " << dst_rank_t
+                                << ", req_id=" << req_id_t
+                                << ", is_attn=" << is_attn_t << std::endl;
+            }
         }
         #if D_GROUP_NCCL_RECV
         NCCLCHECK(ncclGroupEnd());
