@@ -93,13 +93,16 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     int dst_rank = this->channels[cid]->get_peer_id();
     int src_rank = this->device_id;
     int req_id = meta.req_ids.empty() ? -1 : meta.req_ids[0];
+    const char* is_attn = meta.is_attention() ? "true" : "false";
 
     this->peer_mq[cid]->send(data.c_str(), data.size());
     DMOE_LOG(WARNING) << "send meta: " << src_rank << " -> " << dst_rank
-                      << ", req_id=" << req_id << LEND;
+                      << ", req_id=" << req_id
+                      << ", is_attn=" << is_attn << LEND;
     this->channels[cid]->send(buf, meta);
     DMOE_LOG(WARNING) << "send tensor: " << src_rank << " -> " << dst_rank
-                      << ", req_id=" << req_id << LEND;
+                      << ", req_id=" << req_id
+                      << ", is_attn=" << is_attn << LEND;
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -454,8 +457,10 @@ void MuPool::run() {
         int dst_rank = this->device_id;
         int src_rank = peer_id;
         int req_id = meta->req_ids.empty() ? -1 : meta->req_ids[0];
+        const char* is_attn = meta->is_attention() ? "true" : "false";
         DMOE_LOG(WARNING) << "recv meta: " << src_rank << " -> " << dst_rank
-                          << ", req_id=" << req_id << LEND;
+                          << ", req_id=" << req_id
+                          << ", is_attn=" << is_attn << LEND;
         
         torch::Tensor tensor = torch::empty(
             {meta->num_tokens(), meta->token_hidden_dim()}, 
@@ -473,8 +478,10 @@ void MuPool::run() {
             int dst_rank_nb = this->device_id;
             int src_rank_nb = pid;
             int req_id_nb = m->req_ids.empty() ? -1 : m->req_ids[0];
+            const char* is_attn_nb = m->is_attention() ? "true" : "false";
             DMOE_LOG(WARNING) << "recv meta: " << src_rank_nb << " -> " << dst_rank_nb
-                              << ", req_id=" << req_id_nb << LEND;
+                              << ", req_id=" << req_id_nb
+                              << ", is_attn=" << is_attn_nb << LEND;
             
             torch::Tensor t = torch::empty(
                 {m->num_tokens(), m->token_hidden_dim()}, 
@@ -493,8 +500,10 @@ void MuPool::run() {
             int dst_rank_t = this->device_id;
             int src_rank_t = p.peer_id;
             int req_id_t = p.meta->req_ids.empty() ? -1 : p.meta->req_ids[0];
+            const char* is_attn_t = p.meta->is_attention() ? "true" : "false";
             DMOE_LOG(WARNING) << "recv tensor: " << src_rank_t << " -> " << dst_rank_t
-                              << ", req_id=" << req_id_t << LEND;
+                              << ", req_id=" << req_id_t
+                              << ", is_attn=" << is_attn_t << LEND;
         }
         #if D_GROUP_NCCL_RECV
         NCCLCHECK(ncclGroupEnd());

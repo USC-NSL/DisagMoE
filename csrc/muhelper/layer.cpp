@@ -21,10 +21,12 @@ void UnifiedLayer::add_batch(const TokenBatch &batch) {
     TokenBatch to_push = batch;
     int n_tokens = batch.metadata->num_tokens();
     bool warned_full = false;
+    const char* is_attn = this->is_attention() ? "true" : "false";
     while (!this->batch_queue.push(std::move(to_push))) {
         if (!warned_full) {
             DMOE_LOG(WARNING) << "SPSC batch queue full in UnifiedLayer (layer_id="
                               << this->layer_id
+                              << ", is_attn=" << is_attn
                               << "), receiver thread blocking until scheduler drains."
                               << LEND;
             warned_full = true;
@@ -39,10 +41,12 @@ void UnifiedLayer::add_batch(torch::Tensor data, const batch_metadata_t &meta) {
     TokenBatch batch{data, meta};
     int n_tokens = meta->num_tokens();
     bool warned_full = false;
+    const char* is_attn = this->is_attention() ? "true" : "false";
     while (!this->batch_queue.push(std::move(batch))) {
         if (!warned_full) {
             DMOE_LOG(WARNING) << "SPSC batch queue full in UnifiedLayer (layer_id="
                               << this->layer_id
+                              << ", is_attn=" << is_attn
                               << "), receiver thread blocking until scheduler drains."
                               << LEND;
             warned_full = true;
@@ -113,10 +117,12 @@ std::vector<TokenBatch> UnifiedLayer::get_batches_restricted(int token_threshold
 void UnifiedLayer::add_token(const TokenTopKInfo &token) {
     TokenTopKInfo to_push = token;
     bool warned_full = false;
+    const char* is_attn = this->is_attention() ? "true" : "false";
     while (!this->token_queue.push(std::move(to_push))) {
         if (!warned_full) {
             DMOE_LOG(WARNING) << "SPSC token queue full in UnifiedLayer (layer_id="
                               << this->layer_id
+                              << ", is_attn=" << is_attn
                               << "), receiver thread blocking until scheduler drains."
                               << LEND;
             warned_full = true;
