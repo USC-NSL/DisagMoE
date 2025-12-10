@@ -607,6 +607,7 @@ void MuPool::run() {
             this->peer_channels[p.peer_id]->sync();
             if (this->comm_log_.is_open()) {
                 this->comm_log_ << "rank " << this->device_id << " synced channel " << p.peer_id << LEND;
+            }
             this->process_batch(p.tensor, p.meta);
         }
     }
