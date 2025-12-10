@@ -143,12 +143,12 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_all_tokens() {
     }
     if (drained_tokens > 0) {
         this->num_tokens.fetch_sub(drained_tokens, std::memory_order_relaxed);
-        if (this->get_num_tokens() == 0) {
-            DMOE_LOG(WARNING) << "SPSC token queue drained in UnifiedLayer (layer_id="
-                              << this->layer_id
-                              << "); scheduler consumed all queued tokens."
-                              << LEND;
-        }
+        // if (this->get_num_tokens() == 0) {
+        //     DMOE_LOG(WARNING) << "SPSC token queue drained in UnifiedLayer (layer_id="
+        //                       << this->layer_id
+        //                       << "); scheduler consumed all queued tokens."
+        //                       << LEND;
+        // }
     }
     return result;
 }
