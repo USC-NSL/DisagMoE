@@ -154,8 +154,6 @@ protected:
 
     void recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking = false);
 
-    void recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta);
-
     virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta) = 0;
 
     void start_queueing_timer(const std::vector<int> &req_ids);

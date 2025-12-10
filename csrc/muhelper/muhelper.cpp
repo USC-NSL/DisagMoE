@@ -119,9 +119,7 @@ void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
     packed_data.metadata = *batch.metadata;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
-
-    uintptr_t data_ptr = (uintptr_t)batch.data.data_ptr();
-    this->channels[cid]->send(data_ptr, *batch.metadata);
+    this->channels[cid]->send_batch(batch.data, *batch.metadata);
 
     cudaEvent_t event;
     CUDACHECK(cudaEventCreate(&event));
@@ -139,7 +137,7 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
-    this->channels[cid]->send(buf, meta);
+    this->channels[cid]->send_raw(buf, meta);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
@@ -173,6 +171,7 @@ void MuDispatcher::run() {
 
 void MuDispatcher::put(TokenBatch batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
+    // batch.data = batch.data.clone().detach();
     this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
 }
@@ -423,15 +422,6 @@ void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocki
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
-void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta) {
-    // DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
-    ASSERT(0 <= peer_id && peer_id < this->peer_channels.size());
-    ASSERT(this->peer_channels[peer_id].get() != nullptr);
-    ASSERT(meta.get() != nullptr);
-    ASSERT(tensor_buf != 0);
-    this->peer_channels[peer_id]->recv(tensor_buf, *meta);
-}
-
 void MuPool::put_batch(TokenBatch batch) {
     // CAREFUL USE:
     // This is only used to directly put a batch into the first attention layer.
@@ -524,7 +514,7 @@ void MuPool::run() {
         NCCLCHECK(ncclGroupStart());
         #endif
         for (auto &p : pending) {
-            this->peer_channels[p.peer_id]->recv((uintptr_t)p.tensor.data_ptr(), *p.meta);
+            this->peer_channels[p.peer_id]->recv_batch(tensor, *p.meta);
         }
         #if D_GROUP_NCCL_RECV
         NCCLCHECK(ncclGroupEnd());
