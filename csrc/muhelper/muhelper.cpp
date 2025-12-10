@@ -8,6 +8,7 @@
 #include <atomic>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <iomanip>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -35,6 +36,31 @@ struct MetadataWithPeerId {
         archive(peer_id, metadata);
     }
 };
+
+// Simple 64-bit hash for BatchMetadata to correlate send/recv logs.
+static uint64_t hash_batch_metadata(const BatchMetadata &meta) {
+    auto mix = [](uint64_t &h, uint64_t v) {
+        // 64-bit mix (similar to boost::hash_combine)
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    };
+
+    uint64_t h = 0xcbf29ce484222325ULL;  // FNV-like offset basis
+    mix(h, static_cast<uint64_t>(meta.layer_id));
+    mix(h, static_cast<uint64_t>(meta.num_tokens()));
+
+    // Hash a subset of vectors; enough to distinguish most batches.
+    for (int v : meta.req_ids) {
+        mix(h, static_cast<uint64_t>(static_cast<uint32_t>(v)));
+    }
+    for (int v : meta.exp_ids) {
+        mix(h, static_cast<uint64_t>(static_cast<uint32_t>(v)));
+    }
+    for (int v : meta.attn_dp_ranks) {
+        mix(h, static_cast<uint64_t>(static_cast<uint32_t>(v)));
+    }
+    // We skip floating-point fields for simplicity; not needed for correlation.
+    return h;
+}
 
 // Helper to open a per-helper communication log under ~/coulson/comm_logs.
 static std::ofstream open_comm_log(const std::string &role, int rank) {
@@ -113,20 +139,25 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     auto data = cerealize_(packed_data);
     int dst_rank = this->channels[cid]->get_peer_id();
     int src_rank = this->device_id;
-    int req_id = meta.req_ids.empty() ? -1 : meta.req_ids[0];
+    int layer_id = meta.layer_id;
+    uint64_t meta_hash = hash_batch_metadata(meta);
     const char* is_attn = meta.is_attention() ? "true" : "false";
 
     this->peer_mq[cid]->send(data.c_str(), data.size());
     if (this->comm_log_.is_open()) {
         this->comm_log_ << "send meta: " << src_rank << " -> " << dst_rank
-                        << ", req_id=" << req_id
-                        << ", is_attn=" << is_attn << std::endl;
+                        << ", layer_id=" << layer_id
+                        << ", is_attn=" << is_attn
+                        << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash
+                        << std::dec << std::setfill(' ') << std::endl;
     }
     this->channels[cid]->send(buf, meta);
     if (this->comm_log_.is_open()) {
         this->comm_log_ << "send tensor: " << src_rank << " -> " << dst_rank
-                        << ", req_id=" << req_id
-                        << ", is_attn=" << is_attn << std::endl;
+                        << ", layer_id=" << layer_id
+                        << ", is_attn=" << is_attn
+                        << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash
+                        << std::dec << std::setfill(' ') << std::endl;
     }
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
@@ -483,12 +514,15 @@ void MuPool::run() {
         ASSERT_MSG(meta.get() != nullptr, "Metadata is nullptr while receiving from peer " + std::to_string(peer_id));
         int dst_rank = this->device_id;
         int src_rank = peer_id;
-        int req_id = meta->req_ids.empty() ? -1 : meta->req_ids[0];
+        int layer_id = meta->layer_id;
+        uint64_t meta_hash = hash_batch_metadata(*meta);
         const char* is_attn = meta->is_attention() ? "true" : "false";
         if (this->comm_log_.is_open()) {
             this->comm_log_ << "recv meta: " << src_rank << " -> " << dst_rank
-                            << ", req_id=" << req_id
-                            << ", is_attn=" << is_attn << std::endl;
+                            << ", layer_id=" << layer_id
+                            << ", is_attn=" << is_attn
+                            << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash
+                            << std::dec << std::setfill(' ') << std::endl;
         }
         
         torch::Tensor tensor = torch::empty(
@@ -506,12 +540,15 @@ void MuPool::run() {
             if (m.get() == nullptr) break; // nothing more to recv now
             int dst_rank_nb = this->device_id;
             int src_rank_nb = pid;
-            int req_id_nb = m->req_ids.empty() ? -1 : m->req_ids[0];
+            int layer_id_nb = m->layer_id;
+            uint64_t meta_hash_nb = hash_batch_metadata(*m);
             const char* is_attn_nb = m->is_attention() ? "true" : "false";
             if (this->comm_log_.is_open()) {
                 this->comm_log_ << "recv meta: " << src_rank_nb << " -> " << dst_rank_nb
-                                << ", req_id=" << req_id_nb
-                                << ", is_attn=" << is_attn_nb << std::endl;
+                                << ", layer_id=" << layer_id_nb
+                                << ", is_attn=" << is_attn_nb
+                                << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash_nb
+                                << std::dec << std::setfill(' ') << std::endl;
             }
             
             torch::Tensor t = torch::empty(
@@ -530,12 +567,15 @@ void MuPool::run() {
             this->peer_channels[p.peer_id]->recv((uintptr_t)p.tensor.data_ptr(), *p.meta);
             int dst_rank_t = this->device_id;
             int src_rank_t = p.peer_id;
-            int req_id_t = p.meta->req_ids.empty() ? -1 : p.meta->req_ids[0];
+            int layer_id_t = p.meta->layer_id;
+            uint64_t meta_hash_t = hash_batch_metadata(*p.meta);
             const char* is_attn_t = p.meta->is_attention() ? "true" : "false";
             if (this->comm_log_.is_open()) {
                 this->comm_log_ << "recv tensor: " << src_rank_t << " -> " << dst_rank_t
-                                << ", req_id=" << req_id_t
-                                << ", is_attn=" << is_attn_t << std::endl;
+                                << ", layer_id=" << layer_id_t
+                                << ", is_attn=" << is_attn_t
+                                << ", meta_hash=0x" << std::hex << std::setw(16) << std::setfill('0') << meta_hash_t
+                                << std::dec << std::setfill(' ') << std::endl;
             }
         }
         #if D_GROUP_NCCL_RECV
