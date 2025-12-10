@@ -84,15 +84,28 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id,
 }
 
 void MuDispatcher::clean_pending_sends() {
+    static int spin_count = 0;
     while (!this->pending_sends.empty()) {
         auto &pr = this->pending_sends.front();
         cudaError_t err = cudaEventQuery(pr.second);
         if (err == cudaSuccess) {
             this->pending_sends.pop();
+            spin_count = 0;
         } else if (err == cudaErrorNotReady) {
+            spin_count ++;
+            if (spin_count > 10000) {
+                DMOE_LOG(ERROR) << "spin count too large: " << spin_count << LEND;
+                // print out the queue
+                while (!this->pending_sends.empty()) {
+                    auto &pr = this->pending_sends.front();
+                    DMOE_LOG(ERROR) << "pending send: metadata=" << *pr.first.metadata << LEND;
+                    this->pending_sends.pop();
+                }
+                ASSERT_MSG(false, "spin count too large");
+            }
             break;
         } else {
-            DMOE_LOG(ERROR) << "cudaEventQuery failed: " << cudaGetErrorName(err) << ", error string: " << cudaGetErrorString(err) << LEND;
+            DMOE_LOG(ERROR) << "cudaEventQuery failed: " << cudaGetErrorName(err) << ", error string: " << cudaGetErrorString(err) << ", spin count: " << spin_count << LEND;
             ASSERT_MSG(false, "Failed to query cuda event");
         }
     }
