@@ -46,7 +46,7 @@ void debug_print_environ() {
 
 void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
-    tx_range _{"NcclChannel::send"};
+    // tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclSend(
         data, 
@@ -61,7 +61,7 @@ void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
 }
 
 void NcclChannel::recv(uintptr_t data_ptr, const BatchMetadata& metadata) {
-    tx_range _{"NcclChannel::recv"};
+    // tx_range _{"NcclChannel::recv"};
     void* data = reinterpret_cast<void*>(data_ptr);
     NCCLCHECK(ncclRecv(
         data,

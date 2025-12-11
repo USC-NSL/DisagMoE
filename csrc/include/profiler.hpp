@@ -104,13 +104,13 @@ public:
     }
 
     static void push(const std::string &msg) {
-        std::shared_lock lock(mtx);
+        // std::shared_lock lock(mtx);
 
         instance->push_(msg);
     }
 
     static void pop() {
-        std::shared_lock lock(mtx);
+        // std::shared_lock lock(mtx);
 
         instance->pop_();
     }
