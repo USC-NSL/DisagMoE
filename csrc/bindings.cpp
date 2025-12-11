@@ -100,10 +100,6 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("data", &TokenBatch::data)
         .def_readwrite("metadata", &TokenBatch::metadata);
 
-    py::class_<NcclChannel, Channel, std::shared_ptr<NcclChannel>>(m, "NcclChannel")
-        .def("send", &NcclChannel::send)
-        .def("recv", &NcclChannel::recv);
-
     py::class_<BlockManager, std::shared_ptr<BlockManager>>(m, "BlockManager")
         .def(py::init<int, int, int>())
         .def("close", &BlockManager::close)

@@ -21,11 +21,11 @@ class PyChannel: Channel {
 public:
     using Channel::Channel;
 
-    void send(uintptr_t data, const BatchMetadata& metadata) override {
-        PYBIND11_OVERRIDE_PURE(void, Channel, send);
+    void send_raw(uintptr_t data, const BatchMetadata& metadata) override {
+        PYBIND11_OVERRIDE_PURE(void, Channel, send_raw);
     }
     
-    void recv(uintptr_t data, const BatchMetadata& metadata) override {
-        PYBIND11_OVERRIDE_PURE(void, Channel, recv);
+    void recv_raw(uintptr_t data, const BatchMetadata& metadata) override {
+        PYBIND11_OVERRIDE_PURE(void, Channel, recv_raw);
     }
 };

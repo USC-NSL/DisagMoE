@@ -7,8 +7,11 @@
 
 #include <iomanip>
 #include <mutex>
+#include <memory>
 #include <cstring>
 #include <cstdlib>
+
+static std::shared_ptr<std::mutex> global_mutex = std::make_shared<std::mutex>();
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream): 
     Channel::Channel(party_local, party_other), unique_id(unique_id) {
@@ -43,11 +46,12 @@ void debug_print_environ() {
         printf("%s\n", *s);
     }
 }
-
-void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
+ 
+void NcclChannel::send_raw(uintptr_t data_ptr, const BatchMetadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
+    std::lock_guard<std::mutex> lock(*global_mutex);
     NCCLCHECK(ncclSend(
         data, 
         /*count=*/ metadata.num_element(),
@@ -60,9 +64,10 @@ void NcclChannel::send(uintptr_t data_ptr, const BatchMetadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sent " << local << " " << other << LEND;
 }
 
-void NcclChannel::recv(uintptr_t data_ptr, const BatchMetadata& metadata) {
+void NcclChannel::recv_raw(uintptr_t data_ptr, const BatchMetadata& metadata) {
     tx_range _{"NcclChannel::recv"};
     void* data = reinterpret_cast<void*>(data_ptr);
+    std::lock_guard<std::mutex> lock(*global_mutex);
     NCCLCHECK(ncclRecv(
         data,
         /*count=*/ metadata.num_element(),
@@ -71,6 +76,14 @@ void NcclChannel::recv(uintptr_t data_ptr, const BatchMetadata& metadata) {
         this->comm,
         this->stream
     ));
+}
+
+void NcclChannel::send_batch(const torch::Tensor &data, const BatchMetadata& metadata) {
+    this->send_raw((uintptr_t)data.data_ptr(), metadata);
+}
+
+void NcclChannel::recv_batch(const torch::Tensor &data, const BatchMetadata& metadata) {
+    this->recv_raw((uintptr_t)data.data_ptr(), metadata);
 }
 
 void NcclChannel::warmup_send(int *send_buf, int count) {
@@ -97,6 +110,10 @@ void NcclChannel::warmup_recv(int *recv_buf, int count) {
     ));
 }
 
+void NcclChannel::record_event(cudaEvent_t &event) {
+    CUDACHECK(cudaEventRecord(event, this->stream));
+}
+
 void NcclChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
@@ -111,27 +128,45 @@ TensorLocalChannel::TensorLocalChannel(int device_id, cudaStream_t stream):
     } 
 }
 
-void TensorLocalChannel::send(uintptr_t data, const BatchMetadata& metadata) {
+void TensorLocalChannel::send_raw(uintptr_t data, const BatchMetadata& metadata) {
     std::lock_guard<std::mutex> lock(m);
     data_buffer.push(data);
     c.notify_one();
 }
 
-void TensorLocalChannel::recv(uintptr_t data, const BatchMetadata& metadata) {
+void TensorLocalChannel::recv_raw(uintptr_t data, const BatchMetadata& metadata) {
     std::unique_lock<std::mutex> lock(m);
     while (data_buffer.empty()) {
         c.wait(lock);
     }
     uintptr_t data_to_recv = data_buffer.front();
     data_buffer.pop();
-    cudaMemcpy((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice);
+    cudaMemcpyAsync((void *)data, (void*) data_to_recv, metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice, this->stream);
+}
+
+void TensorLocalChannel::send_batch(const torch::Tensor &data, const BatchMetadata& metadata) {
+    std::lock_guard<std::mutex> lock(m);
+    batch_buffer.push(data);
+    c.notify_one();
+}
+
+void TensorLocalChannel::recv_batch(const torch::Tensor &data, const BatchMetadata& metadata) {
+    std::unique_lock<std::mutex> lock(m);
+    while (batch_buffer.empty()) {
+        c.wait(lock);
+    }
+    torch::Tensor data_to_recv = batch_buffer.front();
+    cudaMemcpyAsync((void *)data.data_ptr(), (void*) data_to_recv.data_ptr(), metadata.num_element() * metadata.get_datatype_size(), cudaMemcpyKind::cudaMemcpyDeviceToDevice, this->stream);
+    batch_buffer.pop();
 }
 
 void TensorLocalChannel::sync() {
     CUDACHECK(cudaStreamSynchronize(this->stream));
 }
 
-std::mutex global_mutex;
+void TensorLocalChannel::record_event(cudaEvent_t &event) {
+    CUDACHECK(cudaEventRecord(event, this->stream));
+}
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id) {
     auto channel = std::make_shared<NcclChannel>(party_local, party_other, unique_id);
