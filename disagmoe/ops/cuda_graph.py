@@ -211,6 +211,7 @@ def cuda_graph_preprocess_cuda(
     static_context_lens: Tensor,
     static_seq_start_loc: Tensor,
     
+    padded_batch_size: int,
     tokens_per_block: int = 2,
 ):
     torch.ops.disag_ops.cuda_graph_preprocess_fused(
@@ -229,6 +230,7 @@ def cuda_graph_preprocess_cuda(
         static_seq_lens,
         static_context_lens,
         static_seq_start_loc,
+        padded_batch_size,
         tokens_per_block,
     )
     
@@ -246,16 +248,20 @@ def copy_graph_results_cuda(
     
 def fused_copy_and_pad_cuda(
     hidden_states: Tensor,
+    batch_sizes: Tensor,
     m_indices: Tensor,
     out_hiddens: Tensor,
+    out_batch_sizes: Tensor,
     out_m_indices: Tensor,
     padded_bsz: int,
     tokens_per_block: int = 2,
 ):
     torch.ops.disag_ops.fused_copy_and_pad(
         hidden_states,
+        batch_sizes,
         m_indices,
         out_hiddens,
+        out_batch_sizes,
         out_m_indices,
         padded_bsz,
         tokens_per_block,

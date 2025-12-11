@@ -108,7 +108,8 @@ std::vector<TokenTopKInfo> UnifiedLayer::get_tokens_restricted(int token_thresho
 UnifiedLayerSchedulerBase::UnifiedLayerSchedulerBase(int num_attn_layers, int num_expert_layers, int topk):
     num_attn_layers(num_attn_layers), num_expert_layers(num_expert_layers), 
     num_layers(num_attn_layers + num_expert_layers),
-    top_k(topk > 0 ? topk : 1), attn_use_token_queue(topk > 1) {
+    top_k(topk > 0 ? topk : 1), attn_use_token_queue(topk > 1),
+    scheduler_mutex(std::make_shared<std::mutex>()) {
     for (int i = 0; i < num_attn_layers; i++) {
         auto attn_layer = UnifiedLayer::create_attention_layer(i);
         this->attn_layers.push_back(attn_layer);
@@ -139,11 +140,15 @@ TokenBatch UnifiedLayerSchedulerBase::get_batch_from_layer(int layer_id) {
         return TokenBatch {};
     }
     if (this->layer_uses_token_queue(layer_id)) {
+        this->scheduler_mutex->lock();
         auto tokens = this->layers[layer_id]->get_all_tokens();
+        this->scheduler_mutex->unlock();
         auto batch = TokenBatch::pack_topk_tokens(layer_id, tokens);
         return batch;
-    } else {
+    } else { 
+        this->scheduler_mutex->lock();
         auto batches = this->layers[layer_id]->get_all_batches();
+        this->scheduler_mutex->unlock();
         auto batch = TokenBatch::merge(batches);
         return batch;
     }
@@ -153,21 +158,26 @@ TokenBatch UnifiedLayerSchedulerBase::get_batch_from_layer_restricted(int layer_
     if (layer_id < 0 || layer_id >= (this->num_attn_layers + this->num_expert_layers)) {
         return TokenBatch {};
     }
-    if (token_threshold <= 0 || this->layers[layer_id]->get_num_tokens() <= token_threshold) {
-        return this->get_batch_from_layer(layer_id);
-    }
+    // if (token_threshold <= 0 || this->layers[layer_id]->get_num_tokens() <= token_threshold) {
+    //     return this->get_batch_from_layer(layer_id);
+    // }
     if (this->layer_uses_token_queue(layer_id)) {
+        this->scheduler_mutex->lock();
         auto tokens = this->layers[layer_id]->get_tokens_restricted(token_threshold);
+        this->scheduler_mutex->unlock();
         auto batch = TokenBatch::pack_topk_tokens(layer_id, tokens);
         return batch;
     } else {
+        this->scheduler_mutex->lock();
         auto batches = this->layers[layer_id]->get_batches_restricted(token_threshold);
+        this->scheduler_mutex->unlock();
         auto batch = TokenBatch::merge(batches);
         return batch;
     }
 }
 
 std::vector<int> UnifiedLayerSchedulerBase::get_pool_snapshot() {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     std::vector<int> snapshot(this->num_attn_layers + this->num_expert_layers, 0);
     for (int i = 0; i < this->num_attn_layers; i++) {
         snapshot[i] = this->attn_layers[i]->get_num_tokens();
@@ -183,10 +193,12 @@ void UnifiedLayerSchedulerBase::add_tokens_to_layer(int layer_id, int num_tokens
 }
 
 void UnifiedLayerSchedulerBase::attn_add_tokens(int layer_id, const std::vector<TokenTopKInfo> &tokens) {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     this->attn_layers[layer_id]->add_tokens(tokens);
 }
 
 void UnifiedLayerSchedulerBase::add_batch(const TokenBatch &batch) {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     if (batch.metadata->is_attention()) {
         this->attn_layers[batch.metadata->layer_id]->add_batch(batch);
     } else if (batch.metadata->is_expert()) {
@@ -197,6 +209,7 @@ void UnifiedLayerSchedulerBase::add_batch(const TokenBatch &batch) {
 }
 
 void UnifiedLayerSchedulerBase::add_batch(const torch::Tensor& tensor, const batch_metadata_t &meta) {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     if (meta->is_attention()) {
         this->attn_layers[meta->layer_id]->add_batch(tensor, meta);
     } else if (meta->is_expert()) {
@@ -219,6 +232,7 @@ UnifiedLayerScheduler::UnifiedLayerScheduler(int num_attn_layers, int num_expert
 
 int UnifiedLayerScheduler::schedule() {
     // TODO: this is fisrt-layer-first-serve, implement other policies
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     for (int i = 0; i < this->num_attn_layers; i++) {
         if (this->attn_layers[i]->get_num_tokens() > 0) {
             return this->attn_layers[i]->get_layer_id();
@@ -273,6 +287,7 @@ void UnifiedDefraggingLayerScheduler::step_end(const std::vector<int> &effective
 }
 
 int UnifiedDefraggingLayerScheduler::schedule() {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
     std::vector<int> raw_tokens(num_layers, 0);
     std::vector<float> effective_tokens(num_layers, 0.0f);
     for (int i = 0; i < num_layers; i++) {

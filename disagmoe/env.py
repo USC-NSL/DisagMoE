@@ -10,7 +10,6 @@ _env_vars = {
     "MASTER_ADDR": "localhost",
     "MASTER_PORT": "26500",
     "TORCH_NCCL_BLOCKING_WAIT": "0",
-    "GROUPED_GEMM_CUTLASS": "",
     "LD_LIBRARY_PATH": "",
     "ENABLE_NVTX": "0",
     "DMOE_WEIGHTED_ROUTER_FILE": "",

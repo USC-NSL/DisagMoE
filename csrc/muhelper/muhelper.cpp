@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <condition_variable>
 #include <cstdlib>
 #include <string>
@@ -6,6 +7,7 @@
 #include <ctime>
 #include <utility>
 #include <atomic>
+#include <pthread.h>
 
 #include "distributed.hpp"
 #include "datatypes.hpp"
@@ -81,6 +83,50 @@ MuDispatcher::MuDispatcher(std::vector<int> layer_ids, int device_id,
     }
 }
 
+void MuDispatcher::clean_pending_sends() {
+    static int spin_count = 0;
+    while (!this->pending_sends.empty()) {
+        auto &pr = this->pending_sends.front();
+        cudaError_t err = cudaEventQuery(pr.second);
+        if (err == cudaSuccess) {
+            this->pending_sends.pop();
+            spin_count = 0;
+        } else if (err == cudaErrorNotReady) {
+            spin_count ++;
+            if (spin_count > 10000) {
+                DMOE_LOG(ERROR) << "spin count too large: " << spin_count << LEND;
+                // print out the queue
+                while (!this->pending_sends.empty()) {
+                    auto &pr = this->pending_sends.front();
+                    DMOE_LOG(ERROR) << "pending send: metadata=" << *pr.first.metadata << LEND;
+                    this->pending_sends.pop();
+                }
+                ASSERT_MSG(false, "spin count too large");
+            }
+            break;
+        } else {
+            DMOE_LOG(ERROR) << "cudaEventQuery failed: " << cudaGetErrorName(err) << ", error string: " << cudaGetErrorString(err) << ", spin count: " << spin_count << LEND;
+            ASSERT_MSG(false, "Failed to query cuda event");
+        }
+    }
+}
+
+void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
+    tx_range _{"MuDispatcher::send_batch_nonblocking"};
+    // Pack peer_id and metadata into a single message
+    MetadataWithPeerId packed_data;
+    packed_data.peer_id = this->device_id;
+    packed_data.metadata = *batch.metadata;
+    auto data = cerealize_(packed_data);
+    this->peer_mq[cid]->send(data.c_str(), data.size());
+    this->channels[cid]->send_batch(batch.data, *batch.metadata);
+
+    cudaEvent_t event;
+    CUDACHECK(cudaEventCreate(&event));
+    this->channels[cid]->record_event(event);
+    this->pending_sends.push(std::make_pair(batch, event));
+}
+
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
@@ -91,12 +137,14 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
-    this->channels[cid]->send(buf, meta);
+    this->channels[cid]->send_raw(buf, meta);
 
     // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
+    pthread_setname_np(pthread_self(), "MuDispatcherThread");
+    cudaDeviceSynchronize();
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
         this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1));
@@ -105,6 +153,7 @@ void MuDispatcher::run() {
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
         // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
+        this->clean_pending_sends();
         TokenBatch batch;
         {
             // Fetch a batch from the queue, lock required (for the send_queue).
@@ -122,6 +171,7 @@ void MuDispatcher::run() {
 
 void MuDispatcher::put(TokenBatch batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
+    // batch.data = batch.data.clone().detach();
     this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
 }
@@ -372,15 +422,6 @@ void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocki
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
-void MuPool::recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta) {
-    // DMOE_LOG(DEBUG) << "peer_id " << peer_id << " channelsize " << this->peer_channels.size() << LEND;
-    ASSERT(0 <= peer_id && peer_id < this->peer_channels.size());
-    ASSERT(this->peer_channels[peer_id].get() != nullptr);
-    ASSERT(meta.get() != nullptr);
-    ASSERT(tensor_buf != 0);
-    this->peer_channels[peer_id]->recv(tensor_buf, *meta);
-}
-
 void MuPool::put_batch(TokenBatch batch) {
     // CAREFUL USE:
     // This is only used to directly put a batch into the first attention layer.
@@ -424,6 +465,8 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
 }
 
 void MuPool::run() {
+    pthread_setname_np(pthread_self(), "MuPoolThread");
+    cudaDeviceSynchronize();
     if (this->channels.empty()) {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
@@ -471,7 +514,7 @@ void MuPool::run() {
         NCCLCHECK(ncclGroupStart());
         #endif
         for (auto &p : pending) {
-            this->peer_channels[p.peer_id]->recv((uintptr_t)p.tensor.data_ptr(), *p.meta);
+            this->peer_channels[p.peer_id]->recv_batch(tensor, *p.meta);
         }
         #if D_GROUP_NCCL_RECV
         NCCLCHECK(ncclGroupEnd());
@@ -481,8 +524,8 @@ void MuPool::run() {
 
         // process the incoming batch and sync the NCCL CUDA streams
         for (auto &p : pending) {
-            this->process_batch(p.tensor, p.meta);
             this->peer_channels[p.peer_id]->sync();
+            this->process_batch(p.tensor, p.meta);
         }
     }
 }

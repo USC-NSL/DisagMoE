@@ -56,12 +56,17 @@ protected:
 
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
+    std::queue<std::pair<TokenBatch, cudaEvent_t>> pending_sends;
 
     ParallelConfig cfg;
 
     virtual void _send_once(TokenBatch batch) = 0;
 
     void _send_batch(int cid, uintptr_t buf, const BatchMetadata& meta);
+
+    void clean_pending_sends();
+
+    void send_batch_nonblocking(int cid, const TokenBatch &batch);
 
     void run() override;
 
@@ -148,8 +153,6 @@ protected:
     std::shared_ptr<LayerSchedulerBase> layer_scheduler;
 
     void recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking = false);
-
-    void recv_tensor(int peer_id, uintptr_t tensor_buf, batch_metadata_t &meta);
 
     virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta) = 0;
 

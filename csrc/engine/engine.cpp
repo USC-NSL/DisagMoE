@@ -64,6 +64,48 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
         out_channels[i]->initialize();
     }
     ncclGroupEnd();
+
+    cudaDeviceSynchronize();
+
+    // warmup the NCCL communication
+    std::vector<int*> send_bufs(n_in);
+    std::vector<int*> recv_bufs(n_out);
+    for (size_t i = 0; i < n_out; i++) {
+        cudaMalloc(&send_bufs[i], 32 * sizeof(int));
+        cudaMemset(send_bufs[i], 0, 32 * sizeof(int));
+    }
+    for (size_t i = 0; i < n_in; i++) {
+        cudaMalloc(&recv_bufs[i], 32 * sizeof(int));
+    }
+
+    ncclGroupStart();
+
+    for (size_t i = 0; i < n_out; i++) {
+        int peer_id = outbound_peer_ids[i];
+        if (peer_id == local_id) {
+            continue;
+        }
+        out_channels[i]->warmup_send(send_bufs[i], 32);
+    }
+    for (size_t i = 0; i < n_in; i++) {
+        int peer_id = inbound_peer_ids[i];
+        if (peer_id == local_id) {
+            continue;
+        }
+        in_channels[i]->warmup_recv(recv_bufs[i], 32);
+    }
+
+    ncclGroupEnd();
+
+    cudaDeviceSynchronize();
+
+    for (size_t i = 0; i < n_out; i++) {
+        cudaFree(send_bufs[i]);
+    }
+    for (size_t i = 0; i < n_in; i++) {
+        cudaFree(recv_bufs[i]);
+    }
+
     DMOE_LOG(INFO) << "Rank " <<local_id << ": All NCCL channels initialized" << LEND;
     return std::make_tuple(in_channels, out_channels);
 }

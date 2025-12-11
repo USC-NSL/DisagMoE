@@ -69,7 +69,7 @@ __global__ void permute_tokens_kernel(T *d_out, T *d_in, int *mappings, const in
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_output_tokens, hidden_size / chunk_size, 1); \
-    permute_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src, mappings, topk, hidden_size); \
+    permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, mappings, topk, hidden_size); \
 } while(0)
     
 template <class T>
@@ -79,6 +79,7 @@ void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, 
     constexpr int num_threads = 128;
     int topk = num_output_tokens / num_input_tokens;
     dim3 block(num_threads, 1, 1);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     LAUNCH_PERMUTE_KERNEL_(2048);
 }
 
@@ -123,7 +124,7 @@ __global__ void apply_weights_and_permute_tokens_kernel(T *d_out, T *d_in, float
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    apply_weights_and_permute_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src, weights, mappings, hidden_size); \
+    apply_weights_and_permute_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src, weights, mappings, hidden_size); \
 } while(0)
 
 template <class T>
@@ -132,6 +133,7 @@ void _apply_weights_and_permute_tokens_cuda(T *dest, T *src, float *weights, int
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(2048);
 }
 
@@ -169,7 +171,7 @@ __global__ void gather_tokens_kernel(T *d_out, uintptr_t *d_in_ptr, const int hi
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(num_tokens, hidden_size / chunk_size, 1); \
-    gather_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, hidden_size); \
+    gather_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, hidden_size); \
 } while(0)
 
 template <class T>
@@ -178,6 +180,7 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     LAUNCH_GATHER_KERNEL_(2048);
 }
 
@@ -195,7 +198,7 @@ gdr_context_t get_gather_src_ptrs_gdr() {
         auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
         gather_src_ptrs_gdr_alt = std::make_shared<GdrContext>(src_tensor);
     }
-    enter_count++;
+    enter_count = (enter_count + 1) & 1;
     if (enter_count & 1) {
         return gather_src_ptrs_gdr;
     } else {

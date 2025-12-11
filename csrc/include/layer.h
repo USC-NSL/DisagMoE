@@ -90,6 +90,8 @@ protected:
 
     int top_k;
 
+    std::shared_ptr<std::mutex> scheduler_mutex;
+
     std::vector<unified_layer_t> layers; // attn layers first, then expert layers
     std::vector<unified_layer_t> attn_layers;
     std::vector<unified_layer_t> expert_layers;
