@@ -162,8 +162,9 @@ void gather_and_sum_tokens_cuda_dispatch(
     auto src_tensor = torch::empty({n * topk}, torch::TensorOptions()
         .dtype(torch::kUInt64)
         .device(torch::kCUDA));
-    cudaMemcpy(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
-               n * topk * sizeof(uintptr_t), cudaMemcpyHostToDevice);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    CUDACHECK(cudaMemcpyAsync(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
+               n * topk * sizeof(uintptr_t), cudaMemcpyHostToDevice, stream));
     _gather_and_sum_tokens_cuda<scalar_t>(
         dest.data_ptr<scalar_t>(), 
         src_tensor.data_ptr<uintptr_t>(), 
