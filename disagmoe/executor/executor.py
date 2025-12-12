@@ -396,7 +396,7 @@ class ExpertsExecutor(Executor):
         if not cfg.enable_grouped_gemm:
             expert_cls = MoEExpertsSerial
         elif getattr(cfg, "less_than_sm90", False):
-            # For pre-SM90 architectures (e.g., A100), we can use DeepGEMM,
+            # For pre-SM90 architectures (e.g., A100), DeepGEMM is not available,
             # so we use CUTLASS grouped GEMM experts instead.
             expert_cls = MoEExpertsCUTLASS
         elif self.quant_method == "fp8":
