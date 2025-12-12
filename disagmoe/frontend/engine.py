@@ -31,7 +31,7 @@ from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.utils.utils import _log_memory_usage
 from disagmoe.models.distributed import set_tensor_model_parallel_config
-from disagmoe.models.experts import MoEExpertsDeepGemmBF16
+from disagmoe.models.experts import MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -381,8 +381,7 @@ class ExpertEngineMixin:
             self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
         self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
 
-        # TODO: later should make fp8 experts to use this paths as well
-        if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls is MoEExpertsDeepGemmBF16:
+        if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
             self.expert_executor.build_cuda_graph_executor()
         else:
             self.expert_executor.warmup(self.expert_max_batch_size)

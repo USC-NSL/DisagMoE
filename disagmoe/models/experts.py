@@ -176,12 +176,6 @@ class MoEExpertsDeepGemmBF16(torch.nn.Module):
 
     def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
 
-        assert isinstance(hiddens, torch.Tensor), f"hiddens type: {type(hiddens)}"
-        assert isinstance(self.w13, torch.Tensor), f"w13 type: {type(self.w13)}"
-        assert isinstance(m_indices, torch.Tensor), f"m_indices type: {type(m_indices)}"
-        assert m_indices.dtype == torch.int32, f"m_indices dtype: {m_indices.dtype}"
-        assert m_indices.device.type == "cuda", f"m_indices device: {m_indices.device}"
-
         # Output buffer for w13 (BF16), shape: [total_tokens, intermediate_size * 2]
         intermediate_size_2 = self.intermediate_size * 2
         up_out = torch.empty(
@@ -298,7 +292,8 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         )
 
     def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
-        # Cast hiddens to FP8
+
+        # Quant input
         # For sglang with DeepEP, the cast is fused with communication.
         hiddens_fp8, sf_hiddens = sglang_per_token_group_quant_fp8(
             hiddens, group_size=128, scale_ue8m0=False
@@ -322,14 +317,10 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         )
 
         # Activation and gating
-        up = self.act_fn(up_out[:, : self.intermediate_size]) * up_out[
-            :, self.intermediate_size :
-        ]
+        up = self.act_fn(up_out[:, : self.intermediate_size]) * up_out[:, self.intermediate_size :]
 
-        # Prepare inputs for w2
-        up_fp8, sf_up = sglang_per_token_group_quant_fp8(
-            up, group_size=128, scale_ue8m0=False
-        )
+        # Quant
+        up_fp8, sf_up = sglang_per_token_group_quant_fp8(up, group_size=128, scale_ue8m0=False)
 
         # Output buffer for w2 (BF16), shape: [M, hidden_size]
         down_out = torch.empty(
@@ -348,242 +339,6 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         )
 
         return down_out
-
-
-class MoEExpertsDeepGemmFP8Graph(MoEExpertsDeepGemmFP8):
-    """DeepGEMM-based FP8 grouped experts using CUDAGraphs with bucketing."""
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        num_experts: int,
-        tp_size: int = 1,
-        max_batch_size: int = MAX_BATCH_SIZE,
-    ):
-        super().__init__(hidden_size, intermediate_size, num_experts, tp_size, max_batch_size)
-
-        self.graph_batch_sizes = self.get_graph_batch_sizes(max_batch_size)
-        self.graphs: Dict[int, torch.cuda.CUDAGraph] = {}
-        self.static_buffers: Dict[int, Dict[str, torch.Tensor]] = {}
-        
-        # Warmup and capture
-        self.capture_graphs()
-
-    def get_graph_batch_sizes(self, graph_max_batch_size: int) -> List[int]:
-        """
-        We use 128-aligned, exponentially growing buckets:
-        128, 256, 512, 1024, 2048, ... up to graph_max_batch_size.
-        """
-        if graph_max_batch_size <= 0:
-            raise ValueError("graph_max_batch_size must be positive")
-
-        # If max batch size is small, just capture exactly that size.
-        if graph_max_batch_size <= 128:
-            return [graph_max_batch_size]
-
-        graph_bsz: List[int] = []
-        bsz = 128
-        while bsz < graph_max_batch_size:
-            graph_bsz.append(bsz)
-            bsz *= 2
-
-        # Always include the exact max batch size as the last bucket
-        if graph_bsz[-1] != graph_max_batch_size:
-            graph_bsz.append(graph_max_batch_size)
-
-        return graph_bsz
-
-    def _get_graph_by_batch_size(self, batch_size: int):
-        for bs in self.graph_batch_sizes:
-            if bs >= batch_size:
-                return bs
-        raise RuntimeError(f"Batch size {batch_size} exceeds max_batch_size {self.max_batch_size}")
-
-    def capture_graphs(self):
-        # We need to capture a graph for each bucket size
-        for bs in self.graph_batch_sizes:
-            self.static_buffers[bs] = self._allocate_static_buffers(bs)
-            
-            # Warmup
-            self._run_graph_pass(bs, warmup=True)
-            torch.cuda.synchronize()
-            
-            # Capture
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
-                self._run_graph_pass(bs, warmup=False)
-            self.graphs[bs] = g
-
-    def _allocate_static_buffers(self, bs: int) -> Dict[str, torch.Tensor]:
-        buffers: Dict[str, torch.Tensor] = {}
-        device = self.w13_weight_fp8.device
-        
-        # Input hiddens
-        buffers["hiddens"] = torch.zeros((bs, self.hidden_size), dtype=torch.bfloat16, device=device)
-        
-        # m_indices
-        buffers["m_indices"] = torch.zeros((bs,), dtype=torch.int32, device=device)
-        
-        # Output: w2 output (BF16)
-        buffers["down_out"] = torch.empty((bs, self.hidden_size), dtype=torch.bfloat16, device=device)
-        
-        return buffers
-
-    def _run_graph_pass(self, bs: int, warmup: bool = False):
-        buffers = self.static_buffers[bs]
-        
-        hiddens_fp8 = torch.empty(
-            (bs, self.hidden_size),
-            dtype=torch.float8_e4m3fn,
-            device=buffers["hiddens"].device,
-        )
-        n_scales_hiddens = dg.ceil_div(self.hidden_size, 128)
-        hiddens_sf = torch.empty(
-            (bs, n_scales_hiddens),
-            dtype=torch.float32,
-            device=buffers["hiddens"].device,
-        )
-
-        up_out = torch.empty(
-            (bs, self.intermediate_size * 2),
-            dtype=torch.bfloat16,
-            device=buffers["hiddens"].device,
-        )
-
-        up_activated = torch.empty(
-            (bs, self.intermediate_size),
-            dtype=torch.bfloat16,
-            device=buffers["hiddens"].device,
-        )
-
-        up_fp8 = torch.empty(
-            (bs, self.intermediate_size),
-            dtype=torch.float8_e4m3fn,
-            device=buffers["hiddens"].device,
-        )
-        n_scales_up = dg.ceil_div(self.intermediate_size, 128)
-        up_sf = torch.empty(
-            (bs, n_scales_up),
-            dtype=torch.float32,
-            device=buffers["hiddens"].device,
-        )
-
-        # 1. Quantize Hiddens
-        sglang_per_token_group_quant_fp8(
-            buffers["hiddens"],
-            group_size=128,
-            scale_ue8m0=False,
-            out_q=hiddens_fp8,
-            out_s=hiddens_sf,
-        )
-        
-        # 2. GEMM w13
-        dg.m_grouped_fp8_gemm_nt_contiguous(
-            (hiddens_fp8, hiddens_sf),
-            (self.w13_weight_fp8, self.w13_sf),
-            up_out,
-            buffers["m_indices"],
-        )
-        
-        # 3. Activation
-        gate = up_out[:, : self.intermediate_size]
-        val = up_out[:, self.intermediate_size :]
-        
-        # In-place SiLU on gate
-        self.act_fn(gate) 
-        
-        # Element-wise mul. `gate * val` -> up_activated
-        torch.mul(gate, val, out=up_activated)
-
-        # 4. Quantize Up
-        sglang_per_token_group_quant_fp8(
-            up_activated,
-            group_size=128,
-            scale_ue8m0=False,
-            out_q=up_fp8,
-            out_s=up_sf,
-        )
-
-        # 5. GEMM w2
-        dg.m_grouped_fp8_gemm_nt_contiguous(
-            (up_fp8, up_sf),
-            (self.w2_weight_fp8, self.w2_sf),
-            buffers["down_out"],
-            buffers["m_indices"],
-        )
-        
-    @override
-    def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
-        # 1. Select bucket
-        bucket_bs = self._get_graph_by_batch_size(bs)
-        buffers = self.static_buffers[bucket_bs]
-        
-        # 2. Fused Copy + Pad (CUDA Op)
-        fused_copy_and_pad_cuda(
-            hiddens, m_indices,
-            buffers["hiddens"], buffers["m_indices"],
-            bucket_bs,
-        )
-
-        # # Data copy integrity check for -1 case
-        # m_idx = buffers["m_indices"].cpu()
-        # neg_indices = (m_idx == -1).nonzero(as_tuple=True)[0]
-        # if len(neg_indices) > 0:
-        #     first_neg = neg_indices[0].item()
-        #     if not torch.all(m_idx[first_neg:] == -1).item():
-        #         raise RuntimeError(
-        #             f"m_indices check failed: Found non -1 values after the first -1. "
-        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-        #         )
-        #     valid_m_idx = m_idx[:first_neg]
-        # else:
-        #     valid_m_idx = m_idx
-        #
-        # if valid_m_idx.numel() > 0:
-        #     if torch.any(valid_m_idx < 0).item():
-        #         raise RuntimeError(
-        #             f"m_indices check failed: Found negative values in valid part. "
-        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-        #         )
-        #     if torch.any(valid_m_idx >= self.num_experts).item():
-        #         raise RuntimeError(
-        #             f"m_indices check failed: Found values >= num_experts ({self.num_experts}). "
-        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-        #         )
-        #     if torch.any(valid_m_idx[1:] < valid_m_idx[:-1]).item():
-        #         raise RuntimeError(
-        #             f"m_indices check failed: Valid part is not monotonically increasing. "
-        #             f"bs={bs}, bucket_bs={bucket_bs}, m_indices.dtype={m_indices.dtype}. "
-        #             f"Buffer: {m_idx.tolist()} Original m_indices: {m_indices.tolist()}"
-        #         )
-
-        
-        # # a simpler check for 0 case
-        # with torch.no_grad():
-        #     src_idx = m_indices.to("cpu")
-        #     dst_idx = buffers["m_indices"][: src_idx.numel()].to("cpu")
-        #     mismatches = (src_idx != dst_idx).nonzero(as_tuple=True)[0]
-        #     if mismatches.numel() > 0:
-        #         first_bad = mismatches[0].item()
-        #         raise RuntimeError(
-        #             "m_indices copy check failed: destination buffer does not match source "
-        #             f"at position {first_bad}. "
-        #             f"bs={bs}, bucket_bs={bucket_bs}, "
-        #             f"src_val={int(src_idx[first_bad])}, "
-        #             f"dst_val={int(dst_idx[first_bad])}, "
-        #             f"src={src_idx.tolist()}, "
-        #             f"dst={dst_idx.tolist()}"
-        #         )
-
-        # 3. Replay Graph
-        self.graphs[bucket_bs].replay()
-        
-        # 4. Return output sliced
-        return buffers["down_out"][:bs]
 
 
 class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
