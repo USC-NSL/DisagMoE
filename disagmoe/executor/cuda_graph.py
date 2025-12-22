@@ -116,7 +116,7 @@ class CUDAGraphAttnExecutor:
             graph_list = self.graphs[graph_batch_size]
             batch = make_attention_dummy_batch(0, graph_batch_size, self.model_config.hidden_size, self.model_config.max_seq_len)
             attn_meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
-            self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta)
+            self.cuda_graph_preprocess(batch.data, batch.seq_lens_tensor.to(torch.long), attn_meta, graph_batch_size)
             graph_attn_meta = self.prepare_metadata_for_capture(attn_meta)
             bsz_start_time = time.perf_counter()
             free_memory_before, _ = torch.cuda.mem_get_info()
@@ -175,7 +175,7 @@ class CUDAGraphAttnExecutor:
                 return size
         assert False, f"No available graph for batch size={batch_size}"
         
-    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, positions: torch.Tensor, meta: FlashAttentionMetadata):
+    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, positions: torch.Tensor, meta: FlashAttentionMetadata, padded_batch_size: int):
         num_tokens = hidden_states.shape[0]
         max_num_blocks = meta.block_tables.shape[1]
         
@@ -197,6 +197,7 @@ class CUDAGraphAttnExecutor:
                 self.static_seq_lens,
                 self.static_context_lens,
                 self.static_seq_start_loc,
+                padded_batch_size,
             )
         else:
             self.static_input[ : num_tokens].copy_(hidden_states)
@@ -214,7 +215,7 @@ class CUDAGraphAttnExecutor:
             num_tokens = hidden_states.shape[0]
             batch_size = self._get_bucket_by_num_tokens(num_tokens)
             
-            self.cuda_graph_preprocess(hidden_states, positions, meta)
+            self.cuda_graph_preprocess(hidden_states, positions, meta, batch_size)
             self.graphs[batch_size][layer_id].replay()
 
             outputs, topk_weights, topk_ids = self.static_outputs[batch_size][layer_id]
@@ -255,6 +256,7 @@ class CUDAGraphExpertsExecutor:
         self.static_outputs: Dict[int, List[Tensor]] = {} # callee allocated, no need to pre-allocate
         
         # Allocate respecting max batch size, small batches can use slices of this
+        self.static_input_batch_sizes = torch.empty((self.model_config.num_experts_per_rank,), dtype=torch.int64, device="cuda")
         self.static_input_hiddens = torch.empty((max_batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype, device="cuda")
         self.static_input_m_indices = torch.empty((max_batch_size,), dtype=torch.int32, device="cuda")
 
@@ -281,11 +283,11 @@ class CUDAGraphExpertsExecutor:
 
         return graph_bsz
     
-    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, m_indices: torch.Tensor, bucket_size: int):
+    def cuda_graph_preprocess(self, hidden_states: torch.Tensor, batch_sizes: torch.Tensor, m_indices: torch.Tensor, bucket_size: int):
         # copy stuff into cudagraph region
         fused_copy_and_pad_cuda(
-            hidden_states, m_indices,
-            self.static_input_hiddens, self.static_input_m_indices,
+            hidden_states, batch_sizes, m_indices,
+            self.static_input_hiddens, self.static_input_batch_sizes, self.static_input_m_indices,
             bucket_size,
         )
     
@@ -306,15 +308,14 @@ class CUDAGraphExpertsExecutor:
             
             bsz_start_time = time.perf_counter()
 
-            hiddens, _, m_indices = make_expert_dummy_inputs(
+            hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
                 batch_size=graph_batch_size,
                 hidden_size=self.model_config.hidden_size,
                 num_experts_per_rank=self.model_config.num_experts_per_rank,
                 expert_ids=self.expert_ids,
-                need_m_indices=True,
             )
 
-            self.cuda_graph_preprocess(hiddens, m_indices, graph_batch_size)
+            self.cuda_graph_preprocess(hiddens, batch_sizes, m_indices, graph_batch_size)
 
             bsz_start_time = time.perf_counter()
             free_memory_before, _ = torch.cuda.mem_get_info()
@@ -329,7 +330,7 @@ class CUDAGraphExpertsExecutor:
                             meta_c=None,
                             proc_func=None,
                             post_proc_func=None,
-                            batch_sizes=None,
+                            batch_sizes=self.static_input_batch_sizes,
                             m_indices=self.static_input_m_indices[:graph_batch_size]
                         )
                 
@@ -362,23 +363,22 @@ class CUDAGraphExpertsExecutor:
     def test_graph(self):
         for layer_id in self.model_config.layer_ids:
             for bs in self.graph_batch_sizes:
-                hiddens, _, m_indices = make_expert_dummy_inputs(
+                hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
                     bs,
                     self.model_config.hidden_size,
                     self.model_config.num_experts_per_rank,
                     self.expert_ids,
-                    True
                 )
                 
-                self.run(layer_id, hiddens, m_indices)
+                self.run(layer_id, hiddens, batch_sizes, m_indices)
 
-    def run(self, layer_id: int, hiddens: Tensor, m_indices: Tensor) -> Tensor:
+    def run(self, layer_id: int, hiddens: Tensor, batch_sizes: Tensor, m_indices: Tensor) -> Tensor:
 
         num_tokens = hiddens.shape[0]
         batch_size_bucket = self._get_bucket_by_num_tokens(num_tokens)
 
         try:
-            self.cuda_graph_preprocess(hiddens, m_indices, batch_size_bucket)
+            self.cuda_graph_preprocess(hiddens, batch_sizes, m_indices, batch_size_bucket)
             self.graphs[batch_size_bucket][layer_id].replay()
 
             outputs = self.static_outputs[batch_size_bucket][layer_id]

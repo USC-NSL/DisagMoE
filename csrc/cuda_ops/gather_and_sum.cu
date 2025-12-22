@@ -32,7 +32,7 @@ gdr_context_t get_gather_and_sum_src_ptrs_gdr() {
         auto src_tensor = get_cuda_aligned_tensor(MAX_GATHER_TOKENS, torch::kUInt64);
         gather_and_sum_src_ptrs_gdr_alt = std::make_shared<GdrContext>(src_tensor);
     }
-    enter_count++;
+    enter_count = (enter_count + 1) & 1;
     if (enter_count & 1) {
         return gather_and_sum_src_ptrs_gdr;
     } else {
@@ -114,7 +114,7 @@ __global__ void gather_and_sum_tokens_kernel(
 do { \
     constexpr int chunk_size = (SIZE); \
     dim3 grid(n, hidden_size / chunk_size, 1); \
-    gather_and_sum_tokens_kernel<T, chunk_size><<<grid, block>>>(dest, src_ptr, n, topk, hidden_size); \
+    gather_and_sum_tokens_kernel<T, chunk_size><<<grid, block, 0, stream>>>(dest, src_ptr, n, topk, hidden_size); \
 } while(0)
 
 template <class T>
@@ -129,6 +129,7 @@ void _gather_and_sum_tokens_cuda(
     assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     LAUNCH_GATHER_AND_SUM_KERNEL_(2048);
 }
 
@@ -161,8 +162,9 @@ void gather_and_sum_tokens_cuda_dispatch(
     auto src_tensor = torch::empty({n * topk}, torch::TensorOptions()
         .dtype(torch::kUInt64)
         .device(torch::kCUDA));
-    cudaMemcpy(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
-               n * topk * sizeof(uintptr_t), cudaMemcpyHostToDevice);
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    CUDACHECK(cudaMemcpyAsync(src_tensor.data_ptr<uintptr_t>(), src_ptr_host, 
+               n * topk * sizeof(uintptr_t), cudaMemcpyHostToDevice, stream));
     _gather_and_sum_tokens_cuda<scalar_t>(
         dest.data_ptr<scalar_t>(), 
         src_tensor.data_ptr<uintptr_t>(), 

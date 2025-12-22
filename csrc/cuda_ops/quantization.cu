@@ -5,8 +5,6 @@
 
 #include <torch/extension.h>
 
-#include "quantization.cuh"
-
 namespace {
 
 __device__ __forceinline__ float GroupReduceMax(float val, const int tid) {

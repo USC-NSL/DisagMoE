@@ -5,6 +5,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <torch/torch.h>
 
 #include "cuda_runtime.h"
 #include "zmq.hpp"
@@ -33,8 +34,11 @@ protected:
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
 
-    virtual void send(uintptr_t data, const BatchMetadata& metadata) = 0;
-    virtual void recv(uintptr_t data, const BatchMetadata& metadata) = 0;
+    virtual void send_raw(uintptr_t data, const BatchMetadata& metadata) = 0;
+    virtual void recv_raw(uintptr_t data, const BatchMetadata& metadata) = 0;
+
+    virtual void send_batch(const torch::Tensor &data, const BatchMetadata& metadata) = 0;
+    virtual void recv_batch(const torch::Tensor &data, const BatchMetadata& metadata) = 0;
 
     void _debug_print() {
         printf("%d %d\n", local, other);
@@ -47,6 +51,13 @@ public:
     virtual void initialize() {}
 
     virtual void sync() {}
+
+    virtual void warmup_send(int *send_buf, int count) {}
+
+    virtual void warmup_recv(int *recv_buf, int count) {}
+
+    virtual void record_event(cudaEvent_t &event) {}
+
 };
 
 typedef std::shared_ptr<Channel> Channel_t;
@@ -66,30 +77,47 @@ protected:
 public:
     NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream = nullptr);
 
-    void send(uintptr_t data, const BatchMetadata& metadata) override;
+    void send_raw(uintptr_t data, const BatchMetadata& metadata) override;
 
-    void recv(uintptr_t data, const BatchMetadata& metadata) override;
+    void recv_raw(uintptr_t data, const BatchMetadata& metadata) override;
+
+    void send_batch(const torch::Tensor &data, const BatchMetadata& metadata) override;
+
+    void recv_batch(const torch::Tensor &data, const BatchMetadata& metadata) override;
 
     void sync() override;
 
     void initialize() override;
+
+    void warmup_send(int *send_buf, int count) override;
+
+    void warmup_recv(int *recv_buf, int count) override;
+
+    void record_event(cudaEvent_t &event) override;
 };
 
 class TensorLocalChannel: public Channel {
     protected:
         cudaStream_t stream;
         std::queue<uintptr_t> data_buffer{};
+        std::queue<torch::Tensor> batch_buffer{};
         mutable std::mutex m;
         std::condition_variable c;
     
     public:
         TensorLocalChannel(int device_id, cudaStream_t stream = nullptr);
     
-        void send(uintptr_t data, const BatchMetadata& metadata) override;
+        void send_raw(uintptr_t data, const BatchMetadata& metadata) override;
     
-        void recv(uintptr_t data, const BatchMetadata& metadata) override;
+        void recv_raw(uintptr_t data, const BatchMetadata& metadata) override;
+
+        void send_batch(const torch::Tensor &data, const BatchMetadata& metadata) override;
+
+        void recv_batch(const torch::Tensor &data, const BatchMetadata& metadata) override;
     
         void sync() override;
+
+        void record_event(cudaEvent_t &event) override;
 };
 
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);
