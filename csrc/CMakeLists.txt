@@ -63,6 +63,7 @@ file(
     GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS
     "engine/*.cpp"
     "muhelper/*.cpp"
+    "debugger/*.cpp"
     "include/transport_factory.h"
     "bindings.cpp"
 )
@@ -70,6 +71,7 @@ file(
 # message(sources=${CPP_SOURCES})
 
 pybind11_add_module(disagmoe_c ${CPP_SOURCES})
+target_link_options(disagmoe_c PRIVATE -rdynamic)
 
 target_include_directories(disagmoe_c PUBLIC includes)
 target_include_directories(disagmoe_c PUBLIC ${THIRD_PARTY_DIR}/cereal/include)

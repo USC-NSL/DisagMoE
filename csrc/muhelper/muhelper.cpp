@@ -20,6 +20,7 @@
 #include "profiler.hpp"
 #include "scheduler.h"
 #include "layer.h"
+#include "debugging.h"
 
 #include "transport_factory.h"
 
@@ -53,6 +54,9 @@ void MuHelper::start() {
         }, 
         this
     );
+#if defined(D_ENABLE_HANG_DEBUGGER) && D_ENABLE_HANG_DEBUGGER == 1
+    HangDebugger::startMonThread(device_id);
+#endif
 }
 
 int MuHelper::get_device_id() {
@@ -62,6 +66,9 @@ int MuHelper::get_device_id() {
 void MuHelper::terminate() {
     this->end_flag = true;
     this->thread.join();
+#if defined(D_ENABLE_HANG_DEBUGGER) && D_ENABLE_HANG_DEBUGGER == 1
+    HangDebugger::terminate();
+#endif
 }
 
 void MuHelper::init_cuda_device() {
@@ -143,7 +150,12 @@ void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta
 }
 
 void MuDispatcher::run() {
-    pthread_setname_np(pthread_self(), "MuDispatcherThread");
+    std::string th_name = "MuDispatcher@" + std::to_string(this->device_id);
+    pthread_setname_np(pthread_self(), th_name.c_str());
+#if defined(D_ENABLE_HANG_DEBUGGER) && D_ENABLE_HANG_DEBUGGER == 1
+    int timeout4dump = HangDebugger::calcDumpTimeout(this->device_id, 0);
+    HangDebugger::registerTimeoutForStackDump(this->thread.native_handle(), timeout4dump, th_name);
+#endif
     cudaDeviceSynchronize();
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
@@ -465,7 +477,12 @@ float MuPool::remove_queueing_timer(const std::vector<int> &req_ids) {
 }
 
 void MuPool::run() {
-    pthread_setname_np(pthread_self(), "MuPoolThread");
+    std::string th_name = "MuPool@" + std::to_string(this->device_id);
+    pthread_setname_np(pthread_self(), th_name.c_str());
+#if defined(D_ENABLE_HANG_DEBUGGER) && D_ENABLE_HANG_DEBUGGER == 1
+    int timeout4dump = HangDebugger::calcDumpTimeout(this->device_id, 2);
+    HangDebugger::registerTimeoutForStackDump(this->thread.native_handle(), timeout4dump, th_name);
+#endif
     cudaDeviceSynchronize();
     if (this->channels.empty()) {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
