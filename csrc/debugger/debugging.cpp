@@ -141,9 +141,19 @@ void HangDebugger::init(const char* pathToLogfile) {
 
 void HangDebugger::registerTimeoutForStackDump(pthread_t pthreadId, int timeoutInSec, std::string threadName) {
     HangDebugger* debugger = getDefault();
+    
+    // First dump at the specified timeout
     debugger->registerTimeout(timeoutInSec, [pthreadId, debugger, threadName]() {
         int currentTime = int(Cycles::toSeconds(Cycles::rdtsc() - debugger->_startTick));
-        debugger->logfMsg("%" PRIu64 " [%3d s] Stack trace for %s\n",
+        debugger->logfMsg("%" PRIu64 " [%3d s] Stack trace (1st) for %s\n",
+                Cycles::rdtsc(), currentTime, threadName.c_str());
+        pthread_kill(pthreadId, SIGUSR1);
+    });
+    
+    // Second dump after secondDumpDelay (30 seconds later)
+    debugger->registerTimeout(timeoutInSec + secondDumpDelay, [pthreadId, debugger, threadName]() {
+        int currentTime = int(Cycles::toSeconds(Cycles::rdtsc() - debugger->_startTick));
+        debugger->logfMsg("%" PRIu64 " [%3d s] Stack trace (2nd) for %s\n",
                 Cycles::rdtsc(), currentTime, threadName.c_str());
         pthread_kill(pthreadId, SIGUSR1);
     });

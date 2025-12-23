@@ -82,6 +82,7 @@ public:
     static constexpr const char* logFilePathDefault{"stackdump.log"};
     static const int printInterval{60};
     static const int hangTimeoutBase{90};
+    static const int secondDumpDelay{30};  // Second dump 30 seconds after first
     static inline int calcDumpTimeout(int device_id, int offset) {
         return hangTimeoutBase + 6 * device_id + offset;
     }
