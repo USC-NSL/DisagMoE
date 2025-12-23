@@ -20,6 +20,7 @@
 #include <csignal>
 #include <execinfo.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 
 #include "debugging.h"
 #include "cycles.h"
@@ -32,6 +33,40 @@ int log_fd = 2;
 
 std::unique_ptr<HangDebugger> _defaultDebugger;
 std::mutex _defaultDebuggerLock;
+
+// Signal-safe integer to string conversion (writes digits in reverse, then reverses)
+// Returns the number of characters written (not including null terminator)
+static int int_to_str_safe(long val, char* buf, int bufsize) {
+    if (bufsize < 2) return 0;
+    
+    int neg = 0;
+    if (val < 0) {
+        neg = 1;
+        val = -val;
+    }
+    
+    // Write digits in reverse
+    int i = 0;
+    do {
+        if (i >= bufsize - 1) break;
+        buf[i++] = '0' + (val % 10);
+        val /= 10;
+    } while (val > 0);
+    
+    if (neg && i < bufsize - 1) {
+        buf[i++] = '-';
+    }
+    
+    // Reverse the string
+    for (int j = 0; j < i / 2; j++) {
+        char tmp = buf[j];
+        buf[j] = buf[i - 1 - j];
+        buf[i - 1 - j] = tmp;
+    }
+    
+    buf[i] = '\0';
+    return i;
+}
 
 // The Signal Handler to dump stack (Runs inside the hung thread)
 // This handler will be triggered by the monitor thread when relevant timeout
@@ -46,12 +81,25 @@ void dump_stack_signal_handler(int signum) {
         nameBuf[i] = '\0';
     }
 
-    // 2. Safe Printing (Construct message manually)
+    // 2. Get PID and TID (async-signal-safe)
+    pid_t pid = getpid();
+    pid_t tid = syscall(SYS_gettid);
+    
+    char pidBuf[16];
+    char tidBuf[16];
+    int_to_str_safe(pid, pidBuf, sizeof(pidBuf));
+    int_to_str_safe(tid, tidBuf, sizeof(tidBuf));
+
+    // 3. Safe Printing (Construct message manually)
     // Do NOT use fprintf or string operators here.
     const char* msg = "\n*** [SIGUSR1] Stack dump for thread: ";
     write(log_fd, msg, strlen(msg));
     write(log_fd, nameBuf, strlen(nameBuf));
-    write(log_fd, " ***\n", 5);
+    write(log_fd, " (pid=", 6);
+    write(log_fd, pidBuf, strlen(pidBuf));
+    write(log_fd, ", tid=", 6);
+    write(log_fd, tidBuf, strlen(tidBuf));
+    write(log_fd, ") ***\n", 6);
     void *array[20];
     int size = backtrace(array, 20);
     backtrace_symbols_fd(array, size, log_fd);
