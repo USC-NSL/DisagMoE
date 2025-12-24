@@ -106,11 +106,23 @@ void dump_stack_signal_handler(int signum) {
     write(log_fd, "--- Stack Dump End ---\n", 23);
 }
 
+// Generate log filename with hostname: "stackdump-<hostname>.log"
+static std::string getLogFilePathWithHostname() {
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        // Fallback if gethostname fails
+        return HangDebugger::logFilePathDefault;
+    }
+    hostname[sizeof(hostname) - 1] = '\0';  // Ensure null termination
+    return std::string("stackdump-") + hostname + ".log";
+}
+
 HangDebugger* HangDebugger::getDefault() {
     std::lock_guard lock(_defaultDebuggerLock);
     if (!_defaultDebugger) {
         _defaultDebugger = std::make_unique<HangDebugger>();
-        _defaultDebugger->init(logFilePathDefault);
+        std::string logPath = getLogFilePathWithHostname();
+        _defaultDebugger->init(logPath.c_str());
     }
     return _defaultDebugger.get();
 }
