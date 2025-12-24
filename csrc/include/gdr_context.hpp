@@ -1,5 +1,10 @@
 #pragma once
 
+#include <memory>
+
+// Only include and compile GDRCopy support if explicitly enabled
+#if KERNEL_USE_GDRCOPY == 1
+
 #include <gdrapi.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -237,3 +242,12 @@ private:
 };
 
 using gdr_context_t = std::shared_ptr<GdrContext>;
+
+#else  // KERNEL_USE_GDRCOPY != 1
+
+// Stub declarations when GDRCopy is disabled - these types should not be used
+// but are declared to allow conditional compilation in other files
+class GdrContext;
+using gdr_context_t = std::shared_ptr<GdrContext>;
+
+#endif  // KERNEL_USE_GDRCOPY

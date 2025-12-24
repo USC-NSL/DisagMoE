@@ -72,8 +72,7 @@ ext_modules = [
             *TORCH_INCLUDES,
             C_INCLUDE_PATH,
             CPP_INCLUDE_PATH,
-            GDRCOPY_INCLUDE_DIR,
-        ],
+        ] + ([GDRCOPY_INCLUDE_DIR] if KERNEL_USE_GDRCOPY == "1" else []),
         library_dirs=[
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
@@ -81,11 +80,10 @@ ext_modules = [
             NCCL_LIBRARY_DIR,
             ZMQ_LIBRARY_PATH,
             LD_LIBRARY_PATH,
-            GDRCOPY_LIBRARY_DIR,
             "/usr/local/lib",
             "/usr/lib",
-        ], 
-        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
+        ] + ([GDRCOPY_LIBRARY_DIR] if KERNEL_USE_GDRCOPY == "1" else []),
+        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu"] + (["gdrapi"] if KERNEL_USE_GDRCOPY == "1" else []),
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
         define_macros=[
             ("D_ENABLE_RAY", "1"),

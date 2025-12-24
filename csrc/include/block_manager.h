@@ -9,7 +9,9 @@
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
+#if KERNEL_USE_GDRCOPY == 1
 #include "gdr_context.hpp"
+#endif
 
 typedef std::shared_ptr<std::vector<int>> block_list_t;
 
@@ -63,12 +65,16 @@ public:
 
     torch::Tensor prepare_block_table(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 
+#if KERNEL_USE_GDRCOPY == 1
     int prepare_block_table_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens, GdrContext &block_table_gdr, GdrContext &slot_mapping_gdr);
+#endif
 
     // this function is not related to block manager, but we just put it here for convenience
     torch::Tensor prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens);
 
+#if KERNEL_USE_GDRCOPY == 1
     void prepare_seq_info_gdr(batch_metadata_t meta, const std::vector<int> &decode_seq_lens, GdrContext &seq_lens_gdr, GdrContext &context_lens_gdr, GdrContext &seq_start_loc_gdr);
+#endif
 };
 
 typedef std::shared_ptr<BlockManager> block_manager_t;

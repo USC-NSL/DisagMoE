@@ -114,10 +114,16 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("append_tokens", &BlockManager::append_tokens)
         .def("update_block_table", &BlockManager::update_block_table)
         .def("prepare_block_table", &BlockManager::prepare_block_table)
+#if KERNEL_USE_GDRCOPY == 1
         .def("prepare_block_table_gdr", &BlockManager::prepare_block_table_gdr)
+#endif
         .def("prepare_seq_info", &BlockManager::prepare_seq_info)
-        .def("prepare_seq_info_gdr", &BlockManager::prepare_seq_info_gdr);
+#if KERNEL_USE_GDRCOPY == 1
+        .def("prepare_seq_info_gdr", &BlockManager::prepare_seq_info_gdr)
+#endif
+        ;
 
+#if KERNEL_USE_GDRCOPY == 1
     py::class_<GdrContext, std::shared_ptr<GdrContext>>(m, "GdrContext")
         .def(py::init<const torch::Tensor&>())
         .def("get_tensor", &GdrContext::get_tensor)
@@ -132,6 +138,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("copy_to_host_int32", &GdrContext::copy_to_host_int32)
         .def("copy_to_host_float", &GdrContext::copy_to_host_float)
         .def("copy_to_host_int64", &GdrContext::copy_to_host_int64);
+#endif  // KERNEL_USE_GDRCOPY
 
     REGISTER_FUNC(rebind_1d_tensor);
     REGISTER_FUNC(rebind_2d_tensor);

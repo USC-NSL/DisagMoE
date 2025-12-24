@@ -174,6 +174,7 @@ torch::Tensor BlockManager::prepare_block_table(batch_metadata_t meta, const std
     return block_table_1d_pinned.to(torch::kCUDA, true);
 }
 
+#if KERNEL_USE_GDRCOPY == 1
 int BlockManager::prepare_block_table_gdr(
     batch_metadata_t meta, 
     const std::vector<int> &decode_seq_lens,
@@ -210,6 +211,7 @@ int BlockManager::prepare_block_table_gdr(
 
     return m;
 }
+#endif  // KERNEL_USE_GDRCOPY
 
 torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::vector<int> &decode_seq_lens) {
     int num_tokens = meta->num_tokens();
@@ -233,6 +235,7 @@ torch::Tensor BlockManager::prepare_seq_info(batch_metadata_t meta, const std::v
     return torch::tensor(batch_infos, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA, 0));
 }
 
+#if KERNEL_USE_GDRCOPY == 1
 void BlockManager::prepare_seq_info_gdr(
     batch_metadata_t meta, 
     const std::vector<int> &decode_seq_lens,
@@ -257,6 +260,7 @@ void BlockManager::prepare_seq_info_gdr(
     context_lens_gdr.copy_from_host(context_lens.data(), num_seqs * sizeof(int));
     seq_start_loc_gdr.copy_from_host(seq_start_loc.data(), (num_seqs + 1) * sizeof(int));
 }
+#endif  // KERNEL_USE_GDRCOPY
 
 void rebind_batch_info_tensor(
     int num_tokens,

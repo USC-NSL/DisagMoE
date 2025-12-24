@@ -10,7 +10,10 @@
 #include <cstring>
 #include <memory>
 
+#if KERNEL_USE_GDRCOPY == 1
 #include "gdr_context.hpp"
+#endif
+#include "cuda_utils.h"
 #include "tensor_utils.hpp"
 
 using bf16 = __nv_bfloat16;
@@ -18,6 +21,7 @@ using bf162 = __nv_bfloat162;
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
 
+#if KERNEL_USE_GDRCOPY == 1
 // Global GDR contexts for source pointers (shared with permute.cu pattern)
 gdr_context_t gather_and_sum_src_ptrs_gdr = nullptr;
 gdr_context_t gather_and_sum_src_ptrs_gdr_alt = nullptr;
@@ -39,6 +43,7 @@ gdr_context_t get_gather_and_sum_src_ptrs_gdr() {
         return gather_and_sum_src_ptrs_gdr_alt;
     }
 }
+#endif  // KERNEL_USE_GDRCOPY
 
 // Fused gather and sum kernel
 // For each output token (sequence), gather topk tokens and sum them

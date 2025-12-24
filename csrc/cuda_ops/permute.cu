@@ -10,7 +10,9 @@
 #include <cstring>
 #include <memory>
 
+#if KERNEL_USE_GDRCOPY == 1
 #include "gdr_context.hpp"
+#endif
 #include "cuda_utils.h"
 #include "tensor_utils.hpp"
 
@@ -185,6 +187,8 @@ void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden
 }
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;
+
+#if KERNEL_USE_GDRCOPY == 1
 gdr_context_t gather_src_ptrs_gdr = nullptr;
 gdr_context_t gather_src_ptrs_gdr_alt = nullptr;
 
@@ -205,6 +209,7 @@ gdr_context_t get_gather_src_ptrs_gdr() {
         return gather_src_ptrs_gdr_alt;
     }
 }
+#endif  // KERNEL_USE_GDRCOPY
 
 void gather_tokens_cuda_dispatch(torch::Tensor dest, int64_t src_ptr, int64_t num_tokens, int64_t hidden_size) {
     // dest is a cuda ptr, src_ptr is a cpu ptr
