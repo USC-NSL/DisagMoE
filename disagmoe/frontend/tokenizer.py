@@ -12,6 +12,19 @@ def t_now_high_ms() -> int:
     """Get current timestamp in milliseconds (equivalent to t_now_high in C++)"""
     return int(time.time() * 1000)
 
+
+def create_zmq_socket_with_options(context: zmq.Context, socket_type: int) -> zmq.Socket:
+    """
+    Create a ZMQ socket with container-friendly options.
+    
+    Sets ZMQ_LINGER=0 to ensure sockets close immediately without waiting,
+    which prevents "Address already in use" errors in containerized environments
+    where socket TIME_WAIT states can cause port binding conflicts.
+    """
+    socket = context.socket(socket_type)
+    socket.setsockopt(zmq.LINGER, 0)
+    return socket
+
 @ray.remote(num_cpus=2, num_gpus=0)
 class Detokenizer:
     
@@ -31,7 +44,7 @@ class Detokenizer:
         
     def init_detokenizer_socket(self, detokenizer_port: str) -> str:
         context = zmq.Context(2)
-        self.detokenizer_socket: zmq.Socket = context.socket(zmq.PULL)
+        self.detokenizer_socket: zmq.Socket = create_zmq_socket_with_options(context, zmq.PULL)
         self.detokenizer_socket.bind(f"tcp://*:{detokenizer_port}")
         
         local_ip = get_ip()
@@ -141,7 +154,7 @@ class Tokenizer:
         for i in range(self.attn_dp_size):
             addr = f"tcp://*:{tokenizer_ports[i]}"
             connect_addrs.append(f"tcp://{local_ip}:{tokenizer_ports[i]}")
-            socket = context.socket(zmq.PUSH)
+            socket = create_zmq_socket_with_options(context, zmq.PUSH)
             socket.bind(addr)
             self.worker_queues.append(socket)
         return connect_addrs

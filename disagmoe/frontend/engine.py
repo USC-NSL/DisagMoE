@@ -679,9 +679,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         if self.has_attn:
             context = zmq.Context(2)
             self.tokenizer_socket = context.socket(zmq.PULL)
+            self.tokenizer_socket.setsockopt(zmq.LINGER, 0)  # Ensure immediate cleanup in containers
             self.tokenizer_socket.connect(tokenizer_addr)
             
             self.detokenizer_socket = context.socket(zmq.PUSH)
+            self.detokenizer_socket.setsockopt(zmq.LINGER, 0)  # Ensure immediate cleanup in containers
             self.detokenizer_socket.connect(detokenizer_addr)
         
         if self.has_expert:
