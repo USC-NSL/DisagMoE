@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 import numpy as np
-from typing import List
+from typing import List, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from disagmoe.utils.tensor_utils import get_cuda_aligned_tensor
 from disagmoe.utils.utils import nvtx_range
@@ -14,7 +14,12 @@ from disagmoe.block_manager.mem_pool import ReqToTokenPool, TokenToKVPoolAllocat
 from disagmoe_c import BlockManager as BlockManager_C, BatchMetadata as BatchMetadata_C, rebind_batch_info_tensor
 from disagmoe.frontend.engine_utils import get_global_engine_config
 
-from disagmoe.utils.gdr_context import GdrContext, use_gdrcopy_optimization
+from disagmoe.utils.gdr_context import build_gdrcopy_enabled
+if build_gdrcopy_enabled:
+    from disagmoe.utils.gdr_context import GdrContext
+
+if TYPE_CHECKING:
+    from disagmoe.utils.gdr_context import GdrContext
 
 @dataclass
 class BatchTensorBuffer:
@@ -33,11 +38,11 @@ class BatchTensorBuffer:
     seq_start_loc_view: torch.Tensor
     query_start_loc_view: torch.Tensor
     
-    block_table_gdr: GdrContext
-    slot_mapping_gdr: GdrContext
-    seq_lens_gdr: GdrContext
-    context_lens_gdr: GdrContext
-    seq_start_loc_gdr: GdrContext
+    block_table_gdr: Optional["GdrContext"]
+    slot_mapping_gdr: Optional["GdrContext"]
+    seq_lens_gdr: Optional["GdrContext"]
+    context_lens_gdr: Optional["GdrContext"]
+    seq_start_loc_gdr: Optional["GdrContext"]
     
     def __init__(self, max_batch_size: int, max_num_pages: int, device: str = "cuda"):
         self.block_table = get_cuda_aligned_tensor(max_batch_size * max_num_pages, torch.int32, device=device)
@@ -47,11 +52,18 @@ class BatchTensorBuffer:
         self.seq_start_loc = get_cuda_aligned_tensor(max_batch_size + 1, torch.int32, device=device)
         self.query_start_loc = torch.arange(max_batch_size + 1, dtype=torch.int32, device=device)
         
-        self.block_table_gdr = GdrContext(self.block_table)
-        self.slot_mapping_gdr = GdrContext(self.slot_mapping)
-        self.seq_lens_gdr = GdrContext(self.seq_lens)
-        self.context_lens_gdr = GdrContext(self.context_lens)
-        self.seq_start_loc_gdr = GdrContext(self.seq_start_loc)
+        if build_gdrcopy_enabled:
+            self.block_table_gdr = GdrContext(self.block_table)
+            self.slot_mapping_gdr = GdrContext(self.slot_mapping)
+            self.seq_lens_gdr = GdrContext(self.seq_lens)
+            self.context_lens_gdr = GdrContext(self.context_lens)
+            self.seq_start_loc_gdr = GdrContext(self.seq_start_loc)
+        else:
+            self.block_table_gdr = None
+            self.slot_mapping_gdr = None
+            self.seq_lens_gdr = None
+            self.context_lens_gdr = None
+            self.seq_start_loc_gdr = None
         
         self.block_table_view = torch.empty(0, dtype=torch.int32, device=device)
         self.slot_mapping_view = torch.empty(0, dtype=torch.int64, device=device)
@@ -179,7 +191,7 @@ class CPUBlockManager(BaseBlockManager):
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self._block_mgr = BlockManager_C(self.block_size, self.num_gpu_blocks, 0)
         
-        self.use_gdr_copy = use_gdrcopy_optimization
+        self.use_gdr_copy = build_gdrcopy_enabled
         self.use_rebind = use_rebind
         
         self.req_manager = ReqManager(max_running_reqs)

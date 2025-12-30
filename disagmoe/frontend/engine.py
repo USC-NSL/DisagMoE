@@ -50,7 +50,9 @@ from disagmoe_c import (init_disaggregated_engine, init_unified_engine,
                         recorder_output as disagmoe_recorder_output)
 
 from disagmoe.frontend.engine_utils import EngineType, set_global_engine_config
-from disagmoe.utils.gdr_context import use_gdrcopy_optimization, GdrDoubleBuffer
+from disagmoe.utils.gdr_context import build_gdrcopy_enabled
+if build_gdrcopy_enabled:
+    from disagmoe.utils.gdr_context import GdrDoubleBuffer
     
 class AttentionEngineMixin:
     
@@ -84,10 +86,15 @@ class AttentionEngineMixin:
             
         self.req_tracker: Dict[int, int] = {}
         
-        post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.top_k
-        self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
-        self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
-        self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+        if build_gdrcopy_enabled:
+            post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.top_k
+            self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+            self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
+            self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+        else:
+            self.attn_token_mapping_gdr = None
+            self.attn_topk_weights_staging_gdr = None
+            self.attn_topk_ids_staging_gdr = None
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -151,7 +158,7 @@ class AttentionEngineMixin:
         attn_meta = self._attn_driver_preprocess(schedule_batch.meta_c, schedule_batch)
         positions = schedule_batch.seq_lens_tensor.to(torch.int64)
         
-        if use_gdrcopy_optimization:
+        if build_gdrcopy_enabled:
             expert_ids_buffer_gdr = self.attn_topk_ids_staging_gdr.get_one_handle()
             expert_weights_buffer_gdr = self.attn_topk_weights_staging_gdr.get_one_handle()
             expert_ids_buffer = expert_ids_buffer_gdr.tensor
@@ -198,7 +205,7 @@ class AttentionEngineMixin:
         
         new_meta_c.duplicate_topk(self.model_config.top_k)
         
-        if use_gdrcopy_optimization and batch.metadata.use_cuda_graph:
+        if build_gdrcopy_enabled and batch.metadata.use_cuda_graph:
             expert_ids = batch.expert_ids_buffer_gdr.copy_to_host_int32(topk_expanded_num_tokens)
             expert_weights = batch.expert_weights_buffer_gdr.copy_to_host_float(topk_expanded_num_tokens)
         else:
@@ -209,7 +216,7 @@ class AttentionEngineMixin:
         new_meta_c.topk_weights = expert_weights
         exp_mappings = new_meta_c.sort_by_expert()
         
-        if use_gdrcopy_optimization:
+        if build_gdrcopy_enabled:
             attn_token_mapping_gdr = self.attn_token_mapping_gdr.get_one_handle()
             attn_token_mapping_gdr.copy_from_host_int32(exp_mappings)
             token_mapping_tensor = attn_token_mapping_gdr.tensor[:len(exp_mappings)]
@@ -388,8 +395,12 @@ class ExpertEngineMixin:
 
         _log_memory_usage("After building expert executor")
         
-        self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
-        self.expert_token_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
+        if build_gdrcopy_enabled:
+            self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
+            self.expert_token_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
+        else:
+            self.expert_token_mapping_gdr = None
+            self.expert_token_weights_staging_gdr = None
     
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
@@ -414,7 +425,7 @@ class ExpertEngineMixin:
         topk_weights = batch.meta_c.topk_weights
         new_mappings = list(batch.meta_c.sort_by_attention())
             
-        if use_gdrcopy_optimization:
+        if build_gdrcopy_enabled:
             expert_weights_buffer_gdr = self.expert_token_weights_staging_gdr.get_one_handle()
             expert_token_mapping_buffer_gdr = self.expert_token_mapping_gdr.get_one_handle()
             expert_weights_buffer_gdr.copy_from_host_float(topk_weights)

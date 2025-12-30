@@ -1,8 +1,11 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Callable, Union
+from typing import List, Dict, Tuple, Optional, Callable, Union, TYPE_CHECKING
 import torch
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
-from disagmoe.utils.gdr_context import GdrContext
+
+if TYPE_CHECKING:
+    from disagmoe.utils.gdr_context import GdrContext
+
 from disagmoe_c import (
     BatchMetadata as BatchMetadata_C,
     ChannelInfo as ChannelInfo_C,
@@ -239,8 +242,8 @@ class AttentionForwardBatch(ForwardBatch):
     output_buffer: Optional[torch.Tensor] = None
     expert_ids_buffer: Optional[torch.Tensor] = None
     expert_weights_buffer: Optional[torch.Tensor] = None
-    expert_ids_buffer_gdr: Optional[GdrContext] = None
-    expert_weights_buffer_gdr: Optional[GdrContext] = None
+    expert_ids_buffer_gdr: Optional["GdrContext"] = None
+    expert_weights_buffer_gdr: Optional["GdrContext"] = None
     
     def to_string(self) -> str:
         return f"AttentionForwardBatch(layer_id={self.layer_id}, num_tokens={self.num_tokens}, {self.data.shape}, {self.req_ids})"

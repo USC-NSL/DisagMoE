@@ -26,7 +26,9 @@ from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.executor.cuda_graph import CUDAGraphAttnExecutor, CUDAGraphExpertsExecutor
 from disagmoe.ops.cuda_graph import copy_graph_results_cuda
 from disagmoe.frontend.datatypes import BatchMetadata
-from disagmoe.utils.gdr_context import use_gdrcopy_optimization, GdrDoubleBuffer
+from disagmoe.utils.gdr_context import build_gdrcopy_enabled
+if build_gdrcopy_enabled:
+    from disagmoe.utils.gdr_context import GdrDoubleBuffer
 
 def get_module_param_memory(module, unit='GB'):
     unit_scale = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3}
@@ -350,7 +352,10 @@ class ExpertsExecutor(Executor):
         self.global_to_local_expert_rank = global_to_local_expert_rank
         self.cuda_graph_executor: CUDAGraphExpertsExecutor = None
         
-        self.token_m_indices_gdr = GdrDoubleBuffer(get_global_engine_config().max_batch_size_expert, dtype=torch.int32, device="cuda")
+        if build_gdrcopy_enabled:
+            self.token_m_indices_gdr = GdrDoubleBuffer(get_global_engine_config().max_batch_size_expert, dtype=torch.int32, device="cuda")
+        else:
+            self.token_m_indices_gdr = None
         
         self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank,), dtype=torch.int64, device="cuda")
         self.static_m_indices = torch.zeros((get_global_engine_config().max_batch_size_expert,), dtype=torch.int32, device="cuda")
@@ -439,7 +444,7 @@ class ExpertsExecutor(Executor):
         # DeepGEMM-based experts (both BF16 and FP8) expect m_indices
         if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
             m_indices_list = meta_c.get_token_expert_indices(self.model_config.num_experts, self.global_to_local_expert_rank)
-            if use_gdrcopy_optimization:
+            if build_gdrcopy_enabled:
                 token_m_indices_buffer_gdr = self.token_m_indices_gdr.get_one_handle()
                 token_m_indices_buffer_gdr.copy_from_host_int32(m_indices_list)
                 m_indices = token_m_indices_buffer_gdr.tensor[:len(m_indices_list)]
