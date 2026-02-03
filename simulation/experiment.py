@@ -17,6 +17,13 @@ NET_DELAY_VALUES = [0.1, 0.4]
 
 MAX_WORKERS = 56
 
+# Async-only: enable early termination once max concurrent active requests is hit.
+ENABLE_EARLY_TERMINATION_AFTER_MAX_BS = True
+
+# Async-only: once max concurrent active requests is first reached, run this many
+# additional SimPy events before stopping and reporting metrics.
+STEPS_AFTER_REACHING_MAX_BS = 10000
+
 
 def _build_configs() -> List[Dict[str, Any]]:
     configs: List[Dict[str, Any]] = []
@@ -44,10 +51,15 @@ def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     sim_async.ATTN_SERVICE_T = cfg["attn_service_t"]
     sim_async.NET_T_ATTN_TO_EXPERT = cfg["net_delay"]
     sim_async.NET_T_EXPERT_TO_ATTN = cfg["net_delay"]
+
+    steps_after_reaching_max_bs = (
+        STEPS_AFTER_REACHING_MAX_BS if ENABLE_EARLY_TERMINATION_AFTER_MAX_BS else None
+    )
     result = sim_async.run_simulation(
         ep_group_size=cfg["ep_group_size"],
         global_request_max_batch_size=cfg["global_request_max_batch_size"],
         attn_dp_group_size=cfg["ep_group_size"],
+        steps_after_reaching_max_bs=steps_after_reaching_max_bs,
     )
 
     ticks_per_ms = sim_async.TICKS_PER_MILLISECOND

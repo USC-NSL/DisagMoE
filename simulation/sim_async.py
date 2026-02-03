@@ -59,6 +59,12 @@ PROFILE_ROUTING_PATH = os.path.abspath(
     )
 )
 
+# Expert scheduling policy used by each ExpertWorker.
+#   "longest_queue_first" (default): pick the single longest queue.
+#   "defragging_v0": approximate the C++ GroupLayerScheduler, looking
+#                   ahead across layers for the same local expert id.
+SCHEDULING_POLICY = "defragging_v0"
+
 # ------------------------------
 # Token representation
 # ------------------------------
@@ -302,12 +308,20 @@ class ExpertWorker:
     Then each token in the batch is sent to the NEXT layer's attention worker
     (or marked finished if this is the last layer).
     """
-    def __init__(self, env, worker_idx, num_layers, num_queues_per_worker_per_layer,
-                 max_batch_size, compute_time_lookup,
-                 net_t_expert_to_attn,
-                 attention_layers,
-                 final_completion_tracker: FinalCompletionTracker,
-                 batch_stats=None):
+    def __init__(
+        self,
+        env,
+        worker_idx,
+        num_layers,
+        num_queues_per_worker_per_layer,
+        max_batch_size,
+        compute_time_lookup,
+        net_t_expert_to_attn,
+        attention_layers,
+        final_completion_tracker: FinalCompletionTracker,
+        batch_stats=None,
+        scheduling_policy: str = "longest_queue_first",
+    ):
         self.env = env
         self.worker_idx = worker_idx
         self.num_layers = num_layers
@@ -319,6 +333,7 @@ class ExpertWorker:
         self.final_completion_tracker = final_completion_tracker
         self._batch_stats = batch_stats
         self._total_queue_length = 0
+        self.scheduling_policy = scheduling_policy
 
         # Per-layer, per-expert queues:
         # queues[layer_idx][local_queue_idx]
@@ -347,33 +362,32 @@ class ExpertWorker:
             self.has_work.succeed()
 
     def run(self):
+        """
+        Main loop for the expert worker.
+
+        The scheduling of which (layer, local_expert) queue to serve next is
+        controlled by `self.scheduling_policy`:
+          - "longest_queue_first": pick the single longest queue.
+          - "defragging_v0": approximate GroupLayerScheduler::schedule from
+            the C++ runtime, where each (layer, local_expert) is a
+            "layer_group" and we look ahead across layers for that group.
+        """
         while True:
             if self._total_queue_length == 0:
                 # No work: go to sleep
                 self.has_work = self.env.event()
                 yield self.has_work
 
-            # Pick the longest queue across all layers
-            max_q = None
-            max_len = 0
-            chosen_layer_idx = None
+            chosen_layer_idx, chosen_queue = self._select_next_queue()
 
-            for layer_idx, layer_queues in enumerate(self.queues):
-                for q in layer_queues:
-                    q_len = len(q)
-                    if q_len > max_len:
-                        max_len = q_len
-                        max_q = q
-                        chosen_layer_idx = layer_idx
-
-            if max_q is None or max_len == 0:
+            if chosen_queue is None:
                 # Shouldn't really happen, but be defensive
                 continue
 
             # Form a batch
             batch = []
-            while max_q and len(batch) < self.max_batch_size:
-                batch.append(max_q.popleft())
+            while chosen_queue and len(batch) < self.max_batch_size:
+                batch.append(chosen_queue.popleft())
                 self._total_queue_length -= 1
 
             # Track batch size statistics if requested.
@@ -397,6 +411,102 @@ class ExpertWorker:
                     # Send to next layer's attention worker pending list
                     next_attn = self.attention_layers[chosen_layer_idx + 1]
                     next_attn.notify_expert_completion(token)
+
+    def _select_next_queue(self):
+        """
+        Select the next (layer, queue) to serve according to the configured
+        scheduling policy.
+
+        Returns (layer_idx, deque_or_None).
+        """
+        if self.scheduling_policy == "defragging_v0":
+            return self._select_next_queue_defragging_v0()
+        # Default / fallback policy.
+        return self._select_next_queue_longest_queue_first()
+
+    def _select_next_queue_longest_queue_first(self):
+        """Original policy: pick the single longest queue across all layers."""
+        max_q = None
+        max_len = 0
+        chosen_layer_idx = None
+
+        for layer_idx, layer_queues in enumerate(self.queues):
+            for q in layer_queues:
+                q_len = len(q)
+                if q_len > max_len:
+                    max_len = q_len
+                    max_q = q
+                    chosen_layer_idx = layer_idx
+
+        if max_q is None or max_len == 0:
+            return None, None
+        return chosen_layer_idx, max_q
+
+    def _select_next_queue_defragging_v0(self):
+        """
+        "Defragging" policy inspired by GroupLayerScheduler::schedule.
+
+        We treat each (layer_idx, local_expert_idx) as a "layer_group". For a
+        given starting layer i and local expert j, we look ahead across layers
+        for the same local expert j and accumulate a decayed score based on how
+        many tokens are queued in those future layers. Queues that are busy in
+        both the current and upcoming layers are preferred.
+        """
+        n_layers = self.num_layers
+        n_groups = self.num_queues_per_worker_per_layer
+        if n_layers <= 0 or n_groups <= 0:
+            return None, None
+
+        # scheduler parameters
+        weight_decay = 0.95
+        lookahead_steps = 4
+
+        best_score = 0.0
+        best_layer_idx = None
+        best_group_idx = None
+
+        # Precompute per-layer total queue lengths for this worker so that
+        # we can approximate the "lookahead" load across all experts in a
+        # given layer.
+        queues = self.queues
+        layer_totals = [0] * n_layers
+        for layer_idx in range(n_layers):
+            total = 0
+            for q in queues[layer_idx]:
+                total += len(q)
+            layer_totals[layer_idx] = total
+
+        inv_n_groups = 1.0 / float(n_groups)
+
+        for i in range(n_layers):
+            # Compute lookahead score shared by all groups at layer i.
+            lookahead_score = 0.0
+            decay = weight_decay
+            for k in range(1, lookahead_steps):
+                cur_layer = (i + k) % n_layers
+                num_tokens_cur_layer = layer_totals[cur_layer]
+                if num_tokens_cur_layer > 0:
+                    lookahead_score += num_tokens_cur_layer * decay # * inv_n_groups
+                decay *= weight_decay
+
+            # Now compute per-(layer, group) scores, only for non-empty queues
+            # at the current layer. Queues with more tokens in the current
+            # layer and busy future layers will have higher scores.
+            layer_queues = queues[i]
+            for j in range(n_groups):
+                q = layer_queues[j]
+                local_len = len(q)
+                if local_len <= 0:
+                    continue
+                score = lookahead_score + float(local_len)
+                if best_layer_idx is None or score > best_score:
+                    best_score = score
+                    best_layer_idx = i
+                    best_group_idx = j
+
+        if best_layer_idx is None or best_group_idx is None:
+            return None, None
+        return best_layer_idx, queues[best_layer_idx][best_group_idx]
 
 
 # ------------------------------
@@ -583,6 +693,8 @@ def run_simulation(
     routing_top_k=ROUTING_TOP_K,
     global_request_max_batch_size=GLOBAL_REQUEST_MAX_BATCH_SIZE,
     attn_dp_group_size=ATTN_DP_GROUP_SIZE,
+    steps_after_reaching_max_bs: int | None = None,
+    scheduling_policy: str = SCHEDULING_POLICY,
 ):
     random.seed(RNG_SEED)
     env = simpy.Environment()
@@ -661,6 +773,7 @@ def run_simulation(
             attention_layers=None,  # temp, will fix after we create them
             final_completion_tracker=final_completion_tracker,
             batch_stats=batch_stats,
+            scheduling_policy=scheduling_policy,
         )
         expert_workers.append(worker)
 
@@ -693,34 +806,89 @@ def run_simulation(
         request_manager=request_manager,
     ))
 
-    # Run until all tokens are completed.
-    # Easiest is to run until the event queue drains; since we only
-    # generate a finite number of tokens per request and they all eventually
-    # complete, the sim will naturally finish.
-    env.run()
-    progress_tracker.finalize()
+    steps_executed = 0
+    saturation_step: int | None = None
+    if steps_after_reaching_max_bs is not None:
+        steps_after_reaching_max_bs = int(steps_after_reaching_max_bs)
+        if steps_after_reaching_max_bs < 0:
+            raise ValueError("steps_after_reaching_max_bs must be >= 0 or None")
+
+        # Step event-by-event so we can stop shortly after the system reaches
+        # the configured max active request batch size (i.e., saturation).
+        try:
+            while True:
+                env.step()
+                steps_executed += 1
+
+                if (
+                    saturation_step is None
+                    and request_manager.max_active_requests is not None
+                    and request_manager.active_requests
+                    >= request_manager.max_active_requests
+                ):
+                    saturation_step = steps_executed
+
+                if (
+                    saturation_step is not None
+                    and (steps_executed - saturation_step) >= steps_after_reaching_max_bs
+                ):
+                    break
+        except simpy.core.EmptySchedule:
+            pass
+    else:
+        # Run until all tokens are completed.
+        # Easiest is to run until the event queue drains; since we only
+        # generate a finite number of tokens per request and they all eventually
+        # complete, the sim will naturally finish.
+        env.run()
+
+    if len(completion_times) >= expected_total_tokens:
+        progress_tracker.finalize()
+    else:
+        progress_tracker.update(len(completion_times), force=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
     # Metrics
-    if len(completion_times) != expected_total_tokens:
-        print("WARNING: some tokens did not complete!", len(completion_times), "/", expected_total_tokens)
+    stopped_early = len(completion_times) != expected_total_tokens
+    if stopped_early and steps_after_reaching_max_bs is None:
+        print(
+            "WARNING: some tokens did not complete!",
+            len(completion_times),
+            "/",
+            expected_total_tokens,
+        )
 
     latencies = list(token_latencies.values())
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
-    makespan = max(completion_times.values())
+    avg_latency = sum(latencies) / len(latencies) if latencies else float("nan")
+    makespan = float(env.now)
 
     request_latencies_ms = [
         latency / TICKS_PER_MILLISECOND for latency in request_latency_values
     ]
     avg_request_latency_ms = (
-        sum(request_latencies_ms) / len(request_latencies_ms) if request_latencies_ms else 0.0
+        sum(request_latencies_ms) / len(request_latencies_ms)
+        if request_latencies_ms
+        else float("nan")
     )
-    p90_request_latency_ms = percentile(request_latency_values, 0.90) / TICKS_PER_MILLISECOND
-    p99_request_latency_ms = percentile(request_latency_values, 0.99) / TICKS_PER_MILLISECOND
+    p90_request_latency_ms = (
+        percentile(request_latency_values, 0.90) / TICKS_PER_MILLISECOND
+        if request_latency_values
+        else float("nan")
+    )
+    p99_request_latency_ms = (
+        percentile(request_latency_values, 0.99) / TICKS_PER_MILLISECOND
+        if request_latency_values
+        else float("nan")
+    )
 
     makespan_ms = makespan / TICKS_PER_MILLISECOND
     makespan_sec = makespan_ms / 1000.0 if makespan_ms > 0 else 0.0
+    completed_tokens = len(completion_times)
     avg_throughput_req_per_sec = (
-        total_requests / makespan_sec if makespan_sec > 0 else 0.0
+        (completed_tokens / float(tokens_per_request)) / makespan_sec
+        if makespan_sec > 0 and tokens_per_request > 0
+        else 0.0
     )
 
     # Average per-expert batch size across all expert compute invocations.
@@ -731,7 +899,15 @@ def run_simulation(
     else:
         avg_per_expert_batch_size = 0.0
 
-    print(f"Simulation finished at time {makespan:.3f}")
+    if stopped_early:
+        print(
+            f"Simulation stopped early at time {makespan:.3f} "
+            f"(completed_tokens={completed_tokens}/{expected_total_tokens}, "
+            f"steps_executed={steps_executed}, saturation_step={saturation_step})"
+        )
+    else:
+        print(f"Simulation finished at time {makespan:.3f}")
+
     print(f"Average completion time over {len(latencies)} tokens: {avg_latency:.3f}")
     print(f"Average throughput: {avg_throughput_req_per_sec:.3f} requests/sec")
     print(f"Average request latency: {avg_request_latency_ms:.3f} ms")
@@ -748,6 +924,9 @@ def run_simulation(
         "p90_request_latency_ms": p90_request_latency_ms,
         "p99_request_latency_ms": p99_request_latency_ms,
         "avg_per_expert_batch_size": avg_per_expert_batch_size,
+        "stopped_early": stopped_early,
+        "steps_executed": steps_executed,
+        "saturation_step": saturation_step,
     }
 
 
