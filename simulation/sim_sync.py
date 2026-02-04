@@ -7,7 +7,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List
+from typing import Callable, Deque, Dict, List
 
 import torch
 
@@ -74,6 +74,7 @@ class Token:
     request_id: int
     token_index: int
     layer_fanout: Dict[int, int] = field(default_factory=dict)
+    sampled_for_stats: bool = False
 
 
 @dataclass
@@ -215,6 +216,8 @@ class SyncMoESimulator:
         profile_router: ProfileDrivenRouter,
         progress_tracker: ProgressTracker,
         global_request_max_batch_size: int,
+        per_token_begin_cb: Callable[[Token], None] | None = None,
+        per_token_stats_cb: Callable[[Token, float], None] | None = None,
     ):
         if total_expert_count % ep_group_size != 0:
             raise ValueError("total_expert_count must be divisible by ep_group_size")
@@ -232,6 +235,8 @@ class SyncMoESimulator:
         self.profile_router = profile_router
         self.progress_tracker = progress_tracker
         self.global_request_max_batch_size = max(1, int(global_request_max_batch_size))
+        self.per_token_begin_cb = per_token_begin_cb
+        self.per_token_stats_cb = per_token_stats_cb
 
         self.total_requests = len(request_arrivals)
         self.expected_total_tokens = self.total_requests * self.tokens_per_request
@@ -269,28 +274,80 @@ class SyncMoESimulator:
         self.total_expert_batch_size: float = 0.0
         self.total_expert_batch_count: int = 0
 
-    def run(self):
-        while self.completed_tokens < self.expected_total_tokens:
-            self._release_new_arrivals()
-            self._fill_active_requests()
+    def run(self, tokens_after_reaching_max_bs: int | None = None):
+        steps_executed = 0
+        saturation_step: int | None = None
+        saturation_tokens_completed: int | None = None
 
-            if not self.active_requests:
-                if not self._advance_to_next_arrival():
+        if tokens_after_reaching_max_bs is not None:
+            tokens_after_reaching_max_bs = int(tokens_after_reaching_max_bs)
+            if tokens_after_reaching_max_bs < 0:
+                raise ValueError("tokens_after_reaching_max_bs must be >= 0 or None")
+
+            # Step iteration-by-iteration so we can stop shortly after the
+            # system reaches the configured max active request batch size
+            # (i.e., saturation), once enough additional tokens have completed.
+            while self.completed_tokens < self.expected_total_tokens:
+                steps_executed += 1
+
+                self._release_new_arrivals()
+                self._fill_active_requests()
+
+                if (
+                    saturation_step is None
+                    and self.active_requests
+                    and len(self.active_requests) >= self.global_request_max_batch_size
+                ):
+                    saturation_step = steps_executed
+                    saturation_tokens_completed = self.completed_tokens
+
+                if not self.active_requests:
+                    if not self._advance_to_next_arrival():
+                        break
+                else:
+                    tokens = self._spawn_tokens_for_iteration()
+                    if tokens:
+                        iteration_duration = self._run_one_iteration(tokens)
+                        self.current_time += iteration_duration
+                        self._finalize_iteration(tokens)
+                    else:
+                        # Should not happen, but guard against zero-token iterations.
+                        if not self._advance_to_next_arrival():
+                            break
+
+                if (
+                    saturation_tokens_completed is not None
+                    and (self.completed_tokens - saturation_tokens_completed)
+                    >= tokens_after_reaching_max_bs
+                ):
                     break
-                continue
+        else:
+            while self.completed_tokens < self.expected_total_tokens:
+                self._release_new_arrivals()
+                self._fill_active_requests()
 
-            tokens = self._spawn_tokens_for_iteration()
-            if not tokens:
-                # Should not happen, but guard against zero-token iterations.
-                if not self._advance_to_next_arrival():
-                    break
-                continue
+                if not self.active_requests:
+                    if not self._advance_to_next_arrival():
+                        break
+                    continue
 
-            iteration_duration = self._run_one_iteration(tokens)
-            self.current_time += iteration_duration
-            self._finalize_iteration(tokens)
+                tokens = self._spawn_tokens_for_iteration()
+                if not tokens:
+                    # Should not happen, but guard against zero-token iterations.
+                    if not self._advance_to_next_arrival():
+                        break
+                    continue
 
-        self.progress_tracker.finalize()
+                iteration_duration = self._run_one_iteration(tokens)
+                self.current_time += iteration_duration
+                self._finalize_iteration(tokens)
+
+        if self.completed_tokens >= self.expected_total_tokens:
+            self.progress_tracker.finalize()
+        else:
+            self.progress_tracker.update(self.completed_tokens, force=True)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
         # Aggregate per-layer metrics across all layers and iterations.
         if self.layer_expert_runtimes:
@@ -321,6 +378,8 @@ class SyncMoESimulator:
         else:
             avg_per_expert_batch_size = 0.0
 
+        stopped_early = self.completed_tokens != self.expected_total_tokens
+
         return {
             "completion_times": self.completion_times,
             "token_latencies": self.token_latencies,
@@ -330,6 +389,10 @@ class SyncMoESimulator:
             "avg_layer_wait_imbalance": avg_layer_wait_imbalance,
             "avg_layer_worker_queue_stddev": avg_layer_worker_queue_stddev,
             "avg_per_expert_batch_size": avg_per_expert_batch_size,
+            "stopped_early": stopped_early,
+            "steps_executed": steps_executed,
+            "saturation_step": saturation_step,
+            "saturation_tokens_completed": saturation_tokens_completed,
         }
 
     # ------------------------------
@@ -365,6 +428,7 @@ class SyncMoESimulator:
 
     def _spawn_tokens_for_iteration(self) -> List[Token]:
         tokens: List[Token] = []
+        begin_cb = self.per_token_begin_cb
         for request in self.active_requests:
             if request.completed or request.next_token_index >= self.tokens_per_request:
                 continue
@@ -375,6 +439,8 @@ class SyncMoESimulator:
                 token_index=request.next_token_index,
             )
             self.next_tid += 1
+            if begin_cb is not None:
+                begin_cb(token)
             tokens.append(token)
         return tokens
 
@@ -494,19 +560,37 @@ class SyncMoESimulator:
 
     def _finalize_iteration(self, tokens: List[Token]):
         completion_time = self.current_time
-        for token in tokens:
-            self.completion_times[token.tid] = completion_time
-            latency = completion_time - token.birth_time
-            self.token_latencies[token.tid] = latency
-            self.completed_tokens += 1
+        cb = self.per_token_stats_cb
+        if cb is None:
+            for token in tokens:
+                self.completion_times[token.tid] = completion_time
+                latency = completion_time - token.birth_time
+                self.token_latencies[token.tid] = latency
+                self.completed_tokens += 1
 
-            req = self.request_lookup[token.request_id]
-            req.next_token_index += 1
-            if req.next_token_index >= self.tokens_per_request:
-                req.completed = True
-                self.request_latency_values.append(
-                    completion_time - req.arrival_time
-                )
+                req = self.request_lookup[token.request_id]
+                req.next_token_index += 1
+                if req.next_token_index >= self.tokens_per_request:
+                    req.completed = True
+                    self.request_latency_values.append(
+                        completion_time - req.arrival_time
+                    )
+        else:
+            for token in tokens:
+                self.completion_times[token.tid] = completion_time
+                latency = completion_time - token.birth_time
+                self.token_latencies[token.tid] = latency
+                self.completed_tokens += 1
+                if token.sampled_for_stats:
+                    cb(token, completion_time)
+
+                req = self.request_lookup[token.request_id]
+                req.next_token_index += 1
+                if req.next_token_index >= self.tokens_per_request:
+                    req.completed = True
+                    self.request_latency_values.append(
+                        completion_time - req.arrival_time
+                    )
 
         self.progress_tracker.update(self.completed_tokens)
         # Remove finished requests before the next iteration starts.
@@ -536,6 +620,9 @@ def run_simulation(
     routing_top_k=ROUTING_TOP_K,
     rng_seed=RNG_SEED,
     global_request_max_batch_size=GLOBAL_REQUEST_MAX_BATCH_SIZE,
+    tokens_after_reaching_max_bs: int | None = None,
+    per_token_begin_cb: Callable[[Token], None] | None = None,
+    per_token_stats_cb: Callable[[Token, float], None] | None = None,
 ):
     rng = random.Random(rng_seed)
 
@@ -584,9 +671,11 @@ def run_simulation(
         profile_router=profile_router,
         progress_tracker=progress_tracker,
         global_request_max_batch_size=global_request_max_batch_size,
+        per_token_begin_cb=per_token_begin_cb,
+        per_token_stats_cb=per_token_stats_cb,
     )
 
-    results = simulator.run()
+    results = simulator.run(tokens_after_reaching_max_bs=tokens_after_reaching_max_bs)
     completion_times = results["completion_times"]
     token_latencies = results["token_latencies"]
     request_latency_values = results["request_latency_values"]
@@ -595,8 +684,11 @@ def run_simulation(
     avg_layer_wait_imbalance = results["avg_layer_wait_imbalance"]
     avg_layer_worker_queue_stddev = results["avg_layer_worker_queue_stddev"]
     avg_per_expert_batch_size = results["avg_per_expert_batch_size"]
+    stopped_early = results.get("stopped_early", False)
+    steps_executed = results.get("steps_executed", 0)
+    saturation_step = results.get("saturation_step", None)
 
-    if len(completion_times) != total_tokens_expected:
+    if stopped_early and tokens_after_reaching_max_bs is None:
         print(
             "WARNING: some tokens did not complete!",
             len(completion_times),
@@ -608,8 +700,11 @@ def run_simulation(
     avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
     makespan_ms = makespan / ticks_per_millisecond
     makespan_sec = makespan_ms / 1000.0 if makespan_ms > 0 else 0.0
+    completed_tokens = len(completion_times)
     avg_throughput_req_per_sec = (
-        total_requests / makespan_sec if makespan_sec > 0 else 0.0
+        (completed_tokens / float(tokens_per_request)) / makespan_sec
+        if makespan_sec > 0 and tokens_per_request > 0
+        else 0.0
     )
 
     request_latencies_ms = [
@@ -634,7 +729,14 @@ def run_simulation(
     avg_layer_runtime_ms = avg_layer_runtime / ticks_per_millisecond
     avg_layer_wait_imbalance_ms = avg_layer_wait_imbalance / ticks_per_millisecond
 
-    print(f"Simulation finished at time {makespan:.3f}")
+    if stopped_early:
+        print(
+            f"Simulation stopped early at time {makespan:.3f} "
+            f"(completed_tokens={completed_tokens}/{total_tokens_expected}, "
+            f"steps_executed={steps_executed}, saturation_step={saturation_step})"
+        )
+    else:
+        print(f"Simulation finished at time {makespan:.3f}")
     print(f"Average completion time over {len(latencies)} tokens: {avg_latency:.3f}")
     print(f"Average throughput: {avg_throughput_req_per_sec:.3f} requests/sec")
     print(f"Average request latency: {avg_request_latency_ms:.3f} ms")
@@ -659,6 +761,9 @@ def run_simulation(
         "p99_request_latency_ms": p99_request_latency_ms,
         "avg_layer_worker_queue_stddev": avg_layer_worker_queue_stddev,
         "avg_per_expert_batch_size": avg_per_expert_batch_size,
+        "stopped_early": stopped_early,
+        "steps_executed": steps_executed,
+        "saturation_step": saturation_step,
     }
 
 

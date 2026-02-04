@@ -77,6 +77,34 @@ class Token:
     token_index: int
     layer_fanout: Dict[int, int] = field(default_factory=dict)
     # Stores how many experts each layer routed the token through.
+    sampled_for_stats: bool = False
+
+@dataclass
+class DefragV0DebugState:
+    enabled: bool = False
+    triggered: bool = False
+    trigger_time: float | None = None
+    trigger_request_id: int | None = None
+    trigger_active_requests: int | None = None
+    trigger_pending_queue_len: int | None = None
+
+    get_active_requests: Callable[[], int] | None = None
+    get_pending_queue_len: Callable[[], int] | None = None
+    get_global_expert_queued_tokens: Callable[[], int] | None = None
+    get_global_expert_inflight_tokens: Callable[[], int] | None = None
+    get_per_worker_expert_queued_tokens: Callable[[], List[int]] | None = None
+    get_per_worker_expert_inflight_tokens: Callable[[], List[int]] | None = None
+    get_attention_users: Callable[[], int] | None = None
+    get_attention_queue: Callable[[], int] | None = None
+    get_pending_tokens_total: Callable[[], int] | None = None
+    get_pending_tokens_per_layer: Callable[[], List[int]] | None = None
+    get_tokens_created: Callable[[], int] | None = None
+    get_tokens_completed: Callable[[], int] | None = None
+
+    logged: bool = False
+    log_time: float | None = None
+    worker_idx: int | None = None
+    entry: Dict[str, object] | None = None
 
 
 class RequestManager:
@@ -88,12 +116,16 @@ class RequestManager:
     def __init__(self, env, tokens_per_request: int,
                  record_completion_cb: Callable[[Token, float], None],
                  request_complete_cb: Callable[[int, float], None] | None = None,
-                 max_active_requests: int | None = None):
+                 max_active_requests: int | None = None,
+                 defrag_v0_debug_state: DefragV0DebugState | None = None,
+                 token_begin_cb: Callable[[Token], None] | None = None):
         self.env = env
         self.tokens_per_request = tokens_per_request
         self._record_completion = record_completion_cb
         self._request_complete_cb = request_complete_cb
         self.max_active_requests = max_active_requests
+        self._defrag_v0_debug_state = defrag_v0_debug_state
+        self._token_begin_cb = token_begin_cb
         self.first_attention: AttentionWorker | None = None
         self._next_tid = 0
         self._request_state: Dict[int, int] = {}
@@ -107,6 +139,10 @@ class RequestManager:
     def active_requests(self) -> int:
         return len(self._request_state)
 
+    @property
+    def pending_queue_len(self) -> int:
+        return len(self._pending_queue)
+
     def admit_request(self, request_id: int, arrival_time: float):
         if self.max_active_requests is None or self.active_requests < self.max_active_requests:
             self._start_request_now(request_id, arrival_time)
@@ -118,6 +154,21 @@ class RequestManager:
             raise ValueError(f"Request {request_id} already started")
         self._request_state[request_id] = 0
         self._request_start_time[request_id] = arrival_time
+
+        dbg = self._defrag_v0_debug_state
+        if (
+            dbg is not None
+            and dbg.enabled
+            and not dbg.triggered
+            and self.max_active_requests is not None
+            and self.active_requests >= self.max_active_requests
+        ):
+            dbg.triggered = True
+            dbg.trigger_time = self.env.now
+            dbg.trigger_request_id = request_id
+            dbg.trigger_active_requests = self.active_requests
+            dbg.trigger_pending_queue_len = self.pending_queue_len
+
         self._dispatch_next_token(request_id)
 
     def handle_token_completion(self, token: Token, completion_time: float):
@@ -154,6 +205,8 @@ class RequestManager:
         )
         self._next_tid += 1
         self._request_state[request_id] = next_idx + 1
+        if self._token_begin_cb is not None:
+            self._token_begin_cb(token)
         self.first_attention.enqueue(token)
 
     def _maybe_admit_queued_requests(self):
@@ -320,6 +373,7 @@ class ExpertWorker:
         attention_layers,
         final_completion_tracker: FinalCompletionTracker,
         batch_stats=None,
+        defrag_v0_debug_state: DefragV0DebugState | None = None,
         scheduling_policy: str = "longest_queue_first",
     ):
         self.env = env
@@ -334,6 +388,8 @@ class ExpertWorker:
         self._batch_stats = batch_stats
         self._total_queue_length = 0
         self.scheduling_policy = scheduling_policy
+        self._defrag_v0_debug_state = defrag_v0_debug_state
+        self._inflight_batch_size = 0
 
         # Per-layer, per-expert queues:
         # queues[layer_idx][local_queue_idx]
@@ -396,11 +452,13 @@ class ExpertWorker:
                 self._batch_stats["total_batches"] += 1
 
             # Expert compute
+            self._inflight_batch_size = len(batch)
             compute_t = self._compute_time_lookup[len(batch)]
             yield self.env.timeout(compute_t)
 
             # Network delay to attention / completion
             yield self.env.timeout(self.net_t_expert_to_attn)
+            self._inflight_batch_size = 0
 
             # Route tokens onward
             for token in batch:
@@ -470,13 +528,20 @@ class ExpertWorker:
         # given layer.
         queues = self.queues
         layer_totals = [0] * n_layers
+        queue_len_matrix = [[0] * n_groups for _ in range(n_layers)]
         for layer_idx in range(n_layers):
             total = 0
-            for q in queues[layer_idx]:
-                total += len(q)
+            for group_idx, q in enumerate(queues[layer_idx]):
+                q_len = len(q)
+                queue_len_matrix[layer_idx][group_idx] = q_len
+                total += q_len
             layer_totals[layer_idx] = total
 
         inv_n_groups = 1.0 / float(n_groups)
+        lookahead_scores_by_layer = [0.0] * n_layers
+        score_matrix: List[List[float | None]] = [
+            [None] * n_groups for _ in range(n_layers)
+        ]
 
         for i in range(n_layers):
             # Compute lookahead score shared by all groups at layer i.
@@ -488,6 +553,7 @@ class ExpertWorker:
                 if num_tokens_cur_layer > 0:
                     lookahead_score += num_tokens_cur_layer * decay # * inv_n_groups
                 decay *= weight_decay
+            lookahead_scores_by_layer[i] = lookahead_score
 
             # Now compute per-(layer, group) scores, only for non-empty queues
             # at the current layer. Queues with more tokens in the current
@@ -499,10 +565,111 @@ class ExpertWorker:
                 if local_len <= 0:
                     continue
                 score = lookahead_score + float(local_len)
+                score_matrix[i][j] = score
                 if best_layer_idx is None or score > best_score:
                     best_score = score
                     best_layer_idx = i
                     best_group_idx = j
+
+        dbg = self._defrag_v0_debug_state
+        if (
+            dbg is not None
+            and dbg.enabled
+            and dbg.triggered
+        ):
+            active_requests_at_log_time = (
+                dbg.get_active_requests() if dbg.get_active_requests is not None else None
+            )
+            pending_queue_len_at_log_time = (
+                dbg.get_pending_queue_len() if dbg.get_pending_queue_len is not None else None
+            )
+            global_expert_queued_tokens = (
+                dbg.get_global_expert_queued_tokens()
+                if dbg.get_global_expert_queued_tokens is not None
+                else None
+            )
+            global_expert_inflight_tokens = (
+                dbg.get_global_expert_inflight_tokens()
+                if dbg.get_global_expert_inflight_tokens is not None
+                else None
+            )
+            per_worker_expert_queued_tokens = (
+                dbg.get_per_worker_expert_queued_tokens()
+                if dbg.get_per_worker_expert_queued_tokens is not None
+                else None
+            )
+            per_worker_expert_inflight_tokens = (
+                dbg.get_per_worker_expert_inflight_tokens()
+                if dbg.get_per_worker_expert_inflight_tokens is not None
+                else None
+            )
+            attention_users = (
+                dbg.get_attention_users() if dbg.get_attention_users is not None else None
+            )
+            attention_queue = (
+                dbg.get_attention_queue() if dbg.get_attention_queue is not None else None
+            )
+            pending_tokens_total = (
+                dbg.get_pending_tokens_total()
+                if dbg.get_pending_tokens_total is not None
+                else None
+            )
+            pending_tokens_per_layer = (
+                dbg.get_pending_tokens_per_layer()
+                if dbg.get_pending_tokens_per_layer is not None
+                else None
+            )
+            tokens_created = (
+                dbg.get_tokens_created() if dbg.get_tokens_created is not None else None
+            )
+            tokens_completed = (
+                dbg.get_tokens_completed() if dbg.get_tokens_completed is not None else None
+            )
+            tokens_inflight_unique = (
+                (int(tokens_created) - int(tokens_completed))
+                if tokens_created is not None and tokens_completed is not None
+                else None
+            )
+
+            dbg.logged = True
+            dbg.log_time = self.env.now
+            dbg.worker_idx = self.worker_idx
+            dbg.entry = {
+                "scheduling_policy": "defragging_v0",
+                "worker_idx": self.worker_idx,
+                "log_time": self.env.now,
+                "trigger_time": dbg.trigger_time,
+                "trigger_request_id": dbg.trigger_request_id,
+                "trigger_active_requests": dbg.trigger_active_requests,
+                "trigger_pending_queue_len": dbg.trigger_pending_queue_len,
+                "active_requests_at_log_time": active_requests_at_log_time,
+                "pending_queue_len_at_log_time": pending_queue_len_at_log_time,
+                "global_expert_queued_tokens": global_expert_queued_tokens,
+                "global_expert_inflight_tokens": global_expert_inflight_tokens,
+                "global_expert_total_tokens": (
+                    (int(global_expert_queued_tokens) + int(global_expert_inflight_tokens))
+                    if global_expert_queued_tokens is not None and global_expert_inflight_tokens is not None
+                    else None
+                ),
+                "per_worker_expert_queued_tokens": per_worker_expert_queued_tokens,
+                "per_worker_expert_inflight_tokens": per_worker_expert_inflight_tokens,
+                "attention_users": attention_users,
+                "attention_queue": attention_queue,
+                "pending_tokens_total": pending_tokens_total,
+                "pending_tokens_per_layer": pending_tokens_per_layer,
+                "tokens_created": tokens_created,
+                "tokens_completed": tokens_completed,
+                "tokens_inflight_unique": tokens_inflight_unique,
+                "weight_decay": weight_decay,
+                "lookahead_steps": lookahead_steps,
+                "queue_len_matrix": queue_len_matrix,
+                "layer_totals": layer_totals,
+                "lookahead_scores_by_layer": lookahead_scores_by_layer,
+                "score_matrix": score_matrix,
+                "best_layer_idx": best_layer_idx,
+                "best_group_idx": best_group_idx,
+                "best_score": best_score,
+            }
 
         if best_layer_idx is None or best_group_idx is None:
             return None, None
@@ -693,8 +860,11 @@ def run_simulation(
     routing_top_k=ROUTING_TOP_K,
     global_request_max_batch_size=GLOBAL_REQUEST_MAX_BATCH_SIZE,
     attn_dp_group_size=ATTN_DP_GROUP_SIZE,
-    steps_after_reaching_max_bs: int | None = None,
+    tokens_after_reaching_max_bs: int | None = None,
+    enable_defrag_v0_debug_log: bool = False,
     scheduling_policy: str = SCHEDULING_POLICY,
+    per_token_begin_cb: Callable[[Token], None] | None = None,
+    per_token_stats_cb: Callable[[Token, float], None] | None = None,
 ):
     random.seed(RNG_SEED)
     env = simpy.Environment()
@@ -706,13 +876,27 @@ def run_simulation(
     token_latencies = {}   # tid -> completion_time - birth_time
     request_latency_values: List[float] = []
 
-    def record_completion(token: Token, t_complete: float):
-        completion_times[token.tid] = t_complete
-        token_latencies[token.tid] = t_complete - token.birth_time
-        progress_tracker.update(len(completion_times))
+    if per_token_stats_cb is None:
+        def record_completion(token: Token, t_complete: float):
+            completion_times[token.tid] = t_complete
+            token_latencies[token.tid] = t_complete - token.birth_time
+            progress_tracker.update(len(completion_times))
+    else:
+        def record_completion(token: Token, t_complete: float):
+            completion_times[token.tid] = t_complete
+            token_latencies[token.tid] = t_complete - token.birth_time
+            progress_tracker.update(len(completion_times))
+            if token.sampled_for_stats:
+                per_token_stats_cb(token, t_complete)
 
     def record_request_completion(request_id: int, latency: float):
         request_latency_values.append(latency)
+
+    defrag_v0_debug_state = (
+        DefragV0DebugState(enabled=True)
+        if enable_defrag_v0_debug_log
+        else None
+    )
 
     request_manager = RequestManager(
         env=env,
@@ -720,7 +904,14 @@ def run_simulation(
         record_completion_cb=record_completion,
         request_complete_cb=record_request_completion,
         max_active_requests=global_request_max_batch_size,
+        defrag_v0_debug_state=defrag_v0_debug_state,
+        token_begin_cb=per_token_begin_cb,
     )
+    if defrag_v0_debug_state is not None:
+        defrag_v0_debug_state.get_active_requests = lambda: request_manager.active_requests
+        defrag_v0_debug_state.get_pending_queue_len = lambda: request_manager.pending_queue_len
+        defrag_v0_debug_state.get_tokens_created = lambda: request_manager._next_tid
+        defrag_v0_debug_state.get_tokens_completed = lambda: len(completion_times)
 
     final_completion_tracker = FinalCompletionTracker(
         final_layer_idx=num_layers - 1,
@@ -731,6 +922,9 @@ def run_simulation(
     # expected to set this explicitly; we still clamp it to a positive int.
     attn_dp_group_size = max(1, int(attn_dp_group_size))
     attention_resource = simpy.Resource(env, capacity=attn_dp_group_size)
+    if defrag_v0_debug_state is not None:
+        defrag_v0_debug_state.get_attention_users = lambda: len(attention_resource.users)
+        defrag_v0_debug_state.get_attention_queue = lambda: len(attention_resource.queue)
 
     # Build expert workers (shared across all layers) and per-layer attention workers.
     expert_workers = []
@@ -773,9 +967,40 @@ def run_simulation(
             attention_layers=None,  # temp, will fix after we create them
             final_completion_tracker=final_completion_tracker,
             batch_stats=batch_stats,
+            defrag_v0_debug_state=defrag_v0_debug_state,
             scheduling_policy=scheduling_policy,
         )
         expert_workers.append(worker)
+
+    if defrag_v0_debug_state is not None:
+        def _global_queued_tokens() -> int:
+            total = 0
+            for worker in expert_workers:
+                for layer_queues in worker.queues:
+                    for q in layer_queues:
+                        total += len(q)
+            return total
+
+        def _global_inflight_tokens() -> int:
+            return sum(int(w._inflight_batch_size) for w in expert_workers)
+
+        def _per_worker_queued_tokens() -> List[int]:
+            totals: List[int] = []
+            for worker in expert_workers:
+                total = 0
+                for layer_queues in worker.queues:
+                    for q in layer_queues:
+                        total += len(q)
+                totals.append(total)
+            return totals
+
+        def _per_worker_inflight_tokens() -> List[int]:
+            return [int(w._inflight_batch_size) for w in expert_workers]
+
+        defrag_v0_debug_state.get_global_expert_queued_tokens = _global_queued_tokens
+        defrag_v0_debug_state.get_global_expert_inflight_tokens = _global_inflight_tokens
+        defrag_v0_debug_state.get_per_worker_expert_queued_tokens = _per_worker_queued_tokens
+        defrag_v0_debug_state.get_per_worker_expert_inflight_tokens = _per_worker_inflight_tokens
 
     # Now create attention workers (they need expert_layers)
     for layer in range(num_layers):
@@ -793,6 +1018,15 @@ def run_simulation(
         attention_layers.append(attn)
 
     request_manager.set_first_attention(attention_layers[0])
+    if defrag_v0_debug_state is not None:
+        def _pending_tokens_total() -> int:
+            return sum(len(attn.pending_tokens) for attn in attention_layers)
+
+        def _pending_tokens_per_layer() -> List[int]:
+            return [len(attn.pending_tokens) for attn in attention_layers]
+
+        defrag_v0_debug_state.get_pending_tokens_total = _pending_tokens_total
+        defrag_v0_debug_state.get_pending_tokens_per_layer = _pending_tokens_per_layer
 
     # Now that we have attention_layers, fix the forward pointers in experts
     for w in expert_workers:
@@ -808,13 +1042,15 @@ def run_simulation(
 
     steps_executed = 0
     saturation_step: int | None = None
-    if steps_after_reaching_max_bs is not None:
-        steps_after_reaching_max_bs = int(steps_after_reaching_max_bs)
-        if steps_after_reaching_max_bs < 0:
-            raise ValueError("steps_after_reaching_max_bs must be >= 0 or None")
+    saturation_tokens_completed: int | None = None
+    if tokens_after_reaching_max_bs is not None:
+        tokens_after_reaching_max_bs = int(tokens_after_reaching_max_bs)
+        if tokens_after_reaching_max_bs < 0:
+            raise ValueError("tokens_after_reaching_max_bs must be >= 0 or None")
 
         # Step event-by-event so we can stop shortly after the system reaches
-        # the configured max active request batch size (i.e., saturation).
+        # the configured max active request batch size (i.e., saturation), once
+        # enough additional tokens have completed.
         try:
             while True:
                 env.step()
@@ -827,10 +1063,12 @@ def run_simulation(
                     >= request_manager.max_active_requests
                 ):
                     saturation_step = steps_executed
+                    saturation_tokens_completed = len(completion_times)
 
                 if (
-                    saturation_step is not None
-                    and (steps_executed - saturation_step) >= steps_after_reaching_max_bs
+                    saturation_tokens_completed is not None
+                    and (len(completion_times) - saturation_tokens_completed)
+                    >= tokens_after_reaching_max_bs
                 ):
                     break
         except simpy.core.EmptySchedule:
@@ -851,7 +1089,7 @@ def run_simulation(
 
     # Metrics
     stopped_early = len(completion_times) != expected_total_tokens
-    if stopped_early and steps_after_reaching_max_bs is None:
+    if stopped_early and tokens_after_reaching_max_bs is None:
         print(
             "WARNING: some tokens did not complete!",
             len(completion_times),
@@ -927,6 +1165,26 @@ def run_simulation(
         "stopped_early": stopped_early,
         "steps_executed": steps_executed,
         "saturation_step": saturation_step,
+        "defrag_v0_debug_triggered": (
+            defrag_v0_debug_state.triggered
+            if defrag_v0_debug_state is not None
+            else False
+        ),
+        "defrag_v0_debug_trigger_time": (
+            defrag_v0_debug_state.trigger_time
+            if defrag_v0_debug_state is not None
+            else None
+        ),
+        "defrag_v0_debug_logged": (
+            defrag_v0_debug_state.logged
+            if defrag_v0_debug_state is not None
+            else False
+        ),
+        "defrag_v0_debug_entry": (
+            defrag_v0_debug_state.entry
+            if defrag_v0_debug_state is not None
+            else None
+        ),
     }
 
 
