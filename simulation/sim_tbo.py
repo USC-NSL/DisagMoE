@@ -7,14 +7,11 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Deque, Dict, List
+from typing import Callable, Deque, Dict, List, Tuple
 
 import torch
 
-from util import (
-    expert_compute_time_lookup_table_from_profile,
-    build_profile_router,
-)
+from util import expert_compute_time_lookup_table_from_profile, build_profile_router
 from disagmoe.models.gate import ProfileDrivenRouter
 
 
@@ -22,24 +19,23 @@ from disagmoe.models.gate import ProfileDrivenRouter
 # Configurable parameters
 # ------------------------------
 
-EP_GROUP_SIZE      = 16      # "n": number of expert workers globally
-TOTAL_EXPERT_COUNT = 128     # total experts per layer
-MAX_BATCH_SIZE     = 512
-NUM_LAYERS         = 48      # number of expert layers
-TOTAL_REQUESTS     = 8192
+EP_GROUP_SIZE = 16  # "n": number of expert workers globally
+TOTAL_EXPERT_COUNT = 128  # total experts per layer
+MAX_BATCH_SIZE = 512
+NUM_LAYERS = 48  # number of expert layers
+TOTAL_REQUESTS = 8192
 TOKENS_PER_REQUEST = 256
-TOTAL_TOKENS       = TOTAL_REQUESTS * TOKENS_PER_REQUEST
-GLOBAL_REQUEST_MAX_BATCH_SIZE = EP_GROUP_SIZE * 256  # ??????? max concurrent active requests
+TOTAL_TOKENS = TOTAL_REQUESTS * TOKENS_PER_REQUEST
+GLOBAL_REQUEST_MAX_BATCH_SIZE = EP_GROUP_SIZE * 256  # max concurrent active requests
 
-ARRIVAL_RATE       = 50.0   # lambda for Poisson arrivals (requests / tick)
-# try for each attention worker, devide the arrival rate by the number of attention workers
+ARRIVAL_RATE = 50.0  # lambda for Poisson arrivals (requests / tick)
 
-ATTN_SERVICE_T     = 2    # time (ticks) per token at attention worker
+ATTN_SERVICE_T = 2  # time (ticks) per token at attention worker
 ATTN_DP_GROUP_SIZE = EP_GROUP_SIZE  # number of parallel attention workers globally
 TICKS_PER_MILLISECOND = 10  # 0.1 ms per tick
 
-NET_T_EXPERT_TO_ATTN  = 0.1  # fixed network delay expert -> attention in #ticks, 10us
-NET_T_ATTN_TO_EXPERT  = 0.1  # fixed network delay attention -> expert in #ticks, 10us
+NET_T_EXPERT_TO_ATTN = 0.1  # fixed network delay expert -> attention in #ticks, 10us
+NET_T_ATTN_TO_EXPERT = 0.1  # fixed network delay attention -> expert in #ticks, 10us
 
 GROUP_GEMM_SPEEDUP_FACTOR = 0.7  # speedup factor for grouped GEMM vs single-expert profile
 
@@ -183,7 +179,7 @@ def percentile(values: List[float], pct: float) -> float:
 def generate_request_arrivals(total_requests: int, arrival_rate: float, rng: random.Random) -> List[float]:
     """
     Generate absolute arrival times for each request following a Poisson process.
-    The first request arrives at time 0, matching the async simulator's behavior.
+    The first request arrives at time 0.
     """
     if total_requests <= 0:
         return []
@@ -196,12 +192,17 @@ def generate_request_arrivals(total_requests: int, arrival_rate: float, rng: ran
     return arrivals
 
 
-class SyncMoESimulator:
+class TBOMoESimulator:
     """
-    Centralized synchronous MoE simulator that advances tokens layer-by-layer.
-    Each iteration processes up to GLOBAL_REQUEST_MAX_BATCH_SIZE active requests,
-    routing their current token through every layer before moving to the next
-    autoregressive position.
+    Centralized synchronous MoE simulator with 2-way microbatch pipelining to overlap
+    communication and compute ("tbo" = two-batch overlap).
+
+    Each iteration spawns one token per active request, splits tokens evenly into
+    two microbatches, and then runs a centralized schedule with three single-capacity
+    resources:
+      - attn: attention (DP) compute
+      - expert: expert (EP) compute
+      - comm: dispatch (attn->expert all2all) + return (expert->attn all2all)
     """
 
     def __init__(
@@ -233,10 +234,10 @@ class SyncMoESimulator:
         self.total_expert_count = total_expert_count
         self.ep_group_size = ep_group_size
         self.max_batch_size = max_batch_size
-        self.attn_service_t = attn_service_t
+        self.attn_service_t = float(attn_service_t)
         self.attn_dp_group_size = max(1, int(attn_dp_group_size))
-        self.net_t_attn_to_expert = net_t_attn_to_expert
-        self.net_t_expert_to_attn = net_t_expert_to_attn
+        self.net_t_attn_to_expert = float(net_t_attn_to_expert)
+        self.net_t_expert_to_attn = float(net_t_expert_to_attn)
         self.net_delay_fn = net_delay_fn
         self.compute_time_lookup = compute_time_lookup
         self.profile_router = profile_router
@@ -266,14 +267,13 @@ class SyncMoESimulator:
         self.completion_times: Dict[int, float] = {}
         self.token_latencies: Dict[int, float] = {}
         self.request_latency_values: List[float] = []
-
         self.completed_tokens = 0
 
         self.queues_per_worker = self.total_expert_count // self.ep_group_size
         self._router_device = torch.device("cpu")
         self._router_dtype = torch.float32
 
-        # Per-layer metrics for imbalance analysis
+        # Per-layer metrics for imbalance analysis (per microbatch)
         self.layer_expert_runtimes: List[float] = []
         self.layer_wait_imbalances: List[float] = []
         self.worker_queue_stddevs: List[float] = []
@@ -293,9 +293,6 @@ class SyncMoESimulator:
             if tokens_after_reaching_max_bs < 0:
                 raise ValueError("tokens_after_reaching_max_bs must be >= 0 or None")
 
-            # Step iteration-by-iteration so we can stop shortly after the
-            # system reaches the configured max active request batch size
-            # (i.e., saturation), once enough additional tokens have completed.
             while self.completed_tokens < self.expected_total_tokens:
                 steps_executed += 1
 
@@ -317,11 +314,11 @@ class SyncMoESimulator:
                 else:
                     tokens = self._spawn_tokens_for_iteration()
                     if tokens:
-                        iteration_duration = self._run_one_iteration(tokens)
-                        self.current_time += iteration_duration
-                        self._finalize_iteration(tokens)
+                        start_time = self.current_time
+                        iteration_duration, token_completion_times = self._run_one_iteration(tokens)
+                        self.current_time = start_time + iteration_duration
+                        self._finalize_iteration(tokens, token_completion_times)
                     else:
-                        # Should not happen, but guard against zero-token iterations.
                         if not self._advance_to_next_arrival():
                             break
 
@@ -343,48 +340,38 @@ class SyncMoESimulator:
 
                 tokens = self._spawn_tokens_for_iteration()
                 if not tokens:
-                    # Should not happen, but guard against zero-token iterations.
                     if not self._advance_to_next_arrival():
                         break
                     continue
 
-                iteration_duration = self._run_one_iteration(tokens)
-                self.current_time += iteration_duration
-                self._finalize_iteration(tokens)
+                start_time = self.current_time
+                iteration_duration, token_completion_times = self._run_one_iteration(tokens)
+                self.current_time = start_time + iteration_duration
+                self._finalize_iteration(tokens, token_completion_times)
 
         if self.completed_tokens >= self.expected_total_tokens:
             self.progress_tracker.finalize()
         else:
             self.progress_tracker.update(self.completed_tokens, force=True)
             sys.stdout.write("\n")
-            sys.stdout.flush()
 
-        # Aggregate per-layer metrics across all layers and iterations.
         if self.layer_expert_runtimes:
-            avg_layer_runtime = (
-                sum(self.layer_expert_runtimes) / len(self.layer_expert_runtimes)
-            )
+            avg_layer_runtime = sum(self.layer_expert_runtimes) / len(self.layer_expert_runtimes)
         else:
             avg_layer_runtime = 0.0
 
         if self.layer_wait_imbalances:
-            avg_layer_wait_imbalance = (
-                sum(self.layer_wait_imbalances) / len(self.layer_wait_imbalances)
-            )
+            avg_layer_wait_imbalance = sum(self.layer_wait_imbalances) / len(self.layer_wait_imbalances)
         else:
             avg_layer_wait_imbalance = 0.0
 
         if self.worker_queue_stddevs:
-            avg_layer_worker_queue_stddev = (
-                sum(self.worker_queue_stddevs) / len(self.worker_queue_stddevs)
-            )
+            avg_layer_worker_queue_stddev = sum(self.worker_queue_stddevs) / len(self.worker_queue_stddevs)
         else:
             avg_layer_worker_queue_stddev = 0.0
 
         if self.total_expert_batch_count > 0:
-            avg_per_expert_batch_size = (
-                self.total_expert_batch_size / self.total_expert_batch_count
-            )
+            avg_per_expert_batch_size = self.total_expert_batch_size / self.total_expert_batch_count
         else:
             avg_per_expert_batch_size = 0.0
 
@@ -407,7 +394,7 @@ class SyncMoESimulator:
         }
 
     # ------------------------------
-    # Internal helpers
+    # Internal helpers (same lifecycle as sim_sync)
     # ------------------------------
 
     def _release_new_arrivals(self):
@@ -463,91 +450,75 @@ class SyncMoESimulator:
             tokens.append(token)
         return tokens
 
-    def _run_one_iteration(self, tokens: List[Token]) -> float:
-        iteration_time = 0.0
+    def _split_into_microbatches(self, tokens: List[Token]) -> Tuple[List[Token], List[Token], Dict[int, int]]:
+        if not tokens:
+            return [], [], {}
+        tokens_sorted = sorted(tokens, key=lambda t: (t.request_id, t.tid))
+        mb0: List[Token] = []
+        mb1: List[Token] = []
+        tid_to_mb: Dict[int, int] = {}
+        for i, token in enumerate(tokens_sorted):
+            mb = 0 if (i % 2 == 0) else 1
+            tid_to_mb[token.tid] = mb
+            (mb0 if mb == 0 else mb1).append(token)
+        return mb0, mb1, tid_to_mb
+
+    def _run_one_iteration(self, tokens: List[Token]) -> tuple[float, Dict[int, float]]:
+        mb0, mb1, tid_to_mb = self._split_into_microbatches(tokens)
+
+        # Pre-build tasks by layer; for each layer route once over all tokens,
+        # then compute per-microbatch stage times.
+        tasks: List[List[tuple[str, float]]] = [[], []]  # per microbatch
+
         for layer_idx in range(self.num_layers):
-            iteration_time += self._run_layer(layer_idx, tokens)
-        return iteration_time
+            layer_times = self._compute_layer_times(layer_idx, tokens, tid_to_mb)
+            # Each microbatch does: attn (compute) -> dispatch (comm) -> expert (compute) -> return (comm)
+            for mb in (0, 1):
+                attn_t, dispatch_t, expert_compute_t, return_t = layer_times[mb]
+                tasks[mb].append(("attn", attn_t))
+                tasks[mb].append(("comm", dispatch_t))
+                tasks[mb].append(("expert", expert_compute_t))
+                tasks[mb].append(("comm", return_t))
 
-    def _run_layer(self, layer_idx: int, tokens: List[Token]) -> float:
-        token_count = len(tokens)
-        if token_count == 0:
-            return 0.0
+        finish0, finish1 = self._schedule_resources(tasks[0], tasks[1])
+        makespan = max(finish0, finish1)
 
-        # Model attention/gating with a shared pool of ATTN_DP_GROUP_SIZE
-        # workers. In each ATTN_SERVICE_T interval, at most that many tokens
-        # can complete attention. Within a layer, this reduces to:
-        #   ceil(token_count / ATTN_DP_GROUP_SIZE) * ATTN_SERVICE_T
-        # We keep the attention pool global conceptually, but because this
-        # synchronous simulator processes layers sequentially per iteration,
-        # the effect is captured via per-layer throughput.
-        batches = math.ceil(token_count / float(self.attn_dp_group_size))
-        attention_time = batches * self.attn_service_t
-        dispatch_time = self.net_t_attn_to_expert
+        token_completion_times: Dict[int, float] = {}
+        for token in tokens:
+            mb = tid_to_mb.get(token.tid, 0)
+            token_completion_times[token.tid] = (finish0 if mb == 0 else finish1)
 
-        worker_loads, worker_src_gpus = self._route_layer(layer_idx, tokens)
+        return makespan, token_completion_times
 
-        worker_return_delays: List[float] = [
-            float(self.net_t_expert_to_attn) for _ in range(self.ep_group_size)
+    def _compute_layer_times(
+        self,
+        layer_idx: int,
+        tokens: List[Token],
+        tid_to_mb: Dict[int, int],
+    ) -> List[tuple[float, float, float, float]]:
+        # Returns per-microbatch (attn, dispatch, expert_compute, return_comm)
+        token_count_mb = [0, 0]
+        for token in tokens:
+            token_count_mb[tid_to_mb[token.tid]] += 1
+
+        attn_times = []
+        for mb in (0, 1):
+            n = token_count_mb[mb]
+            if n <= 0 or self.attn_service_t <= 0.0:
+                attn_times.append(0.0)
+            else:
+                batches = math.ceil(n / float(self.attn_dp_group_size))
+                attn_times.append(batches * self.attn_service_t)
+
+        # Route once for all tokens; then aggregate per microbatch.
+        worker_queues_by_mb: List[List[List[int]]] = [
+            [[0 for _ in range(self.queues_per_worker)] for _ in range(self.ep_group_size)]
+            for _ in range(2)
         ]
-        if self.net_delay_fn is not None:
-            worker_dispatch_delays: List[float] = []
-            worker_return_delays = []
-            for worker_idx, src_gpus in enumerate(worker_src_gpus):
-                if not src_gpus:
-                    worker_dispatch_delays.append(0.0)
-                    worker_return_delays.append(0.0)
-                    continue
-                dispatch = max(
-                    float(self.net_delay_fn(int(src), int(worker_idx))) for src in src_gpus
-                )
-                ret = max(
-                    float(self.net_delay_fn(int(worker_idx), int(src))) for src in src_gpus
-                )
-                worker_dispatch_delays.append(dispatch)
-                worker_return_delays.append(ret)
-            dispatch_time = max(worker_dispatch_delays) if worker_dispatch_delays else 0.0
-
-        # Record per-worker queue imbalance (stddev over that worker's expert queues).
-        for queues in worker_loads:
-            if not queues:
-                continue
-            mean = sum(queues) / float(len(queues))
-            variance = sum((q - mean) ** 2 for q in queues) / float(len(queues))
-            stddev = math.sqrt(variance)
-            self.worker_queue_stddevs.append(stddev)
-
-        worker_times = [
-            self._simulate_worker_time(
-                loads,
-                net_return_delay=(worker_return_delays[worker_idx] if self.net_delay_fn is not None else None),
-            )
-            for worker_idx, loads in enumerate(worker_loads)
+        worker_src_gpus_by_mb: List[List[set[int]]] = [
+            [set() for _ in range(self.ep_group_size)] for _ in range(2)
         ]
-        expert_time = max(worker_times) if worker_times else 0.0
 
-        # Per-layer metrics:
-        # - total layer runtime (from attention start to last expert completion)
-        # - longest wait (from first worker completion to last worker completion)
-        if worker_times:
-            earliest_finish = min(worker_times)
-            latest_finish = max(worker_times)
-            longest_wait = max(0.0, latest_finish - earliest_finish)
-        else:
-            longest_wait = 0.0
-
-        layer_runtime = attention_time + dispatch_time + expert_time
-        self.layer_expert_runtimes.append(layer_runtime)
-        self.layer_wait_imbalances.append(longest_wait)
-
-        return layer_runtime
-
-    def _route_layer(self, layer_idx: int, tokens: List[Token]) -> tuple[List[List[int]], List[set[int]]]:
-        worker_queues: List[List[int]] = [
-            [0 for _ in range(self.queues_per_worker)]
-            for _ in range(self.ep_group_size)
-        ]
-        worker_src_gpus: List[set[int]] = [set() for _ in range(self.ep_group_size)]
         request_ids = [token.request_id for token in tokens]
         token_indices = torch.tensor(
             [token.token_index for token in tokens],
@@ -571,6 +542,7 @@ class SyncMoESimulator:
                     f"Router returned no experts for token {token.tid} at layer {layer_idx}"
                 )
             token.layer_fanout[layer_idx] = len(selected)
+            mb = tid_to_mb[token.tid]
 
             for expert_id in selected:
                 if expert_id >= self.total_expert_count:
@@ -579,18 +551,88 @@ class SyncMoESimulator:
                     )
                 worker_idx = expert_id // self.queues_per_worker
                 local_queue_idx = expert_id % self.queues_per_worker
-                worker_queues[worker_idx][local_queue_idx] += 1
-                worker_src_gpus[worker_idx].add(int(token.home_gpu))
-        return worker_queues, worker_src_gpus
+                worker_queues_by_mb[mb][worker_idx][local_queue_idx] += 1
+                worker_src_gpus_by_mb[mb][worker_idx].add(int(token.home_gpu))
 
-    def _simulate_worker_time(self, queue_lengths: List[int], net_return_delay: float | None = None) -> float:
+        out: List[tuple[float, float, float, float]] = []
+        for mb in (0, 1):
+            dispatch_time = self.net_t_attn_to_expert
+            worker_src_gpus = worker_src_gpus_by_mb[mb]
+
+            worker_return_delays: List[float] = [
+                float(self.net_t_expert_to_attn) for _ in range(self.ep_group_size)
+            ]
+            if self.net_delay_fn is not None:
+                worker_dispatch_delays: List[float] = []
+                worker_return_delays = []
+                for worker_idx, src_gpus in enumerate(worker_src_gpus):
+                    if not src_gpus:
+                        worker_dispatch_delays.append(0.0)
+                        worker_return_delays.append(0.0)
+                        continue
+                    dispatch = max(
+                        float(self.net_delay_fn(int(src), int(worker_idx))) for src in src_gpus
+                    )
+                    ret = max(
+                        float(self.net_delay_fn(int(worker_idx), int(src))) for src in src_gpus
+                    )
+                    worker_dispatch_delays.append(dispatch)
+                    worker_return_delays.append(ret)
+                dispatch_time = max(worker_dispatch_delays) if worker_dispatch_delays else 0.0
+
+            # Record per-worker queue imbalance (stddev over that worker's expert queues).
+            for queues in worker_queues_by_mb[mb]:
+                if not queues:
+                    continue
+                mean = sum(queues) / float(len(queues))
+                variance = sum((q - mean) ** 2 for q in queues) / float(len(queues))
+                self.worker_queue_stddevs.append(math.sqrt(variance))
+
+            compute_times: List[float] = []
+            return_times: List[float] = []
+            total_times: List[float] = []
+            for worker_idx, loads in enumerate(worker_queues_by_mb[mb]):
+                per_batch_return = (
+                    worker_return_delays[worker_idx]
+                    if self.net_delay_fn is not None
+                    else self.net_t_expert_to_attn
+                )
+                compute_t, return_t = self._simulate_worker_compute_and_return(
+                    loads,
+                    per_batch_return=float(per_batch_return),
+                )
+                compute_times.append(compute_t)
+                return_times.append(return_t)
+                total_times.append(compute_t + return_t)
+
+            expert_compute_time = max(compute_times) if compute_times else 0.0
+            return_comm_time = max(return_times) if return_times else 0.0
+
+            # Per-layer wait imbalance: spread of worker total runtimes.
+            if total_times:
+                earliest_finish = min(total_times)
+                latest_finish = max(total_times)
+                longest_wait = max(0.0, latest_finish - earliest_finish)
+            else:
+                longest_wait = 0.0
+
+            layer_runtime = attn_times[mb] + dispatch_time + expert_compute_time + return_comm_time
+            self.layer_expert_runtimes.append(layer_runtime)
+            self.layer_wait_imbalances.append(longest_wait)
+
+            out.append((attn_times[mb], dispatch_time, expert_compute_time, return_comm_time))
+
+        return out
+
+    def _simulate_worker_compute_and_return(self, queue_lengths: List[int], *, per_batch_return: float) -> tuple[float, float]:
         total_tokens = sum(queue_lengths)
-        if total_tokens == 0:
-            return 0.0
+        if total_tokens <= 0:
+            return 0.0, 0.0
 
         queues = list(queue_lengths)
-        elapsed = 0.0
-        per_batch_return = self.net_t_expert_to_attn if net_return_delay is None else float(net_return_delay)
+        compute_elapsed = 0.0
+        return_elapsed = 0.0
+
         while total_tokens > 0:
             queue_idx = max(range(len(queues)), key=lambda i: queues[i])
             available = queues[queue_idx]
@@ -599,48 +641,75 @@ class SyncMoESimulator:
             batch = min(available, self.max_batch_size)
             queues[queue_idx] -= batch
             total_tokens -= batch
-            compute_t = self.compute_time_lookup[batch]
+            compute_t = float(self.compute_time_lookup[batch])
+            compute_elapsed += compute_t
+            return_elapsed += float(per_batch_return)
             self.total_expert_batch_size += batch
             self.total_expert_batch_count += 1
-            elapsed += compute_t + per_batch_return
-        return elapsed
 
-    def _finalize_iteration(self, tokens: List[Token]):
-        completion_time = self.current_time
+        return compute_elapsed, return_elapsed
+
+    @staticmethod
+    def _schedule_resources(
+        tasks0: List[tuple[str, float]],
+        tasks1: List[tuple[str, float]],
+    ) -> tuple[float, float]:
+        tasks = [tasks0, tasks1]
+        next_idx = [0, 0]
+        ready = [0.0, 0.0]
+        res_free: Dict[str, float] = {"attn": 0.0, "expert": 0.0, "comm": 0.0}
+
+        def res_prio(res: str) -> int:
+            # Deterministic tie-break.
+            # Prefer "expert" (critical path) before "comm", then "attn".
+            if res == "expert":
+                return 0
+            if res == "comm":
+                return 1
+            return 2
+
+        while True:
+            candidates: List[tuple[float, int, int]] = []
+            for mb in (0, 1):
+                if next_idx[mb] >= len(tasks[mb]):
+                    continue
+                res, _dur = tasks[mb][next_idx[mb]]
+                est = max(ready[mb], res_free[res])
+                candidates.append((est, res_prio(res), mb))
+
+            if not candidates:
+                break
+
+            est, _prio, mb = min(candidates)
+            res, dur = tasks[mb][next_idx[mb]]
+            start = est
+            end = start + float(dur)
+            ready[mb] = end
+            res_free[res] = end
+            next_idx[mb] += 1
+
+        return ready[0], ready[1]
+
+    def _finalize_iteration(self, tokens: List[Token], token_completion_offsets: Dict[int, float]):
         cb = self.per_token_stats_cb
-        if cb is None:
-            for token in tokens:
-                self.completion_times[token.tid] = completion_time
-                latency = completion_time - token.birth_time
-                self.token_latencies[token.tid] = latency
-                self.completed_tokens += 1
 
-                req = self.request_lookup[token.request_id]
-                req.next_token_index += 1
-                if req.next_token_index >= self.tokens_per_request:
-                    req.completed = True
-                    self.request_latency_values.append(
-                        completion_time - req.arrival_time
-                    )
-        else:
-            for token in tokens:
-                self.completion_times[token.tid] = completion_time
-                latency = completion_time - token.birth_time
-                self.token_latencies[token.tid] = latency
-                self.completed_tokens += 1
-                if token.sampled_for_stats:
-                    cb(token, completion_time)
+        for token in tokens:
+            completion_time = token.birth_time + float(token_completion_offsets.get(token.tid, 0.0))
+            self.completion_times[token.tid] = completion_time
+            latency = completion_time - token.birth_time
+            self.token_latencies[token.tid] = latency
+            self.completed_tokens += 1
 
-                req = self.request_lookup[token.request_id]
-                req.next_token_index += 1
-                if req.next_token_index >= self.tokens_per_request:
-                    req.completed = True
-                    self.request_latency_values.append(
-                        completion_time - req.arrival_time
-                    )
+            if cb is not None and bool(getattr(token, "sampled_for_stats", False)):
+                cb(token, completion_time)
+
+            req = self.request_lookup[token.request_id]
+            req.next_token_index += 1
+            if req.next_token_index >= self.tokens_per_request:
+                req.completed = True
+                self.request_latency_values.append(completion_time - req.arrival_time)
 
         self.progress_tracker.update(self.completed_tokens)
-        # Remove finished requests before the next iteration starts.
         self.active_requests = [req for req in self.active_requests if not req.completed]
 
 
@@ -682,8 +751,6 @@ def run_simulation(
         max_batch_size,
         ticks_per_millisecond=ticks_per_millisecond,
     )
-
-    # Apply group GEMM speedup factor for sync simulator.
     compute_time_lookup: Dict[int, float] = {
         bs: t * GROUP_GEMM_SPEEDUP_FACTOR for bs, t in base_compute_time_lookup.items()
     }
@@ -694,8 +761,6 @@ def run_simulation(
         top_k=routing_top_k,
     )
 
-    # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
-    # expected to set this explicitly; we still clamp it to a positive int.
     attn_dp_group_size = max(1, int(attn_dp_group_size))
 
     request_arrivals = generate_request_arrivals(
@@ -704,7 +769,7 @@ def run_simulation(
         rng=rng,
     )
 
-    simulator = SyncMoESimulator(
+    simulator = TBOMoESimulator(
         request_arrivals=request_arrivals,
         tokens_per_request=tokens_per_request,
         num_layers=num_layers,

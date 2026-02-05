@@ -75,6 +75,9 @@ class Token:
     birth_time: float
     request_id: int
     token_index: int
+    # Models the attention (DP) GPU assigned to this request/token. Used for
+    # topology-aware network delay modeling.
+    home_gpu: int = 0
     layer_fanout: Dict[int, int] = field(default_factory=dict)
     # Stores how many experts each layer routed the token through.
     sampled_for_stats: bool = False
@@ -117,6 +120,7 @@ class RequestManager:
                  record_completion_cb: Callable[[Token, float], None],
                  request_complete_cb: Callable[[int, float], None] | None = None,
                  max_active_requests: int | None = None,
+                 attn_dp_group_size: int = 1,
                  defrag_v0_debug_state: DefragV0DebugState | None = None,
                  token_begin_cb: Callable[[Token], None] | None = None):
         self.env = env
@@ -124,12 +128,15 @@ class RequestManager:
         self._record_completion = record_completion_cb
         self._request_complete_cb = request_complete_cb
         self.max_active_requests = max_active_requests
+        self.attn_dp_group_size = max(1, int(attn_dp_group_size))
         self._defrag_v0_debug_state = defrag_v0_debug_state
         self._token_begin_cb = token_begin_cb
         self.first_attention: AttentionWorker | None = None
         self._next_tid = 0
         self._request_state: Dict[int, int] = {}
         self._request_start_time: Dict[int, float] = {}
+        self._request_home_gpu: Dict[int, int] = {}
+        self._next_home_gpu = 0
         self._pending_queue = deque()
 
     def set_first_attention(self, attention_worker: AttentionWorker):
@@ -154,6 +161,8 @@ class RequestManager:
             raise ValueError(f"Request {request_id} already started")
         self._request_state[request_id] = 0
         self._request_start_time[request_id] = arrival_time
+        self._request_home_gpu[request_id] = (self._next_home_gpu % self.attn_dp_group_size)
+        self._next_home_gpu += 1
 
         dbg = self._defrag_v0_debug_state
         if (
@@ -183,6 +192,7 @@ class RequestManager:
             # Request fully finished; drop state for bookkeeping
             self._request_state.pop(rid, None)
             start_time = self._request_start_time.pop(rid, token.birth_time)
+            self._request_home_gpu.pop(rid, None)
             if self._request_complete_cb is not None:
                 self._request_complete_cb(rid, completion_time - start_time)
             self._maybe_admit_queued_requests()
@@ -197,11 +207,16 @@ class RequestManager:
         if next_idx >= self.tokens_per_request:
             return
 
+        home_gpu = self._request_home_gpu.get(request_id)
+        if home_gpu is None:
+            raise RuntimeError(f"Request {request_id} missing home_gpu assignment.")
+
         token = Token(
             tid=self._next_tid,
             birth_time=self.env.now,
             request_id=request_id,
             token_index=next_idx,
+            home_gpu=int(home_gpu),
         )
         self._next_tid += 1
         self._request_state[request_id] = next_idx + 1
@@ -372,6 +387,8 @@ class ExpertWorker:
         net_t_expert_to_attn,
         attention_layers,
         final_completion_tracker: FinalCompletionTracker,
+        *,
+        net_delay_fn: Callable[[int, int], float] | None = None,
         batch_stats=None,
         defrag_v0_debug_state: DefragV0DebugState | None = None,
         scheduling_policy: str = "longest_queue_first",
@@ -383,6 +400,7 @@ class ExpertWorker:
         self.max_batch_size = max_batch_size
         self._compute_time_lookup = compute_time_lookup
         self.net_t_expert_to_attn = net_t_expert_to_attn
+        self.net_delay_fn = net_delay_fn
         self.attention_layers = attention_layers
         self.final_completion_tracker = final_completion_tracker
         self._batch_stats = batch_stats
@@ -457,7 +475,16 @@ class ExpertWorker:
             yield self.env.timeout(compute_t)
 
             # Network delay to attention / completion
-            yield self.env.timeout(self.net_t_expert_to_attn)
+            delay = self.net_t_expert_to_attn
+            if self.net_delay_fn is not None:
+                delay = max(
+                    (
+                        float(self.net_delay_fn(int(self.worker_idx), int(token.home_gpu)))
+                        for token in batch
+                    ),
+                    default=0.0,
+                )
+            yield self.env.timeout(delay)
             self._inflight_batch_size = 0
 
             # Route tokens onward
@@ -706,13 +733,16 @@ class AttentionWorker:
                  net_t_attn_to_expert,
                  expert_workers,
                  profile_router: ProfileDrivenRouter,
-                 attention_resource: simpy.Resource):
+                 attention_resource: simpy.Resource,
+                 *,
+                 net_delay_fn: Callable[[int, int], float] | None = None):
         self.env = env
         self.layer_idx = layer_idx
         self.total_expert_count = total_expert_count
         self.ep_group_size = ep_group_size
         self.attn_service_t = attn_service_t
         self.net_t_attn_to_expert = net_t_attn_to_expert
+        self.net_delay_fn = net_delay_fn
         self.expert_workers = expert_workers
         self.profile_router = profile_router
         # Shared across *all* layers to model a global FCFS attention queue
@@ -787,13 +817,30 @@ class AttentionWorker:
             raise RuntimeError(f"Router returned no experts for token {token.tid}")
         token.layer_fanout[self.layer_idx] = fanout
 
-        # Network delay to expert queues (modeled as a single hop before dispatch)
-        yield self.env.timeout(self.net_t_attn_to_expert)
-
-        # Send token copies into each chosen expert queue in THIS layer
+        routes: List[tuple[int, int]] = []
+        dest_workers: set[int] = set()
         for global_expert_id in global_expert_ids:
             worker_idx = global_expert_id // self.queues_per_worker
             local_queue_idx = global_expert_id % self.queues_per_worker
+            routes.append((worker_idx, local_queue_idx))
+            dest_workers.add(worker_idx)
+
+        # Network delay to expert queues (modeled as a single hop before dispatch).
+        # If a topology-aware net_delay_fn is provided, assume the sends happen in
+        # parallel and pay the maximum delay among all destination workers.
+        delay = self.net_t_attn_to_expert
+        if self.net_delay_fn is not None:
+            delay = max(
+                (
+                    float(self.net_delay_fn(int(token.home_gpu), int(worker_idx)))
+                    for worker_idx in dest_workers
+                ),
+                default=0.0,
+            )
+        yield self.env.timeout(delay)
+
+        # Send token copies into each chosen expert queue in THIS layer
+        for worker_idx, local_queue_idx in routes:
             expert_worker = self.expert_workers[worker_idx]
             expert_worker.enqueue(self.layer_idx, local_queue_idx, token)
 
@@ -865,6 +912,7 @@ def run_simulation(
     scheduling_policy: str = SCHEDULING_POLICY,
     per_token_begin_cb: Callable[[Token], None] | None = None,
     per_token_stats_cb: Callable[[Token, float], None] | None = None,
+    net_delay_fn: Callable[[int, int], float] | None = None,
 ):
     random.seed(RNG_SEED)
     env = simpy.Environment()
@@ -898,12 +946,17 @@ def run_simulation(
         else None
     )
 
+    # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
+    # expected to set this explicitly; we still clamp it to a positive int.
+    attn_dp_group_size = max(1, int(attn_dp_group_size))
+
     request_manager = RequestManager(
         env=env,
         tokens_per_request=tokens_per_request,
         record_completion_cb=record_completion,
         request_complete_cb=record_request_completion,
         max_active_requests=global_request_max_batch_size,
+        attn_dp_group_size=attn_dp_group_size,
         defrag_v0_debug_state=defrag_v0_debug_state,
         token_begin_cb=per_token_begin_cb,
     )
@@ -918,9 +971,6 @@ def run_simulation(
         completion_callback=request_manager.handle_token_completion,
     )
 
-    # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
-    # expected to set this explicitly; we still clamp it to a positive int.
-    attn_dp_group_size = max(1, int(attn_dp_group_size))
     attention_resource = simpy.Resource(env, capacity=attn_dp_group_size)
     if defrag_v0_debug_state is not None:
         defrag_v0_debug_state.get_attention_users = lambda: len(attention_resource.users)
@@ -964,6 +1014,7 @@ def run_simulation(
             max_batch_size=max_batch_size,
             compute_time_lookup=compute_time_lookup,
             net_t_expert_to_attn=NET_T_EXPERT_TO_ATTN,
+            net_delay_fn=net_delay_fn,
             attention_layers=None,  # temp, will fix after we create them
             final_completion_tracker=final_completion_tracker,
             batch_stats=batch_stats,
@@ -1011,6 +1062,7 @@ def run_simulation(
             ep_group_size=ep_group_size,
             attn_service_t=ATTN_SERVICE_T,
             net_t_attn_to_expert=NET_T_ATTN_TO_EXPERT,
+            net_delay_fn=net_delay_fn,
             expert_workers=expert_workers,
             profile_router=profile_router,
             attention_resource=attention_resource,
@@ -1043,6 +1095,7 @@ def run_simulation(
     steps_executed = 0
     saturation_step: int | None = None
     saturation_tokens_completed: int | None = None
+    saturation_time: float | None = None
     if tokens_after_reaching_max_bs is not None:
         tokens_after_reaching_max_bs = int(tokens_after_reaching_max_bs)
         if tokens_after_reaching_max_bs < 0:
@@ -1064,6 +1117,7 @@ def run_simulation(
                 ):
                     saturation_step = steps_executed
                     saturation_tokens_completed = len(completion_times)
+                    saturation_time = float(env.now)
 
                 if (
                     saturation_tokens_completed is not None
@@ -1129,6 +1183,20 @@ def run_simulation(
         else 0.0
     )
 
+    tail_throughput_req_per_sec = float("nan")
+    if (
+        tokens_after_reaching_max_bs is not None
+        and stopped_early
+        and saturation_time is not None
+        and saturation_tokens_completed is not None
+        and tokens_per_request > 0
+        and makespan > float(saturation_time)
+    ):
+        tail_tokens = completed_tokens - int(saturation_tokens_completed)
+        tail_seconds = ((makespan - float(saturation_time)) / TICKS_PER_MILLISECOND) / 1000.0
+        if tail_seconds > 0:
+            tail_throughput_req_per_sec = (tail_tokens / float(tokens_per_request)) / tail_seconds
+
     # Average per-expert batch size across all expert compute invocations.
     if batch_stats["total_batches"] > 0:
         avg_per_expert_batch_size = (
@@ -1148,6 +1216,11 @@ def run_simulation(
 
     print(f"Average completion time over {len(latencies)} tokens: {avg_latency:.3f}")
     print(f"Average throughput: {avg_throughput_req_per_sec:.3f} requests/sec")
+    if tail_throughput_req_per_sec == tail_throughput_req_per_sec and math.isfinite(tail_throughput_req_per_sec):
+        print(
+            f"Tail throughput (after saturation, {tokens_after_reaching_max_bs} tokens): "
+            f"{tail_throughput_req_per_sec:.3f} requests/sec"
+        )
     print(f"Average request latency: {avg_request_latency_ms:.3f} ms")
     print(f"P90 request latency: {p90_request_latency_ms:.3f} ms")
     print(f"P99 request latency: {p99_request_latency_ms:.3f} ms")
@@ -1158,6 +1231,7 @@ def run_simulation(
         "avg_latency": avg_latency,
         "makespan": makespan,
         "avg_throughput_req_per_sec": avg_throughput_req_per_sec,
+        "tail_throughput_req_per_sec": tail_throughput_req_per_sec,
         "avg_request_latency_ms": avg_request_latency_ms,
         "p90_request_latency_ms": p90_request_latency_ms,
         "p99_request_latency_ms": p99_request_latency_ms,
@@ -1165,6 +1239,8 @@ def run_simulation(
         "stopped_early": stopped_early,
         "steps_executed": steps_executed,
         "saturation_step": saturation_step,
+        "saturation_tokens_completed": saturation_tokens_completed,
+        "saturation_time": saturation_time,
         "defrag_v0_debug_triggered": (
             defrag_v0_debug_state.triggered
             if defrag_v0_debug_state is not None
