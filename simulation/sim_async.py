@@ -392,6 +392,7 @@ class ExpertWorker:
         batch_stats=None,
         defrag_v0_debug_state: DefragV0DebugState | None = None,
         scheduling_policy: str = "longest_queue_first",
+        routing_top_k: int = ROUTING_TOP_K,
     ):
         self.env = env
         self.worker_idx = worker_idx
@@ -408,6 +409,14 @@ class ExpertWorker:
         self.scheduling_policy = scheduling_policy
         self._defrag_v0_debug_state = defrag_v0_debug_state
         self._inflight_batch_size = 0
+        self._inflight_attention = False
+        self.routing_top_k = max(1, int(routing_top_k))
+
+        # Per-GPU attention queue. This models the constraint that a GPU cannot
+        # compute attention while it is computing an expert batch (and vice
+        # versa). Tokens are enqueued here by AttentionWorker.enqueue() based on
+        # token.home_gpu.
+        self.attention_queue: deque[tuple["AttentionWorker", Token]] = deque()
 
         # Per-layer, per-expert queues:
         # queues[layer_idx][local_queue_idx]
@@ -426,12 +435,26 @@ class ExpertWorker:
     def total_queue_length(self):
         return self._total_queue_length
 
+    @property
+    def attention_queue_length(self) -> int:
+        return len(self.attention_queue)
+
+    @property
+    def inflight_attention(self) -> bool:
+        return bool(self._inflight_attention)
+
     def enqueue(self, layer_idx: int, local_queue_idx: int, token: Token):
         q = self.queues[layer_idx][local_queue_idx]
-        was_empty = (self._total_queue_length == 0)
+        was_empty = (self._total_queue_length == 0 and not self.attention_queue)
         q.append(token)
         self._total_queue_length += 1
         # Wake the worker if it was idle
+        if was_empty and not self.has_work.triggered:
+            self.has_work.succeed()
+
+    def enqueue_attention(self, attention_layer: "AttentionWorker", token: Token):
+        was_empty = (self._total_queue_length == 0 and not self.attention_queue)
+        self.attention_queue.append((attention_layer, token))
         if was_empty and not self.has_work.triggered:
             self.has_work.succeed()
 
@@ -447,15 +470,24 @@ class ExpertWorker:
             "layer_group" and we look ahead across layers for that group.
         """
         while True:
-            if self._total_queue_length == 0:
+            if self._total_queue_length == 0 and not self.attention_queue:
                 # No work: go to sleep
                 self.has_work = self.env.event()
                 yield self.has_work
 
-            chosen_layer_idx, chosen_queue = self._select_next_queue()
+            task_kind, payload = self._select_next_task()
+            if task_kind == "attention":
+                attention_layer, token = payload
+                self._inflight_attention = True
+                yield self.env.timeout(attention_layer.attn_service_t)
+                self._inflight_attention = False
+                # Schedule routing + dispatch asynchronously so this GPU can
+                # start the next compute immediately.
+                self.env.process(attention_layer.route_and_dispatch(token))
+                continue
 
+            chosen_layer_idx, chosen_queue = payload
             if chosen_queue is None:
-                # Shouldn't really happen, but be defensive
                 continue
 
             # Form a batch
@@ -497,17 +529,30 @@ class ExpertWorker:
                     next_attn = self.attention_layers[chosen_layer_idx + 1]
                     next_attn.notify_expert_completion(token)
 
-    def _select_next_queue(self):
+    def _select_next_task(self):
         """
-        Select the next (layer, queue) to serve according to the configured
-        scheduling policy.
+        Select the next unit of work for this GPU:
+          - an expert batch from some (layer, local_expert) queue, or
+          - one attention token from this GPU's attention queue.
 
-        Returns (layer_idx, deque_or_None).
+        Returns:
+          ("attention", (attention_layer, token)) or
+          ("expert", (layer_idx, deque_or_None))
         """
+        attention_score = (
+            float(len(self.attention_queue)) * float(self.routing_top_k)
+            if self.attention_queue
+            else 0.0
+        )
+
         if self.scheduling_policy == "defragging_v0":
-            return self._select_next_queue_defragging_v0()
-        # Default / fallback policy.
-        return self._select_next_queue_longest_queue_first()
+            layer_idx, q, score = self._select_next_queue_defragging_v0()
+        else:
+            layer_idx, q, score = self._select_next_queue_longest_queue_first()
+
+        if self.attention_queue and (q is None or attention_score > float(score)):
+            return "attention", self.attention_queue.popleft()
+        return "expert", (layer_idx, q)
 
     def _select_next_queue_longest_queue_first(self):
         """Original policy: pick the single longest queue across all layers."""
@@ -524,8 +569,8 @@ class ExpertWorker:
                     chosen_layer_idx = layer_idx
 
         if max_q is None or max_len == 0:
-            return None, None
-        return chosen_layer_idx, max_q
+            return None, None, 0.0
+        return chosen_layer_idx, max_q, float(max_len)
 
     def _select_next_queue_defragging_v0(self):
         """
@@ -578,7 +623,7 @@ class ExpertWorker:
                 cur_layer = (i + k) % n_layers
                 num_tokens_cur_layer = layer_totals[cur_layer]
                 if num_tokens_cur_layer > 0:
-                    lookahead_score += num_tokens_cur_layer * decay # * inv_n_groups
+                    lookahead_score += num_tokens_cur_layer * decay * inv_n_groups
                 decay *= weight_decay
             lookahead_scores_by_layer[i] = lookahead_score
 
@@ -699,8 +744,8 @@ class ExpertWorker:
             }
 
         if best_layer_idx is None or best_group_idx is None:
-            return None, None
-        return best_layer_idx, queues[best_layer_idx][best_group_idx]
+            return None, None, 0.0
+        return best_layer_idx, queues[best_layer_idx][best_group_idx], float(best_score)
 
 
 # ------------------------------
@@ -710,16 +755,15 @@ class ExpertWorker:
 class AttentionWorker:
     """
     Maintains a pending list of partial expert completions for this layer and
-    hands fully-ready tokens to a *global* attention queue that is shared
-    across all layers.
+    hands fully-ready tokens to a *per-GPU* attention queue. Each token's
+    `home_gpu` selects which GPU processes its attention compute, and that GPU
+    serializes attention with expert compute.
 
     Semantics:
       - Tokens "arrive" to the attention system either from the request source
         (layer 0) or when all top-k experts in the previous layer finish.
-      - The global attention queue is first-come-first-served across all layers.
-      - There are ATTN_DP_GROUP_SIZE attention workers that run in parallel.
-        In each ATTN_SERVICE_T interval, at most ATTN_DP_GROUP_SIZE tokens can
-        complete attention, regardless of which layer they belong to.
+      - Attention is queued per GPU (token.home_gpu). Across all GPUs, at most
+        one attention token per GPU can be processed at a time.
       - After attention/gating:
           * the token is routed to all top-k experts from the profile-driven
             router for this layer;
@@ -733,7 +777,6 @@ class AttentionWorker:
                  net_t_attn_to_expert,
                  expert_workers,
                  profile_router: ProfileDrivenRouter,
-                 attention_resource: simpy.Resource,
                  *,
                  net_delay_fn: Callable[[int, int], float] | None = None):
         self.env = env
@@ -745,9 +788,6 @@ class AttentionWorker:
         self.net_delay_fn = net_delay_fn
         self.expert_workers = expert_workers
         self.profile_router = profile_router
-        # Shared across *all* layers to model a global FCFS attention queue
-        # with ATTN_DP_GROUP_SIZE parallel workers.
-        self.attention_resource = attention_resource
 
         self.pending_tokens: Dict[int, Token] = {}
         self.pending_counts = defaultdict(int)
@@ -763,9 +803,15 @@ class AttentionWorker:
     def enqueue(self, token: Token):
         """
         Schedule attention + routing for a single token by enqueuing it into
-        the global FCFS attention queue shared across all layers.
+        the per-GPU attention queue for the token's home GPU.
         """
-        self.env.process(self._process_token(token))
+        home_gpu = int(token.home_gpu)
+        if home_gpu < 0 or home_gpu >= len(self.expert_workers):
+            raise RuntimeError(
+                f"Token {token.tid} has home_gpu={home_gpu} but there are "
+                f"{len(self.expert_workers)} GPU workers."
+            )
+        self.expert_workers[home_gpu].enqueue_attention(self, token)
 
     def notify_expert_completion(self, token: Token):
         """
@@ -800,16 +846,14 @@ class AttentionWorker:
             f"but only {expected} were expected."
         )
 
-    def _process_token(self, token: Token):
-        # First-come-first-served attention/gating with limited parallelism.
-        # All layers share the same attention_resource so tokens of different
-        # layers compete in a single global queue.
-        with self.attention_resource.request() as req:
-            # Wait for an attention slot.
-            yield req
-            # Attention/gating compute for this token.
-            yield self.env.timeout(self.attn_service_t)
+    def route_and_dispatch(self, token: Token):
+        """
+        Routing + network delay + expert enqueue after attention compute.
 
+        Attention compute time itself is modeled by the GPU worker that popped
+        this token from its per-GPU attention queue. This method is scheduled
+        asynchronously so GPU compute can overlap with network transfer.
+        """
         # Decide routing for all top-k experts
         global_expert_ids = self._route_token(token)
         fanout = len(global_expert_ids)
@@ -949,6 +993,11 @@ def run_simulation(
     # Attention parallelism: ATTN_DP_GROUP_SIZE workers globally. Caller is
     # expected to set this explicitly; we still clamp it to a positive int.
     attn_dp_group_size = max(1, int(attn_dp_group_size))
+    if int(attn_dp_group_size) != int(ep_group_size):
+        raise ValueError(
+            "sim_async models attention and expert compute sharing the same GPUs; "
+            "set attn_dp_group_size == ep_group_size to enforce mutual exclusion."
+        )
 
     request_manager = RequestManager(
         env=env,
@@ -970,11 +1019,6 @@ def run_simulation(
         final_layer_idx=num_layers - 1,
         completion_callback=request_manager.handle_token_completion,
     )
-
-    attention_resource = simpy.Resource(env, capacity=attn_dp_group_size)
-    if defrag_v0_debug_state is not None:
-        defrag_v0_debug_state.get_attention_users = lambda: len(attention_resource.users)
-        defrag_v0_debug_state.get_attention_queue = lambda: len(attention_resource.queue)
 
     # Build expert workers (shared across all layers) and per-layer attention workers.
     expert_workers = []
@@ -1020,8 +1064,17 @@ def run_simulation(
             batch_stats=batch_stats,
             defrag_v0_debug_state=defrag_v0_debug_state,
             scheduling_policy=scheduling_policy,
+            routing_top_k=routing_top_k,
         )
         expert_workers.append(worker)
+
+    if defrag_v0_debug_state is not None:
+        defrag_v0_debug_state.get_attention_users = lambda: sum(
+            1 for worker in expert_workers if worker.inflight_attention
+        )
+        defrag_v0_debug_state.get_attention_queue = lambda: sum(
+            int(worker.attention_queue_length) for worker in expert_workers
+        )
 
     if defrag_v0_debug_state is not None:
         def _global_queued_tokens() -> int:
@@ -1065,7 +1118,6 @@ def run_simulation(
             net_delay_fn=net_delay_fn,
             expert_workers=expert_workers,
             profile_router=profile_router,
-            attention_resource=attention_resource,
         )
         attention_layers.append(attn)
 

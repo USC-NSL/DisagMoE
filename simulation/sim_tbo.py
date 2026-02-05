@@ -85,6 +85,170 @@ class RequestState:
     completed: bool = False
 
 
+@dataclass(frozen=True)
+class TimelineOp:
+    op_idx: int
+    step_idx: int
+    microbatch: int
+    layer_idx: int
+    stage: str  # attn | dispatch | expert | return
+    resource: str  # attn | comm | expert
+    start_time: float  # absolute ticks
+    end_time: float  # absolute ticks
+
+
+class TimelineCapture:
+    def __init__(self, max_ops: int):
+        self.max_ops = max(0, int(max_ops))
+        self.started = False
+        self.start_step: int | None = None
+        self.start_time: float | None = None
+        self.ops: List[TimelineOp] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self.max_ops > 0
+
+    def maybe_start(self, *, step_idx: int, sim_time: float) -> None:
+        if not self.enabled or self.started:
+            return
+        self.started = True
+        self.start_step = int(step_idx)
+        self.start_time = float(sim_time)
+
+    def record(
+        self,
+        *,
+        step_idx: int,
+        microbatch: int,
+        layer_idx: int,
+        stage: str,
+        resource: str,
+        start_time: float,
+        end_time: float,
+    ) -> None:
+        if not self.started or not self.enabled:
+            return
+        if len(self.ops) >= self.max_ops:
+            return
+        self.ops.append(
+            TimelineOp(
+                op_idx=len(self.ops),
+                step_idx=int(step_idx),
+                microbatch=int(microbatch),
+                layer_idx=int(layer_idx),
+                stage=str(stage),
+                resource=str(resource),
+                start_time=float(start_time),
+                end_time=float(end_time),
+            )
+        )
+
+    def write_csv(self, out_path: str, *, ticks_per_millisecond: float) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            f.write(
+                "op_idx,step_idx,microbatch,layer_idx,stage,resource,"
+                "start_ticks,end_ticks,duration_ticks,start_ms,end_ms,duration_ms\n"
+            )
+            for op in self.ops:
+                dur = op.end_time - op.start_time
+                start_ms = (
+                    op.start_time / float(ticks_per_millisecond)
+                    if ticks_per_millisecond
+                    else 0.0
+                )
+                end_ms = (
+                    op.end_time / float(ticks_per_millisecond)
+                    if ticks_per_millisecond
+                    else 0.0
+                )
+                dur_ms = dur / float(ticks_per_millisecond) if ticks_per_millisecond else 0.0
+                f.write(
+                    f"{op.op_idx},"
+                    f"{op.step_idx},"
+                    f"{op.microbatch},"
+                    f"{op.layer_idx},"
+                    f"{op.stage},"
+                    f"{op.resource},"
+                    f"{op.start_time:.6f},"
+                    f"{op.end_time:.6f},"
+                    f"{dur:.6f},"
+                    f"{start_ms:.6f},"
+                    f"{end_ms:.6f},"
+                    f"{dur_ms:.6f}\n"
+                )
+
+
+def _plot_tbo_microbatch_timeline(
+    capture: TimelineCapture,
+    out_path: str,
+    *,
+    ticks_per_millisecond: float,
+    title: str,
+) -> bool:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+
+    if not capture.ops:
+        return False
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+
+    base = min(op.start_time for op in capture.ops)
+
+    def to_ms(ticks: float) -> float:
+        return ticks / float(ticks_per_millisecond) if ticks_per_millisecond else 0.0
+
+    color_by_stage = {
+        "attn": "#1f77b4",
+        "dispatch": "#ff7f0e",
+        "expert": "#2ca02c",
+        "combine": "#d62728",
+    }
+
+    rows = {0: 10, 1: 0}
+    height = 8
+
+    fig, ax = plt.subplots(figsize=(14, 3.8))
+    for mb in (0, 1):
+        ops = [op for op in capture.ops if op.microbatch == mb]
+        for op in ops:
+            left = to_ms(op.start_time - base)
+            width = max(0.0, to_ms(op.end_time - op.start_time))
+            ax.broken_barh(
+                [(left, width)],
+                (rows[mb], height),
+                facecolors=color_by_stage.get(op.stage, "#7f7f7f"),
+                edgecolors="black",
+                linewidth=0.4,
+                alpha=0.9,
+            )
+
+    ax.set_yticks([rows[0] + height / 2.0, rows[1] + height / 2.0])
+    ax.set_yticklabels(["microbatch 0", "microbatch 1"])
+    ax.set_xlabel("time (ms, relative)")
+    ax.set_title(title)
+    ax.grid(True, axis="x", linestyle="--", linewidth=0.5, alpha=0.5)
+
+    legend_handles = []
+    legend_labels = []
+    for stage in ("attn", "dispatch", "expert", "combine"):
+        legend_handles.append(plt.Line2D([0], [0], color=color_by_stage[stage], linewidth=8))
+        legend_labels.append(stage)
+    ax.legend(legend_handles, legend_labels, ncol=4, loc="upper right", frameon=True)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180)
+    plt.close(fig)
+    return True
+
+
 class ProgressTracker:
     """Simple stdout progress bar with ETA estimation."""
 
@@ -198,11 +362,14 @@ class TBOMoESimulator:
     communication and compute ("tbo" = two-batch overlap).
 
     Each iteration spawns one token per active request, splits tokens evenly into
-    two microbatches, and then runs a centralized schedule with three single-capacity
-    resources:
-      - attn: attention (DP) compute
-      - expert: expert (EP) compute
-      - comm: dispatch (attn->expert all2all) + return (expert->attn all2all)
+    two microbatches, and then runs a centralized schedule with:
+      - compute: attention (DP) compute and expert (EP) compute (single-capacity, mutually exclusive)
+      - comm: dispatch/combine latency modeled as asynchronous in-flight transfer
+
+    Note: This model allows overlapping communication with compute, but does NOT
+    allow overlapping attention compute with expert compute. Combine only blocks
+    if its in-flight transfer has not finished at the time the next compute stage
+    needs the data.
     """
 
     def __init__(
@@ -225,6 +392,7 @@ class TBOMoESimulator:
         net_delay_fn: Callable[[int, int], float] | None = None,
         per_token_begin_cb: Callable[[Token], None] | None = None,
         per_token_stats_cb: Callable[[Token, float], None] | None = None,
+        timeline_capture: TimelineCapture | None = None,
     ):
         if total_expert_count % ep_group_size != 0:
             raise ValueError("total_expert_count must be divisible by ep_group_size")
@@ -245,6 +413,7 @@ class TBOMoESimulator:
         self.global_request_max_batch_size = max(1, int(global_request_max_batch_size))
         self.per_token_begin_cb = per_token_begin_cb
         self.per_token_stats_cb = per_token_stats_cb
+        self.timeline_capture = timeline_capture
 
         self.total_requests = len(request_arrivals)
         self.expected_total_tokens = self.total_requests * self.tokens_per_request
@@ -287,6 +456,7 @@ class TBOMoESimulator:
         saturation_step: int | None = None
         saturation_tokens_completed: int | None = None
         saturation_time: float | None = None
+        capture = self.timeline_capture
 
         if tokens_after_reaching_max_bs is not None:
             tokens_after_reaching_max_bs = int(tokens_after_reaching_max_bs)
@@ -307,6 +477,8 @@ class TBOMoESimulator:
                     saturation_step = steps_executed
                     saturation_tokens_completed = self.completed_tokens
                     saturation_time = self.current_time
+                    if capture is not None:
+                        capture.maybe_start(step_idx=steps_executed, sim_time=self.current_time)
 
                 if not self.active_requests:
                     if not self._advance_to_next_arrival():
@@ -315,7 +487,12 @@ class TBOMoESimulator:
                     tokens = self._spawn_tokens_for_iteration()
                     if tokens:
                         start_time = self.current_time
-                        iteration_duration, token_completion_times = self._run_one_iteration(tokens)
+                        iteration_duration, token_completion_times = self._run_one_iteration(
+                            tokens,
+                            step_idx=steps_executed,
+                            iteration_base_time=start_time,
+                            timeline_capture=capture,
+                        )
                         self.current_time = start_time + iteration_duration
                         self._finalize_iteration(tokens, token_completion_times)
                     else:
@@ -330,8 +507,20 @@ class TBOMoESimulator:
                     break
         else:
             while self.completed_tokens < self.expected_total_tokens:
+                steps_executed += 1
                 self._release_new_arrivals()
                 self._fill_active_requests()
+
+                if (
+                    saturation_step is None
+                    and self.active_requests
+                    and len(self.active_requests) >= self.global_request_max_batch_size
+                ):
+                    saturation_step = steps_executed
+                    saturation_tokens_completed = self.completed_tokens
+                    saturation_time = self.current_time
+                    if capture is not None:
+                        capture.maybe_start(step_idx=steps_executed, sim_time=self.current_time)
 
                 if not self.active_requests:
                     if not self._advance_to_next_arrival():
@@ -345,7 +534,12 @@ class TBOMoESimulator:
                     continue
 
                 start_time = self.current_time
-                iteration_duration, token_completion_times = self._run_one_iteration(tokens)
+                iteration_duration, token_completion_times = self._run_one_iteration(
+                    tokens,
+                    step_idx=steps_executed,
+                    iteration_base_time=start_time,
+                    timeline_capture=capture,
+                )
                 self.current_time = start_time + iteration_duration
                 self._finalize_iteration(tokens, token_completion_times)
 
@@ -391,6 +585,8 @@ class TBOMoESimulator:
             "saturation_step": saturation_step,
             "saturation_tokens_completed": saturation_tokens_completed,
             "saturation_time": saturation_time,
+            "timeline_capture_started": bool(capture.started) if capture is not None else False,
+            "timeline_ops_recorded": len(capture.ops) if capture is not None else 0,
         }
 
     # ------------------------------
@@ -463,24 +659,40 @@ class TBOMoESimulator:
             (mb0 if mb == 0 else mb1).append(token)
         return mb0, mb1, tid_to_mb
 
-    def _run_one_iteration(self, tokens: List[Token]) -> tuple[float, Dict[int, float]]:
+    def _run_one_iteration(
+        self,
+        tokens: List[Token],
+        *,
+        step_idx: int,
+        iteration_base_time: float,
+        timeline_capture: TimelineCapture | None,
+    ) -> tuple[float, Dict[int, float]]:
         mb0, mb1, tid_to_mb = self._split_into_microbatches(tokens)
 
         # Pre-build tasks by layer; for each layer route once over all tokens,
         # then compute per-microbatch stage times.
-        tasks: List[List[tuple[str, float]]] = [[], []]  # per microbatch
+        # Task kinds:
+        # - compute: consumes the single-capacity compute resource
+        # - dispatch/combine: launches an async transfer (in-flight), may block later if not finished
+        tasks: List[List[tuple[str, float, str, int]]] = [[], []]  # (kind, dur, stage, layer_idx) per microbatch
 
         for layer_idx in range(self.num_layers):
             layer_times = self._compute_layer_times(layer_idx, tokens, tid_to_mb)
-            # Each microbatch does: attn (compute) -> dispatch (comm) -> expert (compute) -> return (comm)
+            # Each microbatch does: attn (compute) -> dispatch (comm, async) -> expert (compute) -> combine (comm, async)
             for mb in (0, 1):
-                attn_t, dispatch_t, expert_compute_t, return_t = layer_times[mb]
-                tasks[mb].append(("attn", attn_t))
-                tasks[mb].append(("comm", dispatch_t))
-                tasks[mb].append(("expert", expert_compute_t))
-                tasks[mb].append(("comm", return_t))
+                attn_t, dispatch_t, expert_compute_t, combine_t = layer_times[mb]
+                tasks[mb].append(("compute", attn_t, "attn", layer_idx))
+                tasks[mb].append(("dispatch", dispatch_t, "dispatch", layer_idx))
+                tasks[mb].append(("compute", expert_compute_t, "expert", layer_idx))
+                tasks[mb].append(("combine", combine_t, "combine", layer_idx))
 
-        finish0, finish1 = self._schedule_resources(tasks[0], tasks[1])
+        finish0, finish1 = self._schedule_resources(
+            tasks[0],
+            tasks[1],
+            step_idx=int(step_idx),
+            iteration_base_time=float(iteration_base_time),
+            timeline_capture=timeline_capture,
+        )
         makespan = max(finish0, finish1)
 
         token_completion_times: Dict[int, float] = {}
@@ -496,7 +708,7 @@ class TBOMoESimulator:
         tokens: List[Token],
         tid_to_mb: Dict[int, int],
     ) -> List[tuple[float, float, float, float]]:
-        # Returns per-microbatch (attn, dispatch, expert_compute, return_comm)
+        # Returns per-microbatch (attn, dispatch, expert_compute, combine_comm)
         token_count_mb = [0, 0]
         for token in tokens:
             token_count_mb[tid_to_mb[token.tid]] += 1
@@ -651,41 +863,101 @@ class TBOMoESimulator:
 
     @staticmethod
     def _schedule_resources(
-        tasks0: List[tuple[str, float]],
-        tasks1: List[tuple[str, float]],
+        tasks0: List[tuple],
+        tasks1: List[tuple],
+        *,
+        step_idx: int,
+        iteration_base_time: float,
+        timeline_capture: TimelineCapture | None,
     ) -> tuple[float, float]:
         tasks = [tasks0, tasks1]
         next_idx = [0, 0]
         ready = [0.0, 0.0]
-        res_free: Dict[str, float] = {"attn": 0.0, "expert": 0.0, "comm": 0.0}
+        compute_free = 0.0
+        inflight_until = [0.0, 0.0]  # per-microbatch async comm completion time
+        inflight_src: list[tuple[str, int] | None] = [None, None]  # (stage, layer_idx)
 
-        def res_prio(res: str) -> int:
-            # Deterministic tie-break.
-            # Prefer "expert" (critical path) before "comm", then "attn".
-            if res == "expert":
+        def kind_prio(kind: str) -> int:
+            # Deterministic tie-break: prefer launching comm early at the same timestamp.
+            if kind in ("dispatch", "combine"):
                 return 0
-            if res == "comm":
-                return 1
-            return 2
+            return 1
 
         while True:
             candidates: List[tuple[float, int, int]] = []
             for mb in (0, 1):
                 if next_idx[mb] >= len(tasks[mb]):
                     continue
-                res, _dur = tasks[mb][next_idx[mb]]
-                est = max(ready[mb], res_free[res])
-                candidates.append((est, res_prio(res), mb))
+                t = tasks[mb][next_idx[mb]]
+                kind = str(t[0])
+                if kind == "compute":
+                    est = max(ready[mb], inflight_until[mb], compute_free)
+                elif kind in ("dispatch", "combine"):
+                    # Launch is async and doesn't consume a serialized resource.
+                    est = ready[mb]
+                else:
+                    raise ValueError(f"Unknown task kind: {kind}")
+                candidates.append((est, kind_prio(kind), mb))
 
             if not candidates:
                 break
 
             est, _prio, mb = min(candidates)
-            res, dur = tasks[mb][next_idx[mb]]
-            start = est
-            end = start + float(dur)
-            ready[mb] = end
-            res_free[res] = end
+            t = tasks[mb][next_idx[mb]]
+            kind = str(t[0])
+            dur = float(t[1])
+            stage = str(t[2]) if len(t) >= 3 else kind
+            layer_idx = int(t[3]) if len(t) >= 4 else -1
+
+            if kind == "compute":
+                # If compute is waiting solely due to an unfinished async comm,
+                # record that wait (comm only appears if it blocks).
+                t0 = max(ready[mb], compute_free)
+                if inflight_until[mb] > t0:
+                    src = inflight_src[mb]
+                    wait_stage, wait_layer = (src if src is not None else ("comm", -1))
+                    if (
+                        timeline_capture is not None
+                        and timeline_capture.started
+                        and len(timeline_capture.ops) < timeline_capture.max_ops
+                    ):
+                        timeline_capture.record(
+                            step_idx=int(step_idx),
+                            microbatch=int(mb),
+                            layer_idx=int(wait_layer),
+                            stage=str(wait_stage),
+                            resource="comm",
+                            start_time=float(iteration_base_time) + float(t0),
+                            end_time=float(iteration_base_time) + float(inflight_until[mb]),
+                        )
+
+                start = est
+                end = start + dur
+                ready[mb] = end
+                compute_free = end
+
+                if (
+                    timeline_capture is not None
+                    and timeline_capture.started
+                    and len(timeline_capture.ops) < timeline_capture.max_ops
+                ):
+                    timeline_capture.record(
+                        step_idx=int(step_idx),
+                        microbatch=int(mb),
+                        layer_idx=int(layer_idx),
+                        stage=stage,
+                        resource="compute",
+                        start_time=float(iteration_base_time) + float(start),
+                        end_time=float(iteration_base_time) + float(end),
+                    )
+            else:
+                # Async launch: doesn't advance ready time, but starts an in-flight transfer.
+                start = float(est)
+                end = start + dur
+                if end > inflight_until[mb]:
+                    inflight_until[mb] = end
+                    inflight_src[mb] = (stage, int(layer_idx))
+
             next_idx[mb] += 1
 
         return ready[0], ready[1]
@@ -740,6 +1012,9 @@ def run_simulation(
     tokens_after_reaching_max_bs: int | None = None,
     per_token_begin_cb: Callable[[Token], None] | None = None,
     per_token_stats_cb: Callable[[Token, float], None] | None = None,
+    timeline_capture_ops: int = 0,
+    timeline_out_dir: str | None = None,
+    timeline_basename: str | None = None,
 ):
     rng = random.Random(rng_seed)
 
@@ -769,6 +1044,11 @@ def run_simulation(
         rng=rng,
     )
 
+    timeline_capture = (
+        TimelineCapture(int(timeline_capture_ops))
+        if int(timeline_capture_ops) > 0
+        else None
+    )
     simulator = TBOMoESimulator(
         request_arrivals=request_arrivals,
         tokens_per_request=tokens_per_request,
@@ -787,9 +1067,44 @@ def run_simulation(
         global_request_max_batch_size=global_request_max_batch_size,
         per_token_begin_cb=per_token_begin_cb,
         per_token_stats_cb=per_token_stats_cb,
+        timeline_capture=timeline_capture,
     )
 
     results = simulator.run(tokens_after_reaching_max_bs=tokens_after_reaching_max_bs)
+    if timeline_capture is not None and timeline_capture.started and timeline_capture.ops:
+        out_dir = (
+            str(timeline_out_dir)
+            if timeline_out_dir is not None
+            else os.path.join(os.path.dirname(os.path.abspath(__file__)), "tbo-timeline")
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        if timeline_basename is None:
+            timeline_basename = (
+                f"tbo_timeline_ep{ep_group_size}_gbs{global_request_max_batch_size}_attn{attn_service_t}_pid{os.getpid()}"
+            )
+        csv_path = os.path.join(out_dir, f"{timeline_basename}.csv")
+        png_path = os.path.join(out_dir, f"{timeline_basename}.png")
+        timeline_capture.write_csv(csv_path, ticks_per_millisecond=float(ticks_per_millisecond))
+        title = (
+            f"TBO timeline (first {len(timeline_capture.ops)}/{timeline_capture.max_ops} ops after saturation)\\n"
+            f"ep_group_size={ep_group_size} global_bs={global_request_max_batch_size} attn_t={attn_service_t}"
+        )
+        plotted = _plot_tbo_microbatch_timeline(
+            timeline_capture,
+            png_path,
+            ticks_per_millisecond=float(ticks_per_millisecond),
+            title=title,
+        )
+        results["timeline_csv_path"] = csv_path
+        results["timeline_png_path"] = png_path if plotted else None
+        print(f"[tbo timeline] wrote csv: {csv_path}")
+        if plotted:
+            print(f"[tbo timeline] wrote png: {png_path}")
+        else:
+            print("[tbo timeline] matplotlib unavailable; skipped png plot (csv still written)")
+    elif timeline_capture is not None and timeline_capture.enabled:
+        results["timeline_csv_path"] = None
+        results["timeline_png_path"] = None
     completion_times = results["completion_times"]
     token_latencies = results["token_latencies"]
     request_latency_values = results["request_latency_values"]
@@ -900,6 +1215,11 @@ def run_simulation(
         "stopped_early": stopped_early,
         "steps_executed": steps_executed,
         "saturation_step": saturation_step,
+        "saturation_time": saturation_time,
+        "timeline_capture_started": results.get("timeline_capture_started", False),
+        "timeline_ops_recorded": results.get("timeline_ops_recorded", 0),
+        "timeline_csv_path": results.get("timeline_csv_path", None),
+        "timeline_png_path": results.get("timeline_png_path", None),
     }
 
 

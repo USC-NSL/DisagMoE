@@ -39,6 +39,13 @@ ENABLE_EARLY_TERMINATION_AFTER_MAX_BS = True
 # tokens complete before stopping and reporting metrics.
 TOKENS__AFTER_REACHING_MAX_BS = 80000
 
+# Optional: record a short post-saturation schedule timeline for the TBO simulator.
+# Set env var `TBO_TIMELINE_CAPTURE_OPS` (e.g. "100") to enable.
+try:
+    TBO_TIMELINE_CAPTURE_OPS = int(os.environ.get("TBO_TIMELINE_CAPTURE_OPS", "0") or "0")
+except ValueError:
+    TBO_TIMELINE_CAPTURE_OPS = 0
+
 # Async-only: after the system first reaches max concurrent active requests, keep
 # updating a single defrag-v0 scheduler debug snapshot (queue lengths + score matrix),
 # and write the *last* snapshot observed before simulation termination.
@@ -484,6 +491,14 @@ def _run_tbo_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         tokens_after_reaching_max_bs=tokens_after_reaching_max_bs,
         per_token_begin_cb=per_token_begin_cb,
         per_token_stats_cb=per_token_stats_cb,
+        timeline_capture_ops=TBO_TIMELINE_CAPTURE_OPS,
+        timeline_out_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "tbo-timeline"),
+        timeline_basename=(
+            f"tbo_timeline_ep{cfg['ep_group_size']}"
+            f"_gbs{cfg['global_request_max_batch_size']}"
+            f"_attn{cfg['attn_service_t']}"
+            f"_pid{os.getpid()}"
+        ),
     )
 
     ticks_per_ms = sim_tbo.TICKS_PER_MILLISECOND
