@@ -45,7 +45,7 @@ ENABLE_EARLY_TERMINATION_AFTER_MAX_BS = True
 
 # Once max concurrent active requests is first reached, let this many additional
 # tokens complete before stopping and reporting metrics.
-TOKENS__AFTER_REACHING_MAX_BS = 80000
+TOKENS__AFTER_REACHING_MAX_BS = 8000
 
 # Optional: record a short post-saturation schedule timeline for the TBO simulator.
 # Set env var `TBO_TIMELINE_CAPTURE_OPS` (e.g. "100") to enable.
@@ -62,7 +62,7 @@ DEFRAG_V0_DEBUG_LOG_BASENAME = "experiment_defrag_v0_debug_async.txt"
 
 # Per-token stats: sampled per-token latency ("ITL") logging.
 ENABLE_PER_TOKEN_STATS = True
-TOKEN_SAMPLING_RATE = 0.05
+TOKEN_SAMPLING_RATE = 0.5
 
 
 _PER_TOKEN_STATS_F = None
