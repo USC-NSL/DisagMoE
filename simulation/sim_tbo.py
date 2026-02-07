@@ -389,7 +389,7 @@ class TBOMoESimulator:
         progress_tracker: ProgressTracker,
         global_request_max_batch_size: int,
         *,
-        net_delay_fn: Callable[[int, int], float] | None = None,
+        net_delay_fn: Callable[[int, int, int], float] | None = None,
         per_token_begin_cb: Callable[[Token], None] | None = None,
         per_token_stats_cb: Callable[[Token, float], None] | None = None,
         timeline_capture: TimelineCapture | None = None,
@@ -782,11 +782,13 @@ class TBOMoESimulator:
                         worker_dispatch_delays.append(0.0)
                         worker_return_delays.append(0.0)
                         continue
+                    # Count tokens being transferred to/from this worker for this microbatch
+                    num_tokens = sum(worker_queues_by_mb[mb][worker_idx])
                     dispatch = max(
-                        float(self.net_delay_fn(int(src), int(worker_idx))) for src in src_gpus
+                        float(self.net_delay_fn(int(src), int(worker_idx), num_tokens)) for src in src_gpus
                     )
                     ret = max(
-                        float(self.net_delay_fn(int(worker_idx), int(src))) for src in src_gpus
+                        float(self.net_delay_fn(int(worker_idx), int(src), num_tokens)) for src in src_gpus
                     )
                     worker_dispatch_delays.append(dispatch)
                     worker_return_delays.append(ret)
@@ -804,14 +806,10 @@ class TBOMoESimulator:
             return_times: List[float] = []
             total_times: List[float] = []
             for worker_idx, loads in enumerate(worker_queues_by_mb[mb]):
-                per_batch_return = (
-                    worker_return_delays[worker_idx]
-                    if self.net_delay_fn is not None
-                    else self.net_t_expert_to_attn
-                )
                 compute_t, return_t = self._simulate_worker_compute_and_return(
-                    loads,
-                    per_batch_return=float(per_batch_return),
+                    worker_idx=worker_idx,
+                    loads=loads,
+                    src_gpus=worker_src_gpus_by_mb[mb][worker_idx],
                 )
                 compute_times.append(compute_t)
                 return_times.append(return_t)
@@ -836,12 +834,12 @@ class TBOMoESimulator:
 
         return out
 
-    def _simulate_worker_compute_and_return(self, queue_lengths: List[int], *, per_batch_return: float) -> tuple[float, float]:
-        total_tokens = sum(queue_lengths)
+    def _simulate_worker_compute_and_return(self, worker_idx: int, loads: List[int], src_gpus: set[int]) -> tuple[float, float]:
+        total_tokens = sum(loads)
         if total_tokens <= 0:
             return 0.0, 0.0
 
-        queues = list(queue_lengths)
+        queues = list(loads)
         compute_elapsed = 0.0
         return_elapsed = 0.0
 
@@ -855,7 +853,17 @@ class TBOMoESimulator:
             total_tokens -= batch
             compute_t = float(self.compute_time_lookup[batch])
             compute_elapsed += compute_t
-            return_elapsed += float(per_batch_return)
+            
+            # Calculate return delay based on batch size
+            if self.net_delay_fn is not None and src_gpus:
+                batch_return_delay = max(
+                    float(self.net_delay_fn(int(worker_idx), int(src), batch))
+                    for src in src_gpus
+                )
+            else:
+                batch_return_delay = self.net_t_expert_to_attn
+            
+            return_elapsed += batch_return_delay
             self.total_expert_batch_size += batch
             self.total_expert_batch_count += 1
 

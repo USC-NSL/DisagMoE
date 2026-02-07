@@ -30,6 +30,14 @@ N_GPU_PER_HOST = 4
 NET_DELAY_VALUES_INTRA_HOST = [0.04]
 NET_DELAY_VALUES_INTER_HOST = [0.08]
 
+# Bandwidth-aware network parameters for realistic EP simulation
+# These can be used to compute transfer times based on data size rather than fixed delays
+HIDDEN_DIM_VALUES = [2048, 4096]          # Hidden dimensions to sweep
+BYTES_PER_ELEMENT = 2                      # FP16 = 2 bytes
+INTRA_NODE_BANDWIDTH_GBPS = 800.0          # NVLink bandwidth (GB/s)
+INTER_NODE_BANDWIDTH_VALUES = [100, 200]   # InfiniBand/RoCE bandwidth (GB/s) to sweep
+TICKS_PER_MILLISECOND = 10                 # Conversion factor for simulation time
+
 MAX_WORKERS = 56
 
 # Enable early termination once max concurrent active requests is hit.
@@ -104,6 +112,7 @@ def _init_worker_per_token_stats(mode: str, enabled: bool, sampling_rate: float)
     _PER_TOKEN_STATS_F.write(
         "mode,worker,pid,ep_group_size,global_request_max_batch_size,attn_service_t,"
         "n_gpu_per_host,net_delay_intra_host,net_delay_inter_host,"
+        "hidden_dim,inter_node_bw_gbps,"
         "request_id,token_index,tid,birth_time,completion_time,latency_ticks,latency_ms\n"
     )
     _PER_TOKEN_STATS_F.flush()
@@ -160,6 +169,8 @@ def _per_token_stats_log_if_sampled(
         f"{cfg.get('n_gpu_per_host')},"
         f"{cfg.get('net_delay_intra_host')},"
         f"{cfg.get('net_delay_inter_host')},"
+        f"{cfg.get('hidden_dim', 0)},"
+        f"{cfg.get('inter_node_bw_gbps', 0.0)},"
         f"{getattr(token, 'request_id', '')},"
         f"{getattr(token, 'token_index', '')},"
         f"{getattr(token, 'tid', '')},"
@@ -199,12 +210,14 @@ def _format_optional_float_matrix(matrix: List[List[float | None]]) -> str:
 
 def _build_configs() -> List[Dict[str, Any]]:
     configs: List[Dict[str, Any]] = []
-    for ep_group_size, attn_t, net_delay_intra, net_delay_inter, mult in itertools.product(
+    for ep_group_size, attn_t, net_delay_intra, net_delay_inter, mult, hidden_dim, inter_bw in itertools.product(
         EP_GROUP_SIZE_VALUES,
         ATTN_SERVICE_T_VALUES,
         NET_DELAY_VALUES_INTRA_HOST,
         NET_DELAY_VALUES_INTER_HOST,
         GLOBAL_BATCH_MULTIPLIERS,
+        HIDDEN_DIM_VALUES,
+        INTER_NODE_BANDWIDTH_VALUES,
     ):
         global_batch = ep_group_size * mult
         configs.append(
@@ -215,6 +228,8 @@ def _build_configs() -> List[Dict[str, Any]]:
                 "net_delay_intra_host": net_delay_intra,
                 "net_delay_inter_host": net_delay_inter,
                 "global_request_max_batch_size": global_batch,
+                "hidden_dim": hidden_dim,
+                "inter_node_bw_gbps": inter_bw,
             }
         )
     return configs
@@ -238,6 +253,49 @@ def _make_topology_net_delay_fn(
     return net_delay_fn
 
 
+def _make_bandwidth_aware_delay_fn(
+    *,
+    n_gpu_per_host: int,
+    hidden_dim: int,
+    bytes_per_elem: int = BYTES_PER_ELEMENT,
+    intra_node_bw_gbps: float = INTRA_NODE_BANDWIDTH_GBPS,
+    inter_node_bw_gbps: float,
+    ticks_per_ms: float = TICKS_PER_MILLISECOND,
+):
+    """
+    Create a bandwidth-aware delay function that computes transfer time
+    based on the amount of data being transferred.
+
+    Args:
+        n_gpu_per_host: Number of GPUs per host for topology
+        hidden_dim: Hidden dimension of the model
+        bytes_per_elem: Bytes per element (2 for FP16, 4 for FP32)
+        intra_node_bw_gbps: Intra-node bandwidth in GB/s
+        inter_node_bw_gbps: Inter-node bandwidth in GB/s
+        ticks_per_ms: Conversion factor from ms to simulation ticks
+
+    Returns:
+        A function(src_gpu, dst_gpu, num_tokens=1) -> delay_ticks
+    """
+    n_gpu_per_host = max(1, int(n_gpu_per_host))
+    bytes_per_token = int(hidden_dim) * int(bytes_per_elem)
+    intra_bw_bytes_per_ms = float(intra_node_bw_gbps) * 1e9 / 1000.0  # GB/s -> bytes/ms
+    inter_bw_bytes_per_ms = float(inter_node_bw_gbps) * 1e9 / 1000.0  # GB/s -> bytes/ms
+
+    def net_delay_fn(src_gpu: int, dst_gpu: int, num_tokens: int = 1) -> float:
+        src_host = int(src_gpu) // n_gpu_per_host
+        dst_host = int(dst_gpu) // n_gpu_per_host
+
+        data_bytes = float(num_tokens) * float(bytes_per_token)
+        bandwidth = intra_bw_bytes_per_ms if src_host == dst_host else inter_bw_bytes_per_ms
+
+        transfer_time_ms = data_bytes / bandwidth
+        transfer_time_ticks = transfer_time_ms * float(ticks_per_ms)
+        return transfer_time_ticks
+
+    return net_delay_fn
+
+
 def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if sim_async is None:
         raise RuntimeError(
@@ -252,10 +310,13 @@ def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     sim_async.NET_T_ATTN_TO_EXPERT = cfg["net_delay_inter_host"]
     sim_async.NET_T_EXPERT_TO_ATTN = cfg["net_delay_inter_host"]
 
-    net_delay_fn = _make_topology_net_delay_fn(
+    net_delay_fn = _make_bandwidth_aware_delay_fn(
         n_gpu_per_host=cfg["n_gpu_per_host"],
-        net_delay_intra_host=cfg["net_delay_intra_host"],
-        net_delay_inter_host=cfg["net_delay_inter_host"],
+        hidden_dim=cfg["hidden_dim"],
+        bytes_per_elem=BYTES_PER_ELEMENT,
+        intra_node_bw_gbps=INTRA_NODE_BANDWIDTH_GBPS,
+        inter_node_bw_gbps=cfg["inter_node_bw_gbps"],
+        ticks_per_ms=sim_async.TICKS_PER_MILLISECOND,
     )
 
     tokens_after_reaching_max_bs = (
@@ -355,6 +416,8 @@ def _run_async_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "n_gpu_per_host": cfg["n_gpu_per_host"],
         "net_delay_intra_host": cfg["net_delay_intra_host"],
         "net_delay_inter_host": cfg["net_delay_inter_host"],
+        "hidden_dim": cfg.get("hidden_dim", 0),
+        "inter_node_bw_gbps": cfg.get("inter_node_bw_gbps", 0),
         "avg_token_latency_ms": avg_latency_ms,
         "makespan_ms": makespan_ms,
         "avg_throughput_req_per_sec": result.get("avg_throughput_req_per_sec", 0.0),
@@ -397,10 +460,13 @@ def _run_sync_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         attn_dp_group_size=cfg["ep_group_size"],
         net_t_attn_to_expert=cfg["net_delay_inter_host"],
         net_t_expert_to_attn=cfg["net_delay_inter_host"],
-        net_delay_fn=_make_topology_net_delay_fn(
+        net_delay_fn=_make_bandwidth_aware_delay_fn(
             n_gpu_per_host=cfg["n_gpu_per_host"],
-            net_delay_intra_host=cfg["net_delay_intra_host"],
-            net_delay_inter_host=cfg["net_delay_inter_host"],
+            hidden_dim=cfg["hidden_dim"],
+            bytes_per_elem=BYTES_PER_ELEMENT,
+            intra_node_bw_gbps=INTRA_NODE_BANDWIDTH_GBPS,
+            inter_node_bw_gbps=cfg["inter_node_bw_gbps"],
+            ticks_per_ms=sim_sync.TICKS_PER_MILLISECOND,
         ),
         global_request_max_batch_size=cfg["global_request_max_batch_size"],
         tokens_after_reaching_max_bs=tokens_after_reaching_max_bs,
@@ -442,6 +508,8 @@ def _run_sync_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "n_gpu_per_host": cfg["n_gpu_per_host"],
         "net_delay_intra_host": cfg["net_delay_intra_host"],
         "net_delay_inter_host": cfg["net_delay_inter_host"],
+        "hidden_dim": cfg.get("hidden_dim", 0),
+        "inter_node_bw_gbps": cfg.get("inter_node_bw_gbps", 0),
         "avg_token_latency_ms": avg_latency_ms,
         "makespan_ms": makespan_ms,
         "avg_throughput_req_per_sec": avg_throughput_req_per_sec,
@@ -482,10 +550,13 @@ def _run_tbo_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         attn_dp_group_size=cfg["ep_group_size"],
         net_t_attn_to_expert=cfg["net_delay_inter_host"],
         net_t_expert_to_attn=cfg["net_delay_inter_host"],
-        net_delay_fn=_make_topology_net_delay_fn(
+        net_delay_fn=_make_bandwidth_aware_delay_fn(
             n_gpu_per_host=cfg["n_gpu_per_host"],
-            net_delay_intra_host=cfg["net_delay_intra_host"],
-            net_delay_inter_host=cfg["net_delay_inter_host"],
+            hidden_dim=cfg["hidden_dim"],
+            bytes_per_elem=BYTES_PER_ELEMENT,
+            intra_node_bw_gbps=INTRA_NODE_BANDWIDTH_GBPS,
+            inter_node_bw_gbps=cfg["inter_node_bw_gbps"],
+            ticks_per_ms=sim_tbo.TICKS_PER_MILLISECOND,
         ),
         global_request_max_batch_size=cfg["global_request_max_batch_size"],
         tokens_after_reaching_max_bs=tokens_after_reaching_max_bs,
@@ -535,6 +606,8 @@ def _run_tbo_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "n_gpu_per_host": cfg["n_gpu_per_host"],
         "net_delay_intra_host": cfg["net_delay_intra_host"],
         "net_delay_inter_host": cfg["net_delay_inter_host"],
+        "hidden_dim": cfg.get("hidden_dim", 0),
+        "inter_node_bw_gbps": cfg.get("inter_node_bw_gbps", 0),
         "avg_token_latency_ms": avg_latency_ms,
         "makespan_ms": makespan_ms,
         "avg_throughput_req_per_sec": avg_throughput_req_per_sec,
@@ -557,6 +630,7 @@ def _write_results(mode: str, results: List[Dict[str, Any]]) -> None:
     header = (
         "mode,ep_group_size,global_request_max_batch_size,"
         "attn_service_t,n_gpu_per_host,net_delay_intra_host,net_delay_inter_host,"
+        "hidden_dim,inter_node_bw_gbps,"
         "avg_token_latency_ms,makespan_ms,avg_throughput_req_per_sec,tail_throughput_req_per_sec,"
         "avg_request_latency_ms,p90_request_latency_ms,p99_request_latency_ms,"
         "avg_layer_runtime_ms,avg_layer_wait_imbalance_ms,"
@@ -573,6 +647,8 @@ def _write_results(mode: str, results: List[Dict[str, Any]]) -> None:
             r["n_gpu_per_host"],
             r["net_delay_intra_host"],
             r["net_delay_inter_host"],
+            r.get("hidden_dim", 0),
+            r.get("inter_node_bw_gbps", 0),
         ),
     )
 
@@ -587,6 +663,8 @@ def _write_results(mode: str, results: List[Dict[str, Any]]) -> None:
                 f"{r['n_gpu_per_host']},"
                 f"{r['net_delay_intra_host']},"
                 f"{r['net_delay_inter_host']},"
+                f"{r.get('hidden_dim', '')},"
+                f"{r.get('inter_node_bw_gbps', '')},"
                 f"{r['avg_token_latency_ms']:.6f},"
                 f"{r['makespan_ms']:.6f},"
                 f"{r['avg_throughput_req_per_sec']:.6f},"
@@ -627,6 +705,7 @@ def main(argv: List[str]) -> None:
     header = (
         "mode,ep_group_size,global_request_max_batch_size,"
         "attn_service_t,n_gpu_per_host,net_delay_intra_host,net_delay_inter_host,"
+        "hidden_dim,inter_node_bw_gbps,"
         "avg_token_latency_ms,makespan_ms,avg_throughput_req_per_sec,tail_throughput_req_per_sec,"
         "avg_request_latency_ms,p90_request_latency_ms,p99_request_latency_ms,"
         "avg_layer_runtime_ms,avg_layer_wait_imbalance_ms,"
@@ -668,6 +747,8 @@ def main(argv: List[str]) -> None:
                         f"{summary['n_gpu_per_host']},"
                         f"{summary['net_delay_intra_host']},"
                         f"{summary['net_delay_inter_host']},"
+                        f"{summary.get('hidden_dim', '')},"
+                        f"{summary.get('inter_node_bw_gbps', '')},"
                         f"{summary['avg_token_latency_ms']:.6f},"
                         f"{summary['makespan_ms']:.6f},"
                         f"{summary['avg_throughput_req_per_sec']:.6f},"

@@ -221,7 +221,7 @@ class SyncMoESimulator:
         progress_tracker: ProgressTracker,
         global_request_max_batch_size: int,
         *,
-        net_delay_fn: Callable[[int, int], float] | None = None,
+        net_delay_fn: Callable[[int, int, int], float] | None = None,
         per_token_begin_cb: Callable[[Token], None] | None = None,
         per_token_stats_cb: Callable[[Token, float], None] | None = None,
     ):
@@ -498,11 +498,13 @@ class SyncMoESimulator:
                     worker_dispatch_delays.append(0.0)
                     worker_return_delays.append(0.0)
                     continue
+                # Count tokens being transferred to/from this worker
+                num_tokens = sum(worker_loads[worker_idx])
                 dispatch = max(
-                    float(self.net_delay_fn(int(src), int(worker_idx))) for src in src_gpus
+                    float(self.net_delay_fn(int(src), int(worker_idx), num_tokens)) for src in src_gpus
                 )
                 ret = max(
-                    float(self.net_delay_fn(int(worker_idx), int(src))) for src in src_gpus
+                    float(self.net_delay_fn(int(worker_idx), int(src), num_tokens)) for src in src_gpus
                 )
                 worker_dispatch_delays.append(dispatch)
                 worker_return_delays.append(ret)
@@ -519,8 +521,9 @@ class SyncMoESimulator:
 
         worker_times = [
             self._simulate_worker_time(
-                loads,
-                net_return_delay=(worker_return_delays[worker_idx] if self.net_delay_fn is not None else None),
+                worker_idx=worker_idx,
+                loads=loads,
+                src_gpus=worker_src_gpus[worker_idx],
             )
             for worker_idx, loads in enumerate(worker_loads)
         ]
@@ -583,14 +586,13 @@ class SyncMoESimulator:
                 worker_src_gpus[worker_idx].add(int(token.home_gpu))
         return worker_queues, worker_src_gpus
 
-    def _simulate_worker_time(self, queue_lengths: List[int], net_return_delay: float | None = None) -> float:
-        total_tokens = sum(queue_lengths)
+    def _simulate_worker_time(self, worker_idx: int, loads: List[int], src_gpus: set[int]) -> float:
+        total_tokens = sum(loads)
         if total_tokens == 0:
             return 0.0
 
-        queues = list(queue_lengths)
+        queues = list(loads)
         elapsed = 0.0
-        per_batch_return = self.net_t_expert_to_attn if net_return_delay is None else float(net_return_delay)
         while total_tokens > 0:
             queue_idx = max(range(len(queues)), key=lambda i: queues[i])
             available = queues[queue_idx]
@@ -602,7 +604,17 @@ class SyncMoESimulator:
             compute_t = self.compute_time_lookup[batch]
             self.total_expert_batch_size += batch
             self.total_expert_batch_count += 1
-            elapsed += compute_t + per_batch_return
+            
+            # Calculate return delay based on batch size
+            if self.net_delay_fn is not None and src_gpus:
+                batch_return_delay = max(
+                    float(self.net_delay_fn(int(worker_idx), int(src), batch))
+                    for src in src_gpus
+                )
+            else:
+                batch_return_delay = self.net_t_expert_to_attn
+            
+            elapsed += compute_t + batch_return_delay
         return elapsed
 
     def _finalize_iteration(self, tokens: List[Token]):

@@ -41,6 +41,11 @@ TICKS_PER_MILLISECOND = 10  # 0.1 ms per tick
 NET_T_EXPERT_TO_ATTN  = 0.1  # fixed network delay expert -> attention in #ticks, 10us
 NET_T_ATTN_TO_EXPERT  = 0.1  # fixed network delay attention -> expert in #ticks, 10us
 
+# Speedup factor for grouped GEMM vs single-expert profile.
+# When batching all experts in a layer together (like the real system),
+# grouped GEMM kernels are more efficient than processing experts one-by-one.
+GROUP_GEMM_SPEEDUP_FACTOR = 0.7
+
 RNG_SEED = 42
 
 EXPERT_COMPUTE_PROFILE_PATH = os.path.join(
@@ -388,7 +393,7 @@ class ExpertWorker:
         attention_layers,
         final_completion_tracker: FinalCompletionTracker,
         *,
-        net_delay_fn: Callable[[int, int], float] | None = None,
+        net_delay_fn: Callable[[int, int, int], float] | None = None,
         batch_stats=None,
         defrag_v0_debug_state: DefragV0DebugState | None = None,
         scheduling_policy: str = "longest_queue_first",
@@ -462,12 +467,14 @@ class ExpertWorker:
         """
         Main loop for the expert worker.
 
-        The scheduling of which (layer, local_expert) queue to serve next is
-        controlled by `self.scheduling_policy`:
-          - "longest_queue_first": pick the single longest queue.
-          - "defragging_v0": approximate GroupLayerScheduler::schedule from
-            the C++ runtime, where each (layer, local_expert) is a
-            "layer_group" and we look ahead across layers for that group.
+        Scheduling is at LAYER granularity, matching the real C++ system:
+        - UnifiedDefraggingLayerScheduler picks a layer_id
+        - get_batch_from_layer() merges ALL tokens for that layer
+        - Expert executor uses grouped GEMM to process all experts together
+
+        The scheduling policy controls HOW the layer is selected:
+          - "longest_queue_first": pick the layer with the most total tokens.
+          - "defragging_v0": use lookahead scoring matching C++.
         """
         while True:
             if self._total_queue_length == 0 and not self.attention_queue:
@@ -486,24 +493,31 @@ class ExpertWorker:
                 self.env.process(attention_layer.route_and_dispatch(token))
                 continue
 
-            chosen_layer_idx, chosen_queue = payload
-            if chosen_queue is None:
+            # payload is layer_idx (or None if no work)
+            chosen_layer_idx = payload
+            if chosen_layer_idx is None:
                 continue
 
-            # Form a batch
-            batch = []
-            while chosen_queue and len(batch) < self.max_batch_size:
-                batch.append(chosen_queue.popleft())
-                self._total_queue_length -= 1
+            # Form a batch from ALL queues for this layer (matching TokenBatch::merge)
+            batch: List[Token] = []
+            for local_queue in self.queues[chosen_layer_idx]:
+                while local_queue and len(batch) < self.max_batch_size:
+                    batch.append(local_queue.popleft())
+                    self._total_queue_length -= 1
+
+            if not batch:
+                continue
 
             # Track batch size statistics if requested.
             if self._batch_stats is not None:
                 self._batch_stats["total_batch_size"] += len(batch)
                 self._batch_stats["total_batches"] += 1
 
-            # Expert compute
+            # Expert compute with grouped GEMM speedup
+            # (matches sync/tbo which apply GROUP_GEMM_SPEEDUP_FACTOR)
             self._inflight_batch_size = len(batch)
-            compute_t = self._compute_time_lookup[len(batch)]
+            base_compute_t = self._compute_time_lookup[len(batch)]
+            compute_t = base_compute_t * GROUP_GEMM_SPEEDUP_FACTOR
             yield self.env.timeout(compute_t)
 
             # Network delay to attention / completion
@@ -511,7 +525,7 @@ class ExpertWorker:
             if self.net_delay_fn is not None:
                 delay = max(
                     (
-                        float(self.net_delay_fn(int(self.worker_idx), int(token.home_gpu)))
+                        float(self.net_delay_fn(int(self.worker_idx), int(token.home_gpu), len(batch)))
                         for token in batch
                     ),
                     default=0.0,
@@ -532,12 +546,12 @@ class ExpertWorker:
     def _select_next_task(self):
         """
         Select the next unit of work for this GPU:
-          - an expert batch from some (layer, local_expert) queue, or
+          - an expert batch from a layer (all queues for that layer), or
           - one attention token from this GPU's attention queue.
 
         Returns:
           ("attention", (attention_layer, token)) or
-          ("expert", (layer_idx, deque_or_None))
+          ("expert", layer_idx_or_None)
         """
         attention_score = (
             float(len(self.attention_queue)) * float(self.routing_top_k)
@@ -545,14 +559,15 @@ class ExpertWorker:
             else 0.0
         )
 
+        # Use layer-level scheduling (matching real system behavior)
         if self.scheduling_policy == "defragging_v0":
-            layer_idx, q, score = self._select_next_queue_defragging_v0()
+            layer_idx, score = self._select_next_layer_defragging()
         else:
-            layer_idx, q, score = self._select_next_queue_longest_queue_first()
+            layer_idx, score = self._select_next_layer_longest_first()
 
-        if self.attention_queue and (q is None or attention_score > float(score)):
+        if self.attention_queue and (layer_idx is None or attention_score > float(score)):
             return "attention", self.attention_queue.popleft()
-        return "expert", (layer_idx, q)
+        return "expert", layer_idx
 
     def _select_next_queue_longest_queue_first(self):
         """Original policy: pick the single longest queue across all layers."""
@@ -571,6 +586,83 @@ class ExpertWorker:
         if max_q is None or max_len == 0:
             return None, None, 0.0
         return chosen_layer_idx, max_q, float(max_len)
+
+    def _select_next_layer_longest_first(self) -> tuple[int | None, float]:
+        """
+        Layer-level scheduling: pick the layer with the most total tokens.
+        This matches the real system behavior where scheduling is at layer
+        granularity, not per-expert queue.
+        """
+        best_layer_idx = None
+        best_score = 0.0
+
+        for layer_idx, layer_queues in enumerate(self.queues):
+            layer_total = sum(len(q) for q in layer_queues)
+            if layer_total > best_score:
+                best_score = float(layer_total)
+                best_layer_idx = layer_idx
+
+        return best_layer_idx, best_score
+
+    def _select_next_layer_defragging(self) -> tuple[int | None, float]:
+        """
+        Layer-level defragging scheduler matching C++ UnifiedDefraggingLayerScheduler.
+
+        Computes a score for each layer based on:
+        1. Immediate tokens in the layer (sum across all local expert queues)
+        2. Lookahead score: decayed sum of tokens in future layers
+
+        This matches the real system where scheduling is at layer granularity,
+        then all tokens for that layer are batched together for grouped GEMM.
+        """
+        n_layers = self.num_layers
+        if n_layers <= 0:
+            return None, 0.0
+
+        # Scheduler parameters (match C++ defaults)
+        weight_decay = 0.95
+        lookahead_steps = 4
+
+        # Compute total tokens per layer
+        queues = self.queues
+        layer_totals = [0] * n_layers
+        for layer_idx in range(n_layers):
+            layer_totals[layer_idx] = sum(len(q) for q in queues[layer_idx])
+
+        # Early exit if no work
+        total_tokens = sum(layer_totals)
+        if total_tokens == 0:
+            return None, 0.0
+
+        # Compute per-layer scores with lookahead
+        scores = [0.0] * n_layers
+        for i in range(n_layers):
+            # Immediate tokens in this layer
+            immediate = float(layer_totals[i])
+            if immediate <= 0:
+                continue
+
+            # Compute lookahead score
+            lookahead_score = 0.0
+            decay = weight_decay
+            for k in range(1, lookahead_steps):
+                cur_layer = (i + k) % n_layers
+                num_tokens_cur_layer = layer_totals[cur_layer]
+                if num_tokens_cur_layer > 0:
+                    lookahead_score += num_tokens_cur_layer * decay
+                decay *= weight_decay
+
+            scores[i] = immediate + lookahead_score
+
+        # Find best layer
+        best_layer_idx = None
+        best_score = 0.0
+        for i in range(n_layers):
+            if scores[i] > best_score:
+                best_score = scores[i]
+                best_layer_idx = i
+
+        return best_layer_idx, best_score
 
     def _select_next_queue_defragging_v0(self):
         """
@@ -876,7 +968,7 @@ class AttentionWorker:
         if self.net_delay_fn is not None:
             delay = max(
                 (
-                    float(self.net_delay_fn(int(token.home_gpu), int(worker_idx)))
+                    float(self.net_delay_fn(int(token.home_gpu), int(worker_idx), 1))
                     for worker_idx in dest_workers
                 ),
                 default=0.0,
