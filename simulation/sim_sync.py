@@ -222,6 +222,7 @@ class SyncMoESimulator:
         global_request_max_batch_size: int,
         *,
         net_delay_fn: Callable[[int, int, int], float] | None = None,
+        n_gpu_per_host: int | None = None,
         per_token_begin_cb: Callable[[Token], None] | None = None,
         per_token_stats_cb: Callable[[Token, float], None] | None = None,
     ):
@@ -238,6 +239,7 @@ class SyncMoESimulator:
         self.net_t_attn_to_expert = net_t_attn_to_expert
         self.net_t_expert_to_attn = net_t_expert_to_attn
         self.net_delay_fn = net_delay_fn
+        self.n_gpu_per_host = max(1, int(n_gpu_per_host)) if n_gpu_per_host is not None else None
         self.compute_time_lookup = compute_time_lookup
         self.profile_router = profile_router
         self.progress_tracker = progress_tracker
@@ -463,6 +465,11 @@ class SyncMoESimulator:
             tokens.append(token)
         return tokens
 
+    def _is_same_host(self, gpu_a: int, gpu_b: int) -> bool:
+        if self.n_gpu_per_host is None:
+            return True
+        return (int(gpu_a) // self.n_gpu_per_host) == (int(gpu_b) // self.n_gpu_per_host)
+
     def _run_one_iteration(self, tokens: List[Token]) -> float:
         iteration_time = 0.0
         for layer_idx in range(self.num_layers):
@@ -485,30 +492,33 @@ class SyncMoESimulator:
         attention_time = batches * self.attn_service_t
         dispatch_time = self.net_t_attn_to_expert
 
-        worker_loads, worker_src_gpus = self._route_layer(layer_idx, tokens)
+        worker_loads, worker_src_gpus, tokens_per_src_per_dst = self._route_layer(layer_idx, tokens)
 
-        worker_return_delays: List[float] = [
-            float(self.net_t_expert_to_attn) for _ in range(self.ep_group_size)
-        ]
         if self.net_delay_fn is not None:
-            worker_dispatch_delays: List[float] = []
-            worker_return_delays = []
-            for worker_idx, src_gpus in enumerate(worker_src_gpus):
-                if not src_gpus:
-                    worker_dispatch_delays.append(0.0)
-                    worker_return_delays.append(0.0)
+            # --- Congestion-aware dispatch (dual receive-queue model) ---
+            # Each destination GPU has two independent receive queues: NVLink
+            # (intra-node) and RDMA (inter-node).  Transfers are serialized
+            # within each queue at full link bandwidth, but the two queues
+            # drain in parallel.  The destination finishes when both queues
+            # are drained: max(nvlink_total, rdma_total).
+            dst_dispatch_delays: List[float] = []
+            for worker_idx in range(self.ep_group_size):
+                src_tokens = tokens_per_src_per_dst.get(worker_idx)
+                if not src_tokens:
+                    dst_dispatch_delays.append(0.0)
                     continue
-                # Count tokens being transferred to/from this worker
-                num_tokens = sum(worker_loads[worker_idx])
-                dispatch = max(
-                    float(self.net_delay_fn(int(src), int(worker_idx), num_tokens)) for src in src_gpus
-                )
-                ret = max(
-                    float(self.net_delay_fn(int(worker_idx), int(src), num_tokens)) for src in src_gpus
-                )
-                worker_dispatch_delays.append(dispatch)
-                worker_return_delays.append(ret)
-            dispatch_time = max(worker_dispatch_delays) if worker_dispatch_delays else 0.0
+                nvlink_total = 0.0
+                rdma_total = 0.0
+                for src, ntok in src_tokens.items():
+                    if ntok <= 0:
+                        continue
+                    delay = float(self.net_delay_fn(int(src), int(worker_idx), int(ntok)))
+                    if self._is_same_host(src, worker_idx):
+                        nvlink_total += delay
+                    else:
+                        rdma_total += delay
+                dst_dispatch_delays.append(max(nvlink_total, rdma_total))
+            dispatch_time = max(dst_dispatch_delays) if dst_dispatch_delays else 0.0
 
         # Record per-worker queue imbalance (stddev over that worker's expert queues).
         for queues in worker_loads:
@@ -519,22 +529,58 @@ class SyncMoESimulator:
             stddev = math.sqrt(variance)
             self.worker_queue_stddevs.append(stddev)
 
-        worker_times = [
-            self._simulate_worker_time(
-                worker_idx=worker_idx,
-                loads=loads,
-                src_gpus=worker_src_gpus[worker_idx],
-            )
-            for worker_idx, loads in enumerate(worker_loads)
-        ]
-        expert_time = max(worker_times) if worker_times else 0.0
+        # Compute expert processing time (compute only, no return delay).
+        worker_compute_times: List[float] = []
+        # Collect per-worker total tokens for return transfer sizing.
+        worker_total_tokens: List[int] = []
+        for worker_idx, loads in enumerate(worker_loads):
+            compute_t = self._simulate_worker_compute_time(loads)
+            worker_compute_times.append(compute_t)
+            worker_total_tokens.append(sum(loads))
+        expert_compute_time = max(worker_compute_times) if worker_compute_times else 0.0
+
+        # --- Congestion-aware return (dual receive-queue model) ---
+        # After expert compute, each worker sends results back to the
+        # attention GPUs that originally sent tokens. Each attention GPU
+        # (destination) has NVLink and RDMA receive queues.
+        if self.net_delay_fn is not None:
+            attn_nvlink_delays: Dict[int, float] = {}
+            attn_rdma_delays: Dict[int, float] = {}
+            for worker_idx in range(self.ep_group_size):
+                total_tok = worker_total_tokens[worker_idx]
+                if total_tok == 0:
+                    continue
+                src_tokens = tokens_per_src_per_dst.get(worker_idx)
+                if not src_tokens:
+                    continue
+                for attn_gpu in src_tokens:
+                    tokens_to_return = src_tokens[attn_gpu]
+                    if tokens_to_return <= 0:
+                        continue
+                    delay = float(self.net_delay_fn(int(worker_idx), int(attn_gpu), int(tokens_to_return)))
+                    if self._is_same_host(worker_idx, attn_gpu):
+                        attn_nvlink_delays[attn_gpu] = attn_nvlink_delays.get(attn_gpu, 0.0) + delay
+                    else:
+                        attn_rdma_delays[attn_gpu] = attn_rdma_delays.get(attn_gpu, 0.0) + delay
+            all_attn_gpus = set(attn_nvlink_delays.keys()) | set(attn_rdma_delays.keys())
+            if all_attn_gpus:
+                return_time = max(
+                    max(attn_nvlink_delays.get(gpu, 0.0), attn_rdma_delays.get(gpu, 0.0))
+                    for gpu in all_attn_gpus
+                )
+            else:
+                return_time = 0.0
+        else:
+            return_time = self.net_t_expert_to_attn
+
+        expert_time = expert_compute_time + return_time
 
         # Per-layer metrics:
         # - total layer runtime (from attention start to last expert completion)
         # - longest wait (from first worker completion to last worker completion)
-        if worker_times:
-            earliest_finish = min(worker_times)
-            latest_finish = max(worker_times)
+        if worker_compute_times:
+            earliest_finish = min(worker_compute_times)
+            latest_finish = max(worker_compute_times)
             longest_wait = max(0.0, latest_finish - earliest_finish)
         else:
             longest_wait = 0.0
@@ -545,12 +591,17 @@ class SyncMoESimulator:
 
         return layer_runtime
 
-    def _route_layer(self, layer_idx: int, tokens: List[Token]) -> tuple[List[List[int]], List[set[int]]]:
+    def _route_layer(
+        self, layer_idx: int, tokens: List[Token],
+    ) -> tuple[List[List[int]], List[set[int]], Dict[int, Dict[int, int]]]:
         worker_queues: List[List[int]] = [
             [0 for _ in range(self.queues_per_worker)]
             for _ in range(self.ep_group_size)
         ]
         worker_src_gpus: List[set[int]] = [set() for _ in range(self.ep_group_size)]
+        # tokens_per_src_per_dst[dst_worker][src_gpu] = number of tokens
+        tokens_per_src_per_dst: Dict[int, Dict[int, int]] = {}
+
         request_ids = [token.request_id for token in tokens]
         token_indices = torch.tensor(
             [token.token_index for token in tokens],
@@ -574,6 +625,7 @@ class SyncMoESimulator:
                     f"Router returned no experts for token {token.tid} at layer {layer_idx}"
                 )
             token.layer_fanout[layer_idx] = len(selected)
+            src_gpu = int(token.home_gpu)
 
             for expert_id in selected:
                 if expert_id >= self.total_expert_count:
@@ -583,10 +635,15 @@ class SyncMoESimulator:
                 worker_idx = expert_id // self.queues_per_worker
                 local_queue_idx = expert_id % self.queues_per_worker
                 worker_queues[worker_idx][local_queue_idx] += 1
-                worker_src_gpus[worker_idx].add(int(token.home_gpu))
-        return worker_queues, worker_src_gpus
+                worker_src_gpus[worker_idx].add(src_gpu)
+                dst_map = tokens_per_src_per_dst.get(worker_idx)
+                if dst_map is None:
+                    dst_map = {}
+                    tokens_per_src_per_dst[worker_idx] = dst_map
+                dst_map[src_gpu] = dst_map.get(src_gpu, 0) + 1
+        return worker_queues, worker_src_gpus, tokens_per_src_per_dst
 
-    def _simulate_worker_time(self, worker_idx: int, loads: List[int], src_gpus: set[int]) -> float:
+    def _simulate_worker_compute_time(self, loads: List[int]) -> float:
         total_tokens = sum(loads)
         if total_tokens == 0:
             return 0.0
@@ -604,17 +661,7 @@ class SyncMoESimulator:
             compute_t = self.compute_time_lookup[batch]
             self.total_expert_batch_size += batch
             self.total_expert_batch_count += 1
-            
-            # Calculate return delay based on batch size
-            if self.net_delay_fn is not None and src_gpus:
-                batch_return_delay = max(
-                    float(self.net_delay_fn(int(worker_idx), int(src), batch))
-                    for src in src_gpus
-                )
-            else:
-                batch_return_delay = self.net_t_expert_to_attn
-            
-            elapsed += compute_t + batch_return_delay
+            elapsed += compute_t
         return elapsed
 
     def _finalize_iteration(self, tokens: List[Token]):
@@ -673,7 +720,8 @@ def run_simulation(
     attn_dp_group_size=ATTN_DP_GROUP_SIZE,
     net_t_attn_to_expert=NET_T_ATTN_TO_EXPERT,
     net_t_expert_to_attn=NET_T_EXPERT_TO_ATTN,
-    net_delay_fn: Callable[[int, int], float] | None = None,
+    net_delay_fn: Callable[[int, int, int], float] | None = None,
+    n_gpu_per_host: int | None = None,
     ticks_per_millisecond=TICKS_PER_MILLISECOND,
     expert_profile_path=EXPERT_COMPUTE_PROFILE_PATH,
     profile_routing_path=PROFILE_ROUTING_PATH,
@@ -728,6 +776,7 @@ def run_simulation(
         net_t_attn_to_expert=net_t_attn_to_expert,
         net_t_expert_to_attn=net_t_expert_to_attn,
         net_delay_fn=net_delay_fn,
+        n_gpu_per_host=n_gpu_per_host,
         compute_time_lookup=compute_time_lookup,
         profile_router=profile_router,
         progress_tracker=progress_tracker,

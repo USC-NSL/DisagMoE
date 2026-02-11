@@ -19,6 +19,7 @@ class ConfigKey:
     net_delay_inter_host: float | None
     hidden_dim: int
     inter_node_bw_gbps: float
+    bw_aware: bool
 
 
 @dataclass
@@ -90,6 +91,9 @@ def _key_from_row(row: Dict[str, str]) -> tuple[str, ConfigKey]:
     if not _is_finite(inter_node_bw):
         inter_node_bw = 0.0
 
+    bw_aware_raw = (row.get("bw_aware") or "True").strip()
+    bw_aware = bw_aware_raw not in ("False", "false", "0", "")
+
     return mode, ConfigKey(
         ep_group_size=_safe_int(row.get("ep_group_size"), 0),
         global_request_max_batch_size=_safe_int(
@@ -101,6 +105,7 @@ def _key_from_row(row: Dict[str, str]) -> tuple[str, ConfigKey]:
         net_delay_inter_host=inter_opt,
         hidden_dim=int(hidden_dim),
         inter_node_bw_gbps=float(inter_node_bw),
+        bw_aware=bw_aware,
     )
 
 
@@ -170,6 +175,7 @@ def _print_stats_summary(
             k.attn_service_t,
             k.hidden_dim,
             k.inter_node_bw_gbps,
+            0 if k.bw_aware else 1,
         ),
     )
 
@@ -198,6 +204,7 @@ def _print_stats_summary(
         config_label = (
             f"ep{key.ep_group_size} gb{key.global_request_max_batch_size} "
             f"attn{key.attn_service_t:g} hid{key.hidden_dim} bw{int(key.inter_node_bw_gbps)}"
+            f"{' bwa' if key.bw_aware else ' nobw'}"
         )
 
         first_mode = True
@@ -418,6 +425,7 @@ def main() -> None:
             _sort_float(k.net_delay_inter_host),
             k.hidden_dim,
             k.inter_node_bw_gbps,
+            0 if k.bw_aware else 1,
         ),
     ):
         by_mode = latencies_by_cfg[key]
@@ -484,6 +492,7 @@ def main() -> None:
         # Hidden dimension and inter-node bandwidth for filename
         hidden_desc = f"hidden={key.hidden_dim}" if key.hidden_dim else ""
         bw_desc = f"bw={key.inter_node_bw_gbps:g}Gbps" if key.inter_node_bw_gbps else ""
+        bwa_desc = "bw_aware" if key.bw_aware else "fixed_delay"
 
         title = (
             f"Sampled ITL CDF ({mode_desc})\n"
@@ -491,7 +500,7 @@ def main() -> None:
             f"global_bs={key.global_request_max_batch_size} "
             f"attn_t={key.attn_service_t:g} "
             f"n_gpu_per_host={key.n_gpu_per_host} {net_desc} "
-            f"{hidden_desc} {bw_desc}"
+            f"{hidden_desc} {bw_desc} {bwa_desc}"
         )
 
         filename = (
@@ -503,6 +512,7 @@ def main() -> None:
             f"_{net_fname}"
             f"_hid{key.hidden_dim}"
             f"_bw{int(key.inter_node_bw_gbps)}"
+            f"_bwa{1 if key.bw_aware else 0}"
             f"_na{len(async_values)}"
             f"_ns{len(sync_values)}"
             f"_nt{len(tbo_values)}.png"
@@ -565,6 +575,7 @@ def main() -> None:
             _sort_float(k.net_delay_inter_host),
             k.hidden_dim,
             k.inter_node_bw_gbps,
+            0 if k.bw_aware else 1,
         ),
     ):
         by_mode = latencies_by_cfg[key]
@@ -591,6 +602,7 @@ def main() -> None:
             f"attn{key.attn_service_t:g} "
             f"hid{key.hidden_dim} "
             f"bw{int(key.inter_node_bw_gbps)}"
+            f"{' bwa' if key.bw_aware else ' nobw'}"
         )
         summary_items.append(
             (
@@ -633,6 +645,7 @@ def main() -> None:
                 _sort_float(k.net_delay_inter_host),
                 k.hidden_dim,
                 k.inter_node_bw_gbps,
+                0 if k.bw_aware else 1,
             ),
         )
         for key in sorted_keys:

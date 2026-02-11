@@ -5,7 +5,7 @@ import random
 import os
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Tuple
 import math
 import sys
 import time
@@ -16,6 +16,56 @@ from util import (
     build_profile_router,
 )
 from disagmoe.models.gate import ProfileDrivenRouter
+
+
+class IngressPort:
+    """Per-GPU receive port with two independent FIFO channels.
+
+    Each GPU has one IngressPort containing:
+      - An NVLink channel for intra-node transfers
+      - An RDMA channel for inter-node transfers
+
+    Each channel processes one transfer at a time at full link bandwidth.
+    The two channels operate independently and can process in parallel.
+    Incoming transfers are classified by topology (same host -> NVLink,
+    different host -> RDMA) and queued on the appropriate channel.
+    """
+
+    def __init__(self, env: simpy.Environment, gpu_idx: int, n_gpu_per_host: int):
+        self.env = env
+        self.gpu_idx = int(gpu_idx)
+        self.n_gpu_per_host = max(1, int(n_gpu_per_host))
+        self._nvlink = simpy.Resource(env, capacity=1)
+        self._rdma = simpy.Resource(env, capacity=1)
+
+    def _is_same_host(self, other_gpu: int) -> bool:
+        return (self.gpu_idx // self.n_gpu_per_host) == (int(other_gpu) // self.n_gpu_per_host)
+
+    def transfer(self, src_gpu: int, solo_delay: float) -> simpy.events.Event:
+        """Queue a transfer from *src_gpu* with the given full-bandwidth delay.
+
+        The transfer is routed to the NVLink channel if *src_gpu* is on the
+        same host as this GPU, or the RDMA channel otherwise.
+
+        Returns a simpy event that triggers when this transfer completes.
+        """
+        if solo_delay <= 0:
+            return self.env.timeout(0)
+
+        is_intra = self._is_same_host(src_gpu)
+        resource = self._nvlink if is_intra else self._rdma
+        done_event = self.env.event()
+        self.env.process(self._do_transfer(resource, solo_delay, done_event))
+        return done_event
+
+    def _do_transfer(self, resource: simpy.Resource, delay: float, done_event: simpy.events.Event):
+        """FIFO transfer: acquire the channel, hold for *delay* ticks, release."""
+        req = resource.request()
+        yield req
+        yield self.env.timeout(delay)
+        resource.release(req)
+        if not done_event.triggered:
+            done_event.succeed()
 
 
 # ------------------------------
@@ -394,6 +444,7 @@ class ExpertWorker:
         final_completion_tracker: FinalCompletionTracker,
         *,
         net_delay_fn: Callable[[int, int, int], float] | None = None,
+        ingress_ports: List[IngressPort] | None = None,
         batch_stats=None,
         defrag_v0_debug_state: DefragV0DebugState | None = None,
         scheduling_policy: str = "longest_queue_first",
@@ -407,6 +458,7 @@ class ExpertWorker:
         self._compute_time_lookup = compute_time_lookup
         self.net_t_expert_to_attn = net_t_expert_to_attn
         self.net_delay_fn = net_delay_fn
+        self.ingress_ports = ingress_ports
         self.attention_layers = attention_layers
         self.final_completion_tracker = final_completion_tracker
         self._batch_stats = batch_stats
@@ -520,17 +572,32 @@ class ExpertWorker:
             compute_t = base_compute_t * GROUP_GEMM_SPEEDUP_FACTOR
             yield self.env.timeout(compute_t)
 
-            # Network delay to attention / completion
-            delay = self.net_t_expert_to_attn
-            if self.net_delay_fn is not None:
-                delay = max(
-                    (
-                        float(self.net_delay_fn(int(self.worker_idx), int(token.home_gpu), len(batch)))
-                        for token in batch
-                    ),
-                    default=0.0,
-                )
-            yield self.env.timeout(delay)
+            # Network delay to attention / completion.
+            # With congestion-aware simulation, each destination GPU's ingress
+            # port fair-shares bandwidth among concurrent senders. We group
+            # tokens by home_gpu and fire concurrent transfers.
+            if self.ingress_ports is not None and self.net_delay_fn is not None:
+                # Group tokens by destination (home_gpu)
+                tokens_per_dst: Dict[int, int] = defaultdict(int)
+                for token in batch:
+                    tokens_per_dst[int(token.home_gpu)] += 1
+
+                # Fire concurrent transfers to each destination's ingress port
+                transfer_events = []
+                for dst_gpu, count in tokens_per_dst.items():
+                    solo_delay = float(
+                        self.net_delay_fn(int(self.worker_idx), dst_gpu, count)
+                    )
+                    if solo_delay > 0:
+                        transfer_events.append(
+                            self.ingress_ports[dst_gpu].transfer(int(self.worker_idx), solo_delay)
+                        )
+
+                if transfer_events:
+                    yield simpy.events.AllOf(self.env, transfer_events)
+            else:
+                delay = self.net_t_expert_to_attn
+                yield self.env.timeout(delay)
             self._inflight_batch_size = 0
 
             # Route tokens onward
@@ -620,7 +687,7 @@ class ExpertWorker:
             return None, 0.0
 
         # Scheduler parameters (match C++ defaults)
-        weight_decay = 0.95
+        weight_decay = 0.8
         lookahead_steps = 4
 
         # Compute total tokens per layer
@@ -870,7 +937,8 @@ class AttentionWorker:
                  expert_workers,
                  profile_router: ProfileDrivenRouter,
                  *,
-                 net_delay_fn: Callable[[int, int], float] | None = None):
+                 net_delay_fn: Callable[[int, int, int], float] | None = None,
+                 ingress_ports: List[IngressPort] | None = None):
         self.env = env
         self.layer_idx = layer_idx
         self.total_expert_count = total_expert_count
@@ -878,6 +946,7 @@ class AttentionWorker:
         self.attn_service_t = attn_service_t
         self.net_t_attn_to_expert = net_t_attn_to_expert
         self.net_delay_fn = net_delay_fn
+        self.ingress_ports = ingress_ports
         self.expert_workers = expert_workers
         self.profile_router = profile_router
 
@@ -961,19 +1030,26 @@ class AttentionWorker:
             routes.append((worker_idx, local_queue_idx))
             dest_workers.add(worker_idx)
 
-        # Network delay to expert queues (modeled as a single hop before dispatch).
-        # If a topology-aware net_delay_fn is provided, assume the sends happen in
-        # parallel and pay the maximum delay among all destination workers.
-        delay = self.net_t_attn_to_expert
-        if self.net_delay_fn is not None:
-            delay = max(
-                (
-                    float(self.net_delay_fn(int(token.home_gpu), int(worker_idx), 1))
-                    for worker_idx in dest_workers
-                ),
-                default=0.0,
-            )
-        yield self.env.timeout(delay)
+        # Network delay to expert queues. With congestion-aware simulation,
+        # each destination worker's ingress port fair-shares bandwidth among
+        # concurrent senders. We fire one transfer per unique destination
+        # worker and wait for all to complete concurrently.
+        if self.ingress_ports is not None and self.net_delay_fn is not None:
+            transfer_events = []
+            for worker_idx in dest_workers:
+                solo_delay = float(
+                    self.net_delay_fn(int(token.home_gpu), int(worker_idx), 1)
+                )
+                if solo_delay > 0:
+                    transfer_events.append(
+                        self.ingress_ports[worker_idx].transfer(int(token.home_gpu), solo_delay)
+                    )
+
+            if transfer_events:
+                yield simpy.events.AllOf(self.env, transfer_events)
+        else:
+            delay = self.net_t_attn_to_expert
+            yield self.env.timeout(delay)
 
         # Send token copies into each chosen expert queue in THIS layer
         for worker_idx, local_queue_idx in routes:
@@ -1048,7 +1124,8 @@ def run_simulation(
     scheduling_policy: str = SCHEDULING_POLICY,
     per_token_begin_cb: Callable[[Token], None] | None = None,
     per_token_stats_cb: Callable[[Token, float], None] | None = None,
-    net_delay_fn: Callable[[int, int], float] | None = None,
+    net_delay_fn: Callable[[int, int, int], float] | None = None,
+    n_gpu_per_host: int | None = None,
 ):
     random.seed(RNG_SEED)
     env = simpy.Environment()
@@ -1140,6 +1217,20 @@ def run_simulation(
     # Build experts first with attention pointer set to None.
     # Then create attention workers and patch each expert's attention_layers reference.
 
+    # Create one IngressPort per GPU for congestion-aware network simulation.
+    # Each port has two independent FIFO channels (NVLink and RDMA).
+    # Transfers are classified by topology and queued on the appropriate
+    # channel; each channel processes one transfer at a time at full
+    # bandwidth.  The port is shared by both dispatch (attn→expert) and
+    # return (expert→attn) traffic targeting this GPU.
+    ingress_ports: List[IngressPort] | None = None
+    if net_delay_fn is not None:
+        _n_gpu_per_host = n_gpu_per_host if n_gpu_per_host is not None else ep_group_size
+        ingress_ports = [
+            IngressPort(env, gpu_idx=i, n_gpu_per_host=_n_gpu_per_host)
+            for i in range(ep_group_size)
+        ]
+
     # Create expert workers (global across all layers)
     for w in range(ep_group_size):
         worker = ExpertWorker(
@@ -1151,6 +1242,7 @@ def run_simulation(
             compute_time_lookup=compute_time_lookup,
             net_t_expert_to_attn=NET_T_EXPERT_TO_ATTN,
             net_delay_fn=net_delay_fn,
+            ingress_ports=ingress_ports,
             attention_layers=None,  # temp, will fix after we create them
             final_completion_tracker=final_completion_tracker,
             batch_stats=batch_stats,
@@ -1208,6 +1300,7 @@ def run_simulation(
             attn_service_t=ATTN_SERVICE_T,
             net_t_attn_to_expert=NET_T_ATTN_TO_EXPERT,
             net_delay_fn=net_delay_fn,
+            ingress_ports=ingress_ports,
             expert_workers=expert_workers,
             profile_router=profile_router,
         )
