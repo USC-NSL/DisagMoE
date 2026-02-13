@@ -1,12 +1,12 @@
 import torch
 from typing import override, List, Optional, Dict
-from grouped_gemm.backend import gmm
 from disagmoe.utils.constants import MAX_BATCH_SIZE
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.ops.quantization import sglang_per_token_group_quant_fp8
 from disagmoe.utils.logger import get_logger
 from disagmoe.ops.cuda_graph import fused_copy_and_pad_cuda
+import disagmoe_c
 
 # Optional import for deep_gemm (only available for sm90+)
 try:
@@ -15,13 +15,14 @@ except ImportError:
     dg = None
 
 class MoEExpertsCUTLASS(torch.nn.Module):
+    """CUTLASS Grouped-GEMM MoE experts for sm < 90)."""
+
     def __init__(
         self, 
         hidden_size: int, 
         intermediate_size: int,
         num_experts: int, 
         tp_size: int = 1,
-        enable_cutlass_cache: bool = True,
         max_batch_size: int = MAX_BATCH_SIZE,
     ):
         super().__init__()
@@ -29,18 +30,27 @@ class MoEExpertsCUTLASS(torch.nn.Module):
         self.intermediate_size = intermediate_size
         self.num_experts = num_experts
         self.tp_size = tp_size
+        self.max_batch_size = max_batch_size
         assert tp_size == 1, "Not implemented TP for experts yet"
             
         params_dtype = torch.get_default_dtype()
         assert params_dtype == torch.bfloat16, "Only bf16 is supported for now"
-        # create weights as bf16
         self.create_weights(torch.bfloat16)
 
-        # grouped_gemm (bf16) path
-        self.gmm_with_cache = None
-        self.gmm = gmm
-        self.gmm_cache_max_batch_size = max_batch_size
-        self.create_grouped_gemm_cache(params_dtype, enable_cutlass_cache, max_batch_size)
+        # One-time hardware probe + tile selection
+        from disagmoe.ops.grouped_gemm import ensure_initialized
+        ensure_initialized()
+
+        # Pre-allocate output caches
+        total_capacity = self.num_experts * max_batch_size
+        self.cache_up = torch.empty(
+            (total_capacity, self.intermediate_size * 2),
+            dtype=torch.bfloat16, device="cuda",
+        )
+        self.cache_down = torch.empty(
+            (total_capacity, self.hidden_size),
+            dtype=torch.bfloat16, device="cuda",
+        )
 
     def create_weights(self, params_dtype: torch.dtype):
         self.w13_weight = torch.nn.Parameter(
@@ -67,59 +77,14 @@ class MoEExpertsCUTLASS(torch.nn.Module):
 
         self.act_fn = torch.nn.SiLU(inplace=True)
 
-    def create_grouped_gemm_cache(self, params_dtype, enable_cutlass_cache, max_batch_size):
-        # TODO: for now we interpret max_batch_size as per-expert batch size
-        # but this leads to wasted memory for non-masked grouped gemm path, which will only use the first max_batch_size tokens
-        # later we should 1) differentiate between per-expert and per-rank batch sizes 2) support cudagraph for non-masked grouped gemm path
-        total_capacity = self.num_experts * max_batch_size
-        self.cache_up = torch.empty(
-            (total_capacity, self.intermediate_size * 2),
-            dtype=params_dtype,
-            device=torch.device("cuda"),
-        )
-        self.cache_down = torch.empty(
-            (total_capacity, self.hidden_size),
-            dtype=params_dtype,
-            device=torch.device("cuda"),
-        )
-        if enable_cutlass_cache:
-            from grouped_gemm.backend import get_arguments, gmm_with_arguments
-
-            self.cutlass_workspace_size, self.arguments_ptr = get_arguments(
-                self.num_experts, torch.device("cuda")
-            )
-            self.cutlass_workspace = torch.empty(
-                [self.cutlass_workspace_size],
-                dtype=torch.uint8,
-                device=torch.device("cuda"),
-            )
-
-            def _gmm(hiddens, weight, batch_sizes, **kwargs):
-                return gmm_with_arguments(
-                    hiddens,
-                    weight,
-                    batch_sizes,
-                    self.cutlass_workspace,
-                    self.arguments_ptr,
-                    **kwargs,
-                )
-
-            self.gmm_with_cache = _gmm
-
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
-        use_cache = bs <= self.gmm_cache_max_batch_size and self.gmm_with_cache is not None
-        output = None
-        if use_cache:
-            up = self.gmm_with_cache(hiddens, self.w13_weight, batch_sizes, c=self.cache_up)
-            up = self.act_fn(up[:bs, : self.intermediate_size]) * up[:bs, self.intermediate_size :]
-            down = self.gmm_with_cache(up, self.w2_weight, batch_sizes, c=self.cache_down)
-            output = down[:bs]
-        else:
-            up = self.gmm(hiddens, self.w13_weight, batch_sizes)
-            up = self.act_fn(up[:, : self.intermediate_size]) * up[:, self.intermediate_size :]
-            down = self.gmm(up, self.w2_weight, batch_sizes)
-            output = down
-        return output
+        # Up projection: [tokens, hidden] @ [E, hidden, inter*2] -> [tokens, inter*2]
+        disagmoe_c.grouped_gemm(hiddens, self.w13_weight, self.cache_up, batch_sizes)
+        up = self.cache_up[:bs]
+        up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
+        # Down projection: [tokens, inter] @ [E, inter, hidden] -> [tokens, hidden]
+        disagmoe_c.grouped_gemm(up, self.w2_weight, self.cache_down, batch_sizes)
+        return self.cache_down[:bs]
 
 class MoEExpertsDeepGemmBF16(torch.nn.Module):
     """DeepGEMM-based BF16 grouped experts."""
@@ -353,7 +318,6 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
         intermediate_size: int,
         num_experts: int,
         tp_size: int = 1,
-        enable_cutlass_cache: bool = True,
         max_batch_size: int = MAX_BATCH_SIZE,
     ):
         super().__init__()
@@ -403,9 +367,9 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
             dtype=torch.float32,
         )
 
-        # create cached grouped gemm buffers (bf16 cache)
+        # create cached output buffers (bf16 cache)
         cache_dtype = torch.bfloat16
-        self.create_grouped_gemm_cache(cache_dtype, enable_cutlass_cache, max_batch_size)
+        self._create_cache_buffers(cache_dtype, max_batch_size)
         # change the views
         self.cache_up = self.cache_up.view(
             self.num_experts, -1, self.intermediate_size * 2
@@ -474,21 +438,10 @@ class MoEExpertsDeepGemmFP8Masked(torch.nn.Module):
             dtype=torch.float32
         )
 
-    def create_grouped_gemm_cache(self, params_dtype, enable_cutlass_cache, max_batch_size):
+    def _create_cache_buffers(self, params_dtype, max_batch_size):
         total_capacity = self.num_experts * max_batch_size
         self.cache_up = torch.empty((total_capacity, self.intermediate_size * 2), dtype=params_dtype, device=torch.device("cuda"))
         self.cache_down = torch.empty((total_capacity, self.hidden_size), dtype=params_dtype, device=torch.device("cuda"))
-        if enable_cutlass_cache:
-            from grouped_gemm.backend import get_arguments, gmm_with_arguments
-
-            self.cutlass_workspace_size, self.arguments_ptr = get_arguments(
-                self.num_experts, torch.device("cuda"))
-            self.cutlass_workspace = torch.empty([self.cutlass_workspace_size], dtype=torch.uint8, device=torch.device("cuda"))
-
-            def _gmm(hiddens, weight, batch_sizes, **kwargs):
-                return gmm_with_arguments(hiddens, weight, batch_sizes, self.cutlass_workspace, self.arguments_ptr, **kwargs)
-            
-            self.gmm_with_cache = _gmm
         
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
         # Cast hiddens to FP8 (Dynamic shape, cannot be in graph)
@@ -576,7 +529,7 @@ class MoEExpertsSerial(MoEExpertsCUTLASS):
                  quant_config: Optional[QuantizationConfig] = None):
         # Store quantization config before parent ctor calls create_weights
         self._moe_quant_config: Optional[QuantizationConfig] = quant_config
-        super().__init__(hidden_size, intermediate_size, num_experts, tp_size, enable_cutlass_cache=False)
+        super().__init__(hidden_size, intermediate_size, num_experts, tp_size)
     
     @override
     def create_weights(self, params_dtype: torch.dtype):

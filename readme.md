@@ -6,7 +6,7 @@ See `.gitmodules`.
 * cereal
 * libzmq
 * nvtx
-* grouped_gemm
+* cutlass (v3.2.0)
 * ucx (not included as submodule)
 * deep_gemm (not included as submodule)
 
@@ -18,6 +18,24 @@ See `.gitmodules`.
 sudo apt-get install libzmq3-dev libcereal-dev libucx-dev
 git submodule update --init --recursive
 pip install -r requirements.txt
+```
+
+NCCL:
+
+```bash
+sudo apt-get install -y libnccl2 libnccl-dev
+```
+
+GDRCopy:
+
+```bash
+sudo apt-get install -y flex bison
+git clone https://github.com/NVIDIA/gdrcopy.git
+cd gdrcopy
+make
+sudo make prefix=/usr/local/gdrcopy install
+sudo ldconfig
+sudo bash ./insmod.sh
 ```
 
 For `deep_gemm`, their pip install is currently broken. So please use their repo's `install.sh` on `v2.1.1` branch.
@@ -32,14 +50,6 @@ cd path/to/python-version/site-packages
 
 git apply DisagMoE/patches/vllm_0.8.2.patch
 
-```
-
-### Build grouped_gemm
-
-```bash
-git submodule update --init
-cd third_party/grouped_gemm
-TORCH_CUDA_ARCH_LIST=8.0 GROUPED_GEMM_CUTLASS=1 pip install .
 ```
 
 ## Build C++ libraries
@@ -65,7 +75,7 @@ It will leverage setup.py to build the shared library. The equivalent command is
 ## Quick Start
 
 ```
-export VLLM_FLASH_ATTN_VERSION=3
+export VLLM_FLASH_ATTN_VERSION=3 # don't run this if GPU doesn't support
 
 ./benchmark/scripts/launch_server.sh
 ```

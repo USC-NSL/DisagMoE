@@ -15,6 +15,7 @@
 #include "profiler.hpp"
 #include "transport_factory.h"
 #include "tensor_utils.hpp"
+#include "grouped_gemm.h"
 
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
@@ -157,5 +158,13 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     // Transport selection from Python (required before engine init)
     m.def("select_transport", &disagmoe::select_transport, py::arg("name"));
+
+    // CUTLASS Grouped GEMM for MoE experts (sm < 90, CUTLASS)
+    m.def("init_grouped_gemm", &disagmoe::init_grouped_gemm,
+          py::arg("device_id"),
+          "Probe hardware and select suitable CUTLASS tile config. Returns description string.");
+    m.def("grouped_gemm", &disagmoe::grouped_gemm,
+          py::arg("a"), py::arg("b"), py::arg("c"), py::arg("batch_sizes"),
+          "Grouped GEMM: C[i] = A_slice[i] @ B[i] for each expert");
 
 }

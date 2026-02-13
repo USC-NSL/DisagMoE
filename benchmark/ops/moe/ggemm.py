@@ -1,7 +1,8 @@
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-from grouped_gemm.backend import gmm
+import disagmoe_c
+from disagmoe.ops.grouped_gemm import ensure_initialized
 import os
 import csv
 import argparse
@@ -67,6 +68,7 @@ def alloc_expert_weights(
 
 @torch.inference_mode()
 def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
+    ensure_initialized()
 
     # this is just batch sizes we test
     # row_sizes = np.concatenate((np.arange(4, 128, 4), np.arange(128, 512 + 1, 32)))
@@ -164,13 +166,14 @@ def benchmark_grouped_gemm(hidden_size, intermediate_size, num_experts, label):
     # the buffer sizes, remember to truncate the output tensors of gmm.
     def run_experts_grouped_gemm(As_list, BCs, Ds, intermediate_size, up_buf, down_buf, batch_sizes):
         A_flat = torch.cat(As_list, dim=0).contiguous()
-        up = gmm(A_flat, BCs, batch_sizes, c=up_buf)
+        disagmoe_c.grouped_gemm(A_flat, BCs, up_buf, batch_sizes)
+        up = up_buf[:A_flat.size(0)]
         # NOTE: the up_1 slice is NOT contiguous
-        # Compute GLU into a new contiguous buffer to satisfy gmm's contiguity requirement
+        # Compute GLU into a new contiguous buffer to satisfy contiguity requirement
         up_1 = up[:, :intermediate_size]
         up_3 = up[:, intermediate_size:]
         glu = (up_1 * up_3).contiguous()
-        _ = gmm(glu, Ds, batch_sizes, c=down_buf)
+        disagmoe_c.grouped_gemm(glu, Ds, down_buf, batch_sizes)
     
     results_grouped_gemm = []
 

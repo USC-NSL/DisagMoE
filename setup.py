@@ -56,6 +56,7 @@ THIRD_PARTY_INCLUDES = [
     f"{THIRD_PARTY_DIR}/cereal/include",
     f"{THIRD_PARTY_DIR}/NVTX/c/include",
     f"{THIRD_PARTY_DIR}/pybind11/include",
+    f"{THIRD_PARTY_DIR}/cutlass/include",
 ]
 
 ext_modules = [
