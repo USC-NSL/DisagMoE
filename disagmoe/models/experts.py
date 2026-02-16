@@ -15,7 +15,7 @@ except ImportError:
     dg = None
 
 class MoEExpertsCUTLASS(torch.nn.Module):
-    """CUTLASS Grouped-GEMM MoE experts for sm < 90)."""
+    """CUTLASS Grouped-GEMM MoE experts for sm < 90."""
 
     def __init__(
         self, 
@@ -40,17 +40,6 @@ class MoEExpertsCUTLASS(torch.nn.Module):
         # One-time hardware probe + tile selection
         from disagmoe.ops.grouped_gemm import ensure_initialized
         ensure_initialized()
-
-        # Pre-allocate output caches
-        total_capacity = self.num_experts * max_batch_size
-        self.cache_up = torch.empty(
-            (total_capacity, self.intermediate_size * 2),
-            dtype=torch.bfloat16, device="cuda",
-        )
-        self.cache_down = torch.empty(
-            (total_capacity, self.hidden_size),
-            dtype=torch.bfloat16, device="cuda",
-        )
 
     def create_weights(self, params_dtype: torch.dtype):
         self.w13_weight = torch.nn.Parameter(
@@ -78,13 +67,25 @@ class MoEExpertsCUTLASS(torch.nn.Module):
         self.act_fn = torch.nn.SiLU(inplace=True)
 
     def forward(self, bs: int, hiddens: torch.Tensor, batch_sizes: torch.Tensor):
+        # During graph capture, these allocations are redirected to graph's memory pool
+        cache_up = torch.empty(
+            (bs, self.intermediate_size * 2),
+            dtype=torch.bfloat16,
+            device=hiddens.device,
+        )
+        down_out = torch.empty(
+            (bs, self.hidden_size),
+            dtype=torch.bfloat16,
+            device=hiddens.device,
+        )
+        
         # Up projection: [tokens, hidden] @ [E, hidden, inter*2] -> [tokens, inter*2]
-        disagmoe_c.grouped_gemm(hiddens, self.w13_weight, self.cache_up, batch_sizes)
-        up = self.cache_up[:bs]
-        up = self.act_fn(up[:, :self.intermediate_size]) * up[:, self.intermediate_size:]
+        disagmoe_c.grouped_gemm(hiddens, self.w13_weight, cache_up, batch_sizes)
+        up = self.act_fn(cache_up[:, :self.intermediate_size]) * cache_up[:, self.intermediate_size:]
+        
         # Down projection: [tokens, inter] @ [E, inter, hidden] -> [tokens, hidden]
-        disagmoe_c.grouped_gemm(up, self.w2_weight, self.cache_down, batch_sizes)
-        return self.cache_down[:bs]
+        disagmoe_c.grouped_gemm(up, self.w2_weight, down_out, batch_sizes)
+        return down_out
 
 class MoEExpertsDeepGemmBF16(torch.nn.Module):
     """DeepGEMM-based BF16 grouped experts."""

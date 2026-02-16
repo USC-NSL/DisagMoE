@@ -404,10 +404,6 @@ class ExpertsExecutor(Executor):
         else:
             expert_cls = MoEExpertsDeepGemmBF16
         
-        # CUTLASS experts currently do not support CUDA graphs.
-        if expert_cls is MoEExpertsCUTLASS and cfg.enable_cuda_graph_expert:
-            raise AssertionError("MoEExpertsCUTLASS does not support CUDA graphs.")
-        
         get_logger().info(f"Using expert class: {expert_cls.__name__}")
         return expert_cls
     
@@ -474,12 +470,15 @@ class ExpertsExecutor(Executor):
     def execute(self, batch: ExpertForwardBatch) -> Tensor:
         assert batch.num_tokens <= get_global_engine_config().max_batch_size_expert, f"batch size {batch.num_tokens} exceeds max batch size {get_global_engine_config().max_batch_size_expert}"
         vid = self.layer_mappings[batch.layer_id]
-        if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
+        
+        # CUDA graph path for DeepGemm and CUTLASS experts
+        if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsCUTLASS]:
             if get_global_engine_config().enable_cuda_graph_expert:
                 outputs = self.cuda_graph_executor.run(vid, batch.data, batch.batch_sizes, batch.m_indices)
             else:
                 outputs = self.execute_eager(batch)
         else:
+            # Serial expert fallback (no CUDA graph)
             operator = self.operators[vid]
             outputs = operator.forward(batch.num_tokens, batch.data, batch.batch_sizes)
         return outputs
@@ -487,9 +486,16 @@ class ExpertsExecutor(Executor):
     @nvtx_range("ExpertsExecute.execute_eager")
     def execute_eager(self, batch: ExpertForwardBatch) -> Tensor:
         # used for capturing CUDA graph for the classes that doesn't do graph at model level
-        assert self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]
         vid = self.layer_mappings[batch.layer_id]
-        outputs = self.operators[vid].forward(batch.num_tokens, batch.data, batch.m_indices)
+        
+        # Dispatch based on whether it's CUTLASS or DeepGemm
+        if self.expert_cls is MoEExpertsCUTLASS:
+            outputs = self.operators[vid].forward(batch.num_tokens, batch.data, batch.batch_sizes)
+        elif self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
+            outputs = self.operators[vid].forward(batch.num_tokens, batch.data, batch.m_indices)
+        else:
+            raise ValueError(f"Unsupported expert class for CUDA graph: {self.expert_cls}")
+        
         return outputs
 
     
