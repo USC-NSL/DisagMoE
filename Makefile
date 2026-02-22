@@ -8,7 +8,7 @@ clean:
 
 .PHONY: pip
 pip:
-	pip install -e .
+	pip install -e . --no-build-isolation
 
 .PHONY: cmake
 cmake:
