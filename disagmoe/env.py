@@ -13,10 +13,12 @@ _env_vars = {
     "LD_LIBRARY_PATH": "",
     "ENABLE_NVTX": "0",
     "DMOE_WEIGHTED_ROUTER_FILE": "",
-    "VLLM_FLASH_ATTN_VERSION": "3",
+    "VLLM_FLASH_ATTN_VERSION": "",
     "TMPDIR": "/tmp/disagmoe/",
 }
 
 ENV_VARS = {
-    k: os.environ.get(k, v) for k, v in _env_vars.items()
+    k: val for k, val in (
+        (k, os.environ.get(k, v)) for k, v in _env_vars.items()
+    ) if val # exclude empty strings
 }
