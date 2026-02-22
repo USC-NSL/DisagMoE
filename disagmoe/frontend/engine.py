@@ -31,7 +31,7 @@ from disagmoe.utils.constants import *
 from disagmoe.utils.placement import ParallelConfig
 from disagmoe.utils.utils import _log_memory_usage
 from disagmoe.models.distributed import set_tensor_model_parallel_config
-from disagmoe.models.experts import MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8
+from disagmoe.models.experts import MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsCUTLASS
 from disagmoe.env import ENV_VARS
 from disagmoe.block_manager.block_manager import BaseBlockManager
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
@@ -381,7 +381,7 @@ class ExpertEngineMixin:
             self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
         self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
 
-        if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
+        if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsCUTLASS]:
             self.expert_executor.build_cuda_graph_executor()
         else:
             self.expert_executor.warmup(self.expert_max_batch_size)
@@ -955,6 +955,26 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         
     def get_node_ip(self) -> str:
         return get_ip()
+
+    def get_worker_identity(self) -> Dict[str, str]:
+        import ray
+
+        runtime_ctx = ray.get_runtime_context()
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        cuda_device = ""
+        if len(cuda_visible) > 0:
+            cuda_device = cuda_visible.split(",")[0].strip()
+        else:
+            accelerator_ids = runtime_ctx.get_accelerator_ids().get("GPU", [])
+            if len(accelerator_ids) > 0:
+                cuda_device = str(accelerator_ids[0])
+
+        return {
+            "host_ip": get_ip(),
+            "ray_node_id": str(runtime_ctx.get_node_id()),
+            "ray_actor_id": str(runtime_ctx.get_actor_id()),
+            "cuda_device": cuda_device,
+        }
         
     def reset(self):
         # for stats usage
