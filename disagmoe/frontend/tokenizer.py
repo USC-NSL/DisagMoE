@@ -1,7 +1,9 @@
 import threading
 import time
 import zmq
-import ray
+import importlib
+
+ray = importlib.import_module("ray")
 
 from typing import List, Dict, Set, Optional
 from disagmoe.frontend.datatypes import SloStat, SamplerStepInfo, BatchDecodeResult, TokenizedRequest
@@ -29,12 +31,12 @@ class Detokenizer:
         
         self.detokenizer_step_counter = 0
         
-    def init_detokenizer_socket(self, detokenizer_port: str) -> str:
+    def init_detokenizer_socket(self, detokenizer_port: str, host_ifname: str = "") -> str:
         context = zmq.Context(2)
         self.detokenizer_socket: zmq.Socket = context.socket(zmq.PULL)
         self.detokenizer_socket.bind(f"tcp://*:{detokenizer_port}")
         
-        local_ip = get_ip()
+        local_ip = get_ip(host_ifname)
         connect_addr = f"tcp://{local_ip}:{detokenizer_port}"
         
         self.thread = threading.Thread(target=self.run)
@@ -134,8 +136,8 @@ class Tokenizer:
         self.worker_queues: List[zmq.Socket] = []
         self.t_submitted: Dict[int, float] = {}
             
-    def init_tokenizer_sockets(self, tokenizer_ports: List[int]) -> List[str]:
-        local_ip = get_ip()
+    def init_tokenizer_sockets(self, tokenizer_ports: List[int], host_ifname: str = "") -> List[str]:
+        local_ip = get_ip(host_ifname)
         context = zmq.Context(self.attn_dp_size)
         connect_addrs = []
         for i in range(self.attn_dp_size):

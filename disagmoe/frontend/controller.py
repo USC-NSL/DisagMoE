@@ -1,10 +1,13 @@
-import ray
-import ray.runtime_env
+import importlib
+
+ray = importlib.import_module("ray")
 import torch
 import os
 import asyncio
 
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+PlacementGroupSchedulingStrategy = importlib.import_module(
+    "ray.util.scheduling_strategies"
+).PlacementGroupSchedulingStrategy
 
 from disagmoe.frontend.ray_helper import init_cluster, get_global_placement_group, InitCoreArgs
 from disagmoe.frontend.engine import Engine, EngineType
@@ -17,7 +20,9 @@ from disagmoe.utils.constants import *
 from disagmoe.scheduler import get_dp_scheduler, DPScheduler
 from disagmoe.config import CacheConfig, ModelConfig, EngineConfig
 from disagmoe.env import ENV_VARS
-from disagmoe.frontend.tokenizer import Tokenizer, Detokenizer
+_tokenizer_mod = importlib.import_module("disagmoe.frontend.tokenizer")
+Tokenizer = _tokenizer_mod.Tokenizer
+Detokenizer = _tokenizer_mod.Detokenizer
 
 from asyncio import Future
 
@@ -36,6 +41,7 @@ class AsyncResult:
         
     async def get(self) -> SloStat:
         await self.wait()
+        assert self.slo_stat is not None
         return self.slo_stat
         
     async def put(self, slo_stat: SloStat):
@@ -46,7 +52,14 @@ class AsyncResult:
 
 class Controller:
     
-    def __init__(self, n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
+    def __init__(
+        self,
+        n_node: int,
+        n_gpu_per_node: int,
+        host_ifname: str = "",
+        expert_wise_schedule: bool = False,
+        enable_nsys: bool = False,
+    ):
         # NOTE(hogura|20241003): assigning n_worker of workers, each worker with 1 gpu
         self.n_worker = n_node * n_gpu_per_node
         self.n_gpu_per_node = n_gpu_per_node
@@ -63,8 +76,9 @@ class Controller:
         self.is_polling = False
         self.enable_nsys = enable_nsys
         self.expert_wise_schedule = expert_wise_schedule
+        self.host_ifname = host_ifname
         
-        self.dp_scheduler: DPScheduler = None
+        self.dp_scheduler: Optional[DPScheduler] = None
         
         initialize_logger("controller")
         init_cluster(self.n_worker, self.n_cpu_per_worker, self.n_gpu_per_worker)
@@ -74,11 +88,11 @@ class Controller:
         self.tokenizer = Tokenizer.remote(attn_dp_size=self.model_config.dp_size)
         
         tokenizer_ports = [TOKENIZER_PORT_BASE + i for i in range(self.model_config.dp_size)]
-        self.tokenizer_addrs = ray.get(self.tokenizer.init_tokenizer_sockets.remote(tokenizer_ports))
+        self.tokenizer_addrs = ray.get(self.tokenizer.init_tokenizer_sockets.remote(tokenizer_ports, self.host_ifname))
         
         self.detokenizer = Detokenizer.remote()
         detokenizer_port = DETOKENIZER_PORT_BASE
-        self.detokenizer_addr = ray.get(self.detokenizer.init_detokenizer_socket.remote(detokenizer_port))
+        self.detokenizer_addr = ray.get(self.detokenizer.init_detokenizer_socket.remote(detokenizer_port, self.host_ifname))
             
     def _create_engines(self):
         pg = get_global_placement_group()
@@ -94,7 +108,7 @@ class Controller:
                 placement_group_bundle_index=bundle_id,
             )
 
-            workers_env= {
+            workers_env: Dict[str, object] = {
                 "env_vars": ENV_VARS,
             }
             
@@ -108,7 +122,7 @@ class Controller:
                 runtime_env=workers_env,
             )(Engine).remote()
             
-            worker_ip = ray.get(worker.get_node_ip.remote())
+            worker_ip = ray.get(worker.get_node_ip.remote(self.host_ifname))
             cur_device_on_worker = device_count.get(worker_ip, 0)
             device_count[worker_ip] = cur_device_on_worker + 1
             if worker_ip not in node_ids:
@@ -133,7 +147,7 @@ class Controller:
 
     # For heterogeneous cluster
     def get_worker_identities(self) -> List[Dict[str, Union[str, int]]]:
-        identities = ray.get([worker.get_worker_identity.remote() for worker in self.workers])
+        identities = ray.get([worker.get_worker_identity.remote(self.host_ifname) for worker in self.workers])
         result: List[Dict[str, Union[str, int]]] = []
         for identity, device_id in zip(identities, self.device_ids):
             item = dict(identity)
@@ -177,7 +191,7 @@ class Controller:
         
         # broadcast the host ips of all devices
         device_2_host = {
-            device_id: ray.get(worker.get_node_ip.remote()) 
+            device_id: ray.get(worker.get_node_ip.remote(self.host_ifname))
                 for worker, device_id in zip(self.all_workers, self.all_device_ids)
         }
         get_logger().info(f"device_id to host_ip: {device_2_host}")
@@ -196,7 +210,7 @@ class Controller:
         for worker, device_id in zip(self.workers, self.device_ids):
             worker_type = determine_worker_type(device_id)
             rank = model_place.rank_at(device_id, num_expert_per_rank=model_config.num_experts_per_rank)
-            if worker_type == EngineType.HYBRID or worker_type == EngineType.TOKENIZER:
+            if worker_type == EngineType.HYBRID or worker_type == EngineType.ATTENTION:
                 assert rank is not None
                 tokenizer_addr = self.tokenizer_addrs[rank]
                 detokenizer_addr = self.detokenizer_addr
@@ -288,10 +302,12 @@ class Controller:
         return req_id
     
     async def process_finished_results(self, results: List[SloStat]):
+        dp_scheduler = self.dp_scheduler
+        assert dp_scheduler is not None
         finished_req_ids = [r.req_id for r in results]
         for req_id in finished_req_ids:
             self.in_flight_reqs.remove(req_id)
-            self.dp_scheduler.del_seq(req_id)
+            dp_scheduler.del_seq(req_id)
         
         # deal with request results
         for result in results:
@@ -315,7 +331,7 @@ class Controller:
     def fetch_sampler_step_infos(self) -> List[SamplerStepInfo]:
         return ray.get(self.detokenizer.fetch_sampler_step_infos.remote())
         
-    async def poll_finished_results(self) -> List[SloStat]:
+    async def poll_finished_results(self) -> None:
         print(f"master start polling request")
         while self.is_polling:
             results = ray.get(self.detokenizer.fetch_finished_results.remote())
@@ -341,10 +357,12 @@ class Controller:
             self._polling_task = None
             
     def put_single_request(self, input_len: int, output_len: int) -> AsyncResult:
+        dp_scheduler = self.dp_scheduler
+        assert dp_scheduler is not None
         req_id = self.get_new_req_id()
         res = AsyncResult(req_id)
         self.request_results[req_id] = res
-        self.dp_scheduler.put_request(
+        dp_scheduler.put_request(
             self.tokenizer.put_single_request.remote,
             req_id, input_len + output_len, input_len, output_len
         )
@@ -405,6 +423,7 @@ class Controller:
         ray.get(tasks)
         
     async def start_scheduler(self):
+        assert self.dp_scheduler is not None
         stats = {self.model_place.attn_dp_rank_at(device_id): 1 << 31 for device_id in self.device_ids if self.model_place.has_attn(device_id)}
         for worker, device_id in zip(self.workers, self.device_ids):
             if self.model_place.has_attn(device_id):
@@ -413,6 +432,7 @@ class Controller:
         self.dp_scheduler.start(stats)
     
     async def stop_scheduler(self):
+        assert self.dp_scheduler is not None
         await self.dp_scheduler.terminate()
 
     def reset(self):
@@ -423,8 +443,19 @@ class Controller:
 
 controller: Controller
 
-def init_controller(n_node: int, n_gpu_per_node: int, expert_wise_schedule=False, enable_nsys=False):
+def init_controller(
+    n_node: int,
+    n_gpu_per_node: int,
+    host_ifname: str = "",
+    expert_wise_schedule: bool = False,
+    enable_nsys: bool = False,
+):
     global controller
-    controller = Controller(n_node, n_gpu_per_node,
-                            expert_wise_schedule=expert_wise_schedule, enable_nsys=enable_nsys)
+    controller = Controller(
+        n_node,
+        n_gpu_per_node,
+        host_ifname=host_ifname,
+        expert_wise_schedule=expert_wise_schedule,
+        enable_nsys=enable_nsys,
+    )
     return controller

@@ -3,11 +3,13 @@ import time
 import torch
 import ctypes
 import socket
+import subprocess
+import re
 
 from disagmoe.utils.logger import get_logger, new_logger
 
 from torch import Tensor
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Optional
 from contextlib import contextmanager
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -26,11 +28,15 @@ def get_nccl_url_from_uid(uid):
     for i in uid:
         h = (h * 256 + i) % 10007
     print("hash result:", h)
-    return f"{os.getenv('MASTER_ADDR')}:{int(os.getenv('MASTER_PORT')) + h}"
+    master_addr = os.environ.get("MASTER_ADDR")
+    master_port = os.environ.get("MASTER_PORT")
+    if master_addr is None or master_port is None:
+        raise RuntimeError("MASTER_ADDR and MASTER_PORT must be set")
+    return f"{master_addr}:{int(master_port) + h}"
 
 class Counter:
 
-    def __init__(self, start: int = 0, end: int = 2e9, step: int = 1) -> None:
+    def __init__(self, start: int = 0, end: int = 2_000_000_000, step: int = 1) -> None:
         self.start = start
         self.counter = start
         self.end = end
@@ -46,11 +52,23 @@ class Counter:
     def reset(self) -> None:
         self.counter = self.start
     
-def get_ip():
+def get_ip(host_ifname: str = ""):
     # adpated from VLLM: https://github.com/vllm-project/vllm/blob/v0.6.0/vllm/utils.py#L484
     host_ip = os.environ.get("HOST_IP", None)
     if host_ip:
         return host_ip
+
+    if host_ifname:
+        try:
+            out = subprocess.check_output(
+                ["ip", "-o", "-4", "addr", "show", "dev", host_ifname],
+                text=True,
+            )
+            m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", out)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
 
     # IP is not set, try to get it from the network interface
 
@@ -115,15 +133,15 @@ class CudaRangeEvent:
         self._end = torch.cuda.Event(enable_timing=enable_timing)
     
     def start(self):
-        self._start.record()
+        self._start.record(torch.cuda.current_stream())
     
     def end(self):
-        self._end.record()
+        self._end.record(torch.cuda.current_stream())
         
     def timing(self):
         return self._start.elapsed_time(self._end)
 
-def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Tensor:
+def make_seqlens_cuda_tensor(lens: Union[List[int], Tensor]) -> Optional[Tensor]:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()
     if len(lens) == 0:
@@ -140,7 +158,7 @@ def get_graph_batch_size(batch_size: int, graph_batch_sizes: List[int]) -> Tuple
             return i, size
     assert False, f"No available graph for batch size={batch_size}"
 
-def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> List[int]:
+def make_seqlens_list(lens: Union[List[int], Tensor], dst=None) -> Optional[List[int]]:
     if isinstance(lens, Tensor):
         lens = lens.view(-1).tolist()
     n = len(lens)

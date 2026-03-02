@@ -163,7 +163,7 @@ def launch(args):
 
     if args.model == "qwen3_235b":
         model_config = qwen3_235b_config
-    if args.model == "qwen3_30b_config":
+    if args.model == "qwen3_30b":
         model_config = qwen3_30b_config
     elif args.model == "mixtral":
         model_config = mixtral_config
@@ -197,6 +197,7 @@ def launch(args):
     master = init_controller(
         cluster_config.n_node, 
         cluster_config.n_gpu, 
+        host_ifname=getattr(args, "host_ifname", ""),
         expert_wise_schedule=args.expert_wise_schedule,
         enable_nsys=args.nsys
     )

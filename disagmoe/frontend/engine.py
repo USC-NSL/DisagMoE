@@ -953,10 +953,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             torch.cuda.synchronize()
             dist.broadcast(self.buffer_meta, 0)
         
-    def get_node_ip(self) -> str:
-        return get_ip()
+    def get_node_ip(self, host_ifname: str = "") -> str:
+        return get_ip(host_ifname)
 
-    def get_worker_identity(self) -> Dict[str, str]:
+    def get_worker_identity(self, host_ifname: str = "") -> Dict[str, str]:
         import ray
 
         runtime_ctx = ray.get_runtime_context()
@@ -970,7 +970,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 cuda_device = str(accelerator_ids[0])
 
         return {
-            "host_ip": get_ip(),
+            "host_ip": get_ip(host_ifname),
             "ray_node_id": str(runtime_ctx.get_node_id()),
             "ray_actor_id": str(runtime_ctx.get_actor_id()),
             "cuda_device": cuda_device,

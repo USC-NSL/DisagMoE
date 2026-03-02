@@ -7,7 +7,7 @@ WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
 
 # model config
 
-MODEL_NAME="qwen3_235b"  # options: mixtral | qwen3_235b
+MODEL_NAME="qwen3_30b"  # options: mixtral | qwen3_235b | qwen3_30b
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
 
@@ -50,6 +50,12 @@ echo "model args: $MODEL_ARGS"
 
 # runtime config
 transport_backend=zmq
+
+HOST_IFNAME="" # leave blank or give the network interface name
+HOST_IFNAME_ARGS=""
+if [ ! -z "$HOST_IFNAME" ]; then
+    HOST_IFNAME_ARGS="--host-ifname $HOST_IFNAME"
+fi
 
 dp_size=$WORLD_SIZE
 ep_size=$WORLD_SIZE
@@ -133,6 +139,7 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
+    $HOST_IFNAME_ARGS \
     $UNIFIED_SCHEDULER_ARGS \
     $SERIAL_GEMM_ARGS \
     $LESS_THAN_SM90_ARGS \
