@@ -8,6 +8,7 @@ from disagmoe.config import (
     CacheConfig,
     mixtral_config,
     qwen3_235b_config,
+    qwen3_30b_config,
     EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
@@ -15,7 +16,7 @@ from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
 from utils import get_parser_base
 import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Sequence, Union
 from dataclasses import dataclass, asdict
 
 import gzip
@@ -93,6 +94,68 @@ def override_model_config_with_args(args, model_config: ModelConfig):
     model_config.num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else model_config.num_kv_heads
     return model_config
 
+# For heterogeneous cluster
+def resolve_expert_allocation(
+    expert_allocation_path: Optional[str],
+    worker_identities: Sequence[Dict[str, Union[str, int]]],
+    total_num_experts: int,
+) -> Optional[List[int]]:
+    if expert_allocation_path is None:
+        return None
+
+    with open(expert_allocation_path, "r") as f:
+        config = json.load(f)
+
+    assert isinstance(config, dict), "Expert allocation config must be a JSON object"
+    allocations = config.get("allocations")
+    assert isinstance(allocations, list), "Expert allocation config must contain a list field 'allocations'"
+
+    num_devices = len(worker_identities)
+    expert_allocation = [0 for _ in range(num_devices)]
+    identity_keys = ["host_ip", "ray_node_id", "ray_actor_id", "cuda_device"]
+
+    for idx, entry in enumerate(allocations):
+        assert isinstance(entry, dict), f"Allocation entry {idx} must be a JSON object"
+        assert "num_experts" in entry, f"Allocation entry {idx} must contain 'num_experts'"
+        assert "cuda_device" in entry, f"Allocation entry {idx} must contain 'cuda_device'"
+        assert ("host_ip" in entry) or ("ray_node_id" in entry) or ("ray_actor_id" in entry), (
+            f"Allocation entry {idx} must include one of 'host_ip', 'ray_node_id', or 'ray_actor_id'"
+        )
+        num_experts = entry["num_experts"]
+        assert type(num_experts) is int and num_experts >= 0, f"Allocation entry {idx} has invalid 'num_experts': {num_experts}"
+
+        selectors = {k: str(entry[k]) for k in identity_keys if k in entry}
+        assert len(selectors) > 0, (
+            f"Allocation entry {idx} must include at least one identity field among {identity_keys}"
+        )
+
+        matched = []
+        for worker in worker_identities:
+            ok = True
+            for k, v in selectors.items():
+                if str(worker.get(k, "")) != v:
+                    ok = False
+                    break
+            if ok:
+                matched.append(worker)
+
+        assert len(matched) == 1, (
+            f"Allocation entry {idx} matched {len(matched)} workers, expected exactly one. "
+            f"selectors={selectors}"
+        )
+
+        device_id = matched[0].get("device_id")
+        assert type(device_id) is int and 0 <= device_id < num_devices, (
+            f"Allocation entry {idx} resolved invalid device_id: {device_id}"
+        )
+        expert_allocation[device_id] += num_experts
+
+    assert sum(expert_allocation) == total_num_experts, (
+        f"Total allocated experts ({sum(expert_allocation)}) must match model config ({total_num_experts})"
+    )
+
+    return expert_allocation
+
 def launch(args):
     # Select transport in C++ backend (default from CLI is zmq)
     c.select_transport(args.transport)
@@ -100,6 +163,8 @@ def launch(args):
 
     if args.model == "qwen3_235b":
         model_config = qwen3_235b_config
+    if args.model == "qwen3_30b_config":
+        model_config = qwen3_30b_config
     elif args.model == "mixtral":
         model_config = mixtral_config
     else:
@@ -127,11 +192,6 @@ def launch(args):
         defrag_lookback_steps=getattr(args, "defrag_lookback_steps"),
     )
 
-    mp = get_model_placement(model_config, cluster_config, args.placement, 
-                             step_attn=args.step_attn, step_expert=args.step_expert, 
-                             zigzag_attn=args.zigzag_attn)
-    # mp = get_model_placement(model_config, cluster_config, "interleave")
-
     global master
 
     master = init_controller(
@@ -140,6 +200,20 @@ def launch(args):
         expert_wise_schedule=args.expert_wise_schedule,
         enable_nsys=args.nsys
     )
+
+    # For heterogeneous cluster
+    worker_identities = master.get_worker_identities()
+    expert_allocation = resolve_expert_allocation(
+        getattr(args, "expert_allocation_path", None),
+        worker_identities,
+        model_config.num_experts,
+    )
+
+    mp = get_model_placement(model_config, cluster_config, args.placement, 
+                             step_attn=args.step_attn, step_expert=args.step_expert, 
+                             zigzag_attn=args.zigzag_attn,
+                             expert_allocation=expert_allocation)
+    # mp = get_model_placement(model_config, cluster_config, "interleave")
 
     cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto")
 
@@ -458,7 +532,8 @@ def get_args():
         print("Warning: number of gpus is not divisible by the number of placement steps")
     
     assert args.ep_size <= args.num_experts, "expert parallel size must be smaller than number of experts"
-    assert args.num_experts % args.ep_size == 0, "number of experts must be divisible by expert parallel size"
+    if getattr(args, "expert_allocation_path", None) is None:
+        assert args.num_experts % args.ep_size == 0, "number of experts must be divisible by expert parallel size"
     
     if args.nsys:
         assert args.profile_dir is None, "cannot enable both nsys and torch profiler"

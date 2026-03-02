@@ -125,9 +125,14 @@ class PlacementBase:
     
     def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
                  step_attn: int = 0, step_expert: int = 0, 
-                 zigzag_attn: bool = True):
+                 zigzag_attn: bool = True, expert_allocation: Optional[List[int]] = None):
         self.model_config = model_config
         self.cluster_config = cluster_config
+        # For heterogeneous cluster
+        self.expert_allocation = expert_allocation
+        if self.expert_allocation is not None:
+            assert sum(self.expert_allocation) == model_config.num_experts, \
+                f"Sum of expert allocation {sum(self.expert_allocation)} must match num_experts {model_config.num_experts}"
         
     @property
     def tp_size(self):
@@ -181,12 +186,19 @@ class PlacementBase:
         """
             default EP worker rank is `expert_id // num_experts_per_rank` for each expert
         """
-        expert_ranks = {
-            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
-                for layer_id, expert_id in product(range(self.num_layers), 
-                                                   range(self.model_config.num_experts))
-        }
-        place.expert_ranks = expert_ranks
+        if self.expert_allocation is not None:
+            expert_ranks = {}
+            for dev_id, layers_experts in place.expert.items():
+                for layer_id, expert_id in layers_experts:
+                    expert_ranks[(layer_id, expert_id)] = dev_id
+            place.expert_ranks = expert_ranks
+        else:
+            expert_ranks = {
+                (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                    for layer_id, expert_id in product(range(self.num_layers),
+                                                    range(self.model_config.num_experts))
+            }
+            place.expert_ranks = expert_ranks
         return place
     
     def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
@@ -332,8 +344,8 @@ class PipelinePlacement(PlacementBase):
     
     def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, 
                  step_attn: int, step_expert: int, 
-                 zigzag_attn: bool = True):
-        super().__init__(model_config, cluster_config)
+                 zigzag_attn: bool = True, expert_allocation: Optional[List[int]] = None):
+        super().__init__(model_config, cluster_config, expert_allocation=expert_allocation)
         self.step_attn = step_attn
         self.step_expert = step_expert
         self.zigzag_attn = zigzag_attn
@@ -407,12 +419,19 @@ class PipelinePlacement(PlacementBase):
     
     @override
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
-        expert_ranks = {
-            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
-                for layer_id, expert_id in product(range(self.num_layers),
-                                                   range(self.model_config.num_experts))
-        }
-        place.expert_ranks = expert_ranks
+        if self.expert_allocation is not None:
+            expert_ranks = {}
+            for dev_id, layers_experts in place.expert.items():
+                for layer_id, expert_id in layers_experts:
+                    expert_ranks[(layer_id, expert_id)] = dev_id
+            place.expert_ranks = expert_ranks
+        else:
+            expert_ranks = {
+                (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                    for layer_id, expert_id in product(range(self.num_layers),
+                                                    range(self.model_config.num_experts))
+            }
+            place.expert_ranks = expert_ranks
         return place
         
     @override
@@ -438,8 +457,8 @@ class PipelinePlacement(PlacementBase):
 
 class ColocatePlacement(PlacementBase):
     
-    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig):
-        super().__init__(model_config, cluster_config)
+    def __init__(self, model_config: ModelConfig, cluster_config: ClusterConfig, expert_allocation: Optional[List[int]] = None):
+        super().__init__(model_config, cluster_config, expert_allocation=expert_allocation)
         
     def _solve(self, n_layer: int, n_expert: int, n_node: int, n_gpu_per_node: int) -> ModelPlacement:
         num_devices = n_node * n_gpu_per_node
@@ -451,9 +470,21 @@ class ColocatePlacement(PlacementBase):
         for i in range(num_devices):
             attns[i].extend(all_layers)
         
-        for i in range(n_expert):
-            for j in all_layers:
-                experts[i // self.model_config.num_experts_per_rank].append((j, i))
+        if self.expert_allocation is not None:
+            assert len(self.expert_allocation) <= num_devices, \
+                f"Expert allocation size {len(self.expert_allocation)} exceeds number of devices {num_devices}"
+            
+            expert_id = 0
+            for dev_id, count in enumerate(self.expert_allocation):
+                for _ in range(count):
+                    for layer_id in all_layers:
+                        experts[dev_id].append((layer_id, expert_id))
+                    expert_id += 1
+            assert expert_id == n_expert
+        else:
+            for i in range(n_expert):
+                for j in all_layers:
+                    experts[i // self.model_config.num_experts_per_rank].append((j, i))
         
         device_groups = {
             i: [i] for i in range(num_devices)
@@ -466,12 +497,19 @@ class ColocatePlacement(PlacementBase):
         
     @override
     def _update_expert_rank(self, place: ModelPlacement) -> ModelPlacement:
-        expert_ranks = {
-            (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
-                for layer_id, expert_id in product(range(self.num_layers),
-                                                   range(self.model_config.num_experts))
-        }
-        place.expert_ranks = expert_ranks
+        if self.expert_allocation is not None:
+            expert_ranks = {}
+            for dev_id, layers_experts in place.expert.items():
+                for layer_id, expert_id in layers_experts:
+                    expert_ranks[(layer_id, expert_id)] = dev_id
+            place.expert_ranks = expert_ranks
+        else:
+            expert_ranks = {
+                (layer_id, expert_id): expert_id // self.model_config.num_experts_per_rank
+                    for layer_id, expert_id in product(range(self.num_layers),
+                                                    range(self.model_config.num_experts))
+            }
+            place.expert_ranks = expert_ranks
         return place
         
     @override
@@ -497,10 +535,15 @@ def get_model_placement(
     else:
         raise NotImplementedError()
     
+    placement_kwargs = dict(kwargs)
+    placement_kwargs.pop("expert_allocation", None)
+
     if strategy == "pipeline":
-        solver = cls(model_config, cluster_config, *args, **kwargs)
+        solver = cls(model_config, cluster_config, *args, **placement_kwargs)
     elif strategy == "colocate":
-        solver = cls(model_config, cluster_config)
+        solver = cls(model_config, cluster_config, expert_allocation=kwargs.get("expert_allocation", None))
+    else:
+        solver = cls(model_config, cluster_config, *args, **placement_kwargs)
         
     place: ModelPlacement = solver.solve()
     

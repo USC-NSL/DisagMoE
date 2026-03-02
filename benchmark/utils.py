@@ -46,6 +46,7 @@ def add_runtime_arguments(parser: ArgumentParser):
 
 def add_placement_arguments(parser: ArgumentParser):
     parser.add_argument("--placement", type=str, default="colocate", help="placement strategy")
+    parser.add_argument("--expert-allocation-path", type=str, default=None, help="path to JSON file specifying number of experts per node per GPU")
     parser.add_argument("--zigzag-attn", action="store_true", default=False, help="enable zigzag attention placment")
     parser.add_argument("--step-attn", type=int, default=1, help="number of steps in attention placement")
     parser.add_argument("--step-expert", type=int, default=1, help="number of steps in expert placement")

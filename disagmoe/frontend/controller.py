@@ -130,6 +130,16 @@ class Controller:
     @property
     def all_device_ids(self):
         return self.device_ids
+
+    # For heterogeneous cluster
+    def get_worker_identities(self) -> List[Dict[str, Union[str, int]]]:
+        identities = ray.get([worker.get_worker_identity.remote() for worker in self.workers])
+        result: List[Dict[str, Union[str, int]]] = []
+        for identity, device_id in zip(identities, self.device_ids):
+            item = dict(identity)
+            item["device_id"] = int(device_id)
+            result.append(item)
+        return result
     
     def get_pairwise_nccl_ids(
             self, model_place: ModelPlacement

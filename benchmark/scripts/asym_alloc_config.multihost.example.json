@@ -1,0 +1,24 @@
+{
+  "allocations": [
+    {
+      "host_ip": "10.0.0.1",
+      "cuda_device": "0",
+      "num_experts": 2
+    },
+    {
+      "host_ip": "10.0.0.1",
+      "cuda_device": "1",
+      "num_experts": 2
+    },
+    {
+      "host_ip": "10.0.0.2",
+      "cuda_device": "0",
+      "num_experts": 2
+    },
+    {
+      "host_ip": "10.0.0.2",
+      "cuda_device": "3",
+      "num_experts": 2
+    }
+  ]
+}

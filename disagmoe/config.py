@@ -105,3 +105,14 @@ qwen3_235b_config = ModelConfig(
     dtype = torch.bfloat16,
     top_k = 8,
 )
+
+qwen3_30b_config = ModelConfig(
+    hidden_size = 2048,
+    num_layers = 48,
+    num_heads = 32,
+    num_kv_heads = 4,
+    num_experts = 128,
+    intermediate_size = 768,
+    dtype = torch.bfloat16,
+    top_k = 8,
+)

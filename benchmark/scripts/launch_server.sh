@@ -31,10 +31,22 @@ if [ ! -z $MOE_LINEAR_QUANT ]; then
     MODEL_ARGS="$MODEL_ARGS --moe-linear-quant $MOE_LINEAR_QUANT"
 fi
 
-echo "model args: $MODEL_ARGS"
-
 # placement config
 placement="colocate"
+
+# Asymmetric Deployment Macro
+ENABLE_ASYMMETRIC_DEPLOYMENT=0
+EXPERT_ALLOCATION_FILE="benchmark/scripts/asym_alloc_config.json"
+
+if [ "$ENABLE_ASYMMETRIC_DEPLOYMENT" -eq 1 ]; then
+    if [ ! -f "$EXPERT_ALLOCATION_FILE" ]; then
+        echo "expert allocation file not found: $EXPERT_ALLOCATION_FILE"
+        exit 1
+    fi
+    MODEL_ARGS="$MODEL_ARGS --expert-allocation-path $EXPERT_ALLOCATION_FILE"
+fi
+
+echo "model args: $MODEL_ARGS"
 
 # runtime config
 transport_backend=zmq
@@ -55,7 +67,7 @@ if [ $placement == "colocate" ]; then
     ep_size=$WORLD_SIZE
 fi
 
-LESS_THAN_SM90=0 # Set to 1 for less than sm90 GPUs like A100, to disable deep_gemm
+LESS_THAN_SM90=1 # Set to 1 for less than sm90 GPUs like A100, to disable deep_gemm
 ENABLE_CUDA_GRAPH_ATTN=1
 ENABLE_CUDA_GRAPH_EXPERT=1
 ENABLE_TORCH_PROFILE=0
