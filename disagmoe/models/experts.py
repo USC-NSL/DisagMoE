@@ -5,7 +5,7 @@ from vllm.model_executor.layers.quantization.base_config import QuantizationConf
 from disagmoe.models.linear import ReplicatedLinear
 from disagmoe.ops.quantization import sglang_per_token_group_quant_fp8
 from disagmoe.utils.logger import get_logger
-from disagmoe.ops.cuda_graph import fused_copy_and_pad_cuda
+
 import disagmoe_c
 
 # Optional import for deep_gemm (only available for sm90+)
@@ -15,7 +15,12 @@ except ImportError:
     dg = None
 
 class MoEExpertsCUTLASS(torch.nn.Module):
-    """CUTLASS Grouped-GEMM MoE experts for sm < 90."""
+    """CUTLASS Grouped-GEMM MoE experts for sm < 90.
+
+    Each instance owns two CutlassGemmRunner objects (one for w13, one for w2).
+    forward() calls runner.setup_meta() + runner.run() which are both
+    graph-capturable (static launch configs, fixed buffer addresses).
+    """
 
     def __init__(
         self, 
@@ -40,6 +45,9 @@ class MoEExpertsCUTLASS(torch.nn.Module):
         # One-time hardware probe + tile selection
         from disagmoe.ops.grouped_gemm import ensure_initialized
         ensure_initialized()
+        # Create per-weight GEMM runners (no global map, explicit ownership)
+        self.w13_runner = disagmoe_c.CutlassGemmRunner(self.w13_weight, max_batch_size)
+        self.w2_runner = disagmoe_c.CutlassGemmRunner(self.w2_weight, max_batch_size)
 
     def create_weights(self, params_dtype: torch.dtype):
         self.w13_weight = torch.nn.Parameter(
@@ -80,11 +88,13 @@ class MoEExpertsCUTLASS(torch.nn.Module):
         )
         
         # Up projection: [tokens, hidden] @ [E, hidden, inter*2] -> [tokens, inter*2]
-        disagmoe_c.grouped_gemm(hiddens, self.w13_weight, cache_up, batch_sizes)
+        self.w13_runner.setup_meta(hiddens, cache_up, batch_sizes)
+        self.w13_runner.run()
         up = self.act_fn(cache_up[:, :self.intermediate_size]) * cache_up[:, self.intermediate_size:]
         
         # Down projection: [tokens, inter] @ [E, inter, hidden] -> [tokens, hidden]
-        disagmoe_c.grouped_gemm(up, self.w2_weight, down_out, batch_sizes)
+        self.w2_runner.setup_meta(up, down_out, batch_sizes)
+        self.w2_runner.run()
         return down_out
 
 class MoEExpertsDeepGemmBF16(torch.nn.Module):

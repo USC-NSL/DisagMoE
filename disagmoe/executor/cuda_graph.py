@@ -12,6 +12,7 @@ from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch, make_expert_dummy_inputs
+from disagmoe.models.experts import MoEExpertsCUTLASS
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda, fused_copy_and_pad_cuda
 from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.utils.tensor_utils import (
@@ -245,6 +246,7 @@ class CUDAGraphExpertsExecutor:
         self.local_to_global_expert_rank = local_to_global_expert_rank
         self.global_to_local_expert_rank = global_to_local_expert_rank
         self.experts_executor = experts_executor
+        self.expert_cls = experts_executor.expert_cls
 
         self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
         
@@ -284,12 +286,20 @@ class CUDAGraphExpertsExecutor:
         return graph_bsz
     
     def cuda_graph_preprocess(self, hidden_states: torch.Tensor, batch_sizes: torch.Tensor, m_indices: torch.Tensor, bucket_size: int):
-        # copy stuff into cudagraph region
-        fused_copy_and_pad_cuda(
-            hidden_states, batch_sizes, m_indices,
-            self.static_input_hiddens, self.static_input_batch_sizes, self.static_input_m_indices,
-            bucket_size,
-        )
+        num_tokens = hidden_states.shape[0]
+        if self.expert_cls is MoEExpertsCUTLASS:
+            # CUTLASS: setup_cutlass_gemm_meta is captured inside the graph
+            # and reads batch_sizes from the static buffer directly.
+            # We only need simple D2D copies — no m_indices, no fused kernel.
+            self.static_input_hiddens[:num_tokens].copy_(hidden_states)
+            self.static_input_batch_sizes.copy_(batch_sizes)
+        else:
+            # DeepGEMM: fused kernel copies hiddens + batch_sizes + m_indices
+            fused_copy_and_pad_cuda(
+                hidden_states, batch_sizes, m_indices,
+                self.static_input_hiddens, self.static_input_batch_sizes, self.static_input_m_indices,
+                bucket_size,
+            )
     
     def _get_bucket_by_num_tokens(self, batch_size: int):
         for size in self.graph_batch_sizes:

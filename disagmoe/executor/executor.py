@@ -351,6 +351,7 @@ class ExpertsExecutor(Executor):
         self.cuda_graph_executor: CUDAGraphExpertsExecutor = None
         
         self.token_m_indices_gdr = GdrDoubleBuffer(get_global_engine_config().max_batch_size_expert, dtype=torch.int32, device="cuda")
+        self.batch_sizes_gdr = GdrDoubleBuffer(self.model_config.num_experts_per_rank, dtype=torch.int64, device="cuda")
         
         self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank,), dtype=torch.int64, device="cuda")
         self.static_m_indices = torch.zeros((get_global_engine_config().max_batch_size_expert,), dtype=torch.int32, device="cuda")
@@ -426,11 +427,17 @@ class ExpertsExecutor(Executor):
             batch_sizes = [batch_sizes[i] for i in self.local_to_global_expert_rank]
             
         if self.expert_cls is MoEExpertsCUTLASS:
-            batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
-            batch_sizes = torch.tensor(
-                [batch_sizes[i] for i in self.local_to_global_expert_rank],
-                dtype=torch.int64, device="cuda"
-            )
+            batch_sizes_list = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
+            batch_sizes_list = [batch_sizes_list[i] for i in self.local_to_global_expert_rank]
+            if use_gdrcopy_optimization:
+                batch_sizes_gdr_handle = self.batch_sizes_gdr.get_one_handle()
+                batch_sizes_gdr_handle.copy_from_host_int64(batch_sizes_list)
+                batch_sizes = batch_sizes_gdr_handle.tensor[:len(batch_sizes_list)]
+            else:
+                batch_sizes = torch.tensor(
+                    batch_sizes_list,
+                    dtype=torch.int64, device="cuda"
+                )
         
         # DeepGEMM-based experts (both BF16 and FP8) expect m_indices
         if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:

@@ -163,8 +163,14 @@ PYBIND11_MODULE(disagmoe_c, m) {
     m.def("init_grouped_gemm", &disagmoe::init_grouped_gemm,
           py::arg("device_id"),
           "Probe hardware and select suitable CUTLASS tile config. Returns description string.");
-    m.def("grouped_gemm", &disagmoe::grouped_gemm,
-          py::arg("a"), py::arg("b"), py::arg("c"), py::arg("batch_sizes"),
-          "Grouped GEMM: C[i] = A_slice[i] @ B[i] for each expert");
 
+    py::class_<disagmoe::CutlassGemmRunner, std::shared_ptr<disagmoe::CutlassGemmRunner>>(m, "CutlassGemmRunner")
+        .def(py::init<torch::Tensor, int64_t>(),
+             py::arg("b_weight"), py::arg("max_tokens"),
+             "Create a CUTLASS grouped GEMM runner for a weight tensor.")
+        .def("setup_meta", &disagmoe::CutlassGemmRunner::setup_meta,
+             py::arg("a"), py::arg("c"), py::arg("batch_sizes"),
+             "Update CUTLASS metadata arrays on device. Graph-capturable.")
+        .def("run", &disagmoe::CutlassGemmRunner::run,
+             "Launch CUTLASS grouped GEMM kernel. setup_meta() must be called first.");
 }
