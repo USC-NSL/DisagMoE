@@ -213,7 +213,7 @@ class MoEAttention(nn.Module):
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
         residual: torch.Tensor = None,
-        request_ids: Optional[List[int]] = None,
+        request_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states

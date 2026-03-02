@@ -85,6 +85,7 @@ class AttnExecutor(Executor):
         self.device = "cuda"
         self.block_mgr: BaseBlockManager = None
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
+        self.has_profile_gating = gate_profile_bytes is not None and len(gate_profile_bytes) > 0
         
         self.init_model()
         self.init_kv_cache()
@@ -223,7 +224,7 @@ class AttnExecutor(Executor):
             hidden_states = torch.randn((batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype)
             operator = self.operators[layer_id]
             # Use dummy request IDs to satisfy profile-driven gating during profiling.
-            dummy_request_ids = list(range(batch_size))
+            dummy_request_ids = torch.arange(batch_size, dtype=torch.int64, device=self.device) if self.has_profile_gating else None
             operator.forward(positions, hidden_states, kv_cache, attn_metadata, request_ids=dummy_request_ids)
             
     def determine_kv_cache_blocks(self) -> int:
@@ -274,8 +275,10 @@ class AttnExecutor(Executor):
         positions: Tensor, 
         hidden_states: Tensor, 
         attn_metadata: FlashAttentionMetadata, 
-        request_ids: Optional[List[int]] = None
+        request_ids = None
     ) -> Tuple[Tensor, Tensor, Tensor]:
+        if self.has_profile_gating and request_ids is not None and not isinstance(request_ids, Tensor):
+            request_ids = torch.tensor(request_ids, dtype=torch.int64, device="cuda")
         
         vid = self.layer_mappings[layer_id]
         outputs, topk_weights, topk_ids = self.operators[vid].forward(
@@ -298,7 +301,10 @@ class AttnExecutor(Executor):
         )
     
     def execute_graph(self, batch: AttentionForwardBatch) -> AttentionForwardResult:
-        staging_outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata)
+        req_ids_tensor = None
+        if self.has_profile_gating and batch.req_ids is not None:
+            req_ids_tensor = torch.tensor(batch.req_ids, dtype=torch.int64, device="cuda")
+        staging_outputs, staging_topk_weights, staging_topk_ids = self.cuda_graph_executor.run(batch.layer_id, batch.positions, batch.data, batch.metadata, request_ids=req_ids_tensor)
         outputs = torch.empty_like(staging_outputs)
         
         if batch.expert_ids_buffer is not None:
@@ -513,6 +519,7 @@ class ParallelAttnExecutor(AttnExecutor):
         self.type = ExecutorType.ATTENTION_EXEC
         self.cache_config = cache_config
         self.gate_profile_bytes: Optional[bytes] = gate_profile_bytes
+        self.has_profile_gating = gate_profile_bytes is not None and len(gate_profile_bytes) > 0
         # Build quantization config for attention QKV if requested
         qkv_quant_config = None
         try:

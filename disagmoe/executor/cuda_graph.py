@@ -31,6 +31,8 @@ class CUDAGraphAttnExecutor:
         self.cache_config = cache_config
         self.attn_executor = attn_executor
         self.fused_copy = True
+        self.has_profile_gating = getattr(attn_executor, 'gate_profile_bytes', None) is not None \
+            and len(attn_executor.gate_profile_bytes) > 0
         
     def create_cuda_graph_buffers(self):
         assert get_global_engine_config().enable_cuda_graph_attn
@@ -46,6 +48,8 @@ class CUDAGraphAttnExecutor:
         self.static_slot_mapping = torch.zeros((batch_size, ), dtype=torch.long, device="cuda")
         
         self.static_positions = torch.zeros(batch_size, dtype=torch.long, device="cuda")
+        if self.has_profile_gating:
+            self.static_request_ids = torch.zeros(batch_size, dtype=torch.int64, device="cuda")
 
         self.static_batch_info = torch.zeros((batch_size + batch_size + (batch_size + 1) + (batch_size + 1)), dtype=torch.int32, device="cuda")
         static_batch_info_splits = self.static_batch_info.split([batch_size, batch_size, batch_size + 1, batch_size + 1])
@@ -121,15 +125,19 @@ class CUDAGraphAttnExecutor:
             graph_attn_meta = self.prepare_metadata_for_capture(attn_meta)
             bsz_start_time = time.perf_counter()
             free_memory_before, _ = torch.cuda.mem_get_info()
+            if self.has_profile_gating:
+                self.static_request_ids[ : graph_batch_size].copy_(
+                    torch.arange(graph_batch_size, dtype=torch.int64, device="cuda")
+                )
             for layer_id in self.model_config.layer_ids:
                 graph = graph_list[layer_id]
 
                 def run_once() -> Tuple[Tensor, Tensor, Tensor]:
-                    # Provide dummy request IDs from the synthetic batch to satisfy profile-driven gating.
+                    req_ids = self.static_request_ids[ : graph_batch_size] if self.has_profile_gating else None
                     return self.attn_executor.execute_eager(
                         layer_id, self.static_positions[ : graph_batch_size], 
                         self.static_input[ : graph_batch_size], graph_attn_meta,
-                        request_ids=batch.req_ids
+                        request_ids=req_ids
                     )
 
                 # warmup
@@ -167,7 +175,8 @@ class CUDAGraphAttnExecutor:
             for bs in self.graph_batch_sizes:
                 batch = make_attention_dummy_batch(0, bs, self.model_config.hidden_size, self.model_config.max_seq_len)
                 meta = self.attn_executor.block_mgr.pack_flash_attn_metadata(batch.to_metadata_c(), batch, dummy_cache=True)
-                hiddens, expert_weights, expert_ids = self.run(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta)
+                request_ids = torch.arange(bs, dtype=torch.int64, device="cuda") if self.has_profile_gating else None
+                hiddens, expert_weights, expert_ids = self.run(layer_id, batch.seq_lens_tensor.to(torch.long), batch.data, meta, request_ids=request_ids)
         torch.cuda.synchronize()
 
     def _get_bucket_by_num_tokens(self, batch_size: int):
@@ -209,7 +218,7 @@ class CUDAGraphAttnExecutor:
             self.static_context_lens[ : num_tokens].copy_(meta.context_lens_tensor)
             self.static_seq_start_loc[ : num_tokens + 1].copy_(meta.seq_start_loc)
 
-    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata) -> Tuple[Tensor, Tensor, Tensor]:
+    def run(self, layer_id: int, positions: torch.Tensor, hidden_states: torch.Tensor, meta: FlashAttentionMetadata, request_ids: torch.Tensor = None) -> Tuple[Tensor, Tensor, Tensor]:
         meta.use_cuda_graph = True
         
         try:
@@ -217,6 +226,8 @@ class CUDAGraphAttnExecutor:
             batch_size = self._get_bucket_by_num_tokens(num_tokens)
             
             self.cuda_graph_preprocess(hidden_states, positions, meta, batch_size)
+            if self.has_profile_gating and request_ids is not None:
+                self.static_request_ids[ : num_tokens].copy_(request_ids)
             self.graphs[batch_size][layer_id].replay()
 
             outputs, topk_weights, topk_ids = self.static_outputs[batch_size][layer_id]
