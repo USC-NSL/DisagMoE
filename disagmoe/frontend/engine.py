@@ -842,9 +842,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     idle_conunt = 0
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
                     forward_batch = self.preprocess_batch(batch_wrapper)
-                    if forward_batch is None:
-                        pass
-                    else:
+                    if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
                         result_queue.append((forward_batch, result)) # forward_batch.copy?
                     self.step_profile(batch.metadata.num_tokens())

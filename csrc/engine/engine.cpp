@@ -56,6 +56,7 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
         }
         out_channels.push_back(channel);
     }
+
     ncclGroupStart();
     for (size_t i = 0; i < n_in; i++) {
         in_channels[i]->initialize();
@@ -64,49 +65,19 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
         out_channels[i]->initialize();
     }
     ncclGroupEnd();
-
     cudaDeviceSynchronize();
+    // NOTE: Warmup (pairwise ncclSend/ncclRecv in a single ncclGroup) was removed
+    // because it caused a non-deterministic hang (~90% repro rate on 2-node cluster).
+    // Root cause: the warmup grouped ncclSend/ncclRecv ops across multiple independent
+    // 2-rank communicators in one ncclGroupStart/End block. Each rank's operation ordering
+    // differed (e.g., Rank 0: Send→1 first, Rank 1: Send→0 first), violating NCCL's
+    // Group Operation Ordering Semantics — which require identical issuing order across
+    // all GPUs, even across different communicators within the same group call. This caused
+    // NCCL-internal circular dependencies during GPU kernel execution, manifesting as a
+    // non-deterministic hang at cudaDeviceSynchronize (ncclGroupEnd returns 0 because it
+    // only enqueues work). See docs/investigate_hang.md for full analysis.
 
-    // warmup the NCCL communication
-    std::vector<int*> send_bufs(n_in);
-    std::vector<int*> recv_bufs(n_out);
-    for (size_t i = 0; i < n_out; i++) {
-        cudaMalloc(&send_bufs[i], 32 * sizeof(int));
-        cudaMemset(send_bufs[i], 0, 32 * sizeof(int));
-    }
-    for (size_t i = 0; i < n_in; i++) {
-        cudaMalloc(&recv_bufs[i], 32 * sizeof(int));
-    }
-
-    ncclGroupStart();
-
-    for (size_t i = 0; i < n_out; i++) {
-        int peer_id = outbound_peer_ids[i];
-        if (peer_id == local_id) {
-            continue;
-        }
-        out_channels[i]->warmup_send(send_bufs[i], 32);
-    }
-    for (size_t i = 0; i < n_in; i++) {
-        int peer_id = inbound_peer_ids[i];
-        if (peer_id == local_id) {
-            continue;
-        }
-        in_channels[i]->warmup_recv(recv_bufs[i], 32);
-    }
-
-    ncclGroupEnd();
-
-    cudaDeviceSynchronize();
-
-    for (size_t i = 0; i < n_out; i++) {
-        cudaFree(send_bufs[i]);
-    }
-    for (size_t i = 0; i < n_in; i++) {
-        cudaFree(recv_bufs[i]);
-    }
-
-    DMOE_LOG(INFO) << "Rank " <<local_id << ": All NCCL channels initialized" << LEND;
+    DMOE_LOG(INFO) << "Rank " << local_id << ": All NCCL channels initialized" << LEND;
     return std::make_tuple(in_channels, out_channels);
 }
 

@@ -130,9 +130,9 @@ class ProfileDrivenRouter:
             + mapped_tok
         )
 
-        topk_ids = self.routing_data[flat_idx].to(dtype=torch.int64)
+        topk_ids = self.routing_data[flat_idx].to(dtype=torch.int32)
         topk_weights = torch.full(
-            (topk_ids.shape[0], top_k), self.uniform_weight, device=device, dtype=dtype
+            (topk_ids.shape[0], top_k), self.uniform_weight, device=device, dtype=torch.float32
         )
 
         return topk_weights, topk_ids

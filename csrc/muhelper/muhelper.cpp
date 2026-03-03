@@ -159,7 +159,8 @@ void MuDispatcher::run() {
     cudaDeviceSynchronize();
     const auto &make_endpoint = disagmoe::mq_endpoint_factory();
     for (int i = 0; i < this->channels.size(); i ++) {
-        this->peer_mq[i]->connect(make_endpoint(this->channels[i]->get_peer_id(), true, -1));
+        auto endpoint = make_endpoint(this->channels[i]->get_peer_id(), true, -1);
+        this->peer_mq[i]->connect(endpoint);
     }
 
     // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
@@ -488,12 +489,12 @@ void MuPool::run() {
         DMOE_LOG(WARNING) << this->device_id << " has no channels, exit MuPool." << LEND;
         return;
     }
-    this->mq->bind(disagmoe::mq_endpoint_factory()(this->device_id, true, -1));
+    auto pool_endpoint = disagmoe::mq_endpoint_factory()(this->device_id, true, -1);
+    this->mq->bind(pool_endpoint);
 
     auto last = t_now();
     auto start = last;
 
-    // DMOE_LOG(DEBUG) << "Running pool@" << this->device_id << LEND;
     while (!this->end_flag) {
         std::vector<MuPoolPendingRecv> pending;
         pending.reserve(MU_POOL_GROUP_RECV_LIMIT);

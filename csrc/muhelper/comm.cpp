@@ -11,7 +11,11 @@
 #include <cstring>
 #include <cstdlib>
 
-static std::shared_ptr<std::mutex> global_mutex = std::make_shared<std::mutex>();
+// static std::shared_ptr<std::mutex> global_mutex = std::make_shared<std::mutex>();
+// NOTE: global_mutex was removed — it caused deadlocks between MuDispatcher (ncclSend)
+// and MuPool (ncclRecv) when NCCL's lazy P2P transport setup required both sides to
+// call their respective ops simultaneously. Each NcclChannel has its own ncclComm_t
+// and cudaStream_t, so concurrent ops on different channels are safe per NCCL docs.
 
 NcclChannel::NcclChannel(int party_local, int party_other, ncclUniqueId unique_id, cudaStream_t stream): 
     Channel::Channel(party_local, party_other), unique_id(unique_id) {
@@ -51,7 +55,6 @@ void NcclChannel::send_raw(uintptr_t data_ptr, const BatchMetadata& metadata) {
     // DMOE_LOG(INFO) << "NCCL sending: " << local << " " << other << LEND;
     tx_range _{"NcclChannel::send"};
     void* data = reinterpret_cast<void*>(data_ptr);
-    std::lock_guard<std::mutex> lock(*global_mutex);
     NCCLCHECK(ncclSend(
         data, 
         /*count=*/ metadata.num_element(),
@@ -67,7 +70,6 @@ void NcclChannel::send_raw(uintptr_t data_ptr, const BatchMetadata& metadata) {
 void NcclChannel::recv_raw(uintptr_t data_ptr, const BatchMetadata& metadata) {
     tx_range _{"NcclChannel::recv"};
     void* data = reinterpret_cast<void*>(data_ptr);
-    std::lock_guard<std::mutex> lock(*global_mutex);
     NCCLCHECK(ncclRecv(
         data,
         /*count=*/ metadata.num_element(),
