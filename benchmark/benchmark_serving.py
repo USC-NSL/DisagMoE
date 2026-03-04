@@ -9,6 +9,7 @@ from disagmoe.config import (
     mixtral_config,
     qwen3_235b_config,
     qwen3_30b_config,
+    gptoss_120b_config,
     EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
@@ -163,8 +164,10 @@ def launch(args):
 
     if args.model == "qwen3_235b":
         model_config = qwen3_235b_config
-    if args.model == "qwen3_30b":
+    elif args.model == "qwen3_30b":
         model_config = qwen3_30b_config
+    elif args.model == "gptoss_120b":
+        model_config = gptoss_120b_config
     elif args.model == "mixtral":
         model_config = mixtral_config
     else:

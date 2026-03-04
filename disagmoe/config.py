@@ -116,3 +116,14 @@ qwen3_30b_config = ModelConfig(
     dtype = torch.bfloat16,
     top_k = 8,
 )
+
+gptoss_120b_config = ModelConfig(
+    hidden_size = 2880,
+    num_layers = 36,
+    num_heads = 30, # original 36
+    num_kv_heads = 6, # original 8
+    num_experts = 128,
+    intermediate_size = 2880,
+    dtype = torch.bfloat16,
+    top_k = 4,
+)

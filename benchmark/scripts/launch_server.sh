@@ -1,13 +1,13 @@
 #!/usr/bin/bash
 
 # cluster config
-N_NODE=1
-N_GPU_PER_NODE=4
+N_NODE=4
+N_GPU_PER_NODE=2
 WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
 
 # model config
 
-MODEL_NAME="qwen3_30b"  # options: mixtral | qwen3_235b | qwen3_30b
+MODEL_NAME="gptoss_120b"  # options: mixtral | qwen3_235b | gptoss_120b
 ATTN_QKV_QUANT="none" # options: none | fp8
 MOE_LINEAR_QUANT="none" # options: none | fp8
 
