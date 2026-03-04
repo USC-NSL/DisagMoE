@@ -75,12 +75,22 @@ do { \
 template <class T>
 void _permute_tokens_cuda(T *dest, T *src, int *mappings, int num_input_tokens, int num_output_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
-    assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
+    assert(hidden_size > 0);
     constexpr int num_threads = 128;
     int topk = num_output_tokens / num_input_tokens;
     dim3 block(num_threads, 1, 1);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    LAUNCH_PERMUTE_KERNEL_(2048);
+    if (hidden_size % 2048 == 0) {
+        LAUNCH_PERMUTE_KERNEL_(2048);
+    } else if (hidden_size % 960 == 0) {
+        LAUNCH_PERMUTE_KERNEL_(960);
+    } else if (hidden_size % 512 == 0) {
+        LAUNCH_PERMUTE_KERNEL_(512);
+    } else if (hidden_size % 256 == 0) {
+        LAUNCH_PERMUTE_KERNEL_(256);
+    } else {
+        LAUNCH_PERMUTE_KERNEL_(128);
+    }
 }
 
 // This kernel is used to permute the tokens in the hidden states
@@ -130,11 +140,21 @@ do { \
 template <class T>
 void _apply_weights_and_permute_tokens_cuda(T *dest, T *src, float *weights, int *mappings, int num_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
-    assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
+    assert(hidden_size > 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(2048);
+    if (hidden_size % 2048 == 0) {
+        LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(2048);
+    } else if (hidden_size % 960 == 0) {
+        LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(960);
+    } else if (hidden_size % 512 == 0) {
+        LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(512);
+    } else if (hidden_size % 256 == 0) {
+        LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(256);
+    } else {
+        LAUNCH_APPLY_WEIGHTS_AND_PERMUTE_KERNEL_(128);
+    }
 }
 
 torch::Tensor apply_weights_and_permute_tokens_cuda_dispatch(torch::Tensor tokens, torch::Tensor weights, torch::Tensor mappings) {
@@ -177,11 +197,21 @@ do { \
 template <class T>
 void _gather_tokens_cuda(T *dest, uintptr_t *src_ptr, int num_tokens, int hidden_size) {
     static_assert(sizeof(T) == 2);
-    assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
+    assert(hidden_size > 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    LAUNCH_GATHER_KERNEL_(2048);
+    if (hidden_size % 2048 == 0) {
+        LAUNCH_GATHER_KERNEL_(2048);
+    } else if (hidden_size % 960 == 0) {
+        LAUNCH_GATHER_KERNEL_(960);
+    } else if (hidden_size % 512 == 0) {
+        LAUNCH_GATHER_KERNEL_(512);
+    } else if (hidden_size % 256 == 0) {
+        LAUNCH_GATHER_KERNEL_(256);
+    } else {
+        LAUNCH_GATHER_KERNEL_(128);
+    }
 }
 
 constexpr int MAX_GATHER_TOKENS = 1024 * 16;

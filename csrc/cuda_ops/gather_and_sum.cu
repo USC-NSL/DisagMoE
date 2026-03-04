@@ -126,13 +126,22 @@ void _gather_and_sum_tokens_cuda(
     int hidden_size
 ) {
     static_assert(sizeof(T) == 2);
-    assert(hidden_size >= 2048 && hidden_size % 2048 == 0);
+    assert(hidden_size > 0);
     constexpr int num_threads = 128;
     dim3 block(num_threads, 1, 1);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    LAUNCH_GATHER_AND_SUM_KERNEL_(2048);
+    if (hidden_size % 2048 == 0) {
+        LAUNCH_GATHER_AND_SUM_KERNEL_(2048);
+    } else if (hidden_size % 960 == 0) {
+        LAUNCH_GATHER_AND_SUM_KERNEL_(960);
+    } else if (hidden_size % 512 == 0) {
+        LAUNCH_GATHER_AND_SUM_KERNEL_(512);
+    } else if (hidden_size % 256 == 0) {
+        LAUNCH_GATHER_AND_SUM_KERNEL_(256);
+    } else {
+        LAUNCH_GATHER_AND_SUM_KERNEL_(128);
+    }
 }
-
 void gather_and_sum_tokens_cuda_dispatch(
     torch::Tensor dest, 
     int64_t src_ptr, 
