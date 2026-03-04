@@ -5,3 +5,4 @@ matplotlib
 flask
 vllm==0.8.2
 simpy
+pyarrow
