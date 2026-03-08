@@ -63,7 +63,7 @@ ext_modules = [
     cpp_extension.CppExtension(
         'disagmoe_c',
         find_all_c_targets(CSRC_DIR),
-        include_dirs=[
+        include_dirs=[d for d in [
             pybind11.get_include(),
             os.path.join(CSRC_DIR, "include"),
             CUDA_INCLUDE_DIR,
@@ -74,8 +74,8 @@ ext_modules = [
             C_INCLUDE_PATH,
             CPP_INCLUDE_PATH,
             GDRCOPY_INCLUDE_DIR,
-        ],
-        library_dirs=[
+        ] if d],
+        library_dirs=[d for d in [
             CUDA_LIBRARY_DIR,
             CUDA_LIB64_DIR,
             TORCH_LIB_DIR,
@@ -85,7 +85,7 @@ ext_modules = [
             GDRCOPY_LIBRARY_DIR,
             "/usr/local/lib",
             "/usr/lib",
-        ], 
+        ] if d],
         libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
         define_macros=[
