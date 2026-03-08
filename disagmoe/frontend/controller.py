@@ -57,6 +57,8 @@ class Controller:
         n_node: int,
         n_gpu_per_node: int,
         host_ifname: str = "",
+        nccl_ib_hca: str = "",
+        nccl_ib_gid_index: str = "",
         expert_wise_schedule: bool = False,
         enable_nsys: bool = False,
     ):
@@ -77,6 +79,8 @@ class Controller:
         self.enable_nsys = enable_nsys
         self.expert_wise_schedule = expert_wise_schedule
         self.host_ifname = host_ifname
+        self.nccl_ib_hca = nccl_ib_hca
+        self.nccl_ib_gid_index = nccl_ib_gid_index
         
         self.dp_scheduler: Optional[DPScheduler] = None
         
@@ -108,8 +112,15 @@ class Controller:
                 placement_group_bundle_index=bundle_id,
             )
 
+            worker_env_vars = dict(ENV_VARS)
+            if self.host_ifname:
+                worker_env_vars["NCCL_SOCKET_IFNAME"] = self.host_ifname
+            if self.nccl_ib_hca:
+                worker_env_vars["NCCL_IB_HCA"] = self.nccl_ib_hca
+            if self.nccl_ib_gid_index:
+                worker_env_vars["NCCL_IB_GID_INDEX"] = self.nccl_ib_gid_index
             workers_env: Dict[str, object] = {
-                "env_vars": ENV_VARS,
+                "env_vars": worker_env_vars,
             }
             
             if self.enable_nsys:
@@ -447,6 +458,8 @@ def init_controller(
     n_node: int,
     n_gpu_per_node: int,
     host_ifname: str = "",
+    nccl_ib_hca: str = "",
+    nccl_ib_gid_index: str = "",
     expert_wise_schedule: bool = False,
     enable_nsys: bool = False,
 ):
@@ -455,6 +468,8 @@ def init_controller(
         n_node,
         n_gpu_per_node,
         host_ifname=host_ifname,
+        nccl_ib_hca=nccl_ib_hca,
+        nccl_ib_gid_index=nccl_ib_gid_index,
         expert_wise_schedule=expert_wise_schedule,
         enable_nsys=enable_nsys,
     )

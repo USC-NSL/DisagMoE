@@ -254,7 +254,6 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
     int n = batch.metadata->shape[0];
     int lid = batch.metadata->layer_id;
 
-    NCCLCHECK(ncclGroupStart());
     for (int i = 0; i < n;) {
         int j = i + 1;
         int ep_rank = _get_rank(lid, batch.metadata->exp_ids[i]);
@@ -269,7 +268,6 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
                 (uintptr_t)batch.data.data_ptr(),
                 *batch.metadata
             );
-            NCCLCHECK(ncclGroupEnd());
             return;
         }
 
@@ -284,8 +282,6 @@ void MuAttnDispatcher::_send_once(TokenBatch batch) {
         i = j;
         // DMOE_LOG(INFO) << "attn send a batch to expert: " << sliced_meta << LEND;
     }
-
-    NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "attn sent a batch." << LEND;
 }
 
@@ -345,7 +341,7 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
 
     auto &channels = this->attn_channel[layer_id];
 
-    NCCLCHECK(ncclGroupStart());
+    // ncclGroupStart/End removed — see MuAttnDispatcher::_send_once for rationale.
     for (int i = 0, j = 1, n = meta->attn_dp_ranks.size(); i < n; i = j) {
         int rank = meta->attn_dp_ranks[i];
         auto channel_id = this->_get_attn_channel(layer_id, rank);
@@ -353,14 +349,12 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
         while (j < n && meta->attn_dp_ranks[j] == rank)
             j ++;
 
-        // a faster path
         if (i == 0 && j == n) {
             this->_send_batch(
                 channel_id,
                 (uintptr_t) batch.data.data_ptr(),
                 *meta
             );
-            NCCLCHECK(ncclGroupEnd());
             return;
         } else {
             auto buf = tensor_at((uintptr_t) batch.data.data_ptr(), batch.metadata, i);
@@ -371,7 +365,6 @@ void MuExpertDispatcher::_send_once(TokenBatch batch) {
             );
         }
     }
-    NCCLCHECK(ncclGroupEnd());
     // DMOE_LOG(DEBUG) << "expert " << device_id << " sent a batch" << LEND;
 }
 
@@ -492,59 +485,62 @@ void MuPool::run() {
     auto pool_endpoint = disagmoe::mq_endpoint_factory()(this->device_id, true, -1);
     this->mq->bind(pool_endpoint);
 
-    auto last = t_now();
-    auto start = last;
+    std::vector<MuPoolPendingRecv> pending_recvs;
 
     while (!this->end_flag) {
-        std::vector<MuPoolPendingRecv> pending;
-        pending.reserve(MU_POOL_GROUP_RECV_LIMIT);
+        // 1. Receive metadata: block only if nothing is pending, else non-blocking
+        bool should_block = pending_recvs.empty();
+        int drain_count = 0;
 
-        // Block for the first metadata
-        int peer_id;
-        batch_metadata_t meta;
-        recv_metadata(peer_id, meta, /*non_blocking=*/ false);
-        ASSERT_MSG(meta.get() != nullptr, "Metadata is nullptr while receiving from peer " + std::to_string(peer_id));
-        
-        torch::Tensor tensor = torch::empty(
-            {meta->num_tokens(), meta->token_hidden_dim()}, 
-            torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
-        );
-        pending.push_back(MuPoolPendingRecv{peer_id, meta, tensor});
+        do {
+            int peer_id;
+            batch_metadata_t meta;
+            recv_metadata(peer_id, meta, /*non_blocking=*/ !should_block);
+            should_block = false;
 
-        #if D_GROUP_NCCL_RECV
-        // Call non-blocking recvs to drain any simultaneous recvs
-        for (int k = 1; k < MU_POOL_GROUP_RECV_LIMIT; ++k) {
-            int pid;
-            batch_metadata_t m;
-            recv_metadata(pid, m, /*non_blocking=*/ true);
-            if (m.get() == nullptr) break; // nothing more to recv now
-            
-            torch::Tensor t = torch::empty(
-                {m->num_tokens(), m->token_hidden_dim()}, 
+            if (meta.get() == nullptr)
+                break;
+
+            torch::Tensor tensor = torch::empty(
+                {meta->num_tokens(), meta->token_hidden_dim()},
                 torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
             );
-            pending.push_back(MuPoolPendingRecv{pid, m, t});
-        }
-        #endif
 
-        // Group NCCL recvs. (There can be TensorLocal channels, but they are not bothered)
-        #if D_GROUP_NCCL_RECV
-        NCCLCHECK(ncclGroupStart());
-        #endif
-        for (auto &p : pending) {
-            this->peer_channels[p.peer_id]->recv_batch(tensor, *p.meta);
-        }
-        #if D_GROUP_NCCL_RECV
-        NCCLCHECK(ncclGroupEnd());
-        #endif
+            auto *channel = this->peer_channels[peer_id].get();
+            bool is_local = (dynamic_cast<NcclChannel*>(channel) == nullptr);
 
-        // NOTE: "this->start_queueing_timer(meta->req_ids)" used to be done here
+            if (is_local) {
+                // TensorLocalChannel: synchronous, completes immediately
+                channel->recv_batch(tensor, *meta);
+                channel->sync();
+                this->process_batch(tensor, meta);
+            } else {
+                // NcclChannel: post recv, record event, add to pending queue
+                channel->recv_batch(tensor, *meta);
+                cudaEvent_t ev;
+                CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+                channel->record_event(ev);
+                pending_recvs.push_back(MuPoolPendingRecv{peer_id, meta, tensor, ev});
+            }
 
-        // process the incoming batch and sync the NCCL CUDA streams
-        for (auto &p : pending) {
-            this->peer_channels[p.peer_id]->sync();
-            this->process_batch(p.tensor, p.meta);
+            drain_count++;
+        } while (drain_count < MU_POOL_GROUP_RECV_LIMIT);
+
+        // 2. Poll pending NCCL recvs — process whichever completed
+        for (auto it = pending_recvs.begin(); it != pending_recvs.end(); ) {
+            if (cudaEventQuery(it->event) == cudaSuccess) {
+                CUDACHECK(cudaEventDestroy(it->event));
+                this->process_batch(it->tensor, it->meta);
+                it = pending_recvs.erase(it);
+            } else {
+                ++it;
+            }
         }
+    }
+
+    // Cleanup any remaining pending recvs
+    for (auto &p : pending_recvs) {
+        cudaEventDestroy(p.event);
     }
 }
 

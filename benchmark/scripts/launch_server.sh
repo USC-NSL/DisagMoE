@@ -51,10 +51,19 @@ echo "model args: $MODEL_ARGS"
 # runtime config
 transport_backend=zmq
 
-HOST_IFNAME="" # leave blank or give the network interface name
-HOST_IFNAME_ARGS=""
+HOST_IFNAME=""  # network interface for inter-node IP and NCCL sockets
+NCCL_IB_HCA=""    # IB/RoCE HCA device for NCCL data transfers
+NCCL_IB_GID_INDEX=""   # RoCE GID index matching the data network subnet
+
+NETWORK_ARGS=""
 if [ ! -z "$HOST_IFNAME" ]; then
-    HOST_IFNAME_ARGS="--host-ifname $HOST_IFNAME"
+    NETWORK_ARGS="--host-ifname $HOST_IFNAME"
+fi
+if [ ! -z "$NCCL_IB_HCA" ]; then
+    NETWORK_ARGS="$NETWORK_ARGS --nccl-ib-hca $NCCL_IB_HCA"
+fi
+if [ ! -z "$NCCL_IB_GID_INDEX" ]; then
+    NETWORK_ARGS="$NETWORK_ARGS --nccl-ib-gid-index $NCCL_IB_GID_INDEX"
 fi
 
 dp_size=$WORLD_SIZE
@@ -83,7 +92,7 @@ USE_SERIAL_GEMM_MOE=0
 # Optional: path to a gate profile file on the launching node. If set, it will be
 # uploaded to the cluster and delivered via Ray's object store.
 # When provided, the attention workers will use profile-driven gating.
-# GATE_PROFILE_FILE="./gating_profiles/gating_sharegptv3_155.parquet"
+GATE_PROFILE_FILE="./gating_profiles/gating_gptoss120b_200.parquet"
 
 # transport backend: zmq | ucx
 
@@ -139,7 +148,7 @@ python benchmark/server.py \
     --dp-size $dp_size \
     --ep-size $ep_size \
     --transport $transport_backend \
-    $HOST_IFNAME_ARGS \
+    $NETWORK_ARGS \
     $UNIFIED_SCHEDULER_ARGS \
     $SERIAL_GEMM_ARGS \
     $LESS_THAN_SM90_ARGS \
@@ -149,3 +158,4 @@ python benchmark/server.py \
     --analyze-throughput \
     --trace \
     --gate-profile-file "$GATE_PROFILE_FILE"
+

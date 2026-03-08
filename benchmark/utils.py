@@ -13,7 +13,9 @@ def add_workload_arguments(parser: ArgumentParser):
     
 def add_runtime_arguments(parser: ArgumentParser):
     parser.add_argument("--transport", type=str, default="zmq", choices=["zmq", "ucx"], help="inter-worker transport backend")
-    parser.add_argument("--host-ifname", type=str, default="", help="network interface name to derive inter-node IP (e.g. ens1f0np0); empty uses default route")
+    parser.add_argument("--host-ifname", type=str, default="", help="network interface for inter-node IP and NCCL sockets")
+    parser.add_argument("--nccl-ib-hca", type=str, default="", help="NCCL IB/RoCE HCA device (e.g. mlx5_1)")
+    parser.add_argument("--nccl-ib-gid-index", type=str, default="", help="NCCL IB/RoCE GID index for correct subnet (e.g. 3)")
     parser.add_argument("-ca", "--cuda-graph-attn", action="store_true", default=False, help="enable cuda graph for attention")
     parser.add_argument("-ce", "--cuda-graph-expert", action="store_true", default=False, help="enable cuda graph for experts")
     parser.add_argument("--max-attn-graph-bsz", type=int, default=160, help="max batch size for attention cuda graph")

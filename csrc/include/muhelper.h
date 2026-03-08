@@ -166,6 +166,7 @@ protected:
         int peer_id;
         batch_metadata_t meta;
         torch::Tensor tensor;
+        cudaEvent_t event;  // For async NCCL recv completion polling
     };
 
 public:

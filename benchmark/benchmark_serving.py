@@ -201,6 +201,8 @@ def launch(args):
         cluster_config.n_node, 
         cluster_config.n_gpu, 
         host_ifname=getattr(args, "host_ifname", ""),
+        nccl_ib_hca=getattr(args, "nccl_ib_hca", ""),
+        nccl_ib_gid_index=getattr(args, "nccl_ib_gid_index", ""),
         expert_wise_schedule=args.expert_wise_schedule,
         enable_nsys=args.nsys
     )
