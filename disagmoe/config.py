@@ -53,6 +53,9 @@ class EngineConfig:
     
     # FIXME(hogura|20250110): temporary field, should be moved to other place
     enable_trace: bool = False
+
+    enable_advanced_logging: bool = False
+    advanced_logging_dir: str = "./advanced_logs"
     
 @dataclass
 class CacheConfig(vllm.config.CacheConfig):

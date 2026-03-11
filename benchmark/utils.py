@@ -81,6 +81,8 @@ def add_analysis_arguments(parser: ArgumentParser):
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
     parser.add_argument("--enable-trace-detail", action="store_true", default=False, help="generate trace")
     parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
+    parser.add_argument("--enable-advanced-logging", action="store_true", default=False, help="enable advanced logging for MoE diagnostics")
+    parser.add_argument("--advanced-logging-dir", type=str, default="./advanced_logs", help="output directory for advanced logs")
 
 def get_parser_base():
     parser = ArgumentParser()

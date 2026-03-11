@@ -134,6 +134,20 @@ def get_topk_pool_snapshot_endpoint():
         res_str += f"Worker {worker_id}: {snapshot}\n"
     return f"get_topk_pool_snapshot executed successfully\n{res_str}\n", 200
 
+@app.route('/dump_advanced_logs', methods=['POST'])
+def dump_advanced_logs_endpoint():
+    global master, args
+    from flask import request
+
+    data = request.get_json(silent=True) or {}
+    suffix = data.get('suffix', '')
+    if not getattr(args, "enable_advanced_logging", False):
+        return "advanced logging is disabled", 400
+
+    _adv_dir = getattr(args, 'advanced_logging_dir', './advanced_logs')
+    results = master.dump_advanced_logs(suffix, output_dir=_adv_dir)
+    return f"advanced logs dumped to {_adv_dir}\n{results}\n", 200
+
 async def init(master: Controller, args):
     master.start_polling_results()
     await master.start_scheduler()

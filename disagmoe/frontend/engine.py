@@ -408,8 +408,15 @@ class ExpertEngineMixin:
         )
         
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
+        _sample = self._advanced_logger.should_sample()
+        if _sample:
+            _t0 = time.perf_counter()
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch)
+        if _sample:
+            torch.cuda.current_stream().synchronize()
+            _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
+            self._advanced_logger.log_moe_step(batch.num_tokens, _elapsed_ms)
         
         topk_weights = batch.meta_c.topk_weights
         new_mappings = list(batch.meta_c.sort_by_attention())
@@ -494,6 +501,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         self._timer = Timer()
         self._queueing_timer = {} # placeholder, not used at the moment
         self._queueing_delays = []
+
+        from disagmoe.utils.advanced_logger import AdvancedLogger
+        self._advanced_logger = AdvancedLogger(False, "", 0)
         
         self.attn_dp_rank = None
         self.expert_ep_rank = None
@@ -611,6 +621,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             
         self.build_executor()
         get_logger().info("core launched")
+
+        from disagmoe.utils.advanced_logger import AdvancedLogger
+        self._advanced_logger = AdvancedLogger(
+            self.engine_config.enable_advanced_logging,
+            getattr(self.engine_config, "advanced_logging_dir", "./advanced_logs"),
+            self.device_id,
+        )
     
     def start(self):
         # attention TP is deprecated
@@ -836,11 +853,19 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         try:
             while not self.end_flag:
                 self.recv_new_request()
+                _sched_t0 = time.perf_counter()
                 batch = self.scheduler.schedule()
                 forward_batch = None
                 if batch.data is not None:
+                    _sched_ms = (time.perf_counter() - _sched_t0) * 1000.0
                     idle_conunt = 0
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
+                    meta = batch_wrapper.metadata
+                    if self._advanced_logger.should_sample() and meta.is_expert():
+                        _layer = meta.layer_id
+                        _delay_ms = _sched_ms / max(1, meta.num_tokens())
+                        for _eid in set(meta.exp_ids):
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms)
                     forward_batch = self.preprocess_batch(batch_wrapper)
                     if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
@@ -905,7 +930,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 meta: BatchMetadata = batch_wrapper.metadata
-                
+
+                if self._advanced_logger.should_sample():
+                    if meta.is_expert():
+                        _schedule_ms = self._timer.get("schedule")
+                        _layer = meta.layer_id
+                        _delay_ms = _schedule_ms / max(1, meta.num_tokens())
+                        for _eid in set(meta.exp_ids):
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms)
+                 
                 # self.stats_pre_process(batch)
                 self.step_profile(meta.num_tokens())
                 batch_wrapper = self.process_batch(batch_wrapper)
@@ -935,6 +968,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
     
     def fetch_queueing_delays(self) -> List[float]:
         return self._queueing_delays
+
+    def dump_advanced_logs(self, suffix: str = "") -> Optional[str]:
+        return self._advanced_logger.dump(suffix)
+
+    def get_advanced_log_data(self) -> Optional[dict]:
+        """Return collected advanced log data for central collection by controller."""
+        return self._advanced_logger.get_data()
     
     def get_pool_snapshot(self) -> List[int]:
         return self.scheduler.get_pool_snapshot()

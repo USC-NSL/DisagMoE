@@ -94,6 +94,9 @@ USE_SERIAL_GEMM_MOE=0
 # When provided, the attention workers will use profile-driven gating.
 GATE_PROFILE_FILE="./gating_profiles/gating_gptoss120b_200.parquet"
 
+ENABLE_ADVANCED_LOGGING=0
+ADVANCED_LOGGING_DIR="./advanced_logs"
+
 # transport backend: zmq | ucx
 
 REPORT_DIR=./reports
@@ -122,6 +125,11 @@ fi
 SERIAL_GEMM_ARGS=""
 if [ "$USE_SERIAL_GEMM_MOE" -eq 1 ]; then
     SERIAL_GEMM_ARGS="--serial-gemm"
+fi
+
+ADVANCED_LOGGING_ARGS=""
+if [ "$ENABLE_ADVANCED_LOGGING" -eq 1 ]; then
+    ADVANCED_LOGGING_ARGS="--enable-advanced-logging --advanced-logging-dir $ADVANCED_LOGGING_DIR"
 fi
 
 UNIFIED_SCHEDULER_ARGS=""
@@ -157,5 +165,5 @@ python benchmark/server.py \
     --file $REPORT_TABLE \
     --analyze-throughput \
     --trace \
-    --gate-profile-file "$GATE_PROFILE_FILE"
-
+    --gate-profile-file "$GATE_PROFILE_FILE" \
+    $ADVANCED_LOGGING_ARGS

@@ -193,6 +193,8 @@ def launch(args):
         defrag_weight_decay=getattr(args, "defrag_weight_decay"),
         defrag_lookahead_steps=getattr(args, "defrag_lookahead_steps"),
         defrag_lookback_steps=getattr(args, "defrag_lookback_steps"),
+        enable_advanced_logging=getattr(args, "enable_advanced_logging", False),
+        advanced_logging_dir=getattr(args, "advanced_logging_dir", "./advanced_logs"),
     )
 
     global master
@@ -489,7 +491,12 @@ def post_benchmark(master, args, results, req_submit_timestamps, req_finish_time
                             attn_delays, exp_delays,
                             t_submitted, results)
         metrics.token_throughput = throughput
-        
+
+    if getattr(args, "enable_advanced_logging", False):
+        _adv_dir = getattr(args, "advanced_logging_dir", "./advanced_logs")
+        master.dump_advanced_logs(output_dir=_adv_dir)
+        logger.info(f"Advanced logs dumped to {_adv_dir}")
+         
     metrics.write_to_file(args)
     logger.info("Results written to file.")
     return metrics

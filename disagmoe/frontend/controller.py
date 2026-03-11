@@ -327,6 +327,29 @@ class Controller:
 
     def fetch_step_stats(self) -> List[Tuple[List[StepInfo], Dict[int, List[TraceContext]], Metric]]:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
+
+    def dump_advanced_logs(self, suffix: str = "", output_dir: str = "./advanced_logs"):
+        """Collect advanced logs from all workers and write centrally on the head node."""
+        import json
+        results = ray.get([worker.get_advanced_log_data.remote() for worker in self.workers])
+        out_paths = []
+        for data in results:
+            if data is None:
+                continue
+            device_id = data["device_id"]
+            dev_dir = os.path.join(output_dir, f"device_{device_id}")
+            os.makedirs(dev_dir, exist_ok=True)
+
+            moe_path = os.path.join(dev_dir, f"moe_steps{suffix}.json")
+            with open(moe_path, "w") as f:
+                json.dump(data["moe_steps"], f)
+
+            queuing_path = os.path.join(dev_dir, f"queuing_delays{suffix}.json")
+            with open(queuing_path, "w") as f:
+                json.dump(data["queuing_delays"], f)
+
+            out_paths.append(dev_dir)
+        return out_paths
         
     def fetch_queueing_delays(self) -> Tuple[List[List[float]], List[List[float]]]:
         results = ray.get([worker.fetch_queueing_delays.remote() for worker in self.workers])
