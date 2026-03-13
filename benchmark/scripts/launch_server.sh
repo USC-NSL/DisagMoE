@@ -51,9 +51,9 @@ echo "model args: $MODEL_ARGS"
 # runtime config
 transport_backend=zmq
 
-HOST_IFNAME=""  # network interface for inter-node IP and NCCL sockets
-NCCL_IB_HCA=""    # IB/RoCE HCA device for NCCL data transfers
-NCCL_IB_GID_INDEX=""   # RoCE GID index matching the data network subnet
+HOST_IFNAME="ens1f1np1"  # network interface for inter-node IP and NCCL sockets
+NCCL_IB_HCA="mlx5_1"    # IB/RoCE HCA device for NCCL data transfers
+NCCL_IB_GID_INDEX="3"   # RoCE GID index matching the data network subnet
 
 NETWORK_ARGS=""
 if [ ! -z "$HOST_IFNAME" ]; then
@@ -96,6 +96,7 @@ GATE_PROFILE_FILE="./gating_profiles/gating_gptoss120b_200.parquet"
 
 ENABLE_ADVANCED_LOGGING=0
 ADVANCED_LOGGING_DIR="./advanced_logs"
+ADVANCED_LOGGING_SAMPLE_RATE=0.1  # fraction of MoE steps to instrument (0.0–1.0)
 
 # transport backend: zmq | ucx
 
@@ -129,7 +130,7 @@ fi
 
 ADVANCED_LOGGING_ARGS=""
 if [ "$ENABLE_ADVANCED_LOGGING" -eq 1 ]; then
-    ADVANCED_LOGGING_ARGS="--enable-advanced-logging --advanced-logging-dir $ADVANCED_LOGGING_DIR"
+    ADVANCED_LOGGING_ARGS="--enable-advanced-logging --advanced-logging-dir $ADVANCED_LOGGING_DIR --advanced-logging-sample-rate $ADVANCED_LOGGING_SAMPLE_RATE"
 fi
 
 UNIFIED_SCHEDULER_ARGS=""

@@ -627,6 +627,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.engine_config.enable_advanced_logging,
             getattr(self.engine_config, "advanced_logging_dir", "./advanced_logs"),
             self.device_id,
+            sample_rate=getattr(self.engine_config, "advanced_logging_sample_rate", 0.1),
         )
     
     def start(self):

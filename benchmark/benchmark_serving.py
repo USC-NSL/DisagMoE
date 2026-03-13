@@ -195,6 +195,7 @@ def launch(args):
         defrag_lookback_steps=getattr(args, "defrag_lookback_steps"),
         enable_advanced_logging=getattr(args, "enable_advanced_logging", False),
         advanced_logging_dir=getattr(args, "advanced_logging_dir", "./advanced_logs"),
+        advanced_logging_sample_rate=getattr(args, "advanced_logging_sample_rate", 0.1),
     )
 
     global master

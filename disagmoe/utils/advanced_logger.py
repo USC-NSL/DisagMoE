@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import time
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
@@ -15,7 +16,8 @@ class AdvancedLogger:
         if not enabled:
             return
 
-        self.moe_steps: List[Tuple[int, float]] = []
+        # Each entry: (batch_size, execution_time_ms, timestamp_s)
+        self.moe_steps: List[Tuple[int, float, float]] = []
         self.queuing_delays: Dict[Tuple[int, int], List[float]] = defaultdict(list)
 
     def should_sample(self) -> bool:
@@ -26,7 +28,7 @@ class AdvancedLogger:
     def log_moe_step(self, batch_size: int, execution_time_ms: float):
         if not self.enabled:
             return
-        self.moe_steps.append((batch_size, execution_time_ms))
+        self.moe_steps.append((batch_size, execution_time_ms, time.monotonic()))
 
     def log_queuing_delay(self, layer_id: int, expert_id: int, delay_ms: float):
         if not self.enabled:
@@ -54,6 +56,7 @@ class AdvancedLogger:
             "moe_steps": {
                 "batch_sizes": [s[0] for s in self.moe_steps],
                 "execution_times_ms": [s[1] for s in self.moe_steps],
+                "timestamps_s": [s[2] for s in self.moe_steps],
             },
             "queuing_delays": queuing_data,
         }
@@ -71,6 +74,7 @@ class AdvancedLogger:
                 {
                     "batch_sizes": [s[0] for s in self.moe_steps],
                     "execution_times_ms": [s[1] for s in self.moe_steps],
+                    "timestamps_s": [s[2] for s in self.moe_steps],
                 },
                 f,
             )

@@ -1,0 +1,36 @@
+first, start ray head on this sgpu4 node, then start ray in other sgpu6/7/8 nodes
+sync the code, rebuild everything everywhere
+run disagmoe on this cluster with launch_server.sh, run 2 benchmarks
+(after running one bench, restart the server).
+
+bench 1:
+curl -X POST http://localhost:6699/run_once \
+        -H "Content-Type: application/json" \
+        -d '{
+            "rate": 250,
+            "time": 4,
+            "distribution": "poisson",
+            "min_input_len": 64,
+            "max_input_len": 128,
+            "min_output_len": 256,
+            "max_output_len": 512
+        }'
+
+bench 2:
+curl -X POST http://localhost:6699/run_once \
+        -H "Content-Type: application/json" \
+        -d '{
+            "rate": 500,
+            "time": 4,
+            "distribution": "poisson",
+            "min_input_len": 64,
+            "max_input_len": 128,
+            "min_output_len": 256,
+            "max_output_len": 512
+        }'
+
+and also test with the 2 profiles under ./gating_profiles
+
+so, in total 4 experiments to run. After you finish and get all the stats, write a markdown report.
+
+if having any issue, stop and report to me first.
