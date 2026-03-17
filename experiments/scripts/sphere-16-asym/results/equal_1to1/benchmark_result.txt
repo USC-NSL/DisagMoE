@@ -1,0 +1,15 @@
+run_once executed successfully
+Metrics: 
+e2e_duration: 31.01s
+req_throughput: 2 req/s
+token_throughput: 571 tokens/s
+req_latency_mean: 21782ms
+req_latency_median: 21178ms
+req_latency_p99: 27576ms
+itl_latency_mean: 58ms
+itl_latency_median: 60ms
+itl_latency_p99: 115ms
+
+
+
+HTTP: 200

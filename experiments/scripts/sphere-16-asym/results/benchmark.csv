@@ -1,0 +1,2 @@
+num_requests,rate,DP_size,EP_size,num_experts,e2e_duration,req_throughput,token_throughput,req_latency_mean_ms,req_latency_median_ms,req_latency_p99_ms,itl_latency_mean_ms,itl_latency_median_ms,itl_latency_p99_ms
+50,10,16,16,,36,1,149,27043,28421,33911,70,65,163

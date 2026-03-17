@@ -1,0 +1,26 @@
+{
+  "allocations": [
+    {"host_ip": "10.0.0.1", "cuda_device": "0", "num_experts": 11},
+    {"host_ip": "10.0.0.1", "cuda_device": "1", "num_experts": 11},
+    {"host_ip": "10.0.0.2", "cuda_device": "0", "num_experts": 10},
+    {"host_ip": "10.0.0.2", "cuda_device": "1", "num_experts": 10},
+    {"host_ip": "10.0.0.3", "cuda_device": "0", "num_experts": 11},
+    {"host_ip": "10.0.0.3", "cuda_device": "1", "num_experts": 11},
+    {"host_ip": "10.0.0.4", "cuda_device": "0", "num_experts": 10},
+    {"host_ip": "10.0.0.4", "cuda_device": "1", "num_experts": 10},
+    {"host_ip": "10.0.0.5", "cuda_device": "0", "num_experts": 6},
+    {"host_ip": "10.0.0.5", "cuda_device": "1", "num_experts": 6},
+    {"host_ip": "10.0.0.6", "cuda_device": "0", "num_experts": 5},
+    {"host_ip": "10.0.0.6", "cuda_device": "1", "num_experts": 5},
+    {"host_ip": "10.0.0.7", "cuda_device": "0", "num_experts": 6},
+    {"host_ip": "10.0.0.7", "cuda_device": "1", "num_experts": 6},
+    {"host_ip": "10.0.0.8", "cuda_device": "0", "num_experts": 5},
+    {"host_ip": "10.0.0.8", "cuda_device": "1", "num_experts": 5}
+  ],
+  "attn_dp_weights": {
+    "0": 1.0, "1": 1.0, "2": 1.0, "3": 1.0,
+    "4": 1.0, "5": 1.0, "6": 1.0, "7": 1.0,
+    "8": 1.0, "9": 1.0, "10": 1.0, "11": 1.0,
+    "12": 1.0, "13": 1.0, "14": 1.0, "15": 1.0
+  }
+}
