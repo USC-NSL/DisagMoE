@@ -64,6 +64,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def_readwrite("ep", &ParallelConfig::ep)
         .def_readwrite("dp", &ParallelConfig::dp)
         .def_readwrite("n_exp_per_rank", &ParallelConfig::n_exp_per_rank)
+        .def_readwrite("n_total_experts", &ParallelConfig::n_total_experts)
         .def_readwrite("expert_ranks", &ParallelConfig::expert_ranks);
         
     py::class_<BatchMetadata, std::shared_ptr<BatchMetadata>>(m, "BatchMetadata")

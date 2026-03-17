@@ -17,7 +17,10 @@ UnifiedDispatcher::UnifiedDispatcher(
     std::vector<ChannelInfo> channel_infos
 ): MuDispatcher(layer_ids, device_id, cfg, channels) {
     // a channel must contain an attention dp and experts
-    int num_experts = cfg.ep * cfg.n_exp_per_rank;
+    // Use n_total_experts when set (asymmetric placement); otherwise fall
+    // back to the legacy uniform formula.
+    int num_experts = cfg.n_total_experts > 0 ? cfg.n_total_experts
+                                              : cfg.ep * cfg.n_exp_per_rank;
     this->rank_to_channel.resize(cfg.dp, -1);
     this->expert_to_rank.resize(num_experts, -1);
 

@@ -350,16 +350,17 @@ class ExpertsExecutor(Executor):
     def __init__(self, model_config: ModelConfig, local_to_global_expert_rank: List[int], global_to_local_expert_rank: List[int]):
         super().__init__(model_config)
         self.type = ExecutorType.EXPERTS_EXEC
+        self.local_num_experts = len(local_to_global_expert_rank)
         # Build quantization config for MoE experts (Serial only) if requested
-        self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
+        self.expert_ids = torch.arange(self.local_num_experts, device="cpu", dtype=torch.int32)
         self.local_to_global_expert_rank = local_to_global_expert_rank
         self.global_to_local_expert_rank = global_to_local_expert_rank
         self.cuda_graph_executor: CUDAGraphExpertsExecutor = None
         
         self.token_m_indices_gdr = GdrDoubleBuffer(get_global_engine_config().max_batch_size_expert, dtype=torch.int32, device="cuda")
-        self.batch_sizes_gdr = GdrDoubleBuffer(self.model_config.num_experts_per_rank, dtype=torch.int64, device="cuda")
+        self.batch_sizes_gdr = GdrDoubleBuffer(self.local_num_experts, dtype=torch.int64, device="cuda")
         
-        self.static_batch_sizes = torch.zeros((self.model_config.num_experts_per_rank,), dtype=torch.int64, device="cuda")
+        self.static_batch_sizes = torch.zeros((self.local_num_experts,), dtype=torch.int64, device="cuda")
         self.static_m_indices = torch.zeros((get_global_engine_config().max_batch_size_expert,), dtype=torch.int32, device="cuda")
         
         self.quant_method = getattr(self.model_config, "moe_linear_quant", None) or "none"
@@ -383,7 +384,7 @@ class ExpertsExecutor(Executor):
                     MoEExpertsSerial(
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
-                        self.model_config.num_experts_per_rank,
+                        self.local_num_experts,
                         max_batch_size=get_global_engine_config().max_batch_size_expert,
                         quant_config=None,
                     )
@@ -393,7 +394,7 @@ class ExpertsExecutor(Executor):
                     self.expert_cls(
                         self.model_config.hidden_size,
                         self.model_config.intermediate_size,
-                        self.model_config.num_experts_per_rank,
+                        self.local_num_experts,
                         max_batch_size=get_global_engine_config().max_batch_size_expert,
                     )
                 )
@@ -461,7 +462,7 @@ class ExpertsExecutor(Executor):
         hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
             batch_size=batch_size,
             hidden_size=self.model_config.hidden_size,
-            num_experts_per_rank=self.model_config.num_experts_per_rank,
+            num_experts_per_rank=self.local_num_experts,
             expert_ids=self.expert_ids,
         )
 

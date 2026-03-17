@@ -254,12 +254,13 @@ class CUDAGraphExpertsExecutor:
 
     def __init__(self, model_config: ModelConfig, local_to_global_expert_rank: List[int], global_to_local_expert_rank: List[int], experts_executor):
         self.model_config = model_config
+        self.local_num_experts = len(local_to_global_expert_rank)
         self.local_to_global_expert_rank = local_to_global_expert_rank
         self.global_to_local_expert_rank = global_to_local_expert_rank
         self.experts_executor = experts_executor
         self.expert_cls = experts_executor.expert_cls
 
-        self.expert_ids = torch.arange(self.model_config.num_experts_per_rank, device="cpu", dtype=torch.int32)
+        self.expert_ids = torch.arange(self.local_num_experts, device="cpu", dtype=torch.int32)
         
     def create_cuda_graph_buffers(self):
         # Currently only designed for BF16, later port FP8 variants
@@ -269,7 +270,7 @@ class CUDAGraphExpertsExecutor:
         self.static_outputs: Dict[int, List[Tensor]] = {} # callee allocated, no need to pre-allocate
         
         # Allocate respecting max batch size, small batches can use slices of this
-        self.static_input_batch_sizes = torch.empty((self.model_config.num_experts_per_rank,), dtype=torch.int64, device="cuda")
+        self.static_input_batch_sizes = torch.empty((self.local_num_experts,), dtype=torch.int64, device="cuda")
         self.static_input_hiddens = torch.empty((max_batch_size, self.model_config.hidden_size), dtype=self.model_config.dtype, device="cuda")
         self.static_input_m_indices = torch.empty((max_batch_size,), dtype=torch.int32, device="cuda")
 
@@ -332,7 +333,7 @@ class CUDAGraphExpertsExecutor:
             hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
                 batch_size=graph_batch_size,
                 hidden_size=self.model_config.hidden_size,
-                num_experts_per_rank=self.model_config.num_experts_per_rank,
+                num_experts_per_rank=self.local_num_experts,
                 expert_ids=self.expert_ids,
             )
 
@@ -387,7 +388,7 @@ class CUDAGraphExpertsExecutor:
                 hiddens, batch_sizes, m_indices = make_expert_dummy_inputs(
                     bs,
                     self.model_config.hidden_size,
-                    self.model_config.num_experts_per_rank,
+                    self.local_num_experts,
                     self.expert_ids,
                 )
                 

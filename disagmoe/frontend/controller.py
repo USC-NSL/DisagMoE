@@ -186,6 +186,8 @@ class Controller:
         model_config: ModelConfig,
         engine_config: EngineConfig,
         cache_config: CacheConfig,
+        attn_dp_weights: Optional[Dict[int, float]] = None,
+        per_device_config: Optional[Dict[int, dict]] = None,
         gate_profile_file: Optional[str] = None
     ):
         get_logger().debug(f"Initializing engine with model placement: {model_place}")
@@ -215,6 +217,17 @@ class Controller:
             if model_place.is_hybrid:
                 return EngineType.HYBRID
             return EngineType.ATTENTION if model_place.has_attn(device_id) else EngineType.EXPERT
+
+        def get_worker_engine_config(device_id: int) -> EngineConfig:
+            if per_device_config is not None and device_id in per_device_config:
+                from copy import copy
+                cfg = copy(engine_config)
+                overrides = per_device_config[device_id]
+                for key, val in overrides.items():
+                    if hasattr(cfg, key):
+                        setattr(cfg, key, val)
+                return cfg
+            return engine_config
         
         # setup attention & expert
         tasks = []
@@ -232,7 +245,7 @@ class Controller:
                 worker.setup_engine.remote(
                     worker_type,
                     model_config=model_config,
-                    engine_config=engine_config,
+                    engine_config=get_worker_engine_config(device_id),
                     cache_config=cache_config,
                     rank=rank,
                     tokenizer_addr=tokenizer_addr,
@@ -285,13 +298,19 @@ class Controller:
                     expert_ranks=model_place.out_expert_ranks_at(device_id),
                     local_attn_dp_rank=model_place.attn_dp_rank_at(device_id),
                     expert_wise_schedule=self.expert_wise_schedule,
+                    local_num_experts=model_place.local_num_experts_at(device_id),
+                    local_expert_ids=model_place.unique_expert_ids_at(device_id),
                 )
             ) for worker, device_id in zip(self.workers, self.device_ids)
         ]
         ray.get(tasks)
         get_logger().info("Launched all workers successfully")
         
-        self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "max")
+        if attn_dp_weights is not None:
+            dp_weights = [attn_dp_weights.get(i, 1.0) for i in range(model_config.dp_size)]
+            self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "weighted", weights=dp_weights)
+        else:
+            self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "max")
         
         self.model_place: ModelPlacement = model_place
         

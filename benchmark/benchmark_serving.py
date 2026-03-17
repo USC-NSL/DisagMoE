@@ -100,9 +100,9 @@ def resolve_expert_allocation(
     expert_allocation_path: Optional[str],
     worker_identities: Sequence[Dict[str, Union[str, int]]],
     total_num_experts: int,
-) -> Optional[List[int]]:
+) -> Tuple[Optional[List[int]], Optional[Dict[int, float]], Optional[Dict[int, dict]]]:
     if expert_allocation_path is None:
-        return None
+        return None, None, None
 
     with open(expert_allocation_path, "r") as f:
         config = json.load(f)
@@ -155,7 +155,17 @@ def resolve_expert_allocation(
         f"Total allocated experts ({sum(expert_allocation)}) must match model config ({total_num_experts})"
     )
 
-    return expert_allocation
+    attn_dp_weights = None
+    raw_weights = config.get("attn_dp_weights")
+    if raw_weights is not None:
+        attn_dp_weights = {int(k): float(v) for k, v in raw_weights.items()}
+
+    per_device_config = None
+    raw_pdc = config.get("per_device_config")
+    if raw_pdc is not None:
+        per_device_config = {int(k): v for k, v in raw_pdc.items()}
+
+    return expert_allocation, attn_dp_weights, per_device_config
 
 def launch(args):
     # Select transport in C++ backend (default from CLI is zmq)
@@ -212,7 +222,7 @@ def launch(args):
 
     # For heterogeneous cluster
     worker_identities = master.get_worker_identities()
-    expert_allocation = resolve_expert_allocation(
+    expert_allocation, attn_dp_weights, per_device_config = resolve_expert_allocation(
         getattr(args, "expert_allocation_path", None),
         worker_identities,
         model_config.num_experts,
@@ -227,6 +237,8 @@ def launch(args):
     cache_config = CacheConfig(args.block_size, args.gpu_usage, 2, "auto")
 
     master.init_engine(args.transport, mp, model_config, engine_config, cache_config,
+                      attn_dp_weights=attn_dp_weights,
+                      per_device_config=per_device_config,
                       gate_profile_file=args.gate_profile_file)
     
     master.start_engine()

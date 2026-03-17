@@ -54,7 +54,7 @@ class Detokenizer:
     def log_throughput(self) -> None:
         cur_time_ms = t_now_high_ms()
         elapsed_time_ms = cur_time_ms - self.start_timestamp_ms
-        token_throughput = self.token_processed * 1000 / elapsed_time_ms
+        token_throughput = self.token_processed * 1000 / elapsed_time_ms if elapsed_time_ms > 0 else 0.0
         get_logger().info(f"Detokenizer: token throughput: {token_throughput/1000:.2f}k tokens/s")
         self.token_processed = 0
         self.iter = 0

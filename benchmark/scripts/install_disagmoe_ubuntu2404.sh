@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/USC-NSL/DisagMoE.git"
 REPO_DIR="$HOME/DisagMoE"
-REPO_TAG="v0.4"
+REPO_TAG="asym"
 
 CONDA_DIR="$HOME/miniconda3"
 CONDA_ENV="disag12"

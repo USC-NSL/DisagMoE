@@ -373,12 +373,17 @@ class ExpertEngineMixin:
     device: str
     
     def build_expert_executor(self):
-        # prepare map from global exp rank to inner exp rank, [n_exp_per_rank * rank, (rank + 1) * n_exp_per_rank) -> [0, n_exp_per_rank)
-        self.local_to_gloabl_expert_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
-        self.global_to_local_expert_rank = [-1 for _ in range(self.model_config.num_experts)]
-        for i in range(self.model_config.num_experts_per_rank):
-            self.local_to_gloabl_expert_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
-            self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
+        if self.local_expert_ids is not None and len(self.local_expert_ids) > 0:
+            self.local_to_gloabl_expert_rank = list(self.local_expert_ids)
+            self.global_to_local_expert_rank = [-1 for _ in range(self.model_config.num_experts)]
+            for local_idx, global_id in enumerate(self.local_expert_ids):
+                self.global_to_local_expert_rank[global_id] = local_idx
+        else:
+            self.local_to_gloabl_expert_rank = [0 for _ in range(self.model_config.num_experts_per_rank)]
+            self.global_to_local_expert_rank = [-1 for _ in range(self.model_config.num_experts)]
+            for i in range(self.model_config.num_experts_per_rank):
+                self.local_to_gloabl_expert_rank[i] = self.model_config.num_experts_per_rank * self.rank_in_group + i
+                self.global_to_local_expert_rank[self.model_config.num_experts_per_rank * self.rank_in_group + i] = i
         self.expert_executor = ExpertsExecutor(self.model_config, self.local_to_gloabl_expert_rank, self.global_to_local_expert_rank)
 
         if self.engine_config.enable_cuda_graph_expert and self.expert_executor.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsCUTLASS]:
@@ -546,6 +551,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         disagmoe_recorder_create()
         
         self.attn_dp_rank = core_args.local_attn_dp_rank
+        self.local_num_experts = core_args.local_num_experts
+        self.local_expert_ids = core_args.local_expert_ids
         
         self.device_group_ids = core_args.device_group_ids
         
@@ -582,12 +589,13 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.has_expert,
             core_args.expert_wise_schedule,
             ParallelConfig.to_c(
-                1,  # control the init of attn_scheduler
+                1,
                 self.model_config.ep_size,
                 self.model_config.dp_size,
-                self.model_config.num_experts_per_rank,
+                self.local_num_experts if self.local_num_experts > 0 else self.model_config.num_experts_per_rank,
                 core_args.expert_ranks,
-            ),  # parallel config
+                n_total_experts=self.model_config.num_experts,
+            ),
             core_args.layer_ids,
             # P2P Channels
             core_args.in_device_ids,

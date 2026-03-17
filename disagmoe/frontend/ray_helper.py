@@ -41,6 +41,9 @@ class InitCoreArgs:
     expert_ranks: List[Tuple[int, int, int]]
     expert_wise_schedule: bool = False
     
+    local_num_experts: int = 0
+    local_expert_ids: List[int] = None
+    
     # Group Channels
     out_device_group_ids: Dict[int, List[int]] = None
     device_group_ids: List[int] = None

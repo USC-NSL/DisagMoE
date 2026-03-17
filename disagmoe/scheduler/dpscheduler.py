@@ -159,11 +159,37 @@ class DPSChedulerRR(DPScheduler):
         self.cur_rank = (self.cur_rank + 1) % self.dp_size
         return rank
 
+class DPSchedulerWeighted(DPScheduler):
+
+    def __init__(self, dp_size: int, block_size: int, weights: List[float]):
+        super().__init__(dp_size, block_size)
+        assert len(weights) == dp_size
+        total = sum(weights)
+        self.weights = [w / total for w in weights]
+
+    @override
+    def _schedule(self, seq_len: int) -> int:
+        required = self.required_blocks(seq_len)
+        best_rank = -1
+        best_score = -1.0
+        for i, num_blocks in enumerate(self.kv_cache_stats):
+            if num_blocks < required:
+                continue
+            score = num_blocks * self.weights[i]
+            if score > best_score:
+                best_score = score
+                best_rank = i
+        return best_rank
+
 _clses = {
     "RR": DPSChedulerRR,
     "max": DPSchedulerMax,
+    "weighted": DPSchedulerWeighted,
 }
 
-def get_dp_scheduler(dp_size: int, block_size: int, policy: str) -> DPScheduler:
+def get_dp_scheduler(dp_size: int, block_size: int, policy: str, weights: List[float] = None) -> DPScheduler:
     cls = _clses[policy]
+    if policy == "weighted":
+        assert weights is not None, "weights required for weighted scheduler"
+        return cls(dp_size, block_size, weights)
     return cls(dp_size, block_size)

@@ -1,0 +1,18 @@
+{
+  "allocations": [
+    {"host_ip": "10.0.0.1", "cuda_device": "0", "num_experts": 2},
+    {"host_ip": "10.0.0.1", "cuda_device": "1", "num_experts": 2},
+    {"host_ip": "10.0.0.2", "cuda_device": "0", "num_experts": 1},
+    {"host_ip": "10.0.0.2", "cuda_device": "1", "num_experts": 1},
+    {"host_ip": "10.0.0.3", "cuda_device": "0", "num_experts": 1},
+    {"host_ip": "10.0.0.3", "cuda_device": "1", "num_experts": 1}
+  ],
+  "attn_dp_weights": {
+    "0": 2.0,
+    "1": 2.0,
+    "2": 1.0,
+    "3": 1.0,
+    "4": 1.0,
+    "5": 1.0
+  }
+}

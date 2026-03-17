@@ -98,9 +98,16 @@ struct ParallelConfig {
     int dp = 1;
     int n_exp_per_rank = 1;
 
+    // Total number of experts in the model.  When >0 the unified dispatcher
+    // uses this instead of ``ep * n_exp_per_rank`` to size its routing table,
+    // which is required for asymmetric expert placement where
+    // ``num_experts != ep * n_exp_per_rank``.  A value of 0 means "fall back
+    // to the legacy formula".
+    int n_total_experts = 0;
+
     // (layer_id, expert_id, expert_rank)
     std::vector<std::tuple<int, int, int>> expert_ranks = {};
 
-    ParallelConfig(int tp = 1, int ep = 1, int dp = 1, int n_exp_per_rank = 1, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
-        tp(tp), ep(ep), dp(dp), n_exp_per_rank(n_exp_per_rank), expert_ranks(expert_ranks) {}
+    ParallelConfig(int tp = 1, int ep = 1, int dp = 1, int n_exp_per_rank = 1, int n_total_experts = 0, const std::vector<std::tuple<int, int, int>> &expert_ranks = {}): 
+        tp(tp), ep(ep), dp(dp), n_exp_per_rank(n_exp_per_rank), n_total_experts(n_total_experts), expert_ranks(expert_ranks) {}
 };

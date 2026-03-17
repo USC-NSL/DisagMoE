@@ -17,13 +17,14 @@ class ParallelConfig:
     expert_ranks: Dict[Tuple[int, int], int] = None
     
     @staticmethod
-    def to_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List) -> "ParallelConfig_C":
+    def to_c(tp: int, ep: int, dp: int, n_exp_per_rank: int, expert_ranks: List, n_total_experts: int = 0) -> "ParallelConfig_C":
         from disagmoe_c import ParallelConfig as ParallelConfig_C
         cfg = ParallelConfig_C()
         cfg.tp = tp
         cfg.ep = ep
         cfg.dp = dp
         cfg.n_exp_per_rank = n_exp_per_rank
+        cfg.n_total_experts = n_total_experts
         cfg.expert_ranks = expert_ranks
         return cfg
 
@@ -46,6 +47,9 @@ class ModelPlacement:
     
     # device_id -> attn_rank_id
     attn_dp_ranks: Dict[int, int] = None
+    
+    # device_id -> number of unique experts on this device (asymmetric placement)
+    local_expert_counts: Dict[int, int] = None
     
     is_hybrid: bool = False
         
@@ -87,6 +91,14 @@ class ModelPlacement:
     
     def expert_ids_at(self, device_id: int):
         return self.expert.get(device_id, [])
+    
+    def unique_expert_ids_at(self, device_id: int) -> List[int]:
+        return sorted(set(eid for _, eid in self.expert.get(device_id, [])))
+    
+    def local_num_experts_at(self, device_id: int) -> int:
+        if self.local_expert_counts is not None and device_id in self.local_expert_counts:
+            return self.local_expert_counts[device_id]
+        return len(self.unique_expert_ids_at(device_id))
     
     def attn_dp_rank_at(self, device_id: int) -> int:
         return self.attn_dp_ranks.get(device_id, 0)
@@ -490,9 +502,15 @@ class ColocatePlacement(PlacementBase):
             i: [i] for i in range(num_devices)
         }
         
+        local_expert_counts = {}
+        for dev_id in range(num_devices):
+            local_expert_counts[dev_id] = len(set(eid for _, eid in experts[dev_id]))
+        
         return ModelPlacement(
             attns, experts, 
-            {}, {}, device_groups=device_groups, is_hybrid=True
+            {}, {}, device_groups=device_groups,
+            local_expert_counts=local_expert_counts,
+            is_hybrid=True
         )
         
     @override
