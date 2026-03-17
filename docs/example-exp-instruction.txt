@@ -20,7 +20,7 @@ bench 2:
 curl -X POST http://localhost:6699/run_once \
         -H "Content-Type: application/json" \
         -d '{
-            "rate": 500,
+            "rate": 2000,
             "time": 4,
             "distribution": "poisson",
             "min_input_len": 64,

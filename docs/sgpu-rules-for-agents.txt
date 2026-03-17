@@ -1,12 +1,21 @@
-This current node is sgpu4, where you can always use ssh to directly access sgpu6, sgpu7, and sgpu8
-Each node has 2 L40S gpus.
-The corresponding ip of those 4,6,7,8 node are 10.0.0.1, 10.0.0.2, 10.0.0.3, 10.0.0.4, while using the RoCE-capable ens1f1np1 interface.
+The head node is sgpu0, where you can use ssh to directly access all worker nodes: sgpu2, sgpu3, sgpu4, sgpu6, sgpu7, sgpu8, sgpu9.
+Each node has 2 L40S gpus (total: 8 nodes × 2 GPUs = 16 L40S).
+
+Node IPs (RoCE-capable ens1f1np1 interface, mlx5_1 HCA):
+  sgpu0 (head) — 10.0.0.1
+  sgpu2         — 10.0.0.2
+  sgpu3         — 10.0.0.3
+  sgpu4         — 10.0.0.4
+  sgpu6         — 10.0.0.5
+  sgpu7         — 10.0.0.6
+  sgpu8         — 10.0.0.7
+  sgpu9         — 10.0.0.8
 
 All python environment, including this disagmoe project itself, is installed inside the "disag12" conda env, that's the env you should use.
 
-A ray cluster is already setup where sgpu4 is the head. If not, re create one where sgpu4 is the head.
+A ray cluster is already setup where sgpu0 is the head. If not, re create one where sgpu0 is the head.
 
-To recompile disagmoe cpp/cuda, we just use "make clean && make pip" in the disag12 conda env.
+To recompile disagmoe cpp/cuda files, we just use "make clean && make pip" in the disag12 conda env.
 To launch disagmoe, we always use the launch_server.sh
 
 To test the peak performance after disagmoe is up, can use something in benchmark_instructions.sh

@@ -176,7 +176,7 @@ echo "[8/8] Verifying build-time Python deps are importable..."
 python -c "import pybind11; import torch" >/dev/null
 
 echo "[8/8] Verifying pip build isolation is disabled in Makefile..."
-if grep -q "--no-build-isolation" "$REPO_DIR/Makefile"; then
+if grep -qF -- "--no-build-isolation" "$REPO_DIR/Makefile"; then
   true
 else
   echo "Expected --no-build-isolation in $REPO_DIR/Makefile pip target." >&2

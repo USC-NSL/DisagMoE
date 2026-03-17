@@ -414,7 +414,6 @@ class ExpertEngineMixin:
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch)
         if _sample:
-            torch.cuda.current_stream().synchronize()
             _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
             self._advanced_logger.log_moe_step(batch.num_tokens, _elapsed_ms)
         
