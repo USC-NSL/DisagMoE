@@ -215,7 +215,7 @@ class AttentionEngineMixin:
             token_mapping_tensor = attn_token_mapping_gdr.tensor[:len(exp_mappings)]
         else:
             token_mapping_tensor = torch.tensor(exp_mappings, dtype=torch.int32, device="cuda")
-            
+     
         new_meta_c.attn_dp_ranks = [self.attn_dp_rank] * len(expert_ids)
         hiddens = permute_tokens(result.hiddens, token_mapping_tensor)
         
@@ -442,7 +442,7 @@ class ExpertEngineMixin:
         batch.meta_c.exp_ids = []
         batch.meta_c.topk_weights = []
         batch.meta_c.step_layer()
-            
+        
         sync_event = torch.cuda.Event()
         sync_event.record(self.stream)
         return ExpertForwardResult(hiddens=permuted_tokens, sync_event=sync_event)
@@ -641,6 +641,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         # attention TP is deprecated
         # if self.is_attn_worker:
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
+        if hasattr(self.engine_config, 'max_pending_sends'):
+            self.dispatcher.set_max_pending_sends(self.engine_config.max_pending_sends)
         start_engine(self.scheduler, self.dispatcher)
         
         self.loop_thread = Thread(target=self.single_module_loop_overlap)

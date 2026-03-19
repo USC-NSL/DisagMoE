@@ -57,6 +57,7 @@ protected:
     std::vector<disagmoe::MqSocketPtr> peer_mq;
 
     std::queue<std::pair<TokenBatch, cudaEvent_t>> pending_sends;
+    int max_pending_sends_{16};
 
     ParallelConfig cfg;
 
@@ -65,6 +66,8 @@ protected:
     void _send_batch(int cid, uintptr_t buf, const BatchMetadata& meta);
 
     void clean_pending_sends();
+    
+    void drain_pending_sends_to(int max_pending);
 
     void send_batch_nonblocking(int cid, const TokenBatch &batch);
 
@@ -78,6 +81,8 @@ public:
                  std::vector<Channel_t> channels);
 
     void put(TokenBatch batch, int rank = 0);
+
+    void set_max_pending_sends(int val) { max_pending_sends_ = val; }
 
 };
 

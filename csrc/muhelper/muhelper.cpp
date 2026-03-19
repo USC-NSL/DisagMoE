@@ -7,6 +7,7 @@
 #include <ctime>
 #include <utility>
 #include <atomic>
+#include <thread>
 #include <pthread.h>
 
 #include "distributed.hpp"
@@ -96,13 +97,13 @@ void MuDispatcher::clean_pending_sends() {
         auto &pr = this->pending_sends.front();
         cudaError_t err = cudaEventQuery(pr.second);
         if (err == cudaSuccess) {
+            CUDACHECK(cudaEventDestroy(pr.second));
             this->pending_sends.pop();
             spin_count = 0;
         } else if (err == cudaErrorNotReady) {
             spin_count ++;
             if (spin_count > 10000) {
                 DMOE_LOG(ERROR) << "spin count too large: " << spin_count << LEND;
-                // print out the queue
                 while (!this->pending_sends.empty()) {
                     auto &pr = this->pending_sends.front();
                     DMOE_LOG(ERROR) << "pending send: metadata=" << *pr.first.metadata << LEND;
@@ -118,9 +119,24 @@ void MuDispatcher::clean_pending_sends() {
     }
 }
 
+void MuDispatcher::drain_pending_sends_to(int max_pending) {
+    while ((int)this->pending_sends.size() >= max_pending) {
+        auto &pr = this->pending_sends.front();
+        cudaError_t err = cudaEventQuery(pr.second);
+        if (err == cudaSuccess) {
+            CUDACHECK(cudaEventDestroy(pr.second));
+            this->pending_sends.pop();
+        } else {
+            std::this_thread::yield();
+        }
+    }
+}
+
 void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
     tx_range _{"MuDispatcher::send_batch_nonblocking"};
-    // Pack peer_id and metadata into a single message
+
+    this->drain_pending_sends_to(this->max_pending_sends_);
+
     MetadataWithPeerId packed_data;
     packed_data.peer_id = this->device_id;
     packed_data.metadata = *batch.metadata;
@@ -129,7 +145,7 @@ void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
     this->channels[cid]->send_batch(batch.data, *batch.metadata);
 
     cudaEvent_t event;
-    CUDACHECK(cudaEventCreate(&event));
+    CUDACHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
     this->channels[cid]->record_event(event);
     this->pending_sends.push(std::make_pair(batch, event));
 }

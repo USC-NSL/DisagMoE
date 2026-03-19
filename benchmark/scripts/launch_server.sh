@@ -70,6 +70,7 @@ dp_size=$WORLD_SIZE
 ep_size=$WORLD_SIZE
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
+MAX_PENDING_SENDS=16
 
 # UNIFIED_SCHEDULER_TYPE: flfs | defrag; only valid for colocate mode
 UNIFIED_SCHEDULER_TYPE="flfs"
@@ -151,6 +152,7 @@ python benchmark/server.py \
     $MODEL_ARGS \
     --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
     --max-attn-graph-bsz $MAX_BATCH_SIZE_ATTN \
+    --max-pending-sends $MAX_PENDING_SENDS \
     --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
     --block-size 16 \
     --placement $placement \

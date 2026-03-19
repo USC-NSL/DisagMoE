@@ -50,6 +50,7 @@ class EngineConfig:
     max_batch_size_attn: int = 160
     max_batch_size_expert: int = 512
     max_attn_graph_bsz: int = 160
+    max_pending_sends: int = 16
     
     # FIXME(hogura|20250110): temporary field, should be moved to other place
     enable_trace: bool = False
