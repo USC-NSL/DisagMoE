@@ -25,6 +25,7 @@ NCCL_IB_HCA="mlx5_1"
 NCCL_IB_GID_INDEX="3"
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=512
+MAX_PENDING_SENDS=16
 UNIFIED_SCHEDULER_TYPE="defrag"
 DEFRAG_WEIGHT_DECAY=0.8
 DEFRAG_LOOKAHEAD_STEPS=4
@@ -94,6 +95,7 @@ launch_server() {
         --moe-linear-quant $MOE_LINEAR_QUANT \
         --max-batch-size-attn $MAX_BATCH_SIZE_ATTN \
         --max-attn-graph-bsz $MAX_BATCH_SIZE_ATTN \
+        --max-pending-sends $MAX_PENDING_SENDS \
         --max-batch-size-exp $MAX_BATCH_SIZE_EXP \
         --block-size 16 \
         --placement $PLACEMENT \

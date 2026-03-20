@@ -26,6 +26,7 @@ WORLD_SIZE=$((N_NODE * N_GPU_PER_NODE))
 MODEL_NAME="gptoss_120b"
 GATE_PROFILE="${REPO_DIR}/gating_profiles/gating_math_gsm8k_200.parquet"
 SERVER_PORT=6699
+MAX_PENDING_SENDS=16
 
 # Benchmark payload — doubled input length range vs sphere-16 (128-256 instead of 64-128)
 BENCH_PAYLOAD='{
@@ -72,6 +73,7 @@ launch_server() {
         --moe-linear-quant none \
         --max-batch-size-attn 256 \
         --max-attn-graph-bsz 256 \
+        --max-pending-sends $MAX_PENDING_SENDS \
         --max-batch-size-exp 512 \
         --block-size 16 \
         --placement colocate \
