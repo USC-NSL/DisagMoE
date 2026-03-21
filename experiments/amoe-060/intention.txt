@@ -1,0 +1,4 @@
+Capture PyTorch Chrome-trace profiles (Perfetto-compatible) for two runs:
+original legal-court and balanced legal-court gate profiles, at -u 0.95,
+10k req 2000rps, 256-512 in/out. Goal: ~60s of steady-state execution
+captured per run for GPU/CPU timeline analysis.
