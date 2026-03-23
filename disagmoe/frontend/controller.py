@@ -367,6 +367,11 @@ class Controller:
             with open(queuing_path, "w") as f:
                 json.dump(data["queuing_delays"], f)
 
+            if "queue_snapshots" in data:
+                snapshot_path = os.path.join(dev_dir, f"queue_snapshots{suffix}.json")
+                with open(snapshot_path, "w") as f:
+                    json.dump(data["queue_snapshots"], f)
+
             out_paths.append(dev_dir)
         return out_paths
         

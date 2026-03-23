@@ -415,12 +415,15 @@ class ExpertEngineMixin:
     def execute_batch_expert(self, batch: ExpertForwardBatch) -> ExpertForwardResult:
         _sample = self._advanced_logger.should_sample()
         if _sample:
-            _t0 = time.perf_counter()
+            _evt_start = torch.cuda.Event(enable_timing=True)
+            _evt_end   = torch.cuda.Event(enable_timing=True)
+            _evt_start.record()
         with self._timer.range("execute"):
             hiddens = self.expert_executor.execute(batch)
         if _sample:
-            _elapsed_ms = (time.perf_counter() - _t0) * 1000.0
-            self._advanced_logger.log_moe_step(batch.num_tokens, _elapsed_ms)
+            _evt_end.record()
+            # Defer timing read — will be drained non-blockingly at next loop top
+            self._pending_moe_events.append((batch.num_tokens, _evt_start, _evt_end))
         
         topk_weights = batch.meta_c.topk_weights
         new_mappings = list(batch.meta_c.sort_by_attention())
@@ -508,6 +511,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
 
         from disagmoe.utils.advanced_logger import AdvancedLogger
         self._advanced_logger = AdvancedLogger(False, "", 0)
+        # Pending CUDA event pairs for non-blocking groupedGEMM timing.
+        # Each entry: (batch_size, start_event, end_event)
+        self._pending_moe_events: deque = deque()
         
         self.attn_dp_rank = None
         self.expert_ep_rank = None
@@ -844,6 +850,18 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         except zmq.Again:
             pass
         
+    def _drain_moe_events(self):
+        """Non-blockingly drain completed CUDA event pairs and log their GPU elapsed time.
+        Called at the top of each loop iteration — no synchronization, no stall.
+        """
+        while self._pending_moe_events:
+            bsz, evt_start, evt_end = self._pending_moe_events[0]
+            if not evt_end.query():  # GPU hasn't passed end marker yet — bail out
+                break
+            elapsed_ms = evt_start.elapsed_time(evt_end)  # accurate GPU time
+            self._advanced_logger.log_moe_step(bsz, elapsed_ms)
+            self._pending_moe_events.popleft()
+
     @torch.inference_mode()
     def single_module_loop_overlap(self):
         # should be used with cuda graph, some concerns
@@ -862,7 +880,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         
         try:
             while not self.end_flag:
+                self._drain_moe_events()
                 self.recv_new_request()
+                if self._advanced_logger.enabled:
+                    _pre_snap = list(self.scheduler.get_pool_snapshot())
+                    _pre_ts = time.monotonic()
                 _sched_t0 = time.perf_counter()
                 batch = self.scheduler.schedule()
                 forward_batch = None
@@ -871,11 +893,14 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     idle_conunt = 0
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
                     meta = batch_wrapper.metadata
+                    if self._advanced_logger.enabled:
+                        _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
+                        self._advanced_logger.log_queue_snapshot(_pre_ts, _unified_layer, _pre_snap)
                     if self._advanced_logger.should_sample() and meta.is_expert():
                         _layer = meta.layer_id
                         _delay_ms = _sched_ms / max(1, meta.num_tokens())
                         for _eid in set(meta.exp_ids):
-                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms)
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _pre_ts)
                     forward_batch = self.preprocess_batch(batch_wrapper)
                     if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
@@ -923,6 +948,9 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             while not self.end_flag:
                 self._timer.start("schedule")
                 self.recv_new_request()
+                if self._advanced_logger.enabled:
+                    _pre_snap = list(self.scheduler.get_pool_snapshot())
+                    _pre_ts = time.monotonic()
                 batch = self.scheduler.schedule()
                 if batch.data is None:
                     if not prev_schedule_empty:
@@ -941,13 +969,17 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 meta: BatchMetadata = batch_wrapper.metadata
 
+                if self._advanced_logger.enabled:
+                    _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
+                    self._advanced_logger.log_queue_snapshot(_pre_ts, _unified_layer, _pre_snap)
+
                 if self._advanced_logger.should_sample():
                     if meta.is_expert():
                         _schedule_ms = self._timer.get("schedule")
                         _layer = meta.layer_id
                         _delay_ms = _schedule_ms / max(1, meta.num_tokens())
                         for _eid in set(meta.exp_ids):
-                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms)
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _pre_ts)
                  
                 # self.stats_pre_process(batch)
                 self.step_profile(meta.num_tokens())
@@ -980,10 +1012,19 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         return self._queueing_delays
 
     def dump_advanced_logs(self, suffix: str = "") -> Optional[str]:
+        # Flush any remaining in-flight CUDA timing events before dumping.
+        # A sync here is acceptable — dump is called off the hot path.
+        if self._pending_moe_events:
+            torch.cuda.synchronize()
+            self._drain_moe_events()
         return self._advanced_logger.dump(suffix)
 
     def get_advanced_log_data(self) -> Optional[dict]:
         """Return collected advanced log data for central collection by controller."""
+        # Flush any remaining in-flight CUDA timing events before collecting.
+        if self._pending_moe_events:
+            torch.cuda.synchronize()
+            self._drain_moe_events()
         return self._advanced_logger.get_data()
     
     def get_pool_snapshot(self) -> List[int]:

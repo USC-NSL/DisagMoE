@@ -18,7 +18,10 @@ class AdvancedLogger:
 
         # Each entry: (batch_size, execution_time_ms, timestamp_s)
         self.moe_steps: List[Tuple[int, float, float]] = []
-        self.queuing_delays: Dict[Tuple[int, int], List[float]] = defaultdict(list)
+        # Each entry: (delay_ms, timestamp_s)
+        self.queuing_delays: Dict[Tuple[int, int], List[Tuple[float, float]]] = defaultdict(list)
+        # Each entry: (timestamp_s, scheduled_layer_id, layer_depths: List[int])
+        self.queue_snapshots: List[Tuple[float, int, List[int]]] = []
 
     def should_sample(self) -> bool:
         if not self.enabled:
@@ -30,10 +33,15 @@ class AdvancedLogger:
             return
         self.moe_steps.append((batch_size, execution_time_ms, time.monotonic()))
 
-    def log_queuing_delay(self, layer_id: int, expert_id: int, delay_ms: float):
+    def log_queuing_delay(self, layer_id: int, expert_id: int, delay_ms: float, timestamp_s: float = 0.0):
         if not self.enabled:
             return
-        self.queuing_delays[(layer_id, expert_id)].append(delay_ms)
+        self.queuing_delays[(layer_id, expert_id)].append((delay_ms, timestamp_s))
+
+    def log_queue_snapshot(self, timestamp_s: float, scheduled_layer_id: int, layer_depths: List[int]):
+        if not self.enabled:
+            return
+        self.queue_snapshots.append((timestamp_s, scheduled_layer_id, layer_depths))
 
     def get_data(self) -> Optional[dict]:
         """Return all collected data as a serializable dict (for cross-node collection)."""
@@ -41,12 +49,15 @@ class AdvancedLogger:
             return None
 
         queuing_data = {}
-        for (layer_id, expert_id), delays in self.queuing_delays.items():
+        for (layer_id, expert_id), entries in self.queuing_delays.items():
             key = f"{layer_id}_{expert_id}"
+            delays = [e[0] for e in entries]
+            timestamps = [e[1] for e in entries]
             queuing_data[key] = {
                 "layer_id": layer_id,
                 "expert_id": expert_id,
                 "delays_ms": delays,
+                "timestamps_s": timestamps,
                 "mean_ms": sum(delays) / len(delays) if delays else 0,
                 "count": len(delays),
             }
@@ -59,6 +70,11 @@ class AdvancedLogger:
                 "timestamps_s": [s[2] for s in self.moe_steps],
             },
             "queuing_delays": queuing_data,
+            "queue_snapshots": {
+                "timestamps_s": [s[0] for s in self.queue_snapshots],
+                "scheduled_layer_ids": [s[1] for s in self.queue_snapshots],
+                "layer_depths": [s[2] for s in self.queue_snapshots],
+            },
         }
 
     def dump(self, suffix: str = "") -> Optional[str]:
@@ -81,17 +97,31 @@ class AdvancedLogger:
 
         queuing_path = os.path.join(out_dir, f"queuing_delays{suffix}.json")
         queuing_data = {}
-        for (layer_id, expert_id), delays in self.queuing_delays.items():
+        for (layer_id, expert_id), entries in self.queuing_delays.items():
             key = f"{layer_id}_{expert_id}"
+            delays = [e[0] for e in entries]
+            timestamps = [e[1] for e in entries]
             queuing_data[key] = {
                 "layer_id": layer_id,
                 "expert_id": expert_id,
                 "delays_ms": delays,
+                "timestamps_s": timestamps,
                 "mean_ms": sum(delays) / len(delays) if delays else 0,
                 "count": len(delays),
             }
         with open(queuing_path, "w") as f:
             json.dump(queuing_data, f)
+
+        queue_snapshot_path = os.path.join(out_dir, f"queue_snapshots{suffix}.json")
+        with open(queue_snapshot_path, "w") as f:
+            json.dump(
+                {
+                    "timestamps_s": [s[0] for s in self.queue_snapshots],
+                    "scheduled_layer_ids": [s[1] for s in self.queue_snapshots],
+                    "layer_depths": [s[2] for s in self.queue_snapshots],
+                },
+                f,
+            )
 
         return out_dir
 
@@ -100,3 +130,4 @@ class AdvancedLogger:
             return
         self.moe_steps.clear()
         self.queuing_delays.clear()
+        self.queue_snapshots.clear()

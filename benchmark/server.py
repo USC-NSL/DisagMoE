@@ -116,15 +116,6 @@ def init_profile_endpoint():
     master.init_profile(profile_start_min_batch_size, profile_num_steps, profile_dir)
     return "init_profile executed successfully", 200
 
-@app.route('/get_pool_snapshot', methods=['GET'])
-def get_pool_snapshot_endpoint():
-    global master
-    results = master.get_pool_snapshot()
-    res_str = ""
-    for worker_id, snapshot in enumerate(results):
-        res_str += f"Worker {worker_id}: {snapshot}\n"
-    return f"get_pool_snapshot executed successfully\n{res_str}\n", 200
-
 @app.route('/get_topk_pool_snapshot', methods=['GET'])
 def get_topk_pool_snapshot_endpoint():
     global master
