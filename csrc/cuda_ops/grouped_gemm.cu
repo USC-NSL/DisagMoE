@@ -17,6 +17,7 @@
 #include <torch/extension.h>
 
 #include "cutlass/bfloat16.h"
+#include "cutlass/float8.h"
 #include "cutlass/complex.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
 #include "cutlass/gemm/kernel/gemm_grouped.h"
@@ -42,7 +43,7 @@ namespace disagmoe {
 using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ::cutlass::bfloat16_t, 8, float, float>;
 
-// Helper: build a GemmGrouped type from tile parameters
+// Helper: build a BF16×BF16 GemmGrouped type from tile parameters
 template <int TbM, int TbN, int TbK, int WpM, int WpN, int WpK, int Stages>
 using MakeGemmGrouped = ::cutlass::gemm::device::GemmGrouped<
     typename cutlass::gemm::kernel::DefaultGemmGrouped<
@@ -59,13 +60,32 @@ using MakeGemmGrouped = ::cutlass::gemm::device::GemmGrouped<
         ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
         Stages>::GemmKernel>;
 
-// LARGE: 32x256x64, warp 32x64x64, 3 stages
-// using GemmGroupedLarge = MakeGemmGrouped<128, 256, 64, 64, 64, 64, 3>; // for large bsz
-using GemmGroupedLarge = MakeGemmGrouped<32, 256, 64, 32, 64, 64, 3>; // for usual bsz
+// Helper: build a W8A16 (FP8 weight × BF16 activation) GemmGrouped type.
+// CUTLASS loads FP8 from GMEM/SMEM and converts to BF16 in registers
+// via NumericArrayConverter before the BF16 MMA instruction.
+template <int TbM, int TbN, int TbK, int WpM, int WpN, int WpK, int Stages>
+using MakeGemmGroupedFP8 = ::cutlass::gemm::device::GemmGrouped<
+    typename cutlass::gemm::kernel::DefaultGemmGrouped<
+        ::cutlass::bfloat16_t, ::cutlass::layout::RowMajor,
+        ::cutlass::ComplexTransform::kNone, 8,              // A: BF16, align 8
+        ::cutlass::float_e4m3_t, ::cutlass::layout::RowMajor,
+        ::cutlass::ComplexTransform::kNone, 16,             // B: FP8,  align 16
+        ::cutlass::bfloat16_t, ::cutlass::layout::RowMajor, float,
+        ::cutlass::arch::OpClassTensorOp, ::cutlass::arch::Sm80,
+        cutlass::gemm::GemmShape<TbM, TbN, TbK>,
+        cutlass::gemm::GemmShape<WpM, WpN, WpK>,
+        cutlass::gemm::GemmShape<16, 8, 16>,
+        EpilogueOp,
+        ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
+        Stages>::GemmKernel>;
 
-// SMALL: 32x128x64, warp 32x64x64, 3 stages
-// using GemmGroupedSmall = MakeGemmGrouped<128, 128, 64, 64, 64, 64, 3>; // for large bsz
-using GemmGroupedSmall = MakeGemmGrouped<32, 128, 64, 32, 64, 64, 3>; // for usual bsz
+// BF16 × BF16 kernel instantiations
+using GemmGroupedLarge = MakeGemmGrouped<32, 256, 64, 32, 64, 64, 3>;
+using GemmGroupedSmall = MakeGemmGrouped<32, 128, 64, 32, 64, 64, 3>;
+
+// W8A16 (FP8 × BF16) kernel instantiations — same tile configs
+using GemmGroupedFP8Large = MakeGemmGroupedFP8<32, 256, 64, 32, 64, 64, 3>;
+using GemmGroupedFP8Small = MakeGemmGroupedFP8<32, 128, 64, 32, 64, 64, 3>;
 
 // Cached state (set once by init_grouped_gemm)
 enum class TileConfig : int { UNINITIALIZED = 0, LARGE = 1, SMALL = 2 };
@@ -74,6 +94,7 @@ static TileConfig s_tile_config = TileConfig::UNINITIALIZED;
 static int        s_device_id   = -1;
 
 using Element = ::cutlass::bfloat16_t;
+using ElementFP8 = ::cutlass::float_e4m3_t;
 
 // --------------------------------------------------------------------------
 // GPU setup kernel (graph-capturable)
@@ -141,6 +162,11 @@ init_cutlass_for_runner(
         num_experts * sizeof(cutlass::gemm::GemmCoord),
         cudaMemcpyHostToDevice));
 
+    // Derive element types from the kernel (handles both BF16 and FP8 variants)
+    using ElemA = typename GemmGroupedT::ElementA;
+    using ElemB = typename GemmGroupedT::ElementB;
+    using ElemC = typename GemmGroupedT::ElementC;
+
     // Construct CUTLASS Arguments pointing to pre-allocated device buffers
     typename GemmGroupedT::EpilogueOutputOp::Params epilogue(1.0f, 0.0f);
     typename GemmGroupedT::Arguments arguments(
@@ -148,10 +174,10 @@ init_cutlass_for_runner(
         static_cast<int>(num_experts),
         threadblock_count,
         epilogue,
-        reinterpret_cast<Element**>(d_ptr_a.data_ptr()),
-        reinterpret_cast<Element**>(d_ptr_b.data_ptr()),
-        reinterpret_cast<Element**>(d_ptr_c.data_ptr()),
-        reinterpret_cast<Element**>(d_ptr_c.data_ptr()),  // D = C (in-place)
+        reinterpret_cast<ElemA const * const *>(d_ptr_a.data_ptr()),
+        reinterpret_cast<ElemB const * const *>(d_ptr_b.data_ptr()),
+        reinterpret_cast<ElemC const * const *>(d_ptr_c.data_ptr()),
+        reinterpret_cast<ElemC       * const *>(d_ptr_c.data_ptr()),  // D = C
         d_lda.data_ptr<int64_t>(),
         d_ldb.data_ptr<int64_t>(),
         d_ldc.data_ptr<int64_t>(),
@@ -326,6 +352,178 @@ void CutlassGemmRunner::setup_meta(torch::Tensor a, torch::Tensor c,
 void CutlassGemmRunner::run() {
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
     run_gemm_(stream);
+}
+
+// --------------------------------------------------------------------------
+// Post-GEMM per-expert-per-channel scale correction for W8A16.
+//
+// The FP8 CUTLASS kernel computes C_raw = A_bf16 × B_fp8.
+// The real result is C = C_raw × scale[expert, :] because the quantised
+// weight satisfies  W_real = W_fp8 × scale.
+//
+// Tokens are packed by expert (expert 0 first, then 1, …).  The kernel
+// determines expert assignment from batch_sizes via a short linear scan
+// (E is typically 8–64, so this is cheap).
+//
+// Launch config: <<<ceil(max_tokens*N / 256), 256>>> — graph-capturable.
+// --------------------------------------------------------------------------
+
+__global__ void apply_w8a16_output_scale_kernel(
+    const int64_t* __restrict__ batch_sizes,
+    Element*       __restrict__ output,
+    const float*   __restrict__ scale,
+    int N, int num_experts
+) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    int n     = static_cast<int>(idx % N);
+    int64_t token = idx / N;
+
+    int64_t offset = 0;
+    for (int e = 0; e < num_experts; ++e) {
+        int64_t next = offset + batch_sizes[e];
+        if (token < next) {
+            float val = static_cast<float>(output[idx]) * scale[e * N + n];
+            output[idx] = Element(val);
+            return;
+        }
+        offset = next;
+    }
+}
+
+// --------------------------------------------------------------------------
+// CutlassGemmRunnerFP8 implementation — native W8A16 CUTLASS kernel
+//
+// Uses MakeGemmGroupedFP8 (ElementB = float_e4m3_t).  CUTLASS loads FP8
+// from GMEM, converts to BF16 in registers via NumericArrayConverter,
+// and feeds the BF16 MMA instruction.  No separate dequant pass.
+// --------------------------------------------------------------------------
+
+CutlassGemmRunnerFP8::CutlassGemmRunnerFP8(
+    torch::Tensor fp8_weight,
+    torch::Tensor weight_scale,
+    int64_t max_tokens)
+{
+    TORCH_CHECK(s_tile_config != TileConfig::UNINITIALIZED,
+                "CutlassGemmRunnerFP8: call init_grouped_gemm() first.");
+    TORCH_CHECK(fp8_weight.is_cuda() &&
+                fp8_weight.scalar_type() == at::ScalarType::Float8_e4m3fn,
+                "fp8_weight must be a CUDA float8_e4m3fn tensor");
+    TORCH_CHECK(fp8_weight.ndimension() == 3,
+                "fp8_weight must be 3D [E, K, N]");
+    TORCH_CHECK(weight_scale.is_cuda() &&
+                weight_scale.scalar_type() == torch::kFloat32,
+                "weight_scale must be a CUDA float32 tensor");
+    TORCH_CHECK(weight_scale.ndimension() == 2,
+                "weight_scale must be 2D [E, N]");
+    TORCH_CHECK(fp8_weight.size(0) == weight_scale.size(0) &&
+                fp8_weight.size(2) == weight_scale.size(1),
+                "weight_scale shape [E, N] must match fp8_weight [E, K, N]");
+
+    fp8_weight_   = fp8_weight;
+    weight_scale_ = weight_scale;
+
+    int64_t E = fp8_weight.size(0);
+    int64_t K = fp8_weight.size(1);
+    int64_t N = fp8_weight.size(2);
+
+    num_experts_ = E;
+    K_ = K;
+    N_ = N;
+    max_tokens_ = max_tokens;
+
+    auto dev   = fp8_weight.device();
+    auto o_i8  = torch::TensorOptions().dtype(torch::kInt8).device(dev);
+    auto o_i64 = torch::TensorOptions().dtype(torch::kInt64).device(dev);
+
+    d_problems_ = torch::empty({static_cast<int64_t>(E * sizeof(cutlass::gemm::GemmCoord))}, o_i8);
+    d_ptr_a_    = torch::empty({static_cast<int64_t>(E * sizeof(Element*))}, o_i8);
+    d_ptr_b_    = torch::empty({static_cast<int64_t>(E * sizeof(ElementFP8*))}, o_i8);
+    d_ptr_c_    = torch::empty({static_cast<int64_t>(E * sizeof(Element*))}, o_i8);
+    d_lda_      = torch::empty({E}, o_i64);
+    d_ldb_      = torch::empty({E}, o_i64);
+    d_ldc_      = torch::empty({E}, o_i64);
+
+    d_lda_.fill_(K);
+    d_ldb_.fill_(N);
+    d_ldc_.fill_(N);
+
+    // FP8 weight pointers (constant, one-time H2D copy)
+    std::vector<ElementFP8*> ptr_b_host(E);
+    auto b_base = reinterpret_cast<ElementFP8*>(fp8_weight.data_ptr());
+    for (int64_t i = 0; i < E; ++i) {
+        ptr_b_host[i] = b_base + i * K * N;
+    }
+    CUDA_CALL(cudaMemcpy(d_ptr_b_.data_ptr(), ptr_b_host.data(),
+                         E * sizeof(ElementFP8*), cudaMemcpyHostToDevice));
+
+    CUDA_CALL(cudaMemset(d_ptr_a_.data_ptr(), 0, E * sizeof(Element*)));
+    CUDA_CALL(cudaMemset(d_ptr_c_.data_ptr(), 0, E * sizeof(Element*)));
+
+    int64_t max_tpe = max_tokens / E;
+    if (max_tpe <= 0) max_tpe = 1;
+
+    switch (s_tile_config) {
+        case TileConfig::LARGE:
+            run_gemm_ = init_cutlass_for_runner<GemmGroupedFP8Large>(
+                workspace_, d_problems_,
+                d_ptr_a_, d_ptr_b_, d_ptr_c_,
+                d_lda_, d_ldb_, d_ldc_,
+                E, max_tpe, K, N);
+            break;
+        case TileConfig::SMALL:
+            run_gemm_ = init_cutlass_for_runner<GemmGroupedFP8Small>(
+                workspace_, d_problems_,
+                d_ptr_a_, d_ptr_b_, d_ptr_c_,
+                d_lda_, d_ldb_, d_ldc_,
+                E, max_tpe, K, N);
+            break;
+        default:
+            TORCH_CHECK(false, "unreachable");
+    }
+
+    CUDA_CALL(cudaDeviceSynchronize());
+}
+
+void CutlassGemmRunnerFP8::setup_meta(torch::Tensor a, torch::Tensor c,
+                                       torch::Tensor batch_sizes) {
+    TORCH_CHECK(a.is_cuda() && c.is_cuda(), "a, c must be CUDA tensors");
+    TORCH_CHECK(batch_sizes.is_cuda() && batch_sizes.scalar_type() == torch::kInt64,
+                "batch_sizes must be a CUDA int64 tensor");
+
+    batch_sizes_ = batch_sizes;
+    c_out_       = c;
+
+    cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+
+    setup_grouped_gemm_args_kernel<<<1, 1, 0, stream>>>(
+        batch_sizes.data_ptr<int64_t>(),
+        reinterpret_cast<cutlass::gemm::GemmCoord*>(d_problems_.data_ptr()),
+        reinterpret_cast<Element**>(d_ptr_a_.data_ptr()),
+        reinterpret_cast<Element**>(d_ptr_c_.data_ptr()),
+        reinterpret_cast<Element*>(a.data_ptr()),
+        reinterpret_cast<Element*>(c.data_ptr()),
+        static_cast<int>(K_),
+        static_cast<int>(N_),
+        static_cast<int>(num_experts_));
+}
+
+void CutlassGemmRunnerFP8::run() {
+    cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+
+    run_gemm_(stream);
+
+    // Post-GEMM: apply per-expert-per-channel weight scale
+    constexpr int kBlock = 256;
+    int64_t max_elements = max_tokens_ * N_;
+    int grid = static_cast<int>((max_elements + kBlock - 1) / kBlock);
+
+    apply_w8a16_output_scale_kernel<<<grid, kBlock, 0, stream>>>(
+        batch_sizes_.data_ptr<int64_t>(),
+        reinterpret_cast<Element*>(c_out_.data_ptr()),
+        weight_scale_.data_ptr<float>(),
+        static_cast<int>(N_),
+        static_cast<int>(num_experts_));
 }
 
 }  // namespace disagmoe

@@ -175,4 +175,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
              "Update CUTLASS metadata arrays on device. Graph-capturable.")
         .def("run", &disagmoe::CutlassGemmRunner::run,
              "Launch CUTLASS grouped GEMM kernel. setup_meta() must be called first.");
+
+    py::class_<disagmoe::CutlassGemmRunnerFP8, std::shared_ptr<disagmoe::CutlassGemmRunnerFP8>>(m, "CutlassGemmRunnerFP8")
+        .def(py::init<torch::Tensor, torch::Tensor, int64_t>(),
+             py::arg("fp8_weight"), py::arg("weight_scale"), py::arg("max_tokens"))
+        .def("setup_meta", &disagmoe::CutlassGemmRunnerFP8::setup_meta,
+             py::arg("a"), py::arg("c"), py::arg("batch_sizes"))
+        .def("run", &disagmoe::CutlassGemmRunnerFP8::run);
 }
