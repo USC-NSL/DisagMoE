@@ -190,6 +190,8 @@ def launch(args):
     model_config.enable_trace = args.trace
     model_config.attn_qkv_quant = None if args.attn_qkv_quant in (None, "", "none") else args.attn_qkv_quant
     model_config.moe_linear_quant = None if getattr(args, "moe_linear_quant", None) in (None, "", "none") else args.moe_linear_quant
+    model_config.num_shared_experts = getattr(args, "num_shared_experts", 0) or 0
+    model_config.shared_expert_intermediate_size = getattr(args, "shared_expert_intermediate_size", None)
     
     engine_config = EngineConfig(
         enable_cuda_graph_attn=args.cuda_graph_attn,

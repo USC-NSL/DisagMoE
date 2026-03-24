@@ -118,6 +118,21 @@ class AttnExecutor(Executor):
             )
             qkv_quant_config = None
         
+        # Build quantization config for shared experts
+        shared_quant_config = None
+        try:
+            # Shared experts use the same quant as attention QKV (they run on attn GPU)
+            shared_method = getattr(self.model_config, "attn_qkv_quant", None)
+            if shared_method and shared_method != "none":
+                if shared_method == "fp8":
+                    shared_quant_config = Fp8Config(activation_scheme="dynamic")
+                    get_logger().info(f"Successfully built FP8 quant config for shared experts.")
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to build shared expert quantization config: {e}. Falling back to unquantized."
+            )
+            shared_quant_config = None
+
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -129,6 +144,10 @@ class AttnExecutor(Executor):
                 cache_config=self.vllm_cache_config,
                 quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
+                num_shared_experts=getattr(self.model_config, "num_shared_experts", 0),
+                shared_expert_intermediate_size=getattr(self.model_config, "shared_expert_intermediate_size", None),
+                quant_config_shared=shared_quant_config,
+                intermediate_size=getattr(self.model_config, "intermediate_size", None),
             ) for layer_id in range(self.num_layers)
         ]
         _log_memory_usage("After allocate attention parameters")
@@ -553,6 +572,16 @@ class ParallelAttnExecutor(AttnExecutor):
                 f"Failed to build QKV quantization config '{getattr(self.model_config, 'attn_qkv_quant', None)}': {e}. Falling back to unquantized."
             )
             qkv_quant_config = None
+        # Build quantization config for shared experts (parallel path)
+        shared_quant_config = None
+        try:
+            shared_method = getattr(self.model_config, "attn_qkv_quant", None)
+            if shared_method and shared_method != "none":
+                if shared_method == "fp8":
+                    shared_quant_config = Fp8Config(activation_scheme="dynamic")
+        except Exception:
+            shared_quant_config = None
+
         self.operators = [
             MoEAttention(
                 layer_id,
@@ -564,6 +593,10 @@ class ParallelAttnExecutor(AttnExecutor):
                 tp_rank=model_config.rank,
                 quant_config_qkv=qkv_quant_config,
                 gate_profile_bytes=self.gate_profile_bytes,
+                num_shared_experts=getattr(self.model_config, "num_shared_experts", 0),
+                shared_expert_intermediate_size=getattr(self.model_config, "shared_expert_intermediate_size", None),
+                quant_config_shared=shared_quant_config,
+                intermediate_size=getattr(self.model_config, "intermediate_size", None),
             ) for layer_id in range(self.num_layers)
         ]
         assert not cache_config.cache_dtype.startswith("fp8") # flash attn supports only fp16 & bf16
