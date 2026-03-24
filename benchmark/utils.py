@@ -71,6 +71,10 @@ def add_model_arguments(parser: ArgumentParser):
     parser.add_argument("--attn-qkv-quant", type=str, default="none", choices=["none", "fp8"], help="quantization method for attention QKV projection")
     parser.add_argument("--moe-linear-quant", type=str, default="none", choices=["none", "fp8"], help="quantization method for MoE experts linear (Serial path)")
     
+    # Shared expert configuration
+    parser.add_argument("--num-shared-experts", type=int, default=0, help="number of shared experts (process all tokens, no routing). 0 = disabled.")
+    parser.add_argument("--shared-expert-intermediate-size", type=int, default=None, help="intermediate size for shared experts (default: hidden_size // num_experts * top_k)")
+    
 def add_cluster_arguments(parser: ArgumentParser):
     parser.add_argument("-N", "--num-nodes", type=int, default=1, help="number of nodes")
     parser.add_argument("-g", "--num-gpus", type=int, default=4, help="number of gpus per node")

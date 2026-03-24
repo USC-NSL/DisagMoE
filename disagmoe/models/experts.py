@@ -760,3 +760,59 @@ class MoEExpertsSerial(MoEExpertsCUTLASS):
             s += bs
 
         return torch.cat(results)
+
+
+class SharedExpertMLP(torch.nn.Module):
+    """Shared expert MLP that processes ALL tokens (no routing).
+
+    Runs on the attention GPU after post-attention layernorm.
+    Uses ReplicatedLinear for automatic FP8 quantization support
+    when quant_config is provided.
+
+    Architecture: gate_up_proj -> SiLU gate -> down_proj
+    Same structure as a single routed expert but applied to every token.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        params_dtype: Optional[torch.dtype] = None,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+
+        if params_dtype is None:
+            params_dtype = torch.get_default_dtype()
+
+        self.gate_up_proj = ReplicatedLinear(
+            input_size=hidden_size,
+            output_size=intermediate_size * 2,
+            bias=False,
+            params_dtype=params_dtype,
+            quant_config=quant_config,
+            prefix=f"{prefix}.gate_up_proj",
+        )
+        self.down_proj = ReplicatedLinear(
+            input_size=intermediate_size,
+            output_size=hidden_size,
+            bias=False,
+            params_dtype=params_dtype,
+            quant_config=quant_config,
+            prefix=f"{prefix}.down_proj",
+        )
+        self.act_fn = torch.nn.SiLU()
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # gate_up: [num_tokens, hidden_size] -> [num_tokens, intermediate_size * 2]
+        gate_up, _ = self.gate_up_proj(hidden_states)
+        gate = gate_up[:, : self.intermediate_size]
+        up = gate_up[:, self.intermediate_size :]
+        # SiLU-gated activation
+        x = self.act_fn(gate) * up
+        # down: [num_tokens, intermediate_size] -> [num_tokens, hidden_size]
+        down, _ = self.down_proj(x)
+        return down

@@ -30,6 +30,10 @@ class ModelConfig:
     # e.g., "fp8" or None
     moe_linear_quant: Optional[str] = None
     
+    # Shared expert configuration
+    num_shared_experts: int = 0
+    shared_expert_intermediate_size: Optional[int] = None
+    
     @property
     def num_experts_per_rank(self):
         return self.num_experts // self.ep_size
