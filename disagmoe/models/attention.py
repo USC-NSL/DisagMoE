@@ -11,6 +11,7 @@ from disagmoe.models.linear import (QKVParallelLinear,
                                                RowParallelLinear)
 from disagmoe.models.gate import ProfileDrivenRouter
 from disagmoe.ops.memory import permute_tokens_cuda
+from disagmoe.models.experts import SharedExpertMLP
 
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
@@ -93,6 +94,10 @@ class MoEAttention(nn.Module):
         params_dtype: Optional[torch.dtype] = None,
         prefix: str = "",
         gate_profile_bytes: Optional[bytes] = None,
+        num_shared_experts: int = 0,
+        shared_expert_intermediate_size: Optional[int] = None,
+        quant_config_shared: Optional[QuantizationConfig] = None,
+        intermediate_size: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.layer_id = layer_id
@@ -188,6 +193,23 @@ class MoEAttention(nn.Module):
         else:
             self.weighted_router = None
 
+        # Shared experts: process ALL tokens, no routing
+        self.num_shared_experts = num_shared_experts
+        if num_shared_experts > 0:
+            se_intermediate = shared_expert_intermediate_size if shared_expert_intermediate_size is not None else (intermediate_size if intermediate_size is not None else hidden_size)
+            self.shared_experts = nn.ModuleList([
+                SharedExpertMLP(
+                    hidden_size=hidden_size,
+                    intermediate_size=se_intermediate,
+                    params_dtype=params_dtype,
+                    quant_config=quant_config_shared,
+                    prefix=f"{prefix}.shared_experts.{i}",
+                )
+                for i in range(num_shared_experts)
+            ])
+        else:
+            self.shared_experts = None
+
     def _random_routing_with_weights(self, router_logits: torch.Tensor) -> torch.Tensor:
         num_tokens = router_logits.shape[0]
         weights = self.weighted_router.expand(num_tokens, -1)
@@ -227,6 +249,14 @@ class MoEAttention(nn.Module):
         attn_output = self.attn(q, k, v, kv_cache=kv_cache, attn_metadata=attn_metadata)
         output, _ = self.o_proj(attn_output)
         output, residual = self.post_attention_layernorm(output, residual)
+
+        # Shared experts: process all tokens and add to output
+        if self.shared_experts is not None:
+            shared_output = torch.zeros_like(output)
+            for shared_expert in self.shared_experts:
+                shared_output = shared_output + shared_expert(output)
+            output = output + shared_output
+
         router_logits, _ = self.gate(output)
         
         if self.profile_driven_router is not None:
