@@ -1,0 +1,124 @@
+Delta NCCL Networking Guide
+===========================
+
+Interconnect: HPE Slingshot 200Gb (Cassini 1 NIC)
+Interface:    hsn0 (CXI fabric, /sys/class/cxi/cxi0)
+No InfiniBand — all inter-node NCCL goes through Slingshot via aws-ofi-nccl.
+
+
+1. NCCL Transport Stack
+------------------------
+
+  NCCL -> aws-ofi-nccl plugin -> libfabric 1.22.0 -> CXI provider -> Slingshot 200Gb
+
+  Intra-node: NVLink/PCIe (automatic, no config needed)
+  Inter-node: Slingshot via aws-ofi-nccl
+
+
+2. Required Environment Variables
+----------------------------------
+
+  # NCCL network plugin (aws-ofi-nccl via Slingshot CXI)
+  export NCCL_NET="AWS Libfabric"
+  export FI_PROVIDER=cxi
+  export LD_PRELOAD=/opt/cray/libfabric/1.22.0/lib64/libfabric.so.1
+
+  # NCCL library (compiled from source)
+  export LD_LIBRARY_PATH=/projects/bgro/spark36/nccl-2.27/build/lib:$LD_LIBRARY_PATH
+
+  # aws-ofi-nccl plugin + libfabric
+  export LD_LIBRARY_PATH=/sw/rh9.4/user/aws-ofi-nccl-1.14.2-lf1.22.0-cu12.8/lib:/opt/cray/libfabric/1.22.0/lib64:$LD_LIBRARY_PATH
+
+  Alternatively, load the module (conflicts with "nccl" module):
+
+    module load cudatoolkit/25.3_12.8 libfabric/1.22.0
+    module load aws-ofi-nccl/1.14.2
+
+  The module sets NCCL_NET, FI_PROVIDER, LD_LIBRARY_PATH, and LD_PRELOAD
+  automatically.
+
+
+3. Compiling nccl-tests
+------------------------
+
+  OpenMPI 4.1.5 from NVIDIA HPC SDK, nvcc from CUDA 12.8, g++ as host compiler.
+
+  # Clone
+  env -i HOME=$HOME PATH=/usr/bin:/bin \
+    git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git
+
+  # Build (on a compute node via srun)
+  export PATH=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5/bin:/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/bin:/bin
+  export LD_LIBRARY_PATH=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5/lib:/projects/bgro/spark36/nccl-2.27/build/lib:/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8/lib64
+
+  cd nccl-tests
+  make -j16 MPI=1 CXX=g++ \
+    MPI_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5 \
+    CUDA_HOME=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8 \
+    NCCL_HOME=/projects/bgro/spark36/nccl-2.27/build \
+    NVCC_GENCODE="-gencode=arch=compute_80,code=sm_80"
+
+  Key points:
+  - CXX=g++ is required (default CC resolves to Cray wrapper which is not in PATH)
+  - NVCC_GENCODE targets SM 8.0 (A100) only, speeds up build
+  - MPI_HOME provides -I and -L paths; nvcc uses g++ as host compiler
+  - Clone with env -i to avoid .bashrc LD_LIBRARY_PATH breaking system git
+
+
+4. Running nccl-tests
+----------------------
+
+  Must run mpirun from the login node (not inside srun).
+  OpenMPI SSH-launches processes to compute nodes.
+
+  export PATH=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5/bin:$PATH
+  export LD_LIBRARY_PATH=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5/lib:/projects/bgro/spark36/nccl-2.27/build/lib:/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8/lib64:/sw/rh9.4/user/aws-ofi-nccl-1.14.2-lf1.22.0-cu12.8/lib:/opt/cray/libfabric/1.22.0/lib64
+  export OPAL_PREFIX=/opt/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/openmpi4/openmpi-4.1.5
+
+  # 16 GPUs across 4 nodes (4 GPUs per node)
+  mpirun --host gpua069:4,gpua080:4,gpua082:4,gpua095:4 -np 16 \
+    -x LD_LIBRARY_PATH \
+    -x NCCL_NET="AWS Libfabric" -x FI_PROVIDER=cxi -x NCCL_DEBUG=WARN \
+    -x UCX_WARN_UNUSED_ENV_VARS=n \
+    -x LD_PRELOAD=/opt/cray/libfabric/1.22.0/lib64/libfabric.so.1 \
+    --mca btl tcp,self --mca btl_tcp_if_include hsn0 \
+    --mca plm_rsh_agent /usr/bin/ssh \
+    ./build/all_reduce_perf -b 8 -e 1G -f 2 -g 1
+
+  # 4 GPUs, 1 per node (pure inter-node)
+  mpirun --host gpua069:1,gpua080:1,gpua082:1,gpua095:1 -np 4 \
+    ... (same -x flags) \
+    ./build/all_reduce_perf -b 8 -e 1G -f 2 -g 1
+
+  Key mpirun flags:
+  - --mca btl tcp,self --mca btl_tcp_if_include hsn0
+      Routes MPI bootstrap over hsn0 (Slingshot), not eth0
+  - --mca plm_rsh_agent /usr/bin/ssh
+      Uses system SSH to launch on compute nodes
+  - -x LD_PRELOAD=.../libfabric.so.1
+      Required for CXI provider to load
+
+
+5. Benchmark Results (March 2026)
+----------------------------------
+
+  NCCL 2.27.7, aws-ofi-nccl 1.14.2, libfabric 1.22.0, CXI provider
+  4 nodes x 4 A100-SXM4-40GB = 16 GPUs
+
+  all_reduce (16 GPU, 4/node):  peak busbw = 14.63 GB/s, avg = 3.54 GB/s
+  all_reduce (4 GPU, 1/node):   peak busbw = 10.30 GB/s, avg = 3.31 GB/s
+  all_gather (16 GPU, 4/node):  peak busbw = 14.39 GB/s, avg = 3.23 GB/s
+  all_gather (4 GPU, 1/node):   peak busbw = 10.04 GB/s, avg = 3.20 GB/s
+
+  NCCL INFO confirms: provider=cxi, fabric=cxi, transport=SENDRECV,
+  all channels via NET/AWS Libfabric/0. GDR=0, PXN=0.
+
+
+Notes
+-----
+- The .bashrc LD_LIBRARY_PATH (from conda/pip nvidia libs) can break system
+  tools like git. Clone repos with env -i to avoid this.
+- The aws-ofi-nccl module conflicts with the "nccl" module. Since we use
+  NCCL compiled from source (not a module), just set env vars directly.
+- GDR (GPUDirect RDMA) is not active (GDR=0 in logs). Enabling it could
+  improve bandwidth but requires CUDA-aware libfabric configuration.
