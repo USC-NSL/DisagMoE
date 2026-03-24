@@ -60,21 +60,21 @@ using MakeGemmGrouped = ::cutlass::gemm::device::GemmGrouped<
         ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
         Stages>::GemmKernel>;
 
-// Helper: build a W8A16 (FP8 weight × BF16 activation) GemmGrouped type.
-// CUTLASS loads FP8 from GMEM/SMEM and converts to BF16 in registers
-// via NumericArrayConverter before the BF16 MMA instruction.
+// Helper: build a native SM89 FP8xFP8 GemmGrouped type.
+// Uses SM89 FP8 tensor cores (mma.sync 16x8x32 e4m3).
+// Activations are quantised BF16->FP8 online before the GEMM call.
 template <int TbM, int TbN, int TbK, int WpM, int WpN, int WpK, int Stages>
 using MakeGemmGroupedFP8 = ::cutlass::gemm::device::GemmGrouped<
     typename cutlass::gemm::kernel::DefaultGemmGrouped<
-        ::cutlass::bfloat16_t, ::cutlass::layout::RowMajor,
-        ::cutlass::ComplexTransform::kNone, 8,              // A: BF16, align 8
         ::cutlass::float_e4m3_t, ::cutlass::layout::RowMajor,
-        ::cutlass::ComplexTransform::kNone, 16,             // B: FP8,  align 16
+        ::cutlass::ComplexTransform::kNone, 16,             // A: FP8, align 16
+        ::cutlass::float_e4m3_t, ::cutlass::layout::ColumnMajor,
+        ::cutlass::ComplexTransform::kNone, 16,             // B: FP8 col-major, align 16
         ::cutlass::bfloat16_t, ::cutlass::layout::RowMajor, float,
-        ::cutlass::arch::OpClassTensorOp, ::cutlass::arch::Sm80,
+        ::cutlass::arch::OpClassTensorOp, ::cutlass::arch::Sm89,
         cutlass::gemm::GemmShape<TbM, TbN, TbK>,
         cutlass::gemm::GemmShape<WpM, WpN, WpK>,
-        cutlass::gemm::GemmShape<16, 8, 16>,
+        cutlass::gemm::GemmShape<16, 8, 32>,
         EpilogueOp,
         ::cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle,
         Stages>::GemmKernel>;
@@ -116,6 +116,32 @@ __global__ void setup_grouped_gemm_args_kernel(
     int num_experts
 ) {
     // E is small (typically 8-64), single-thread sequential scan is fine.
+    if (threadIdx.x == 0) {
+        int64_t offset = 0;
+        for (int i = 0; i < num_experts; ++i) {
+            int64_t M = batch_sizes[i];
+            problems[i] = cutlass::gemm::GemmCoord(
+                static_cast<int>(M), N, K);
+            ptr_a[i] = a_base + offset * K;
+            ptr_c[i] = c_base + offset * N;
+            offset += M;
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// FP8 variant of the setup kernel — ptr_a holds ElementFP8 pointers.
+// --------------------------------------------------------------------------
+
+__global__ void setup_grouped_gemm_args_fp8_kernel(
+    const int64_t* __restrict__ batch_sizes,
+    cutlass::gemm::GemmCoord* __restrict__ problems,
+    ElementFP8** __restrict__ ptr_a,
+    Element**    __restrict__ ptr_c,
+    ElementFP8* a_base,
+    Element*    c_base,
+    int K, int N, int num_experts
+) {
     if (threadIdx.x == 0) {
         int64_t offset = 0;
         for (int i = 0; i < num_experts; ++i) {
@@ -174,14 +200,14 @@ init_cutlass_for_runner(
         static_cast<int>(num_experts),
         threadblock_count,
         epilogue,
-        reinterpret_cast<ElemA const * const *>(d_ptr_a.data_ptr()),
-        reinterpret_cast<ElemB const * const *>(d_ptr_b.data_ptr()),
-        reinterpret_cast<ElemC const * const *>(d_ptr_c.data_ptr()),
-        reinterpret_cast<ElemC       * const *>(d_ptr_c.data_ptr()),  // D = C
-        d_lda.data_ptr<int64_t>(),
-        d_ldb.data_ptr<int64_t>(),
-        d_ldc.data_ptr<int64_t>(),
-        d_ldc.data_ptr<int64_t>(),
+        reinterpret_cast<ElemA**>(d_ptr_a.data_ptr()),
+        reinterpret_cast<ElemB**>(d_ptr_b.data_ptr()),
+        reinterpret_cast<ElemC**>(d_ptr_c.data_ptr()),
+        reinterpret_cast<ElemC**>(d_ptr_c.data_ptr()),  // D = C
+        reinterpret_cast<int64_t*>(d_lda.data_ptr()),
+        reinterpret_cast<int64_t*>(d_ldb.data_ptr()),
+        reinterpret_cast<int64_t*>(d_ldc.data_ptr()),
+        reinterpret_cast<int64_t*>(d_ldc.data_ptr()),
         /*host_problem_sizes=*/nullptr);
 
     // Allocate CUTLASS workspace
@@ -392,11 +418,11 @@ __global__ void apply_w8a16_output_scale_kernel(
 }
 
 // --------------------------------------------------------------------------
-// CutlassGemmRunnerFP8 implementation — native W8A16 CUTLASS kernel
+// CutlassGemmRunnerFP8 implementation — native SM89 FP8 CUTLASS kernel
 //
-// Uses MakeGemmGroupedFP8 (ElementB = float_e4m3_t).  CUTLASS loads FP8
-// from GMEM, converts to BF16 in registers via NumericArrayConverter,
-// and feeds the BF16 MMA instruction.  No separate dequant pass.
+// Uses MakeGemmGroupedFP8 (both A and B are float_e4m3_t on SM89).
+// BF16 activations are quantised to FP8 online before the GEMM.
+// Post-GEMM per-channel scale correction restores the true output.
 // --------------------------------------------------------------------------
 
 CutlassGemmRunnerFP8::CutlassGemmRunnerFP8(
@@ -437,7 +463,7 @@ CutlassGemmRunnerFP8::CutlassGemmRunnerFP8(
     auto o_i64 = torch::TensorOptions().dtype(torch::kInt64).device(dev);
 
     d_problems_ = torch::empty({static_cast<int64_t>(E * sizeof(cutlass::gemm::GemmCoord))}, o_i8);
-    d_ptr_a_    = torch::empty({static_cast<int64_t>(E * sizeof(Element*))}, o_i8);
+    d_ptr_a_    = torch::empty({static_cast<int64_t>(E * sizeof(ElementFP8*))}, o_i8);
     d_ptr_b_    = torch::empty({static_cast<int64_t>(E * sizeof(ElementFP8*))}, o_i8);
     d_ptr_c_    = torch::empty({static_cast<int64_t>(E * sizeof(Element*))}, o_i8);
     d_lda_      = torch::empty({E}, o_i64);
@@ -445,19 +471,23 @@ CutlassGemmRunnerFP8::CutlassGemmRunnerFP8(
     d_ldc_      = torch::empty({E}, o_i64);
 
     d_lda_.fill_(K);
-    d_ldb_.fill_(N);
+    d_ldb_.fill_(K);   // ColumnMajor B: leading dim = K
     d_ldc_.fill_(N);
 
-    // FP8 weight pointers (constant, one-time H2D copy)
+    // Transpose weights from [E, K, N] row-major to [E, N, K] row-major
+    // (equivalent to [E, K, N] column-major — canonical TN layout for CUTLASS).
+    fp8_weight_T_ = fp8_weight.transpose(1, 2).contiguous();
+
+    // FP8 weight pointers into the transposed tensor
     std::vector<ElementFP8*> ptr_b_host(E);
-    auto b_base = reinterpret_cast<ElementFP8*>(fp8_weight.data_ptr());
+    auto b_base = reinterpret_cast<ElementFP8*>(fp8_weight_T_.data_ptr());
     for (int64_t i = 0; i < E; ++i) {
-        ptr_b_host[i] = b_base + i * K * N;
+        ptr_b_host[i] = b_base + i * N * K;
     }
     CUDA_CALL(cudaMemcpy(d_ptr_b_.data_ptr(), ptr_b_host.data(),
                          E * sizeof(ElementFP8*), cudaMemcpyHostToDevice));
 
-    CUDA_CALL(cudaMemset(d_ptr_a_.data_ptr(), 0, E * sizeof(Element*)));
+    CUDA_CALL(cudaMemset(d_ptr_a_.data_ptr(), 0, E * sizeof(ElementFP8*)));
     CUDA_CALL(cudaMemset(d_ptr_c_.data_ptr(), 0, E * sizeof(Element*)));
 
     int64_t max_tpe = max_tokens / E;
@@ -487,7 +517,9 @@ CutlassGemmRunnerFP8::CutlassGemmRunnerFP8(
 
 void CutlassGemmRunnerFP8::setup_meta(torch::Tensor a, torch::Tensor c,
                                        torch::Tensor batch_sizes) {
-    TORCH_CHECK(a.is_cuda() && c.is_cuda(), "a, c must be CUDA tensors");
+    TORCH_CHECK(a.is_cuda() && a.scalar_type() == at::ScalarType::Float8_e4m3fn,
+                "a must be a CUDA float8_e4m3fn tensor (quantize on Python side)");
+    TORCH_CHECK(c.is_cuda(), "c must be a CUDA tensor");
     TORCH_CHECK(batch_sizes.is_cuda() && batch_sizes.scalar_type() == torch::kInt64,
                 "batch_sizes must be a CUDA int64 tensor");
 
@@ -496,12 +528,13 @@ void CutlassGemmRunnerFP8::setup_meta(torch::Tensor a, torch::Tensor c,
 
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
 
-    setup_grouped_gemm_args_kernel<<<1, 1, 0, stream>>>(
+    // Activations are already FP8 -- set up CUTLASS argument arrays directly
+    setup_grouped_gemm_args_fp8_kernel<<<1, 1, 0, stream>>>(
         batch_sizes.data_ptr<int64_t>(),
         reinterpret_cast<cutlass::gemm::GemmCoord*>(d_problems_.data_ptr()),
-        reinterpret_cast<Element**>(d_ptr_a_.data_ptr()),
+        reinterpret_cast<ElementFP8**>(d_ptr_a_.data_ptr()),
         reinterpret_cast<Element**>(d_ptr_c_.data_ptr()),
-        reinterpret_cast<Element*>(a.data_ptr()),
+        reinterpret_cast<ElementFP8*>(a.data_ptr()),
         reinterpret_cast<Element*>(c.data_ptr()),
         static_cast<int>(K_),
         static_cast<int>(N_),

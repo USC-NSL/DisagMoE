@@ -100,6 +100,7 @@ private:
 
     torch::Tensor batch_sizes_;    // cached from setup_meta for scale kernel
     torch::Tensor c_out_;          // cached from setup_meta for scale kernel
+    torch::Tensor fp8_weight_T_;    // [E, N, K] transposed FP8 weights
 
     int64_t num_experts_ = 0;
     int64_t K_ = 0;

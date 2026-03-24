@@ -177,14 +177,24 @@ class MoEExpertsCUTLASSFP8(torch.nn.Module):
             device=hiddens.device,
         )
 
-        self.w13_runner.setup_meta(hiddens, cache_up, batch_sizes)
+        # Quantize BF16 activations to FP8 on Python side (following DeepGEMM path)
+        hiddens_fp8, _sf = sglang_per_token_group_quant_fp8(
+            hiddens, group_size=128, scale_ue8m0=False
+        )
+
+        self.w13_runner.setup_meta(hiddens_fp8, cache_up, batch_sizes)
         self.w13_runner.run()
         up = (
             self.act_fn(cache_up[:, : self.intermediate_size])
             * cache_up[:, self.intermediate_size :]
         )
 
-        self.w2_runner.setup_meta(up, down_out, batch_sizes)
+        # Quantize intermediate activations to FP8
+        up_fp8, _sf_up = sglang_per_token_group_quant_fp8(
+            up, group_size=128, scale_ue8m0=False
+        )
+
+        self.w2_runner.setup_meta(up_fp8, down_out, batch_sizes)
         self.w2_runner.run()
         return down_out
 
