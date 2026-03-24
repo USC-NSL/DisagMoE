@@ -49,10 +49,27 @@ public:
     void set_schedule_block(int step);
     void set_schedule_token_threshold(int attn_token_threshold, int expert_token_threshold);
 
+    // Bundles a scheduling result with the pre-schedule pool snapshot taken
+    // atomically in the same call, so callers get aligned (batch, snapshot) pairs.
+    struct ScheduleTrace {
+        TokenBatch batch;                  // the scheduled batch (may be empty)
+        std::vector<int> pool_snapshot;    // queue depths captured before dequeue
+    };
+
+    // Schedule the next batch; internally delegates to schedule_trace().
     TokenBatch schedule();
+    // Schedule and return both the batch and the pre-schedule pool snapshot.
+    ScheduleTrace schedule_trace();
+
+    // Pool-specific schedule helpers (return batch only).
     TokenBatch schedule_expert();
     TokenBatch schedule_attention();
     TokenBatch schedule_unified();
+
+    // Pool-specific schedule helpers that also capture the aligned snapshot.
+    ScheduleTrace schedule_trace_expert();
+    ScheduleTrace schedule_trace_attention();
+    ScheduleTrace schedule_trace_unified();
     
     inline bool is_attention() const { return attn_pool.get() != nullptr; }
     inline bool is_expert() const { return expert_pool.get() != nullptr; }

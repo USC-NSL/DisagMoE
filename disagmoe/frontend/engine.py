@@ -882,9 +882,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             while not self.end_flag:
                 self._drain_moe_events()
                 self.recv_new_request()
-                if self._advanced_logger.enabled:
-                    _pre_snap = list(self.scheduler.get_pool_snapshot())
-                    _pre_ts = time.monotonic()
                 _sched_t0 = time.perf_counter()
                 batch = self.scheduler.schedule()
                 forward_batch = None
@@ -894,13 +891,15 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
                     meta = batch_wrapper.metadata
                     if self._advanced_logger.enabled:
+                        _sched_ts = time.monotonic()
+                        _pool_snapshot = list(self.scheduler.get_pool_snapshot())
                         _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
-                        self._advanced_logger.log_queue_snapshot(_pre_ts, _unified_layer, _pre_snap)
+                        self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
                     if self._advanced_logger.should_sample() and meta.is_expert():
                         _layer = meta.layer_id
                         _delay_ms = _sched_ms / max(1, meta.num_tokens())
                         for _eid in set(meta.exp_ids):
-                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _pre_ts)
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _sched_ts)
                     forward_batch = self.preprocess_batch(batch_wrapper)
                     if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
@@ -948,9 +947,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             while not self.end_flag:
                 self._timer.start("schedule")
                 self.recv_new_request()
-                if self._advanced_logger.enabled:
-                    _pre_snap = list(self.scheduler.get_pool_snapshot())
-                    _pre_ts = time.monotonic()
                 batch = self.scheduler.schedule()
                 if batch.data is None:
                     if not prev_schedule_empty:
@@ -970,8 +966,10 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 meta: BatchMetadata = batch_wrapper.metadata
 
                 if self._advanced_logger.enabled:
+                    _sched_ts = time.monotonic()
+                    _pool_snapshot = list(self.scheduler.get_pool_snapshot())
                     _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
-                    self._advanced_logger.log_queue_snapshot(_pre_ts, _unified_layer, _pre_snap)
+                    self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
 
                 if self._advanced_logger.should_sample():
                     if meta.is_expert():
@@ -979,7 +977,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                         _layer = meta.layer_id
                         _delay_ms = _schedule_ms / max(1, meta.num_tokens())
                         for _eid in set(meta.exp_ids):
-                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _pre_ts)
+                            self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _sched_ts)
                  
                 # self.stats_pre_process(batch)
                 self.step_profile(meta.num_tokens())

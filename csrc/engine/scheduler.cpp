@@ -82,36 +82,55 @@ void Scheduler::set_schedule_token_threshold(int attn_token_threshold, int exper
 }
 
 TokenBatch Scheduler::schedule() {
+    return this->schedule_trace().batch;
+}
+
+Scheduler::ScheduleTrace Scheduler::schedule_trace() {
     if (this->is_attention()) {
-        return this->schedule_attention();
+        return this->schedule_trace_attention();
     } else if (this->is_expert()) {
-        return this->schedule_expert();
+        return this->schedule_trace_expert();
     } else if (this->is_unified()) {
-        return this->schedule_unified();
+        return this->schedule_trace_unified();
     } 
     throw std::runtime_error("Scheduler must be constructed with at least one valid pool");
 }
 
 TokenBatch Scheduler::schedule_expert() {
+    return this->schedule_trace_expert().batch;
+}
+
+Scheduler::ScheduleTrace Scheduler::schedule_trace_expert() {
     tx_range _{"Scheduler::schedule_expert"};
-    this->pool_snapshot_ = expert_pool->get_pool_snapshot();
+    auto snapshot = expert_pool->get_pool_snapshot();
+    this->pool_snapshot_ = snapshot;
     int id = this->layer_scheduler->schedule();
     auto batch = expert_pool->get_batch_from_layer(id);
-    return batch;
+    return ScheduleTrace{batch, std::move(snapshot)};
 }
 
 TokenBatch Scheduler::schedule_attention() {
+    return this->schedule_trace_attention().batch;
+}
+
+Scheduler::ScheduleTrace Scheduler::schedule_trace_attention() {
     tx_range _{"Scheduler::schedule_attention"};
-    this->pool_snapshot_ = attn_pool->get_pool_snapshot();
+    auto snapshot = attn_pool->get_pool_snapshot();
+    this->pool_snapshot_ = snapshot;
     int id = this->layer_scheduler->schedule();
     auto batch = attn_pool->get_batch_from_layer(id);
-    return batch;
+    return ScheduleTrace{batch, std::move(snapshot)};
 }
 
 TokenBatch Scheduler::schedule_unified() {
+    return this->schedule_trace_unified().batch;
+}
+
+Scheduler::ScheduleTrace Scheduler::schedule_trace_unified() {
     tx_range _{"Scheduler::schedule_unified"};
-    this->pool_snapshot_ = unified_pool->get_pool_snapshot();
+    auto snapshot = unified_pool->get_pool_snapshot();
+    this->pool_snapshot_ = snapshot;
     int id = this->layer_scheduler->schedule();
     auto batch = unified_pool->get_batch_from_layer(id);
-    return batch;
+    return ScheduleTrace{batch, std::move(snapshot)};
 }

@@ -6,7 +6,14 @@ from typing import Tuple, List, Dict, Optional
 
 class Scheduler:
 
+    class ScheduleTrace:
+        batch: TokenBatch
+        pool_snapshot: List[int]
+
     def schedule(self) -> TokenBatch:
+        ...
+
+    def schedule_trace(self) -> ScheduleTrace:
         ...
         
     def get_pool_snapshot(self) -> List[int]:

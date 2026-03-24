@@ -207,6 +207,7 @@ class Controller:
             device_id: ray.get(worker.get_node_ip.remote(self.host_ifname))
                 for worker, device_id in zip(self.all_workers, self.all_device_ids)
         }
+        self.device_2_host = device_2_host
         get_logger().info(f"device_id to host_ip: {device_2_host}")
         ray.get([
             worker.set_hosts.remote(device_2_host)
@@ -348,30 +349,30 @@ class Controller:
         return ray.get([worker.fetch_step_stats.remote() for worker in self.workers])
 
     def dump_advanced_logs(self, suffix: str = "", output_dir: str = "./advanced_logs"):
-        """Collect advanced logs from all workers and write centrally on the head node."""
-        import json
-        results = ray.get([worker.get_advanced_log_data.remote() for worker in self.workers])
+        """Tell each worker to dump its advanced logs to disk locally, then
+        SSH-gather the files to the head node's output_dir."""
+        import subprocess
+
+        local_paths = ray.get([
+            worker.dump_advanced_logs.remote(suffix) for worker in self.workers
+        ])
+
+        os.makedirs(output_dir, exist_ok=True)
         out_paths = []
-        for data in results:
-            if data is None:
+        for device_id, remote_path in zip(self.device_ids, local_paths):
+            if remote_path is None:
                 continue
-            device_id = data["device_id"]
+            host_ip = self.device_2_host[int(device_id)]
             dev_dir = os.path.join(output_dir, f"device_{device_id}")
             os.makedirs(dev_dir, exist_ok=True)
-
-            moe_path = os.path.join(dev_dir, f"moe_steps{suffix}.json")
-            with open(moe_path, "w") as f:
-                json.dump(data["moe_steps"], f)
-
-            queuing_path = os.path.join(dev_dir, f"queuing_delays{suffix}.json")
-            with open(queuing_path, "w") as f:
-                json.dump(data["queuing_delays"], f)
-
-            if "queue_snapshots" in data:
-                snapshot_path = os.path.join(dev_dir, f"queue_snapshots{suffix}.json")
-                with open(snapshot_path, "w") as f:
-                    json.dump(data["queue_snapshots"], f)
-
+            try:
+                subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+                     "-rq", f"{host_ip}:{remote_path}/.", dev_dir],
+                    timeout=60, check=False,
+                )
+            except Exception:
+                pass
             out_paths.append(dev_dir)
         return out_paths
         

@@ -38,12 +38,22 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("put_batch", &MuPool::put_batch);
         
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
-        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot)
+        .def("get_pool_snapshot", &Scheduler::get_pool_snapshot,
+             "Return cached pool snapshot from the most recent schedule() call.")
         .def("get_topk_pool_snapshot", &Scheduler::get_topk_pool_snapshot)
         .def("set_schedule_policy", &Scheduler::set_schedule_policy)
         .def("set_schedule_block", &Scheduler::set_schedule_block)
         .def("set_schedule_token_threshold", &Scheduler::set_schedule_token_threshold)
-        .def("schedule", &Scheduler::schedule);
+        .def("schedule_trace", &Scheduler::schedule_trace,
+             "Schedule next batch and return (batch, pre-schedule snapshot) as ScheduleTrace.")
+        .def("schedule", &Scheduler::schedule,
+             "Schedule next batch; also refreshes the cached pool snapshot atomically.");
+
+    // Pairs a scheduled batch with the pool snapshot taken in the same scheduling call for tracing purpose.
+    py::class_<Scheduler::ScheduleTrace>(m, "ScheduleTrace")
+        .def(py::init<>())
+        .def_readwrite("batch", &Scheduler::ScheduleTrace::batch)
+        .def_readwrite("pool_snapshot", &Scheduler::ScheduleTrace::pool_snapshot);
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put)
