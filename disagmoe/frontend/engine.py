@@ -893,7 +893,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     if self._advanced_logger.enabled:
                         _sched_ts = time.monotonic()
                         _pool_snapshot = list(self.scheduler.get_pool_snapshot())
-                        _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
+                        _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
+                        _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
                         self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
                     if self._advanced_logger.should_sample() and meta.is_expert():
                         _layer = meta.layer_id
@@ -903,7 +904,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     forward_batch = self.preprocess_batch(batch_wrapper)
                     if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
-                        result_queue.append((forward_batch, result)) # forward_batch.copy?
+                        result_queue.append((forward_batch, result))
                     self.step_profile(batch.metadata.num_tokens())
                     
                 if last_batch:
@@ -917,7 +918,6 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                         final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
                         self.post_process(final_result, sync_event=tmp_result.sync_event)
                 elif batch.data is None:
-                    # do idle check
                     idle_conunt += 1
                     
                 last_batch = forward_batch
@@ -968,7 +968,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 if self._advanced_logger.enabled:
                     _sched_ts = time.monotonic()
                     _pool_snapshot = list(self.scheduler.get_pool_snapshot())
-                    _unified_layer = meta.layer_id + (self.model_total_num_layers if meta.is_expert() else 0)
+                    _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
+                    _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
                     self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
 
                 if self._advanced_logger.should_sample():

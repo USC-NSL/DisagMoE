@@ -113,6 +113,7 @@ class Controller:
             )
 
             worker_env_vars = dict(ENV_VARS)
+            # worker_env_vars["NCCL_MAX_NCHANNELS"] = "1"
             if self.host_ifname:
                 worker_env_vars["NCCL_SOCKET_IFNAME"] = self.host_ifname
             if self.nccl_ib_hca:

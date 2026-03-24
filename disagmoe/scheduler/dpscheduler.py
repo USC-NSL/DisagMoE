@@ -62,8 +62,9 @@ class DPScheduler:
     def put_request(self, func: Callable, req_id: int, seq_len: int, prefill_len: int, output_len: int):
         self.waiting_queue.put_nowait(RequestItem(func, req_id, seq_len, prefill_len, output_len))
         
-    def required_blocks(self, seq_len: int) -> int:
-        return (seq_len + self.block_size - 1) // self.block_size
+    def required_blocks(self, prefill_len: int, output_len: int) -> int:
+        bs = self.block_size
+        return (prefill_len + bs - 1) // bs + (output_len + bs - 1) // bs
     
     async def waiting_loop(self):
         self._logger.warning("Waiting loop started")
@@ -88,12 +89,12 @@ class DPScheduler:
                     pass
             
             request_item: RequestItem = done.pop().result()
-            rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
+            rank = self.schedule([request_item.req_id], [request_item.prefill_len], [request_item.output_len])[0]
             
             while rank < 0:
                 await self.sch_event.wait()
                 self.sch_event.clear()
-                rank = self.schedule([request_item.req_id], [request_item.seq_len])[0]
+                rank = self.schedule([request_item.req_id], [request_item.prefill_len], [request_item.output_len])[0]
             
             # self._logger.warning(f"Waiting queue pop a request, assign {request_item.req_id} with rank {rank}, current waiting list size {self.waiting_queue.qsize()}")
             
@@ -105,44 +106,45 @@ class DPScheduler:
             self.kv_cache_stats[rank] = num_blocks
         print(f"Init cache stats {self.kv_cache_stats}")
     
-    def add_seq(self, seq_id: int, max_length: int, rank: int):
-        self.seq_max_len[seq_id] = max_length
-        required_blocks = self.required_blocks(max_length)
+    def add_seq(self, seq_id: int, prefill_len: int, output_len: int, rank: int):
+        self.seq_max_len[seq_id] = (prefill_len, output_len)
+        required_blocks = self.required_blocks(prefill_len, output_len)
         self.kv_cache_stats[rank] -= required_blocks
         self.seq_ranks[seq_id] = rank
         
     def del_seq(self, seq_id: int):
         rank = self.seq_ranks[seq_id]
         self.seq_ranks.pop(seq_id)
-        self.kv_cache_stats[rank] += self.required_blocks(self.seq_max_len[seq_id])
+        prefill_len, output_len = self.seq_max_len[seq_id]
+        self.kv_cache_stats[rank] += self.required_blocks(prefill_len, output_len)
         self.seq_max_len.pop(seq_id)
         self.sch_event.set()
         # self._logger.info(f"Delete seq {seq_id}, rank {rank}, current cache stats {self.kv_cache_stats}")
         
-    def _schedule(self, seq_len: int) -> int:
+    def _schedule(self, prefill_len: int, output_len: int) -> int:
         raise NotImplementedError()
     
-    def schedule(self, req_ids: List[int], seq_lens: List[int]) -> List[int]:
+    def schedule(self, req_ids: List[int], prefill_lens: List[int], output_lens: List[int]) -> List[int]:
         ranks = []
-        for req, seq_len in zip(req_ids, seq_lens):
-            rank = self._schedule(seq_len)
+        for req, plen, olen in zip(req_ids, prefill_lens, output_lens):
+            rank = self._schedule(plen, olen)
             ranks.append(rank)
             if rank >= 0:
-                self.add_seq(req, seq_len, rank)
+                self.add_seq(req, plen, olen, rank)
         return ranks
 
 class DPSchedulerMax(DPScheduler):
     
     @override
-    def _schedule(self, seq_len: int) -> int:
+    def _schedule(self, prefill_len: int, output_len: int) -> int:
         stat = 0
         rank = -1
         for i, num_blocks in enumerate(self.kv_cache_stats):
             if num_blocks > stat:
                 stat = num_blocks
                 rank = i
-        required_blocks = self.required_blocks(seq_len)
-        if stat < required_blocks:
+        required = self.required_blocks(prefill_len, output_len)
+        if stat < required:
             return -1
         else:
             return rank
@@ -154,7 +156,7 @@ class DPSChedulerRR(DPScheduler):
         self.cur_rank = 0
     
     @override
-    def _schedule(self, seq_len: int) -> int:
+    def _schedule(self, prefill_len: int, output_len: int) -> int:
         rank = self.cur_rank
         self.cur_rank = (self.cur_rank + 1) % self.dp_size
         return rank
@@ -168,8 +170,8 @@ class DPSchedulerWeighted(DPScheduler):
         self.weights = [w / total for w in weights]
 
     @override
-    def _schedule(self, seq_len: int) -> int:
-        required = self.required_blocks(seq_len)
+    def _schedule(self, prefill_len: int, output_len: int) -> int:
+        required = self.required_blocks(prefill_len, output_len)
         best_rank = -1
         best_score = -1.0
         for i, num_blocks in enumerate(self.kv_cache_stats):
