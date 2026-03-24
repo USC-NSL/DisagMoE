@@ -178,8 +178,10 @@ class MoEExpertsCUTLASSFP8(torch.nn.Module):
         )
 
         # Quantize BF16 activations to FP8 on Python side (following DeepGEMM path)
+        # Use group_size that divides hidden dim (2880 % 128 != 0, but 2880 % 64 == 0)
+        gs_w13 = 128 if hiddens.shape[-1] % 128 == 0 else 64
         hiddens_fp8, _sf = sglang_per_token_group_quant_fp8(
-            hiddens, group_size=128, scale_ue8m0=False
+            hiddens, group_size=gs_w13, scale_ue8m0=False
         )
 
         self.w13_runner.setup_meta(hiddens_fp8, cache_up, batch_sizes)
@@ -190,8 +192,9 @@ class MoEExpertsCUTLASSFP8(torch.nn.Module):
         )
 
         # Quantize intermediate activations to FP8
+        gs_w2 = 128 if up.shape[-1] % 128 == 0 else 64
         up_fp8, _sf_up = sglang_per_token_group_quant_fp8(
-            up, group_size=128, scale_ue8m0=False
+            up, group_size=gs_w2, scale_ue8m0=False
         )
 
         self.w2_runner.setup_meta(up_fp8, down_out, batch_sizes)
@@ -382,8 +385,9 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
     def forward(self, bs: int, hiddens: torch.Tensor, m_indices: torch.Tensor):
         # Quant input
         # For sglang with DeepEP, the cast is fused with communication.
+        gs_w13 = 128 if hiddens.shape[-1] % 128 == 0 else 64
         hiddens_fp8, sf_hiddens = sglang_per_token_group_quant_fp8(
-            hiddens, group_size=128, scale_ue8m0=False
+            hiddens, group_size=gs_w13, scale_ue8m0=False
         )
 
         # Output buffer for w13 (BF16), shape: [total_tokens, intermediate_size * 2]
@@ -410,8 +414,9 @@ class MoEExpertsDeepGemmFP8(torch.nn.Module):
         )
 
         # Quant
+        gs_w2 = 128 if up.shape[-1] % 128 == 0 else 64
         up_fp8, sf_up = sglang_per_token_group_quant_fp8(
-            up, group_size=128, scale_ue8m0=False
+            up, group_size=gs_w2, scale_ue8m0=False
         )
 
         # Output buffer for w2 (BF16), shape: [M, hidden_size]
