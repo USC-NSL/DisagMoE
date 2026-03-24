@@ -14,7 +14,13 @@ from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
 from disagmoe.env import ENV_VARS
 from disagmoe.models.attention import MoEAttention
-from disagmoe.models.experts import MoEExpertsCUTLASS, MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsSerial
+from disagmoe.models.experts import (
+    MoEExpertsCUTLASS,
+    MoEExpertsCUTLASSFP8,
+    MoEExpertsDeepGemmBF16,
+    MoEExpertsDeepGemmFP8,
+    MoEExpertsSerial,
+)
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.utils import nvtx_range, _log_memory_usage
 from disagmoe.utils.logger import get_logger
@@ -365,9 +371,12 @@ class ExpertsExecutor(Executor):
         
         self.quant_method = getattr(self.model_config, "moe_linear_quant", None) or "none"
         if self.quant_method == "none":
-            get_logger().info(f"Using unquantized (BF16) MoE experts.")
+            get_logger().info("Using unquantized (BF16) MoE experts.")
         elif self.quant_method == "fp8":
-            get_logger().info(f"Enabled deep_gemm FP8 for MoE experts.")
+            if getattr(get_global_engine_config(), "less_than_sm90", False):
+                get_logger().info("MoE FP8 experts: CUTLASS grouped GEMM (pre-sm90).")
+            else:
+                get_logger().info("MoE FP8 experts: DeepGEMM (sm90+).")
         else:
             raise ValueError(f"Invalid MoE linear quantization method: {self.quant_method}")
             
@@ -404,9 +413,10 @@ class ExpertsExecutor(Executor):
         if not cfg.enable_grouped_gemm:
             expert_cls = MoEExpertsSerial
         elif getattr(cfg, "less_than_sm90", False):
-            # For pre-SM90 architectures (e.g., A100), DeepGEMM is not available,
-            # so we use CUTLASS grouped GEMM experts instead.
-            expert_cls = MoEExpertsCUTLASS
+            # Pre-SM90: DeepGEMM is unavailable; use CUTLASS grouped GEMM (bf16 or fp8).
+            expert_cls = (
+                MoEExpertsCUTLASSFP8 if self.quant_method == "fp8" else MoEExpertsCUTLASS
+            )
         elif self.quant_method == "fp8":
             expert_cls = MoEExpertsDeepGemmFP8
         else:
@@ -433,7 +443,7 @@ class ExpertsExecutor(Executor):
             batch_sizes = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
             batch_sizes = [batch_sizes[i] for i in self.local_to_global_expert_rank]
             
-        if self.expert_cls is MoEExpertsCUTLASS:
+        if self.expert_cls in (MoEExpertsCUTLASS, MoEExpertsCUTLASSFP8):
             batch_sizes_list = list(meta_c.get_expert_batch_sizes(self.model_config.num_experts))
             batch_sizes_list = [batch_sizes_list[i] for i in self.local_to_global_expert_rank]
             if use_gdrcopy_optimization:
@@ -485,8 +495,13 @@ class ExpertsExecutor(Executor):
         assert batch.num_tokens <= get_global_engine_config().max_batch_size_expert, f"batch size {batch.num_tokens} exceeds max batch size {get_global_engine_config().max_batch_size_expert}"
         vid = self.layer_mappings[batch.layer_id]
         
-        # CUDA graph path for DeepGemm and CUTLASS experts
-        if self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8, MoEExpertsCUTLASS]:
+        # CUDA graph path for DeepGEMM and CUTLASS grouped-GEMM experts
+        if self.expert_cls in [
+            MoEExpertsDeepGemmBF16,
+            MoEExpertsDeepGemmFP8,
+            MoEExpertsCUTLASS,
+            MoEExpertsCUTLASSFP8,
+        ]:
             if get_global_engine_config().enable_cuda_graph_expert:
                 outputs = self.cuda_graph_executor.run(vid, batch.data, batch.batch_sizes, batch.m_indices)
             else:
@@ -502,8 +517,8 @@ class ExpertsExecutor(Executor):
         # used for capturing CUDA graph for the classes that doesn't do graph at model level
         vid = self.layer_mappings[batch.layer_id]
         
-        # Dispatch based on whether it's CUTLASS or DeepGemm
-        if self.expert_cls is MoEExpertsCUTLASS:
+        # Dispatch: CUTLASS (bf16/fp8) uses batch_sizes; DeepGEMM uses m_indices
+        if self.expert_cls in (MoEExpertsCUTLASS, MoEExpertsCUTLASSFP8):
             outputs = self.operators[vid].forward(batch.num_tokens, batch.data, batch.batch_sizes)
         elif self.expert_cls in [MoEExpertsDeepGemmBF16, MoEExpertsDeepGemmFP8]:
             outputs = self.operators[vid].forward(batch.num_tokens, batch.data, batch.m_indices)

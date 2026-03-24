@@ -12,7 +12,7 @@ from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from disagmoe.config import ModelConfig, CacheConfig as DmoeCacheConfig
 from disagmoe.utils.logger import get_logger
 from disagmoe.models.utils import make_attention_dummy_batch, make_expert_dummy_inputs
-from disagmoe.models.experts import MoEExpertsCUTLASS
+from disagmoe.models.experts import MoEExpertsCUTLASS, MoEExpertsCUTLASSFP8
 from disagmoe.ops.cuda_graph import cuda_graph_preprocess_cuda, fused_copy_and_pad_cuda
 from disagmoe.frontend.engine_utils import get_global_engine_config
 from disagmoe.utils.tensor_utils import (
@@ -263,7 +263,7 @@ class CUDAGraphExpertsExecutor:
         self.expert_ids = torch.arange(self.local_num_experts, device="cpu", dtype=torch.int32)
         
     def create_cuda_graph_buffers(self):
-        # Currently only designed for BF16, later port FP8 variants
+        # BF16 activations in the graph; MoEExpertsCUTLASSFP8 quantizes inside forward.
         assert self.model_config.dtype == torch.bfloat16
 
         max_batch_size = get_global_engine_config().max_batch_size_expert
@@ -299,7 +299,7 @@ class CUDAGraphExpertsExecutor:
     
     def cuda_graph_preprocess(self, hidden_states: torch.Tensor, batch_sizes: torch.Tensor, m_indices: torch.Tensor, bucket_size: int):
         num_tokens = hidden_states.shape[0]
-        if self.expert_cls is MoEExpertsCUTLASS:
+        if self.expert_cls in (MoEExpertsCUTLASS, MoEExpertsCUTLASSFP8):
             # CUTLASS: setup_cutlass_gemm_meta is captured inside the graph
             # and reads batch_sizes from the static buffer directly.
             # We only need simple D2D copies — no m_indices, no fused kernel.
