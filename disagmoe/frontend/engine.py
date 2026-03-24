@@ -88,6 +88,7 @@ class AttentionEngineMixin:
         self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
         self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
         self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+        self.sample_continue_ids_gdr = GdrDoubleBuffer(self.engine_config.max_batch_size_attn, dtype=torch.int64, device="cuda")
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -242,7 +243,14 @@ class AttentionEngineMixin:
             batch_res.is_eos[cont_id] = False
         self.detokenizer_socket.send_pyobj(batch_res)
         
-        return TokenBatchCWrapper(data=batch.data[continue_ids], metadata=continue_meta)
+        if use_gdrcopy_optimization:
+            idx_gdr = self.sample_continue_ids_gdr.get_one_handle()
+            idx_gdr.copy_from_host_int64(continue_ids)
+            idx_tensor = idx_gdr.tensor[: len(continue_ids)]
+            continued_data = torch.index_select(batch.data, 0, idx_tensor)
+        else:
+            continued_data = batch.data[continue_ids]
+        return TokenBatchCWrapper(data=continued_data, metadata=continue_meta)
     
     @nvtx_range("attn_engine.process_batch_attn")
     def process_batch_attn(self, batch: TokenBatchCWrapper) -> Optional[TokenBatchCWrapper]:
