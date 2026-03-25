@@ -495,6 +495,11 @@ class Controller:
         assert self.dp_scheduler is not None
         await self.dp_scheduler.terminate()
 
+    def enable_xfer_buffer(self):
+        import ray
+        tasks = [w.enable_xfer_buffer.remote() for w in self.workers]
+        ray.get(tasks)
+
     def reset(self):
         self.in_flight_reqs.clear()
         self.request_results.clear()

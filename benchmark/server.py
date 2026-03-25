@@ -162,6 +162,8 @@ def main():
 
     master = launch(args)
     asyncio.run(init(master, args))
+    if getattr(args, 'xfer_buffer', False):
+        master.enable_xfer_buffer()
     if args.profile_dir is not None:
         master.init_profile(profile_dir=args.profile_dir)
     

@@ -669,17 +669,19 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         if hasattr(self.engine_config, 'max_pending_sends'):
             self.dispatcher.set_max_pending_sends(self.engine_config.max_pending_sends)
+        start_engine(self.scheduler, self.dispatcher)
+        
+        self.loop_thread = Thread(target=self.single_module_loop_overlap)
+            
+        self.loop_thread.start()
+
+    def enable_xfer_buffer(self):
         if getattr(self.engine_config, 'xfer_buffer_enabled', False):
             self.dispatcher.set_xfer_buffer_config(
                 True,
                 getattr(self.engine_config, 'xfer_buffer_max_channels', 4),
                 self.model_config.num_layers,
             )
-        start_engine(self.scheduler, self.dispatcher)
-        
-        self.loop_thread = Thread(target=self.single_module_loop_overlap)
-            
-        self.loop_thread.start()
 
     def set_transport(self, name: str):
         import disagmoe_c as c
