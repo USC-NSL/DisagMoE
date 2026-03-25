@@ -228,7 +228,7 @@ void MuDispatcher::run() {
                 this->current_send_tensor_ = batch.data;
                 this->_send_once(batch);
             }
-            this->current_send_tensor_ = {};
+            this->current_send_tensor_ = torch::Tensor();
 
             this->_flush_xfer_buffers();
         }
