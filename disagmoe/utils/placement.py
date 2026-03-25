@@ -71,7 +71,7 @@ class ModelPlacement:
         return 0
     
     def rank_at(self, device_id: int, *args, **kwargs) -> int:
-        if device_id in self.expert:
+        if device_id in self.expert and len(self.expert[device_id]) > 0:
             return self.expert_rank_at(device_id, *args, **kwargs)
         else:
             return self.attn_rank_at(device_id)
