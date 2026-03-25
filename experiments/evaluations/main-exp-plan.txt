@@ -1,0 +1,31 @@
+Your task is to run experiments on this 8 node 16 gpu cluster, where you are on sgpu0 and can ssh into any other hosts, for detail cluster info and how to run, see below
+
+Instruction for running ~/sglang-fake-prefill experiments:
+    mainly see ~/sglang-fake-prefill/coulson_docs/sphere8node-rules-for-agents.md for background info and ~/sglang-fake-prefill/experiments/scripts/sphere-16 for example launch scripts
+    IMPORTANT: for EP runs, now sglang should be passed with "--enable-dp-lm-head" flag as well, where the existing scripts don't have
+
+Instruction for running asyncmoe (~/DisagMoE) experiments:
+    background see ~/DisagMoE/experiments/scripts/sphere-16/README.txt and ~/DisagMoE/experiments/scripts/sphere-16/launch_server.sh for example launch params
+
+
+experiment config variables:
+    system: asyncmoe, sglang-fake-prefill EP16 mem-frac 0.77, sglang-fake-prefill mem-frac 0.77 EP16 max global concurrent bs 3100, sglang-fake-prefill PP8TP2
+    profile: sharegpt, legal-court
+    use balanced profile variant: no, yes
+So 4 * 2 * 2 = 16 runs needed in total, 16 set of performance metrics need to collect!
+
+Fixed requirements:
+    model: gptoss-120b
+    input/output len: both set to 256-512 uniformly sampled
+    10k reqs in total, 2000 rps
+
+Rules for experiment runs:
+- Run sglang runs first, then asyncmoe
+- NEVER launch server or invoke requests (e.g. curl) blockingly in the foreground, always launch in tmux (asyncmoe always finish within 6min after benchmark sent), and check progress at least every 5 minutes for both sglang/asyncmoe runs. For asyncmoe, if the system is progressing normally, should see detokenizer tput logs EVERY second, if no detokenizer log since last check, that means the system is in a hang state, kill the server directly, and retry.
+- for asyncmoe, every config, at most 3 retries, for sglang, at most 2; but when you just get started to run a system, you may try a bit more because you weren't familiar with it.
+- between each asyncmoe runs, need to clear the ray cluster to restart, otherwise will get no free GPU error
+- after finishing every single experiment config, write the performance outcomes to ~/paper-repo/results/main-exp-mar23 as a txt file (I care about throughput, where for sglang it's just token output throughput because we enable fake-prefill, and ITL, and p99 ITL, and total benchmark run time), every time one run finish, write the results here and make a commit and push to origin. After everything finish, write another overall experiment report here as well.
+- all the server & benchmark logs go to ~/DisagMoE/experiments/amoe-064
+- for this experiment, we do not enable advanced_logging/sglang recorder
+- For each system, I DO NOT recommend to directly scriptize the experiment, try going over the experiment process with one/two runs for each system before trying to script anything, so that you are familair. Also, really be aware of timeouts (for both system, server startup usually <6min, benchmark run of asyncmoe/sglangep < 5min, TPEP might <10min)
+- DO NOT BLOCK yourself on any command indefinitely, where that command might never return if the system erorred or hang

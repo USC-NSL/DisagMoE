@@ -55,6 +55,7 @@ HOST_IFNAME="ens1f1np1"  # network interface for inter-node IP and NCCL sockets
 NCCL_IB_HCA="mlx5_1"    # IB/RoCE HCA device for NCCL data transfers
 NCCL_IB_GID_INDEX="3"   # RoCE GID index matching the data network subnet
 export NCCL_RUNTIME_CONNECT="${NCCL_RUNTIME_CONNECT:-0}"
+# export NCCL_MAX_NCHANNELS=1
 
 NETWORK_ARGS=""
 if [ ! -z "$HOST_IFNAME" ]; then
@@ -70,7 +71,7 @@ fi
 dp_size=$WORLD_SIZE
 ep_size=$WORLD_SIZE
 MAX_BATCH_SIZE_ATTN=256
-MAX_BATCH_SIZE_EXP=512
+MAX_BATCH_SIZE_EXP=1024
 MAX_PENDING_SENDS=16
 
 # UNIFIED_SCHEDULER_TYPE: flfs | defrag; only valid for colocate mode

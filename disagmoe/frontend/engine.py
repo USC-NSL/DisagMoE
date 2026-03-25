@@ -243,7 +243,9 @@ class AttentionEngineMixin:
             batch_res.is_eos[cont_id] = False
         self.detokenizer_socket.send_pyobj(batch_res)
         
-        if use_gdrcopy_optimization:
+        if len(continue_ids) == 0:
+            continued_data = batch.data[:0]
+        elif use_gdrcopy_optimization:
             idx_gdr = self.sample_continue_ids_gdr.get_one_handle()
             idx_gdr.copy_from_host_int64(continue_ids)
             idx_tensor = idx_gdr.tensor[: len(continue_ids)]
