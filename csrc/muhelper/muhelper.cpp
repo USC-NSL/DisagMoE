@@ -135,6 +135,12 @@ void MuDispatcher::drain_pending_sends_to(int max_pending) {
 void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
     tx_range _{"MuDispatcher::send_batch_nonblocking"};
 
+    if (xfer_config_.enabled) {
+        int flat_lid = compute_flat_lid(*batch.metadata);
+        _accumulate_for_xfer(cid, batch, flat_lid);
+        return;
+    }
+
     this->drain_pending_sends_to(this->max_pending_sends_);
 
     MetadataWithPeerId packed_data;
@@ -152,17 +158,28 @@ void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
-    // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
 
-    // Pack peer_id and metadata into a single message
+    if (xfer_config_.enabled) {
+        ASSERT(current_send_tensor_.defined());
+        uintptr_t base = (uintptr_t)current_send_tensor_.data_ptr();
+        int hidden_bytes = meta.token_hidden_dim() * meta.get_datatype_size();
+        int token_offset = (int)((buf - base) / hidden_bytes);
+        int num_tokens = meta.num_tokens();
+
+        auto tensor_view = current_send_tensor_.narrow(0, token_offset, num_tokens);
+        auto meta_ptr = std::make_shared<BatchMetadata>(meta);
+        int flat_lid = compute_flat_lid(meta);
+
+        _accumulate_for_xfer(cid, TokenBatch{tensor_view, meta_ptr}, flat_lid);
+        return;
+    }
+
     MetadataWithPeerId packed_data;
     packed_data.peer_id = this->device_id;
     packed_data.metadata = meta;
     auto data = cerealize_(packed_data);
     this->peer_mq[cid]->send(data.c_str(), data.size());
     this->channels[cid]->send_raw(buf, meta);
-
-    // DMOE_LOG(DEBUG) << "sent batch to channel " << cid << LEND;
 }
 
 void MuDispatcher::run() {
@@ -179,30 +196,200 @@ void MuDispatcher::run() {
         this->peer_mq[i]->connect(endpoint);
     }
 
-    // DMOE_LOG(DEBUG) << "running mudispatcher@" << this->device_id << LEND;
     while (!this->end_flag) {
-        // DMOE_LOG(WARNING) << "waiting for new dispatching request ..." << LEND;
         this->clean_pending_sends();
-        TokenBatch batch;
-        {
-            // Fetch a batch from the queue, lock required (for the send_queue).
-            std::unique_lock<std::mutex> lock(this->mtx);
-            this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
-            // DMOE_LOG(WARNING) << "Got a request !!!" << LEND;
-            auto pr = this->send_queue.front();
-            batch = pr.first;
-            this->send_queue.pop();
+
+        if (!xfer_config_.enabled) {
+            TokenBatch batch;
+            {
+                std::unique_lock<std::mutex> lock(this->mtx);
+                this->cv.wait(lock, [&] { return !this->send_queue.empty(); });
+                auto pr = this->send_queue.front();
+                batch = pr.first;
+                this->send_queue.pop();
+            }
+            this->_send_once(batch);
+        } else {
+            std::vector<TokenBatch> to_process;
+            {
+                std::unique_lock<std::mutex> lock(this->mtx);
+                this->cv.wait(lock, [&] {
+                    return this->end_flag || !this->send_queue.empty();
+                });
+                while (!this->send_queue.empty()) {
+                    to_process.push_back(this->send_queue.front().first);
+                    this->send_queue.pop();
+                }
+            }
+
+            if (to_process.empty()) continue;
+
+            for (auto& batch : to_process) {
+                this->current_send_tensor_ = batch.data;
+                this->_send_once(batch);
+            }
+            this->current_send_tensor_ = {};
+
+            this->_flush_xfer_buffers();
         }
-        // Send the batch, no lock required, since send_queue won't be changed.
-        this->_send_once(batch);
+    }
+
+    if (xfer_config_.enabled) {
+        int saved = xfer_config_.max_channels_per_cycle;
+        xfer_config_.max_channels_per_cycle = (int)xfer_buffers_.size();
+        this->_flush_xfer_buffers();
+        xfer_config_.max_channels_per_cycle = saved;
     }
 }
 
 void MuDispatcher::put(TokenBatch batch, int rank) {
     std::lock_guard<std::mutex> lock(this->mtx);
-    // batch.data = batch.data.clone().detach();
     this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
+}
+
+void MuDispatcher::terminate() {
+    {
+        std::lock_guard<std::mutex> lock(this->mtx);
+        this->end_flag = true;
+    }
+    this->cv.notify_one();
+    this->thread.join();
+#if defined(D_ENABLE_HANG_DEBUGGER) && D_ENABLE_HANG_DEBUGGER == 1
+    HangDebugger::terminate();
+#endif
+}
+
+void MuDispatcher::set_xfer_buffer_config(bool enabled, int max_channels, int num_layers) {
+    xfer_config_.enabled = enabled;
+    xfer_config_.max_channels_per_cycle = max_channels;
+    xfer_config_.num_layers = num_layers;
+    xfer_buffers_.resize(this->channels.size());
+}
+
+bool MuDispatcher::is_before(int a_flat, int b_flat, int num_layers) {
+    int N = 2 * num_layers;
+    int diff = ((b_flat - a_flat) % N + N) % N;
+    return diff < num_layers;
+}
+
+int MuDispatcher::compute_flat_lid(const BatchMetadata& meta) const {
+    return 2 * meta.layer_id + (is_expert_dispatcher_ ? 1 : 0);
+}
+
+void MuDispatcher::_accumulate_for_xfer(int cid, TokenBatch batch, int flat_lid) {
+    auto& buf = xfer_buffers_[cid];
+    if (buf.empty()) {
+        buf.earliest_flat_lid = flat_lid;
+    } else if (is_before(flat_lid, buf.earliest_flat_lid, xfer_config_.num_layers)) {
+        buf.earliest_flat_lid = flat_lid;
+    }
+    buf.total_tokens += batch.metadata->num_tokens();
+    XferBufferEntry entry;
+    entry.batch = std::move(batch);
+    entry.flat_lid = flat_lid;
+    buf.entries.push_back(std::move(entry));
+}
+
+void MuDispatcher::_do_send_batch(int cid, const TokenBatch& batch) {
+    tx_range _{"MuDispatcher::_do_send_batch"};
+
+    this->drain_pending_sends_to(this->max_pending_sends_);
+
+    MetadataWithPeerId packed_data;
+    packed_data.peer_id = this->device_id;
+    packed_data.metadata = *batch.metadata;
+    auto data = cerealize_(packed_data);
+    this->peer_mq[cid]->send(data.c_str(), data.size());
+    this->channels[cid]->send_raw((uintptr_t)batch.data.data_ptr(), *batch.metadata);
+
+    cudaEvent_t event;
+    CUDACHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    this->channels[cid]->record_event(event);
+    this->pending_sends.push(std::make_pair(batch, event));
+}
+
+void MuDispatcher::_flush_xfer_buffers() {
+    tx_range _{"MuDispatcher::_flush_xfer_buffers"};
+
+    std::vector<int> candidates;
+    for (int i = 0; i < (int)xfer_buffers_.size(); i++) {
+        if (!xfer_buffers_[i].empty()) {
+            candidates.push_back(i);
+        }
+    }
+
+    if (candidates.empty()) return;
+
+    int num_to_send = std::min((int)candidates.size(), xfer_config_.max_channels_per_cycle);
+
+    if ((int)candidates.size() > num_to_send) {
+        int N = 2 * xfer_config_.num_layers;
+
+        int ref = xfer_buffers_[candidates[0]].earliest_flat_lid;
+        for (int cid : candidates) {
+            if (is_before(xfer_buffers_[cid].earliest_flat_lid, ref, xfer_config_.num_layers)) {
+                ref = xfer_buffers_[cid].earliest_flat_lid;
+            }
+        }
+
+        std::partial_sort(candidates.begin(), candidates.begin() + num_to_send, candidates.end(),
+            [&](int a, int b) {
+                auto& ba = xfer_buffers_[a];
+                auto& bb = xfer_buffers_[b];
+                int dist_a = ((ba.earliest_flat_lid - ref) % N + N) % N;
+                int dist_b = ((bb.earliest_flat_lid - ref) % N + N) % N;
+                if (dist_a != dist_b) return dist_a < dist_b;
+                return ba.total_tokens > bb.total_tokens;
+            }
+        );
+    }
+
+    for (int i = 0; i < num_to_send; i++) {
+        int cid = candidates[i];
+        auto& buf = xfer_buffers_[cid];
+
+        std::unordered_map<int, std::vector<int>> by_layer;
+        for (int e = 0; e < (int)buf.entries.size(); e++) {
+            by_layer[buf.entries[e].batch.metadata->layer_id].push_back(e);
+        }
+
+        for (auto& [lid, entry_indices] : by_layer) {
+            if (entry_indices.size() == 1) {
+                _do_send_batch(cid, buf.entries[entry_indices[0]].batch);
+            } else {
+                std::vector<torch::Tensor> tensors;
+                BatchMetadata merged_meta = *buf.entries[entry_indices[0]].batch.metadata;
+
+                for (int idx : entry_indices) {
+                    tensors.push_back(buf.entries[idx].batch.data);
+                }
+
+                for (size_t k = 1; k < entry_indices.size(); k++) {
+                    auto& m = *buf.entries[entry_indices[k]].batch.metadata;
+                    merged_meta.req_ids.insert(merged_meta.req_ids.end(),
+                                               m.req_ids.begin(), m.req_ids.end());
+                    merged_meta.exp_ids.insert(merged_meta.exp_ids.end(),
+                                               m.exp_ids.begin(), m.exp_ids.end());
+                    merged_meta.topk_weights.insert(merged_meta.topk_weights.end(),
+                                                    m.topk_weights.begin(), m.topk_weights.end());
+                    merged_meta.attn_dp_ranks.insert(merged_meta.attn_dp_ranks.end(),
+                                                     m.attn_dp_ranks.begin(), m.attn_dp_ranks.end());
+                    merged_meta.init_prefill_lens.insert(merged_meta.init_prefill_lens.end(),
+                                                         m.init_prefill_lens.begin(), m.init_prefill_lens.end());
+                }
+
+                merged_meta.shape[0] = 0;
+                for (auto& t : tensors) merged_meta.shape[0] += t.size(0);
+
+                torch::Tensor merged_tensor = torch::cat(tensors, 0);
+                auto merged_meta_ptr = std::make_shared<BatchMetadata>(std::move(merged_meta));
+                _do_send_batch(cid, TokenBatch{merged_tensor, merged_meta_ptr});
+            }
+        }
+
+        buf.clear();
+    }
 }
 
 /*
@@ -313,6 +500,7 @@ MuExpertDispatcher::MuExpertDispatcher(
     std::vector<ChannelInfo> channel_infos): 
         MuDispatcher(layer_ids, device_id, cfg, channels),
         channel_infos(channel_infos) {
+    this->is_expert_dispatcher_ = true;
     int max_layer = -1;
     for (auto info: channel_infos)
         for (int i: info.attn_layer_ids)

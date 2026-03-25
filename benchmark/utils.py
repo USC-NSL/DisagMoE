@@ -24,6 +24,8 @@ def add_runtime_arguments(parser: ArgumentParser):
     parser.add_argument("--max-batch-size-attn", type=int, default=160, help="max batch size for attention cuda graph")
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     parser.add_argument("--max-pending-sends", type=int, default=16, help="max concurrent NCCL sends per GPU to prevent SM exhaustion deadlock")
+    parser.add_argument("--xfer-buffer", action="store_true", default=False, help="enable per-destination transfer buffering with selective channel scheduling")
+    parser.add_argument("--xfer-buffer-max-channels", type=int, default=4, help="max destination channels to flush per dispatch cycle")
     
     parser.add_argument("--dp-size", type=int, default=1, help="data parallel size")
     parser.add_argument("--ep-size", type=int, default=1, help="expert parallel size")

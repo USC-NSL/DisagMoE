@@ -7,6 +7,8 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <algorithm>
+#include <climits>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -14,6 +16,30 @@
 #include "comm.h"
 #include "transport_factory.h"
 #include "layer.h"
+
+struct XferBufferConfig {
+    bool enabled = false;
+    int max_channels_per_cycle = 4;
+    int num_layers = 0;
+};
+
+struct XferBufferEntry {
+    TokenBatch batch;
+    int flat_lid;
+};
+
+struct XferBuffer {
+    std::vector<XferBufferEntry> entries;
+    int total_tokens = 0;
+    int earliest_flat_lid = 0;
+
+    bool empty() const { return entries.empty(); }
+
+    void clear() {
+        entries.clear();
+        total_tokens = 0;
+    }
+};
 
 class MuHelper {
 
@@ -61,6 +87,11 @@ protected:
 
     ParallelConfig cfg;
 
+    bool is_expert_dispatcher_ = false;
+    XferBufferConfig xfer_config_;
+    std::vector<XferBuffer> xfer_buffers_;
+    torch::Tensor current_send_tensor_;
+
     virtual void _send_once(TokenBatch batch) = 0;
 
     void _send_batch(int cid, uintptr_t buf, const BatchMetadata& meta);
@@ -71,6 +102,16 @@ protected:
 
     void send_batch_nonblocking(int cid, const TokenBatch &batch);
 
+    virtual int compute_flat_lid(const BatchMetadata& meta) const;
+
+    static bool is_before(int a_flat, int b_flat, int num_layers);
+
+    void _accumulate_for_xfer(int cid, TokenBatch batch, int flat_lid);
+
+    void _do_send_batch(int cid, const TokenBatch& batch);
+
+    void _flush_xfer_buffers();
+
     void run() override;
 
 
@@ -80,9 +121,13 @@ public:
                  ParallelConfig cfg, 
                  std::vector<Channel_t> channels);
 
+    void terminate() override;
+
     void put(TokenBatch batch, int rank = 0);
 
     void set_max_pending_sends(int val) { max_pending_sends_ = val; }
+
+    void set_xfer_buffer_config(bool enabled, int max_channels, int num_layers);
 
 };
 

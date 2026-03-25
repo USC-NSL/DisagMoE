@@ -37,6 +37,10 @@ UnifiedDispatcher::UnifiedDispatcher(
     }
 }
 
+int UnifiedDispatcher::compute_flat_lid(const BatchMetadata& meta) const {
+    return 2 * meta.layer_id + (meta.is_expert() ? 1 : 0);
+}
+
 void UnifiedDispatcher::_send_once(TokenBatch batch) {
     if (batch.metadata->is_attention()) {
         this->_send_to_expert_once(batch);

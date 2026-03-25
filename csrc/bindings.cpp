@@ -57,7 +57,9 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put)
-        .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends);
+        .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends)
+        .def("set_xfer_buffer_config", &MuDispatcher::set_xfer_buffer_config,
+             py::arg("enabled"), py::arg("max_channels"), py::arg("num_layers"));
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())

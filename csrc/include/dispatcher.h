@@ -25,6 +25,8 @@ private:
 
     void _send_once(TokenBatch batch) override;
 
+    int compute_flat_lid(const BatchMetadata& meta) const override;
+
 public:
 
     UnifiedDispatcher(
