@@ -312,18 +312,23 @@ void MuDispatcher::_do_send_batch(int cid, const TokenBatch& batch) {
 void MuDispatcher::_flush_xfer_buffers() {
     tx_range _{"MuDispatcher::_flush_xfer_buffers"};
 
+    std::vector<int> forced;
     std::vector<int> candidates;
     for (int i = 0; i < (int)xfer_buffers_.size(); i++) {
-        if (!xfer_buffers_[i].empty()) {
+        if (xfer_buffers_[i].empty()) continue;
+        if (xfer_buffers_[i].stall_cycles >= xfer_config_.max_stall_cycles) {
+            forced.push_back(i);
+        } else {
             candidates.push_back(i);
         }
     }
 
-    if (candidates.empty()) return;
+    if (forced.empty() && candidates.empty()) return;
 
-    int num_to_send = std::min((int)candidates.size(), xfer_config_.max_channels_per_cycle);
+    int budget = std::max(0, xfer_config_.max_channels_per_cycle - (int)forced.size());
+    int num_from_candidates = std::min((int)candidates.size(), budget);
 
-    if ((int)candidates.size() > num_to_send) {
+    if ((int)candidates.size() > num_from_candidates && num_from_candidates > 0) {
         int N = 2 * xfer_config_.num_layers;
 
         int ref = xfer_buffers_[candidates[0]].earliest_flat_lid;
@@ -333,7 +338,7 @@ void MuDispatcher::_flush_xfer_buffers() {
             }
         }
 
-        std::partial_sort(candidates.begin(), candidates.begin() + num_to_send, candidates.end(),
+        std::partial_sort(candidates.begin(), candidates.begin() + num_from_candidates, candidates.end(),
             [&](int a, int b) {
                 auto& ba = xfer_buffers_[a];
                 auto& bb = xfer_buffers_[b];
@@ -345,8 +350,18 @@ void MuDispatcher::_flush_xfer_buffers() {
         );
     }
 
-    for (int i = 0; i < num_to_send; i++) {
-        int cid = candidates[i];
+    std::vector<int> to_send;
+    to_send.insert(to_send.end(), forced.begin(), forced.end());
+    to_send.insert(to_send.end(), candidates.begin(), candidates.begin() + num_from_candidates);
+
+    for (int i = 0; i < (int)candidates.size(); i++) {
+        if (i >= num_from_candidates) {
+            xfer_buffers_[candidates[i]].stall_cycles++;
+        }
+    }
+
+    for (int i = 0; i < (int)to_send.size(); i++) {
+        int cid = to_send[i];
         auto& buf = xfer_buffers_[cid];
 
         std::unordered_map<int, std::vector<int>> by_layer;

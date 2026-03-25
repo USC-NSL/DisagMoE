@@ -21,6 +21,7 @@ struct XferBufferConfig {
     bool enabled = false;
     int max_channels_per_cycle = 4;
     int num_layers = 0;
+    int max_stall_cycles = 2;
 };
 
 struct XferBufferEntry {
@@ -32,12 +33,14 @@ struct XferBuffer {
     std::vector<XferBufferEntry> entries;
     int total_tokens = 0;
     int earliest_flat_lid = 0;
+    int stall_cycles = 0;
 
     bool empty() const { return entries.empty(); }
 
     void clear() {
         entries.clear();
         total_tokens = 0;
+        stall_cycles = 0;
     }
 };
 
