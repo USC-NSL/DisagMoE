@@ -532,7 +532,8 @@ class ColocatePlacement(PlacementBase):
         
     @override
     def _update_attn_dp_rank(self, place: ModelPlacement) -> ModelPlacement:
-        place.attn_dp_ranks = {dev_id: dev_id for dev_id in place.attn}
+        dp_size = self.model_config.dp_size
+        place.attn_dp_ranks = {dev_id: dev_id % dp_size for dev_id in place.attn}
         return place
 
 _placement_cls: Dict[str, PlacementBase] = {
