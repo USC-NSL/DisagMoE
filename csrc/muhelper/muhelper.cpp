@@ -213,7 +213,7 @@ void MuDispatcher::run() {
             std::vector<TokenBatch> to_process;
             {
                 std::unique_lock<std::mutex> lock(this->mtx);
-                this->cv.wait(lock, [&] {
+                this->cv.wait_for(lock, std::chrono::milliseconds(1), [&] {
                     return this->end_flag || !this->send_queue.empty();
                 });
                 while (!this->send_queue.empty()) {
@@ -222,7 +222,7 @@ void MuDispatcher::run() {
                 }
             }
 
-            if (to_process.empty()) continue;
+            if (this->end_flag && to_process.empty()) continue;
 
             for (auto& batch : to_process) {
                 this->current_send_tensor_ = batch.data;
