@@ -171,7 +171,7 @@ class MoEAttention(nn.Module):
                                      prefix=f"{prefix}.gate")
         
         if gate_profile_bytes is not None and len(gate_profile_bytes) > 0:
-            self.profile_driven_router = ProfileDrivenRouter(gate_profile_bytes, num_experts, top_k)
+            self.profile_driven_router = ProfileDrivenRouter(gate_profile_bytes, num_experts, top_k, layer_id=layer_id)
         else:
             self.profile_driven_router = None
         

@@ -10,9 +10,10 @@ import time
 
 class ProfileDrivenRouter:
 
-    def __init__(self, profile_bytes: bytes, num_experts_expected: int, top_k: int) -> None:
+    def __init__(self, profile_bytes: bytes, num_experts_expected: int, top_k: int, layer_id: int = None) -> None:
         self.num_experts = int(num_experts_expected)
         self.top_k = top_k
+        self.layer_id = layer_id
         if len(profile_bytes) == 0:
             raise ValueError("ProfileDrivenRouter requires non-empty profile bytes at init")
         self._load_profile_from_bytes(profile_bytes, top_k)
@@ -65,6 +66,9 @@ class ProfileDrivenRouter:
         use_cols = ["rid", "token_index", "layer"] + expert_columns
         df = table.select(use_cols).to_pandas(types_mapper=pd.ArrowDtype)
 
+        if self.layer_id is not None:
+            df = df[df["layer"] == self.layer_id].reset_index(drop=True)
+
         routing_outcomes = df[expert_columns].to_numpy(dtype=np.int32, copy=True)
         if project_group_size is not None:
             mask = routing_outcomes >= 0
@@ -74,7 +78,7 @@ class ProfileDrivenRouter:
         self.num_profiled_requests = int(np.unique(rid_array).size)
 
         layer_array = df["layer"].to_numpy(dtype=np.int32, copy=False)
-        self.num_layers = int(layer_array.max()) + 1
+        self.num_layers = 1 if self.layer_id is not None else int(layer_array.max()) + 1
 
         token_counts = df.groupby("rid")["token_index"].nunique()
         tokens_per_req_np = np.zeros(self.num_profiled_requests, dtype=np.int64)
@@ -124,11 +128,14 @@ class ProfileDrivenRouter:
         mapped_rid = request_ids % self.num_profiled_requests
         mapped_tok = token_indices % self.tokens_per_request[mapped_rid]
 
-        flat_idx = (
-            layer_id * self.total_tokens_per_layer
-            + self.token_prefix_sum[mapped_rid]
-            + mapped_tok
-        )
+        if self.layer_id is not None:
+            flat_idx = self.token_prefix_sum[mapped_rid] + mapped_tok
+        else:
+            flat_idx = (
+                layer_id * self.total_tokens_per_layer
+                + self.token_prefix_sum[mapped_rid]
+                + mapped_tok
+            )
 
         topk_ids = self.routing_data[flat_idx].to(dtype=torch.int32)
         topk_weights = torch.full(
