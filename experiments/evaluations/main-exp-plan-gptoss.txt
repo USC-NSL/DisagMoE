@@ -1,11 +1,11 @@
 Your task is to run experiments on this 8 node 16 gpu cluster, where you are on sgpu0 and can ssh into any other hosts, for detail cluster info and how to run, see below
 
 Instruction for running ~/sglang-fake-prefill experiments:
-    mainly see ~/sglang-fake-prefill/coulson_docs/sphere8node-rules-for-agents.md for background info and ~/sglang-fake-prefill/experiments/scripts/sphere-16 for example launch scripts
+    mainly see ~/sglang-fake-prefill/coulson_docs/sphere8node-rules-for-agents.md for background info and ~/sglang-fake-prefill/experiments/scripts/sphere-16/gptoss/ for example launch scripts
     IMPORTANT: for EP runs, now sglang should be passed with "--enable-dp-lm-head" flag as well, where the existing scripts don't have
 
 Instruction for running asyncmoe (~/DisagMoE) experiments:
-    background see ~/DisagMoE/experiments/scripts/sphere-16/README.txt and ~/DisagMoE/experiments/scripts/sphere-16/launch_server.sh for example launch params
+    background see ~/DisagMoE/experiments/scripts/sphere-16/README.txt and ~/DisagMoE/experiments/scripts/sphere-16/gptoss/launch_server.sh for example launch params
 
 
 experiment config variables:

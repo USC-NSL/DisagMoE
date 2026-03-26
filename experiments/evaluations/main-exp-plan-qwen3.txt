@@ -11,7 +11,7 @@ Instruction for running asyncmoe (~/DisagMoE) experiments:
 
 
 experiment config variables:
-    system: asyncmoe, sglang-fake-prefill EP16 mem-frac 0.80, sglang-fake-prefill mem-frac 0.80 EP16 max global concurrent bs 1750, sglang-fake-prefill PP8TP2
+    system: asyncmoe, sglang-fake-prefill EP16 mem-frac 0.80 and no max running req limit (natrually bounded by kvcache space), sglang-fake-prefill mem-frac 0.80 EP16 max global concurrent bs 1750, sglang-fake-prefill PP8TP2
     profile: sharegpt, legal-court
     use balanced profile variant: no, yes
 So 4 * 2 * 2 = 16 runs, then 16 runs needed in total, 16 set of performance metrics need to collect!
