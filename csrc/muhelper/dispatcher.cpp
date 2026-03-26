@@ -163,12 +163,21 @@ TokenBatch UnifiedDispatcher::_merge_for_rank(std::vector<TokenBatch>& batches) 
 
     for (auto& b : batches) {
         auto& m = *b.metadata;
+        int n = m.num_tokens();
         merged_meta->req_ids.insert(merged_meta->req_ids.end(),
                                     m.req_ids.begin(), m.req_ids.end());
-        merged_meta->exp_ids.insert(merged_meta->exp_ids.end(),
-                                    m.exp_ids.begin(), m.exp_ids.end());
-        merged_meta->topk_weights.insert(merged_meta->topk_weights.end(),
-                                         m.topk_weights.begin(), m.topk_weights.end());
+        if ((int)m.exp_ids.size() == n) {
+            merged_meta->exp_ids.insert(merged_meta->exp_ids.end(),
+                                        m.exp_ids.begin(), m.exp_ids.end());
+        } else {
+            merged_meta->exp_ids.insert(merged_meta->exp_ids.end(), n, 0);
+        }
+        if ((int)m.topk_weights.size() == n) {
+            merged_meta->topk_weights.insert(merged_meta->topk_weights.end(),
+                                             m.topk_weights.begin(), m.topk_weights.end());
+        } else {
+            merged_meta->topk_weights.insert(merged_meta->topk_weights.end(), n, 0.0f);
+        }
         merged_meta->attn_dp_ranks.insert(merged_meta->attn_dp_ranks.end(),
                                           m.attn_dp_ranks.begin(), m.attn_dp_ranks.end());
         merged_meta->init_prefill_lens.insert(merged_meta->init_prefill_lens.end(),
