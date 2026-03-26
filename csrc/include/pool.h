@@ -54,6 +54,8 @@ public:
 
     std::vector<int> get_pool_snapshot() override;
 
+    UnifiedLayerSchedulerBase::ScheduleResult schedule_with_snapshot();
+
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler();
 
     std::vector<int> get_topk_pool_snapshot();

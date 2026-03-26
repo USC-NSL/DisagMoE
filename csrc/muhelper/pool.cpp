@@ -122,8 +122,11 @@ std::shared_ptr<LayerSchedulerBase> UnifiedPool::get_layer_scheduler() {
 }
 
 std::vector<int> UnifiedPool::get_pool_snapshot() {
-    // std::lock_guard<std::mutex> lock(this->batch_mutex);
     return this->layer_scheduler->get_pool_snapshot();
+}
+
+UnifiedLayerSchedulerBase::ScheduleResult UnifiedPool::schedule_with_snapshot() {
+    return this->layer_scheduler->schedule_with_snapshot();
 }
 
 std::vector<int> UnifiedPool::get_topk_pool_snapshot() {

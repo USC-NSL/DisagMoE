@@ -100,6 +100,13 @@ protected:
 
 public:
 
+    // Bundles a scheduling decision with the pre-dequeue pool snapshot,
+    // both captured under a single lock acquisition.
+    struct ScheduleResult {
+        int best_layer;                    // unified layer index (-1 if idle)
+        std::vector<int> pool_snapshot;    // queue depths at decision time
+    };
+
     UnifiedLayerSchedulerBase(int num_attn_layers, int num_expert_layers, int topk);
 
     virtual ~UnifiedLayerSchedulerBase() = default;
@@ -119,6 +126,11 @@ public:
 
     virtual std::vector<int> get_pool_snapshot();
 
+    // Schedule and return both the chosen layer and the pool snapshot,
+    // captured atomically under a single lock.  Only used when callers
+    // need an aligned (decision, snapshot) pair (e.g. advanced logging).
+    virtual ScheduleResult schedule_with_snapshot() = 0;
+
     virtual TokenBatch get_batch_from_layer(int layer_id);
 
     // Get a batch from `layer_id` but cap the number of tokens to `token_threshold`
@@ -137,6 +149,8 @@ public:
     UnifiedLayerScheduler(int num_attn_layers, int num_expert_layers, int topk);
 
     int schedule() override;
+
+    ScheduleResult schedule_with_snapshot() override;
 
 };
 
@@ -169,6 +183,8 @@ private:
         return static_cast<float>(raw_tokens) / static_cast<float>(top_k);
     }
 
+    int _schedule_impl(std::vector<int>* out_snapshot);
+
 public:
     UnifiedDefraggingLayerScheduler(int num_attn_layers,
                                     int num_expert_layers,
@@ -178,6 +194,8 @@ public:
                                     float weight_decay);
 
     int schedule() override;
+
+    ScheduleResult schedule_with_snapshot() override;
 
 };
 

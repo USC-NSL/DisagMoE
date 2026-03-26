@@ -241,8 +241,27 @@ int UnifiedLayerScheduler::schedule() {
             return this->expert_layers[i]->get_layer_id() + num_attn_layers;
         }
     }
-
     return -1;
+}
+
+UnifiedLayerSchedulerBase::ScheduleResult UnifiedLayerScheduler::schedule_with_snapshot() {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
+    std::vector<int> snapshot(this->num_layers, 0);
+    for (int i = 0; i < this->num_layers; i++) {
+        snapshot[i] = this->layers[i]->get_num_tokens();
+    }
+    int best = -1;
+    for (int i = 0; i < this->num_attn_layers; i++) {
+        if (this->attn_layers[i]->get_num_tokens() > 0) {
+            best = this->attn_layers[i]->get_layer_id();
+            break;
+        }
+        if (i < this->num_expert_layers && this->expert_layers[i]->get_num_tokens() > 0) {
+            best = this->expert_layers[i]->get_layer_id() + num_attn_layers;
+            break;
+        }
+    }
+    return {best, std::move(snapshot)};
 }
 
 
@@ -286,8 +305,7 @@ void UnifiedDefraggingLayerScheduler::step_end(const std::vector<int> &effective
     }
 }
 
-int UnifiedDefraggingLayerScheduler::schedule() {
-    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
+int UnifiedDefraggingLayerScheduler::_schedule_impl(std::vector<int>* out_snapshot) {
     std::vector<int> raw_tokens(num_layers, 0);
     std::vector<float> effective_tokens(num_layers, 0.0f);
     for (int i = 0; i < num_layers; i++) {
@@ -300,6 +318,7 @@ int UnifiedDefraggingLayerScheduler::schedule() {
     int total_raw = 0;
     for (int t : raw_tokens) total_raw += t;
     if (total_raw == 0) {
+        if (out_snapshot) *out_snapshot = std::move(raw_tokens);
         return -1;
     }
 
@@ -397,7 +416,20 @@ int UnifiedDefraggingLayerScheduler::schedule() {
     }
     step_end(effective_snapshot_int);
 
+    if (out_snapshot) *out_snapshot = std::move(raw_tokens);
     return best_layer;
+}
+
+int UnifiedDefraggingLayerScheduler::schedule() {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
+    return _schedule_impl(nullptr);
+}
+
+UnifiedLayerSchedulerBase::ScheduleResult UnifiedDefraggingLayerScheduler::schedule_with_snapshot() {
+    std::lock_guard<std::mutex> lock(*this->scheduler_mutex);
+    ScheduleResult result;
+    result.best_layer = _schedule_impl(&result.pool_snapshot);
+    return result;
 }
 
 /*

@@ -302,9 +302,10 @@ def _render_rank_queue_png(
     out_path: Path, t_lo: float = None, t_hi: float = None,
     scheduled_layer_ids: list = None,
 ):
-    num_layers = max(len(x) for x in layer_depths)
-    num_expert = (num_layers - 1) // 2
-    num_attn = num_layers - num_expert
+    snapshot_len = max(len(x) for x in layer_depths)
+    num_expert = (snapshot_len - 1) // 2
+    num_attn = snapshot_len - num_expert
+    sampler_idx = num_expert
 
     if t_lo is not None or t_hi is not None:
         lo = t_lo if t_lo is not None else timestamps[0]
@@ -317,28 +318,21 @@ def _render_rank_queue_png(
         if len(timestamps) < 2:
             return
 
-    if len(timestamps) == 1:
-        x_edges = np.array([timestamps[0] - 0.5, timestamps[0] + 0.5])
-    else:
-        mids = (timestamps[:-1] + timestamps[1:]) / 2.0
-        x_edges = np.concatenate([
-            [timestamps[0] - (mids[0] - timestamps[0])],
-            mids,
-            [timestamps[-1] + (timestamps[-1] - mids[-1])],
-        ])
+    ncols = len(timestamps)
 
     mat = np.array(layer_depths, dtype=float).T
     attn_mat = mat[:num_attn, :]
     expert_mat = mat[num_attn:, :]
-    n_pairs = min(num_attn, num_expert)
+    n_pairs = num_expert
     total = n_pairs * 2
 
-    vmax_attn = max(np.nanmax(attn_mat), 1)
-    vmax_expert = max(np.nanmax(expert_mat), 1)
+    attn_real = attn_mat[:num_expert, :]
+    vmax_attn = max(np.nanmax(attn_real), 1) if attn_real.size else 1
+    vmax_expert = max(np.nanmax(expert_mat), 1) if expert_mat.size else 1
 
-    rgba = np.ones((total, mat.shape[1], 4), dtype=float)
+    rgba = np.ones((total, ncols, 4), dtype=float)
     for i in range(n_pairs):
-        t = np.clip(attn_mat[i, :] / vmax_attn, 0, 1)
+        t = np.clip(attn_real[i, :] / vmax_attn, 0, 1)
         row_a = i * 2
         rgba[row_a, :, 0] = 1.0 - t
         rgba[row_a, :, 1] = 1.0 - t * 0.6
@@ -351,19 +345,22 @@ def _render_rank_queue_png(
         rgba[row_e, :, 2] = 1.0 - t
 
     fig, ax = plt.subplots(figsize=(20, 10))
-    extent = [x_edges[0], x_edges[-1], 0, total]
+    extent = [0, ncols, 0, total]
     ax.imshow(rgba, aspect="auto", origin="lower", extent=extent, interpolation="nearest")
 
     if scheduled_layer_ids is not None:
         from matplotlib.collections import LineCollection
         segs = []
         for step_idx, sched_lid in enumerate(scheduled_layer_ids):
+            if sched_lid == sampler_idx:
+                continue
             if sched_lid >= num_attn:
                 row = (sched_lid - num_attn) * 2 + 1
             else:
                 row = sched_lid * 2
-            x_right = x_edges[step_idx + 1] if step_idx + 1 < len(x_edges) else x_edges[-1]
-            segs.append([(x_right, row), (x_right, row + 1)])
+            if row < 0 or row >= total:
+                continue
+            segs.append([(step_idx + 1, row), (step_idx + 1, row + 1)])
         if segs:
             lc = LineCollection(segs, colors="lime", linewidths=0.5, alpha=0.9)
             ax.add_collection(lc)
@@ -376,10 +373,10 @@ def _render_rank_queue_png(
     cb_e.set_label("expert queued tokens", fontsize=8)
 
     tick_count = 20
-    idx = np.linspace(0, len(timestamps) - 1, min(tick_count, len(timestamps)), dtype=int)
-    tick_vals = timestamps[idx]
-    ax.set_xticks(tick_vals)
-    ax.set_xticklabels([f"{t - timestamps[0]:.1f}s" for t in tick_vals], fontsize=6, rotation=45)
+    tick_indices = np.linspace(0, ncols - 1, min(tick_count, ncols), dtype=int)
+    ax.set_xticks(tick_indices)
+    ax.set_xticklabels([f"{timestamps[i] - timestamps[0]:.2f}s" for i in tick_indices],
+                       fontsize=6, rotation=45)
 
     ytick_step = max(1, n_pairs // 12)
     yticks = []
@@ -390,8 +387,8 @@ def _render_rank_queue_png(
     ax.set_yticks(yticks)
     ax.set_yticklabels(ylabels, fontsize=6)
     ax.set_ylabel("Layer (A=attn, E=expert, interleaved)")
-    ax.set_xlabel("Time")
-    ax.set_title(f"Rank {dev_id} — queue depth (blue=attn, red=expert)")
+    ax.set_xlabel("Time (step index)")
+    ax.set_title(f"Rank {dev_id} — queue depth (blue=attn, red=expert, sampler excluded)")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)

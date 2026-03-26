@@ -903,7 +903,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 self._drain_moe_events()
                 self.recv_new_request()
                 _sched_t0 = time.perf_counter()
-                batch = self.scheduler.schedule()
+                if self._advanced_logger.enabled:
+                    trace = self.scheduler.schedule_trace()
+                    batch = trace.batch
+                    _trace_snapshot = trace.pool_snapshot
+                else:
+                    batch = self.scheduler.schedule()
                 forward_batch = None
                 if batch.data is not None:
                     _sched_ms = (time.perf_counter() - _sched_t0) * 1000.0
@@ -912,7 +917,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     meta = batch_wrapper.metadata
                     if self._advanced_logger.enabled:
                         _sched_ts = time.monotonic()
-                        _pool_snapshot = list(self.scheduler.get_pool_snapshot())
+                        _pool_snapshot = list(_trace_snapshot)
                         _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                         _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
                         self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
@@ -967,7 +972,12 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             while not self.end_flag:
                 self._timer.start("schedule")
                 self.recv_new_request()
-                batch = self.scheduler.schedule()
+                if self._advanced_logger.enabled:
+                    trace = self.scheduler.schedule_trace()
+                    batch = trace.batch
+                    _trace_snapshot = trace.pool_snapshot
+                else:
+                    batch = self.scheduler.schedule()
                 if batch.data is None:
                     if not prev_schedule_empty:
                         prev_schedule_empty = True
@@ -987,7 +997,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
 
                 if self._advanced_logger.enabled:
                     _sched_ts = time.monotonic()
-                    _pool_snapshot = list(self.scheduler.get_pool_snapshot())
+                    _pool_snapshot = list(_trace_snapshot)
                     _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                     _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
                     self._advanced_logger.log_queue_snapshot(_sched_ts, _unified_layer, _pool_snapshot)
