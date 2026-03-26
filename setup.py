@@ -38,7 +38,7 @@ TMPDIR=os.environ.get("TMPDIR", "/tmp/disagmoe/")
 GDRCOPY_HOME = os.environ.get("GDRCOPY_HOME", "/usr/local/gdrcopy")
 GDRCOPY_INCLUDE_DIR = os.path.join(GDRCOPY_HOME, "include")
 GDRCOPY_LIBRARY_DIR = os.path.join(GDRCOPY_HOME, "lib")
-KERNEL_USE_GDRCOPY = os.environ.get("KERNEL_USE_GDRCOPY", "0")
+KERNEL_USE_GDRCOPY = os.environ.get("KERNEL_USE_GDRCOPY", "1")
 D_ENABLE_HANG_DEBUGGER = os.environ.get("D_ENABLE_HANG_DEBUGGER", "0")
 
 def find_all_c_targets(path):
