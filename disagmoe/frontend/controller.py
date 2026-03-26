@@ -189,7 +189,8 @@ class Controller:
         cache_config: CacheConfig,
         attn_dp_weights: Optional[Dict[int, float]] = None,
         per_device_config: Optional[Dict[int, dict]] = None,
-        gate_profile_file: Optional[str] = None
+        gate_profile_file: Optional[str] = None,
+        dp_policy: Optional[str] = None
     ):
         get_logger().debug(f"Initializing engine with model placement: {model_place}")
         
@@ -312,7 +313,8 @@ class Controller:
             dp_weights = [attn_dp_weights.get(i, 1.0) for i in range(model_config.dp_size)]
             self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "weighted", weights=dp_weights)
         else:
-            self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, "max")
+            policy = dp_policy or "max"
+            self.dp_scheduler = get_dp_scheduler(model_config.dp_size, cache_config.block_size, policy)
         
         self.model_place: ModelPlacement = model_place
         

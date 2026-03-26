@@ -161,6 +161,25 @@ class DPSChedulerRR(DPScheduler):
         self.cur_rank = (self.cur_rank + 1) % self.dp_size
         return rank
 
+class DPSchedulerCapRR(DPScheduler):
+    """Capacity-aware round-robin: cycles evenly across ranks, skipping
+    any rank that lacks enough free KV-cache blocks for the request."""
+
+    def __init__(self, dp_size: int, block_size: int):
+        super().__init__(dp_size, block_size)
+        self.cur_rank = 0
+
+    @override
+    def _schedule(self, prefill_len: int, output_len: int) -> int:
+        required = self.required_blocks(prefill_len, output_len)
+        for _ in range(self.dp_size):
+            rank = self.cur_rank
+            self.cur_rank = (self.cur_rank + 1) % self.dp_size
+            if self.kv_cache_stats[rank] >= required:
+                return rank
+        return -1
+
+
 class DPSchedulerWeighted(DPScheduler):
 
     def __init__(self, dp_size: int, block_size: int, weights: List[float]):
@@ -186,6 +205,7 @@ class DPSchedulerWeighted(DPScheduler):
 _clses = {
     "RR": DPSChedulerRR,
     "max": DPSchedulerMax,
+    "cap_rr": DPSchedulerCapRR,
     "weighted": DPSchedulerWeighted,
 }
 

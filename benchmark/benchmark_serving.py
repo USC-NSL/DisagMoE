@@ -242,7 +242,8 @@ def launch(args):
     master.init_engine(args.transport, mp, model_config, engine_config, cache_config,
                       attn_dp_weights=attn_dp_weights,
                       per_device_config=per_device_config,
-                      gate_profile_file=args.gate_profile_file)
+                      gate_profile_file=args.gate_profile_file,
+                      dp_policy=getattr(args, "dp_policy", None))
     
     master.start_engine()
     
