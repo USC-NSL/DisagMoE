@@ -218,15 +218,19 @@ void UnifiedDispatcher::_try_flush_queues() {
 // ── check CUDA events, decrement in_flight ─────────────────────────────
 
 void UnifiedDispatcher::_clean_rank_pending_sends() {
-    while (!rank_pending_sends_.empty()) {
-        auto& ps = rank_pending_sends_.front();
+    // Scan ALL pending events (not just front) because events for different
+    // ranks complete out-of-order on separate NCCL streams.  FIFO-only
+    // scanning causes head-of-line blocking that starves the pipeline.
+    int n = (int)rank_pending_sends_.size();
+    for (int i = 0; i < n; i++) {
+        auto ps = std::move(rank_pending_sends_.front());
+        rank_pending_sends_.pop();
         cudaError_t err = cudaEventQuery(ps.event);
         if (err == cudaSuccess) {
             CUDACHECK(cudaEventDestroy(ps.event));
             rank_queues_[ps.dest_rank].in_flight--;
-            rank_pending_sends_.pop();
         } else if (err == cudaErrorNotReady) {
-            break;
+            rank_pending_sends_.push(std::move(ps));
         } else {
             DMOE_LOG(ERROR) << "cudaEventQuery failed: " << cudaGetErrorName(err)
                             << ", " << cudaGetErrorString(err) << LEND;
@@ -280,12 +284,12 @@ void UnifiedDispatcher::run() {
         _try_flush_queues();
     }
 
-    // Drain remaining buffered sends on shutdown
-    for (auto& q : rank_queues_) {
+    for (int r = 0; r < (int)rank_queues_.size(); r++) {
+        auto& q = rank_queues_[r];
         if (!q.buffered.empty() && q.channel_id >= 0) {
             TokenBatch merged = _merge_for_rank(q.buffered);
             q.buffered.clear();
-            _do_rank_send(q.channel_id, merged);
+            _do_rank_send(r, merged);
         }
     }
     // Wait for all pending NCCL sends to complete
