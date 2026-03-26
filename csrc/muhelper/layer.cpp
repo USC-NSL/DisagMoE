@@ -324,13 +324,38 @@ int UnifiedDefraggingLayerScheduler::_schedule_impl(std::vector<int>* out_snapsh
 
     std::vector<float> scores(num_layers, 0.0f);
 
-    // Compute scores for attention layers (indices 0 to num_attn_layers - 1)
-    for (int i = 0; i < num_attn_layers; i++) {
+    // Pipeline ordering: A0 -> E0 -> A1 -> E1 -> ... -> A_{N-1} -> E_{N-1} -> A0 (circular)
+    // Pipeline position 2i = A_i (unified index i), 2i+1 = E_i (unified index num_attn_layers + i)
+    int total_pipeline = num_attn_layers + num_expert_layers;
+
+    auto to_pipeline_pos = [&](int unified_idx) -> int {
+        if (unified_idx < num_attn_layers)
+            return 2 * unified_idx;
+        else
+            return 2 * (unified_idx - num_attn_layers) + 1;
+    };
+
+    auto from_pipeline_pos = [&](int pos) -> int {
+        if (pos % 2 == 0)
+            return pos / 2;                        // attention
+        else
+            return num_attn_layers + pos / 2;      // expert
+    };
+
+    for (int i = 0; i < num_layers; i++) {
+        float immediate = effective_tokens[i];
+        if (immediate <= 0.0f) {
+            scores[i] = 0.0f;
+            continue;
+        }
+
+        int pipe_pos = to_pipeline_pos(i);
         float lookahead_score = 0.0f;
         float decay = weight_decay;
 
-        for (int k = 1; k < lookahead_steps && k < num_attn_layers; k++) {
-            int cur_layer = (i + k) % num_attn_layers;
+        for (int k = 1; k < lookahead_steps; k++) {
+            int next_pos = (pipe_pos + k) % total_pipeline;
+            int cur_layer = from_pipeline_pos(next_pos);
             float num_tokens_cur_layer = effective_tokens[cur_layer];
             float history_score = 0.0f;
 
@@ -351,50 +376,7 @@ int UnifiedDefraggingLayerScheduler::_schedule_impl(std::vector<int>* out_snapsh
             decay *= weight_decay;
         }
 
-        float immediate = effective_tokens[i];
-        if (immediate > 0.0f) {
-            scores[i] = lookahead_score + immediate;
-        } else {
-            scores[i] = 0.0f;
-        }
-    }
-
-    // Compute scores for expert layers (indices num_attn_layers to num_layers - 1)
-    for (int i = num_attn_layers; i < num_layers; i++) {
-        float lookahead_score = 0.0f;
-        float decay = weight_decay;
-
-        for (int k = 1; k < lookahead_steps && k < num_expert_layers; k++) {
-            // Wrap within expert layer range
-            int offset_in_expert = i - num_attn_layers;
-            int cur_offset = (offset_in_expert + k) % num_expert_layers;
-            int cur_layer = num_attn_layers + cur_offset;
-            float num_tokens_cur_layer = effective_tokens[cur_layer];
-            float history_score = 0.0f;
-
-            if (lookback_steps > 0 &&
-                !history_tokens_in_layer.empty() &&
-                !history_tokens_in_layer[cur_layer].empty() &&
-                sum_history_tokens_in_layer[cur_layer] > 0) {
-                int window_size =
-                    static_cast<int>(history_tokens_in_layer[cur_layer].size());
-                if (window_size > 0) {
-                    history_score =
-                        static_cast<float>(sum_history_tokens_in_layer[cur_layer]) /
-                        static_cast<float>(window_size);
-                }
-            }
-
-            lookahead_score += (num_tokens_cur_layer + history_score) * decay;
-            decay *= weight_decay;
-        }
-
-        float immediate = effective_tokens[i];
-        if (immediate > 0.0f) {
-            scores[i] = lookahead_score + immediate;
-        } else {
-            scores[i] = 0.0f;
-        }
+        scores[i] = lookahead_score + immediate;
     }
 
     // Choose the layer with the largest score.
