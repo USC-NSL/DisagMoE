@@ -30,6 +30,8 @@ private:
     
     void process_expert_batch(torch::Tensor tensor, batch_metadata_t &meta);
 
+    void _process_single_batch(torch::Tensor tensor, batch_metadata_t &meta);
+
     void process_batch(torch::Tensor tensor, batch_metadata_t &meta) override;
 
 public:

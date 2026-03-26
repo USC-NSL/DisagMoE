@@ -9,6 +9,7 @@
 #include "tests.h"
 #include "engine.h"
 #include "muhelper.h"
+#include "dispatcher.h"
 #include "datatypes.hpp"
 #include "block_manager.h"
 #include "binding_helper.h"
@@ -57,7 +58,11 @@ PYBIND11_MODULE(disagmoe_c, m) {
 
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put)
-        .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends);
+        .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends)
+        .def("set_max_in_flight_per_rank", [](MuDispatcher& self, int val) {
+            auto* ud = dynamic_cast<UnifiedDispatcher*>(&self);
+            if (ud) ud->set_max_in_flight_per_rank(val);
+        }, py::arg("val"));
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())

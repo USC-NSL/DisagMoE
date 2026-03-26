@@ -21,6 +21,20 @@
 constexpr int max_num_experts = 128;
 constexpr int max_num_attn_dp_ranks = 32;
 
+// Segment descriptor for merged batches that carry tokens from different
+// layers and/or types in a single NCCL transfer.  Serialized as part of
+// the ZMQ/UCX metadata so the receiver can demux the merged tensor.
+struct BatchSegment {
+    int layer_id;
+    BatchTag batch_tag;
+    int num_tokens;
+
+    template<class Archive>
+    void serialize(Archive &archive) {
+        archive(layer_id, batch_tag, num_tokens);
+    }
+};
+
 struct BatchMetadata;
 
 typedef std::shared_ptr<BatchMetadata> batch_metadata_t;
@@ -44,6 +58,11 @@ struct BatchMetadata {
     std::optional<int> num_prefill_tokens;
     std::optional<int> num_decode_tokens;
 
+    // Per-rank in-flight batching: when the dispatcher merges batches from
+    // different layers/types into one NCCL transfer, each original batch
+    // becomes a segment.  Empty for non-merged (single-segment) transfers.
+    std::vector<BatchSegment> segments;
+
     friend std::ostream& operator<<(std::ostream &out, const BatchMetadata &meta) {
         out << "BatchMetadata {";
         out << "num_tokens=" << meta.num_tokens() << ", ";
@@ -65,7 +84,8 @@ struct BatchMetadata {
             batch_tag, shape, dtype, layer_id, 
             req_ids, exp_ids, topk_weights, 
             attn_dp_ranks, init_prefill_lens,
-            num_prefill_tokens, num_prefill_seqs, num_decode_tokens
+            num_prefill_tokens, num_prefill_seqs, num_decode_tokens,
+            segments
         );
     }
 

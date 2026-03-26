@@ -89,7 +89,7 @@ void UnifiedPool::process_expert_batch(torch::Tensor tensor, batch_metadata_t &m
     }
 }
 
-void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
+void UnifiedPool::_process_single_batch(torch::Tensor tensor, batch_metadata_t &meta) {
     if (meta->is_tokenizer()) {
         this->process_attn_batch(tensor, meta);
     } else if (meta->is_expert()) {
@@ -102,6 +102,31 @@ void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
         this->process_expert_batch(tensor, meta);
     } else {
         ASSERT_MSG(false, "Invalid batch metadata");
+    }
+}
+
+void UnifiedPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
+    if (meta->segments.empty()) {
+        _process_single_batch(tensor, meta);
+        return;
+    }
+
+    int offset = 0;
+    for (const auto& seg : meta->segments) {
+        auto sub_tensor = tensor.narrow(0, offset, seg.num_tokens);
+        auto sub_meta = std::make_shared<BatchMetadata>();
+        sub_meta->batch_tag        = seg.batch_tag;
+        sub_meta->layer_id         = seg.layer_id;
+        sub_meta->dtype            = meta->dtype;
+        sub_meta->shape            = {(size_t)seg.num_tokens, meta->shape[1]};
+        sub_meta->req_ids          = slice_vector(meta->req_ids, offset, offset + seg.num_tokens);
+        sub_meta->exp_ids          = slice_vector(meta->exp_ids, offset, offset + seg.num_tokens);
+        sub_meta->topk_weights     = slice_vector(meta->topk_weights, offset, offset + seg.num_tokens);
+        sub_meta->attn_dp_ranks    = slice_vector(meta->attn_dp_ranks, offset, offset + seg.num_tokens);
+        sub_meta->init_prefill_lens = slice_vector(meta->init_prefill_lens, offset, offset + seg.num_tokens);
+
+        _process_single_batch(sub_tensor, sub_meta);
+        offset += seg.num_tokens;
     }
 }
 

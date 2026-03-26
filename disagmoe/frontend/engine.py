@@ -669,6 +669,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         #     self.loop_thread = Thread(target=self.attn_worker_loop)
         if hasattr(self.engine_config, 'max_pending_sends'):
             self.dispatcher.set_max_pending_sends(self.engine_config.max_pending_sends)
+        if hasattr(self.engine_config, 'max_in_flight_per_rank'):
+            self.dispatcher.set_max_in_flight_per_rank(self.engine_config.max_in_flight_per_rank)
         start_engine(self.scheduler, self.dispatcher)
         
         self.loop_thread = Thread(target=self.single_module_loop_overlap)

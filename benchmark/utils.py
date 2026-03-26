@@ -24,6 +24,7 @@ def add_runtime_arguments(parser: ArgumentParser):
     parser.add_argument("--max-batch-size-attn", type=int, default=160, help="max batch size for attention cuda graph")
     parser.add_argument("--max-batch-size-expert", type=int, default=512, help="max batch size for experts")
     parser.add_argument("--max-pending-sends", type=int, default=16, help="max concurrent NCCL sends per GPU to prevent SM exhaustion deadlock")
+    parser.add_argument("--max-in-flight-per-rank", type=int, default=1, help="max concurrent NCCL transfers per destination rank (lower = more batching)")
     
     parser.add_argument("--dp-policy", type=str, default="max", choices=["max", "RR", "cap_rr", "weighted"],
                         help="DP request scheduling policy: 'max' (greedy by free blocks), 'RR' (round-robin, no capacity check), 'cap_rr' (capacity-aware round-robin), 'weighted'")
