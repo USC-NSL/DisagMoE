@@ -276,12 +276,15 @@ class SloStat:
     t_prefill_std: float
     t_decode: float
     t_tokens: List[float]
+    # absolute token timestamps in seconds (preserved for time-window filtering)
+    t_token_timestamps: List[float] = None
         
     def post_process(self) -> None:
         ms_to_s = 1e-3
         self.t_decode = (self.t_decode - self.t_prefill) * ms_to_s
         self.t_prefill = self.t_prefill * ms_to_s
         self.t_prefill_std = self.t_prefill_std * ms_to_s
+        self.t_token_timestamps = [t * ms_to_s for t in self.t_tokens]
         self.t_tokens = [(x - y) * ms_to_s for x, y in zip(self.t_tokens[1:], self.t_tokens[:-1])]
         
 @dataclass

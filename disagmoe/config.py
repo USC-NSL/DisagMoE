@@ -10,6 +10,7 @@ import vllm.config
 class ModelConfig:    
     hidden_size: int
     num_layers: int
+    head_dim: int
     num_heads: int
     num_kv_heads: int
     num_experts: int
@@ -84,6 +85,7 @@ class CacheConfig(vllm.config.CacheConfig):
 mixtral_config = ModelConfig(
     hidden_size = 4096,
     num_layers = 32,
+    head_dim = 128,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 8,
@@ -96,6 +98,7 @@ mixtral_config = ModelConfig(
 duo_expert_mixtral = ModelConfig(
     hidden_size = 4096,
     num_layers = 32,
+    head_dim = 128,
     num_heads = 32,
     num_kv_heads = 8,
     num_experts = 2,
@@ -107,6 +110,7 @@ duo_expert_mixtral = ModelConfig(
 qwen3_235b_config = ModelConfig(
     hidden_size = 4096,
     num_layers = 94,
+    head_dim = 128,
     num_heads = 64,
     num_kv_heads = 4,
     num_experts = 128,
@@ -118,6 +122,7 @@ qwen3_235b_config = ModelConfig(
 qwen3_30b_config = ModelConfig(
     hidden_size = 2048,
     num_layers = 48,
+    head_dim = 128,
     num_heads = 32,
     num_kv_heads = 4,
     num_experts = 128,
@@ -129,10 +134,23 @@ qwen3_30b_config = ModelConfig(
 gptoss_120b_config = ModelConfig(
     hidden_size = 2880,
     num_layers = 36,
-    num_heads = 30, # original 36
-    num_kv_heads = 6, # original 8
+    head_dim = 64,
+    num_heads = 64, # original 36
+    num_kv_heads = 8, # original 8
     num_experts = 128,
     intermediate_size = 2880,
     dtype = torch.bfloat16,
     top_k = 4,
+)
+
+glm45air_106b_config = ModelConfig(
+    hidden_size = 4096,
+    num_layers = 45,
+    head_dim = 128,
+    num_heads = 96,
+    num_kv_heads = 8,
+    num_experts = 128,
+    intermediate_size = 1408,
+    dtype = torch.bfloat16,
+    top_k = 8,
 )

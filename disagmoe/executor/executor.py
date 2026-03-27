@@ -137,6 +137,7 @@ class AttnExecutor(Executor):
             MoEAttention(
                 layer_id,
                 self.model_config.hidden_size, 
+                self.model_config.head_dim,
                 self.model_config.num_heads, 
                 self.model_config.num_kv_heads, 
                 self.model_config.num_experts,
@@ -219,7 +220,7 @@ class AttnExecutor(Executor):
             self.cache_config.block_size,
             self.model_config.dtype,
             self.model_config.num_kv_heads,
-            self.model_config.hidden_size // self.model_config.num_heads,
+            self.model_config.head_dim,
             self.num_layers,
             self.device,
         )
@@ -263,7 +264,7 @@ class AttnExecutor(Executor):
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
         
         peak_memory = self.init_gpu_memory - free_gpu_memory
-        cache_block_size = self.model_config.hidden_size // self.model_config.num_heads \
+        cache_block_size = self.model_config.head_dim \
                             * self.model_config.num_kv_heads * self.cache_config.block_size * 2 * 2 # 2 for kv, 2 for fp16/bf16
         
         num_gpu_blocks = int(

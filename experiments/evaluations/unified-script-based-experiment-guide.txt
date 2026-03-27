@@ -1,0 +1,80 @@
+sphere-16-unified-eval-glm-mar27
+
+Run eval for two systems (AsyncMoE + SGLang) sequentially on the Sphere-16 cluster.
+All outputs go under: ~/DisagMoE/experiments/sphere-16-unified-eval/
+
+Both systems share the SAME cluster — NEVER run them simultaneously.
+Run each eval script one at a time. Only start the next after the previous finishes.
+
+Eval scripts to run (in order):
+
+  1. AsyncMoE gptoss     ~/DisagMoE/experiments/scripts/sphere-16/eval/gptoss_eval.sh
+  2. AsyncMoE glm45air   ~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh
+  3. SGLang gptoss       ~/sglang-fake-prefill/experiments/sphere/eval/gptoss_eval.sh
+  4. SGLang glm45air     ~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh
+
+
+## BEFORE YOU START
+
+Read BOTH READMEs in full — they contain all cluster, config, and script details:
+  - ~/DisagMoE/experiments/scripts/sphere-16/eval/README.md
+  - ~/sglang-fake-prefill/experiments/sphere/eval/README.md
+
+
+## RUNNING EACH SCRIPT
+
+For each of the 4 eval scripts above, follow the same pattern:
+
+  1. SSH into sgpu0.
+  2. Activate the correct conda env:
+       AsyncMoE scripts → conda activate disag12
+       SGLang scripts   → conda activate sglang-fp
+  3. cd to the correct repo root:
+       AsyncMoE scripts → cd ~/DisagMoE
+       SGLang scripts   → cd ~/sglang-fake-prefill
+  4. Verify no lingering processes from the previous run:
+       ps aux | grep -E 'ray|server\.py|sglang|benchmark' | grep -v grep
+     Kill any that remain.
+  5. Launch in background, piping stdout/stderr to a log file:
+
+       OUTDIR=~/DisagMoE/experiments/sphere-16-unified-eval
+       TAG=<short name, e.g. asyncmoe-gptoss, sglang-glm45air>
+       RESULTS=$OUTDIR/${TAG}-results
+       mkdir -p "$RESULTS"
+
+       nohup bash <script> "$RESULTS" > "$OUTDIR/${TAG}.log" 2>&1 &
+       echo $! > "$OUTDIR/${TAG}.pid"
+
+  6. Monitor until the script prints its completion message, then move to the next.
+
+
+## MONITORING
+
+Check each running script at least every 6 minutes:
+
+  1. Process alive?   ps -p $(cat <pid_file>)
+  2. Progress?        tail -80 <log_file>
+     Healthy: timestamps advancing, "SUCCESS", "Attempt N/3", "OOM detected", or at least some progress
+  3. Anomalies: no output >15 min (hung), ALL experiments failing systematically,
+     process dead unexpectedly.
+
+Single experiment failing after retries is normal — the script moves on, but systematic failing need to be noted.
+
+
+## INTERVENTION POLICY
+
+You may modify scripts ONLY when ALL experiments fail systematically.
+Make the minimal fix. Record every change (file, diff, reason) in the report.
+Do NOT change benchmark parameters, model configs, or parallelism strategies.
+
+
+## EXPERIMENT REPORT
+
+After all 4 scripts complete, write:
+    ~/DisagMoE/experiments/sphere-16-unified-eval/experiment_report.md
+
+Include:
+  - Per-experiment status (SUCCESS/FAILED, attempts taken, reason if failed)
+  - Summary table from all result.json files
+  - Any script modifications made (exact diffs) — or state "none"
+  - Anomalies observed during monitoring

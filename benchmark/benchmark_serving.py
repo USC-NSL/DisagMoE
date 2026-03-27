@@ -10,6 +10,7 @@ from disagmoe.config import (
     qwen3_235b_config,
     qwen3_30b_config,
     gptoss_120b_config,
+    glm45air_106b_config,
     EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
@@ -47,6 +48,9 @@ class BenchmarkMetrics:
     itl_latency_median_ms: float = -1
     itl_latency_p99_ms: float = -1
     
+    peak_itl_median_ms: float = -1
+    peak_itl_p99_ms: float = -1
+    
     def __repr__(self):
         return f"Metrics: \n" \
                 f"e2e_duration: {self.e2e_duration:.2f}s\n" \
@@ -57,7 +61,9 @@ class BenchmarkMetrics:
                 f"req_latency_p99: {self.req_latency_p99_ms:.0f}ms\n" \
                 f"itl_latency_mean: {self.itl_latency_mean_ms:.0f}ms\n" \
                 f"itl_latency_median: {self.itl_latency_median_ms:.0f}ms\n" \
-                f"itl_latency_p99: {self.itl_latency_p99_ms:.0f}ms\n"
+                f"itl_latency_p99: {self.itl_latency_p99_ms:.0f}ms\n" \
+                f"peak_itl_median: {self.peak_itl_median_ms:.0f}ms\n" \
+                f"peak_itl_p99: {self.peak_itl_p99_ms:.0f}ms\n"
 
     def write_to_file(self, args):
         filename = args.file
@@ -178,6 +184,8 @@ def launch(args):
         model_config = qwen3_30b_config
     elif args.model == "gptoss_120b":
         model_config = gptoss_120b_config
+    elif args.model == "glm45air_106b":
+        model_config = glm45air_106b_config
     elif args.model == "mixtral":
         model_config = mixtral_config
     else:
@@ -435,7 +443,35 @@ def analyze_throughput(args,
     ])
     ttft_df.to_csv(ttft_fn, index=False)
     
-    return get_peak_throughput()
+    def get_peak_itl(peak_time_range=60):
+        all_itls = []
+        for stat in slo_stats:
+            if stat.t_token_timestamps is None or len(stat.t_token_timestamps) < 2:
+                continue
+            for i in range(1, len(stat.t_token_timestamps)):
+                t = stat.t_token_timestamps[i]
+                itl_ms = (stat.t_token_timestamps[i] - stat.t_token_timestamps[i - 1]) * 1e3
+                all_itls.append((t, itl_ms))
+        
+        if not all_itls:
+            return -1.0, -1.0
+        
+        all_itls.sort(key=lambda x: x[0])
+        t_start = all_itls[0][0]
+        t_end = all_itls[-1][0]
+        t_mid = (t_start + t_end) / 2
+        t_lo = t_mid - peak_time_range / 2
+        t_hi = t_mid + peak_time_range / 2
+        
+        peak_itls = np.array([itl for t, itl in all_itls if t_lo <= t <= t_hi])
+        if len(peak_itls) == 0:
+            return -1.0, -1.0
+        
+        return float(np.median(peak_itls)), float(np.percentile(peak_itls, 99))
+    
+    peak_throughput = get_peak_throughput()
+    peak_itl_median, peak_itl_p99 = get_peak_itl()
+    return peak_throughput, peak_itl_median, peak_itl_p99
 
     
 async def run_benchmark(master: Controller, args, 
@@ -501,13 +537,15 @@ def post_benchmark(master, args, results, req_submit_timestamps, req_finish_time
         sampler_step_infos = master.fetch_sampler_step_infos()
         attn_delays, exp_delays = master.fetch_queueing_delays()
         t_submitted = master.fetch_submitted_time()
-        throughput = analyze_throughput(args, 
+        throughput, peak_itl_median, peak_itl_p99 = analyze_throughput(args, 
                             req_submit_timestamps,
                             req_finish_timestamps,
                             sampler_step_infos, 
                             attn_delays, exp_delays,
                             t_submitted, results)
         metrics.token_throughput = throughput
+        metrics.peak_itl_median_ms = peak_itl_median
+        metrics.peak_itl_p99_ms = peak_itl_p99
 
     if getattr(args, "enable_advanced_logging", False):
         _adv_dir = getattr(args, "advanced_logging_dir", "./advanced_logs")
