@@ -1,0 +1,109 @@
+# AsyncMoE EP16 gptoss Evaluation — Sphere-16
+
+## File layout
+
+```
+eval-gptoss/
+  ep16_eval.sh      # main: experiment matrix + orchestration loop
+  config.sh         # all fixed variables (sourced by main)
+  helpers/
+    ray.sh          # restart_ray(), stop_ray()
+    server.sh       # launch_server(), wait_for_server(), kill_server(), is_oom()
+    benchmark.sh    # run_benchmark()
+  README.md
+```
+
+`helpers/` scripts only define functions; they are sourced, not executed.
+
+---
+
+## What the main script does
+
+For each of the 4 experiments `{sharegpt, legal-court} × {regular, balanced}`,
+up to `MAX_RETRIES=3` times:
+
+1. **`restart_ray`** — stops Ray on all nodes via SSH, restarts head on
+   sgpu0 and workers on sgpu2–9.
+2. **`launch_server`** — builds the server command, saves it to
+   `server_cmd.sh`, then starts `benchmark/server.py` in the
+   background (`nohup`), logging to `server.log`.
+3. **`wait_for_server`** — polls the log for `Running on http://0.0.0.0:6699`,
+   up to `SERVER_READY_TIMEOUT=300s`.
+   - If the server exits early, calls **`is_oom`** on its log. On OOM,
+     `MEM_FRAC` is decreased by `MEM_FRAC_STEP=0.02` before the next attempt.
+4. **`run_benchmark`** — saves the exact `curl` command to
+   `bench_cmd.sh`, then POSTs to `/run_once`; saves response JSON to
+   `result.json`.
+
+Final cleanup: `kill_server` + `stop_ray`.
+
+---
+
+## Fixed config (edit `config.sh`)
+
+| Parameter | Value |
+|---|---|
+| Model | `gptoss_120b` (36 layers, 128 experts, top-4, bf16) |
+| Cluster | 8 nodes × 2 L40S = EP16 |
+| Head node | sgpu0 (10.0.0.1) |
+| Workers | sgpu2, sgpu3, sgpu4, sgpu6, sgpu7, sgpu8, sgpu9 |
+| Placement | `colocate`, dp=16, ep=16 |
+| Transport | ZMQ, `--host-ifname ens1f1np1`, RoCE via mlx5_1 |
+| Scheduler | `defrag` (decay=0.8, lookahead=4, lookback=4) |
+| Optimizations | `--cuda-graph-attn --cuda-graph-expert --less-than-sm90` |
+| Initial memory fraction | 0.98 |
+| OOM step | −0.02 per retry |
+| Batch sizes | attn=256, expert=1024 |
+| Benchmark | 2000 rps × 5s = 10k reqs, in/out 256–512 uniform |
+
+---
+
+## Placeholders to fill in (`ep16_eval.sh`)
+
+Set the four gate profile paths in the `EXPERIMENTS` array:
+
+```bash
+EXPERIMENTS=(
+    ".../gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"
+    ".../balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"
+    ".../gating_legal_court_opinions_200.parquet:legal_court_regular"
+    ".../balanced_output/balanced_legal_court_opinions_200.parquet:legal_court_balanced"
+)
+```
+
+---
+
+## How to run
+
+```bash
+# 1. SSH to sgpu0
+ssh sgpu0
+
+# 2. Activate conda
+conda activate disag12
+
+# 3. Run (RESULTS_DIR is required as the first argument)
+cd ~/DisagMoE
+bash experiments/scripts/sphere-16/eval-gptoss/ep16_eval.sh /path/to/my_results \
+    |& tee /path/to/my_results/ep16_eval.log
+```
+
+---
+
+## Output layout
+
+Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
+
+```
+<RESULTS_DIR>/
+  asyncmoe-sharegpt_regular/
+    server_cmd.sh                       # exact server launch command (replayable)
+    server.log                          # server stdout/stderr
+    bench_cmd.sh                        # exact curl command (replayable)
+    result.json                         # benchmark response JSON
+  asyncmoe-sharegpt_balanced/          ...
+  asyncmoe-legal_court_regular/        ...
+  asyncmoe-legal_court_balanced/       ...
+```
+
+On retries (e.g. OOM), files are overwritten; only the final attempt is kept.
