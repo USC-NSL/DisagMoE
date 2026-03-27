@@ -1,0 +1,119 @@
+#!/usr/bin/bash
+# lib/server.sh — DisagMoE server lifecycle helpers
+# Source this file; do not execute directly.
+#
+# Requires (from config.sh):
+#   REPO_DIR, RESULTS_DIR, SERVER_PORT, SERVER_READY_TIMEOUT
+#   N_NODE, N_GPU_PER_NODE, MEM_FRAC
+#   MODEL_NAME, ATTN_QKV_QUANT, MOE_LINEAR_QUANT
+#   MAX_BATCH_SIZE_ATTN, MAX_BATCH_SIZE_EXP, MAX_PENDING_SENDS, BLOCK_SIZE
+#   PLACEMENT, DP_SIZE, EP_SIZE, TRANSPORT, HOST_IFNAME
+#   UNIFIED_SCHEDULER_TYPE, DEFRAG_WEIGHT_DECAY,
+#   DEFRAG_LOOKAHEAD_STEPS, DEFRAG_LOOKBACK_STEPS
+
+log_server() { echo "$(date '+%Y-%m-%d %H:%M:%S') [server] $*"; }
+
+# launch_server <gate_profile_path> <server_log_path> <cmd_file_path>
+#   Builds the server command, saves it to <cmd_file_path>, then starts
+#   benchmark/server.py in the background (nohup). Sets global SERVER_PID.
+#   MEM_FRAC is read at call time, so OOM retries with a lower value work.
+launch_server() {
+    local gate_profile="$1"
+    local server_log="$2"
+    local cmd_file="$3"
+
+    log_server "Launching server | profile: $(basename "$gate_profile") | mem_frac=$MEM_FRAC"
+    mkdir -p "$(dirname "$server_log")"
+
+    # Build command as an array so we can both save and exec it cleanly
+    local cmd=(
+        python benchmark/server.py
+        -N "$N_NODE"
+        -g "$N_GPU_PER_NODE"
+        -u "$MEM_FRAC"
+        --model "$MODEL_NAME"
+        --attn-qkv-quant "$ATTN_QKV_QUANT"
+        --moe-linear-quant "$MOE_LINEAR_QUANT"
+        --max-batch-size-attn "$MAX_BATCH_SIZE_ATTN"
+        --max-attn-graph-bsz "$MAX_BATCH_SIZE_ATTN"
+        --max-pending-sends "$MAX_PENDING_SENDS"
+        --max-batch-size-expert "$MAX_BATCH_SIZE_EXP"
+        --block-size "$BLOCK_SIZE"
+        --placement "$PLACEMENT"
+        --dp-size "$DP_SIZE"
+        --ep-size "$EP_SIZE"
+        --transport "$TRANSPORT"
+        --host-ifname "$HOST_IFNAME"
+        --unified-scheduler-type "$UNIFIED_SCHEDULER_TYPE"
+        --defrag-weight-decay "$DEFRAG_WEIGHT_DECAY"
+        --defrag-lookahead-steps "$DEFRAG_LOOKAHEAD_STEPS"
+        --defrag-lookback-steps "$DEFRAG_LOOKBACK_STEPS"
+        --less-than-sm90
+        --cuda-graph-attn
+        --cuda-graph-expert
+        --analyze-throughput
+        --trace
+        --gate-profile-file "$gate_profile"
+    )
+
+    # Save the exact command for reproducibility / manual replay
+    {
+        printf '# Server command\n'
+        printf '# Generated: %s\n' "$(date)"
+        printf '# mem_frac: %s\n\n' "$MEM_FRAC"
+        printf 'cd %s\n' "$REPO_DIR"
+        printf 'nohup'
+        for arg in "${cmd[@]}"; do printf ' \\\n    %q' "$arg"; done
+        printf ' \\\n    > %q 2>&1 &\n' "$server_log"
+    } > "$cmd_file"
+
+    cd "$REPO_DIR"
+    nohup "${cmd[@]}" > "$server_log" 2>&1 &
+    SERVER_PID=$!
+    log_server "Server PID: $SERVER_PID (command saved to $(basename "$cmd_file"))"
+}
+
+# wait_for_server <server_log_path>
+#   Polls log until Flask is up or timeout (SERVER_READY_TIMEOUT) is reached.
+#   Returns 0 on success, 1 on failure.
+wait_for_server() {
+    local server_log="$1"
+    local elapsed=0
+
+    log_server "Waiting for server ready (timeout ${SERVER_READY_TIMEOUT}s)..."
+    while [ "$elapsed" -lt "$SERVER_READY_TIMEOUT" ]; do
+        if grep -q "Running on all addresses\|Running on http://0.0.0.0" \
+                "$server_log" 2>/dev/null; then
+            log_server "Server ready (${elapsed}s elapsed)."
+            sleep 3
+            return 0
+        fi
+        if ! pgrep -f "python benchmark/server.py" >/dev/null 2>&1; then
+            log_server "ERROR: Server process exited unexpectedly. See: $server_log"
+            return 1
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
+    log_server "ERROR: Server did not become ready within ${SERVER_READY_TIMEOUT}s."
+    return 1
+}
+
+# is_oom <server_log_path>
+#   Returns 0 if the log contains any CUDA/torch out-of-memory indication.
+is_oom() {
+    local server_log="$1"
+    grep -qi \
+        "out of memory\|OutOfMemoryError\|CUDA error: out of memory\|cudaMalloc failed" \
+        "$server_log" 2>/dev/null
+}
+
+# kill_server
+#   Terminates any running benchmark/server.py process.
+kill_server() {
+    log_server "Killing server..."
+    pkill -f "python benchmark/server.py" 2>/dev/null || true
+    sleep 5
+    pkill -9 -f "python benchmark/server.py" 2>/dev/null || true
+    log_server "Server killed."
+}
