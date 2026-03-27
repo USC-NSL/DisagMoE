@@ -31,7 +31,7 @@ class AdvancedLogger:
     def log_moe_step(self, batch_size: int, execution_time_ms: float):
         if not self.enabled:
             return
-        self.moe_steps.append((batch_size, execution_time_ms, time.monotonic()))
+        self.moe_steps.append((batch_size, execution_time_ms, time.time()))
 
     def log_queuing_delay(self, layer_id: int, expert_id: int, delay_ms: float, timestamp_s: float = 0.0):
         if not self.enabled:

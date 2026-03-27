@@ -916,7 +916,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
                     meta = batch_wrapper.metadata
                     if self._advanced_logger.enabled:
-                        _sched_ts = time.monotonic()
+                        _sched_ts = time.time()
                         _pool_snapshot = list(_trace_snapshot)
                         _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                         _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
@@ -996,7 +996,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 meta: BatchMetadata = batch_wrapper.metadata
 
                 if self._advanced_logger.enabled:
-                    _sched_ts = time.monotonic()
+                    _sched_ts = time.time()
                     _pool_snapshot = list(_trace_snapshot)
                     _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                     _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
