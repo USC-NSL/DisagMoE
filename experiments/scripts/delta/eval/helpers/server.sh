@@ -3,7 +3,7 @@
 # Source this file; do not execute directly.
 #
 # Requires (from config.sh):
-#   REPO_DIR, RESULTS_DIR, SERVER_PORT, SERVER_READY_TIMEOUT
+#   REPO_DIR, MINICONDA, CONDA_ENV, SERVER_PORT, SERVER_READY_TIMEOUT
 #   N_NODE, N_GPU_PER_NODE, MEM_FRAC
 #   MODEL_NAME, ATTN_QKV_QUANT, MOE_LINEAR_QUANT
 #   MAX_BATCH_SIZE_ATTN, MAX_BATCH_SIZE_EXP, MAX_PENDING_SENDS, BLOCK_SIZE
@@ -12,6 +12,10 @@
 #   DEFRAG_LOOKAHEAD_STEPS, DEFRAG_LOOKBACK_STEPS
 
 log_server() { echo "$(date '+%Y-%m-%d %H:%M:%S') [server] $*"; }
+
+server_python() {
+    printf '%s/envs/%s/bin/python' "$MINICONDA" "$CONDA_ENV"
+}
 
 # launch_server <gate_profile_path> <server_log_path> <cmd_file_path>
 #   Builds the server command, saves it to <cmd_file_path>, then starts
@@ -27,7 +31,7 @@ launch_server() {
 
     # Build command as an array so we can both save and exec it cleanly
     local cmd=(
-        python benchmark/server.py
+        "$(server_python)" benchmark/server.py
         -N "$N_NODE"
         -g "$N_GPU_PER_NODE"
         -u "$MEM_FRAC"
@@ -88,7 +92,7 @@ wait_for_server() {
             sleep 3
             return 0
         fi
-        if ! pgrep -f "python benchmark/server.py" >/dev/null 2>&1; then
+        if ! pgrep -f "benchmark/server.py" >/dev/null 2>&1; then
             log_server "ERROR: Server process exited unexpectedly. See: $server_log"
             return 1
         fi
@@ -112,8 +116,8 @@ is_oom() {
 #   Terminates any running benchmark/server.py process.
 kill_server() {
     log_server "Killing server..."
-    pkill -f "python benchmark/server.py" 2>/dev/null || true
+    pkill -f "benchmark/server.py" 2>/dev/null || true
     sleep 5
-    pkill -9 -f "python benchmark/server.py" 2>/dev/null || true
+    pkill -9 -f "benchmark/server.py" 2>/dev/null || true
     log_server "Server killed."
 }

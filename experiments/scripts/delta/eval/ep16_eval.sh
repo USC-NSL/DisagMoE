@@ -56,6 +56,27 @@ log "  Results dir : $RESULTS_DIR"
 log "  Experiments : ${#EXPERIMENTS[@]}, up to $MAX_RETRIES retries each"
 log "  Initial MEM_FRAC: $MEM_FRAC"
 
+archive_attempt_artifacts() {
+    local run_dir="$1"
+    local attempt="$2"
+    local archive_dir="$run_dir/attempt${attempt}"
+    local moved=0
+
+    mkdir -p "$archive_dir"
+    for artifact in server.log server_cmd.sh bench_cmd.sh result.json; do
+        if [ -e "$run_dir/$artifact" ]; then
+            mv "$run_dir/$artifact" "$archive_dir/$artifact"
+            moved=1
+        fi
+    done
+
+    if [ "$moved" -eq 0 ]; then
+        rmdir "$archive_dir" 2>/dev/null || true
+    else
+        log "Archived failed attempt $attempt artifacts to: $archive_dir"
+    fi
+}
+
 WORKER_PIDS=()   # managed by lib/ray.sh
 EXP_NUM=0
 TOTAL=${#EXPERIMENTS[@]}
@@ -110,6 +131,7 @@ for exp_entry in "${EXPERIMENTS[@]}"; do
         fi
 
         kill_server
+        archive_attempt_artifacts "$run_dir" "$attempt"
         sleep 10
     done
 

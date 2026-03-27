@@ -54,7 +54,7 @@ Final cleanup: `kill_server` + `stop_ray`.
 | Initial memory fraction | 0.98 |
 | OOM step | −0.02 per retry |
 | Batch sizes | attn=256, expert=1024 |
-| Benchmark | 2000 rps × 5s = 10k reqs, in/out 256–512 uniform |
+| Benchmark | 2000 rps × 5s = 10k reqs, in/out 256–512 uniform (env-overridable) |
 | Advanced logging | disabled |
 
 ---
@@ -87,6 +87,10 @@ source ~/DisagMoE/experiments/scripts/delta/env.sh
 cd ~/DisagMoE
 bash experiments/scripts/delta/eval/ep16_eval.sh /path/to/my_results \
     |& tee experiments/amoe-081/ep16_eval.log
+
+# Optional: override benchmark parameters via environment
+BENCH_RATE=500 BENCH_TIME=10 \
+    bash experiments/scripts/delta/eval/ep16_eval.sh /path/to/my_results
 ```
 
 ---
@@ -107,4 +111,17 @@ Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
   asyncmoe-legal_court_balanced/       ...
 ```
 
-On retries (e.g. OOM), files are overwritten; only the final attempt is kept.
+On retries (e.g. OOM), failed-attempt artifacts are preserved under `attempt<N>/`;
+the final successful attempt remains at the top level.
+
+```
+<RESULTS_DIR>/
+  asyncmoe-sharegpt_regular/
+    attempt1/                           # archived from first (failed) attempt
+      server.log
+      server_cmd.sh
+    server_cmd.sh                       # final successful attempt
+    server.log
+    bench_cmd.sh
+    result.json
+```

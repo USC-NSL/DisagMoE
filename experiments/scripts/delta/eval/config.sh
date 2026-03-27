@@ -10,6 +10,7 @@ LOG_BASE="$REPO_DIR/experiments/amoe-081"
 # RESULTS_DIR is NOT set here — ep16_eval.sh requires it as $1.
 GATING_DIR="$REPO_DIR/gating_profiles"
 MINICONDA="/projects/bgro/spark36/miniconda3"
+CONDA_ENV="amoe"
 SERVER_PORT=6699
 
 # ── System identity ───────────────────────────────────────────────────────────
@@ -45,13 +46,13 @@ DEFRAG_LOOKAHEAD_STEPS=4
 DEFRAG_LOOKBACK_STEPS=4
 
 # ── Benchmark — 10 000 requests, 2000 rps, lengths 256-512 uniform ────────────
-BENCH_RATE=2000
-BENCH_TIME=5          # 2000 rps × 5 s = 10 000 requests
-BENCH_MIN_IN=256
-BENCH_MAX_IN=512
-BENCH_MIN_OUT=256
-BENCH_MAX_OUT=512
-BENCH_CURL_TIMEOUT=600   # 10-min hard cap; run expected to finish in <6 min
+BENCH_RATE=${BENCH_RATE:-2000}
+BENCH_TIME=${BENCH_TIME:-5}            # 2000 rps × 5 s = 10 000 requests
+BENCH_MIN_IN=${BENCH_MIN_IN:-256}
+BENCH_MAX_IN=${BENCH_MAX_IN:-512}
+BENCH_MIN_OUT=${BENCH_MIN_OUT:-256}
+BENCH_MAX_OUT=${BENCH_MAX_OUT:-512}
+BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-600}   # 10-min hard cap; run expected to finish in <6 min
 
 # ── Server startup timeout ────────────────────────────────────────────────────
 SERVER_READY_TIMEOUT=1200  # 20 min — NFS import contention on Delta can be slow
