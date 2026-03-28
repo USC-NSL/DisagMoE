@@ -24,7 +24,7 @@ To change any single concern, edit only that one file.
 
 ## What the main scripts do
 
-For each experiment in the matrix (e.g. `{sharegpt, legal_court} × {regular, balanced}`),
+For each experiment in the matrix (e.g. `{sharegpt, gsm8k} × {regular, balanced}`),
 up to `MAX_RETRIES=3` times:
 
 1. **`restart_ray`** — kills existing server + srun worker steps, stops Ray
@@ -65,10 +65,10 @@ Each eval script sources its model-specific config, which in turn sources the sh
 | Transport | ZMQ, `--host-ifname hsn0` |
 | Scheduler | `defrag` (decay=0.8, lookahead=4, lookback=4) |
 | Optimizations | `--cuda-graph-attn --cuda-graph-expert --less-than-sm90` |
-| Initial memory fraction | 0.98 (0.95 for glm45air) |
+| Initial memory fraction | 0.92 |
 | OOM step | −0.02 per retry |
 | Batch sizes | attn=256, expert=1024 |
-| Benchmark | 2000 rps × 5s = 10k reqs, dataset generator (sharegpt), max context len 2048, in/out 256–512 fallback (env-overridable) |
+| Benchmark | 2000 rps × 5s = 10k reqs, dataset auto-selected per experiment (sharegpt or gsm8k), max context len 2048, in/out 256–512 fallback (env-overridable) |
 | Throughput analysis window | 15–60s |
 
 ---
@@ -79,21 +79,29 @@ Each eval script sources its model-specific config, which in turn sources the sh
 # 1. Shell on head node (inside SLURM allocation)
 srun --jobid=<JOBID> --nodelist=<HEAD_NODE> --overlap --pty bash
 
-# 2. Source environment
+# 2. Source environment (conda must be initialized first)
+source ~/miniconda3/etc/profile.d/conda.sh
 source ~/DisagMoE/experiments/scripts/delta/env.sh
 
-# 3. Run gptoss experiments
+# 3. Verify no lingering processes from a previous run
+ps aux | grep -E 'ray|server\.py|benchmark' | grep -v grep
+
+# 4. Launch gptoss in background
+#    If running from inside an srun --pty shell, SLURM_JOB_ID / SLURM_JOB_NODELIST
+#    are already set. HEAD_IP is auto-detected via hostname -I. Only set them
+#    explicitly when launching from a non-SLURM shell (e.g. automated runner).
+OUTDIR=~/unified-eval-mar28-1
 cd ~/DisagMoE
-bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/my_results \
-    |& tee /path/to/my_results/gptoss_eval.log
+SLURM_JOB_ID=<JOBID> SLURM_JOB_NODELIST=<NODELIST> HEAD_IP=<HEAD_NODE_IP> \
+    nohup bash experiments/scripts/delta/eval/gptoss_eval.sh "$OUTDIR/asyncmoe-gptoss" \
+    > "$OUTDIR/asyncmoe-gptoss.log" 2>&1 &
+echo $! > "$OUTDIR/asyncmoe-gptoss.pid"
 
-# 4. Run glm45air experiments
-bash experiments/scripts/delta/eval/glm45air_eval.sh /path/to/my_results \
-    |& tee /path/to/my_results/glm45air_eval.log
-
-# Optional: override benchmark parameters via environment
-BENCH_RATE=500 BENCH_TIME=10 \
-    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/my_results
+# 5. After gptoss finishes, launch glm45air
+SLURM_JOB_ID=<JOBID> SLURM_JOB_NODELIST=<NODELIST> HEAD_IP=<HEAD_NODE_IP> \
+    nohup bash experiments/scripts/delta/eval/glm45air_eval.sh "$OUTDIR/asyncmoe-glm45air" \
+    > "$OUTDIR/asyncmoe-glm45air.log" 2>&1 &
+echo $! > "$OUTDIR/asyncmoe-glm45air.pid"
 ```
 
 ### Running a single experiment
@@ -123,6 +131,45 @@ a 1-based index (if numeric) or as a substring of the run name (e.g.
 
 ---
 
+## Overriding benchmark dataset and context length
+
+### Benchmark dataset
+
+Each experiment auto-selects its dataset based on the experiment label:
+- `sharegpt*` experiments → `datasets/sharegpt_lengths.npy`
+- `gsm8k*` experiments → `datasets/gsm8k_lengths.npy`
+
+To force a specific dataset for all experiments in a run, set `BENCH_DATASET_PATH`:
+
+```bash
+BENCH_DATASET_PATH=~/DisagMoE/datasets/sharegpt_lengths.npy \
+    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results
+
+BENCH_DATASET_PATH=~/DisagMoE/datasets/gsm8k_lengths.npy \
+    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results
+```
+
+### Context length
+
+Default max context length is 2048. Override with `BENCH_MAX_CONTEXT_LEN`:
+
+```bash
+BENCH_MAX_CONTEXT_LEN=4096 \
+    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results
+```
+
+Both can be combined:
+
+```bash
+BENCH_DATASET_PATH=~/DisagMoE/datasets/sharegpt_lengths.npy \
+BENCH_MAX_CONTEXT_LEN=4096 \
+    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --only sharegpt
+```
+
+Other overridable benchmark parameters (all from `config.sh`): `BENCH_RATE`, `BENCH_TIME`, `BENCH_MIN_IN`, `BENCH_MAX_IN`, `BENCH_MIN_OUT`, `BENCH_MAX_OUT`.
+
+---
+
 ## Output layout
 
 Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
@@ -135,8 +182,8 @@ Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
     bench_cmd.sh                        # exact curl command (replayable)
     result.json                         # benchmark response JSON
   asyncmoe-sharegpt_balanced/          ...
-  asyncmoe-legal_court_regular/        ...
-  asyncmoe-legal_court_balanced/       ...
+  asyncmoe-gsm8k_regular/             ...
+  asyncmoe-gsm8k_balanced/            ...
 ```
 
 On retries (e.g. OOM), failed-attempt artifacts are preserved under `attempt<N>/`;

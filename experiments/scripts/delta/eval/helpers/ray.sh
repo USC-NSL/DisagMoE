@@ -36,8 +36,10 @@ restart_ray() {
     ALL_NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
     WORKER_NODES=("${ALL_NODES[@]:1}")
     # Management-network IP for Ray control plane (not hsn0 which is data-only)
-    HEAD_IP=$(python3 -c \
-        "import socket; s=socket.socket(); s.connect(('8.8.8.8',80)); print(s.getsockname()[0])")
+    # Allow HEAD_IP to be pre-set via env var (fallback: socket trick, requires internet)
+    if [ -z "${HEAD_IP:-}" ]; then
+        HEAD_IP=$(hostname -I | awk '{print $1}')
+    fi
 
     # Stop ray on all nodes
     log_ray "Stopping ray on all nodes..."

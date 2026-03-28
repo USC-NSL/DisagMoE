@@ -10,5 +10,3 @@ MOE_LINEAR_QUANT="none"
 NUM_SHARED_EXPERTS=1
 SHARED_EXPERT_INTERMEDIATE_SIZE=1408
 
-# GLM-4.5-Air needs lower initial MEM_FRAC due to shared expert activation overhead
-MEM_FRAC=0.95

@@ -18,7 +18,7 @@
 #
 # Run directory naming: <RESULTS_DIR>/<system>-<dataset>/
 #   e.g.  asyncmoe-sharegpt_regular/
-#         asyncmoe-legal_court_balanced/
+#         asyncmoe-gsm8k_balanced/
 #
 # Prerequisites:
 #   - SLURM allocation active (4 nodes × 4 A100-SXM4-40GB = 16 GPUs)
@@ -59,8 +59,8 @@ GLM_GATING_DIR="$GATING_DIR/glm45air_gating_profiles"
 EXPERIMENTS=(
     "${GLM_GATING_DIR}/gating_glm45air_sharegpt_200.parquet:sharegpt_regular"
     "${GLM_GATING_DIR}/balanced_output/balanced_glm45air_sharegpt_200.parquet:sharegpt_balanced"
-    "${GLM_GATING_DIR}/gating_glm45air_legal_court_opinions_200.parquet:legal_court_regular"
-    "${GLM_GATING_DIR}/balanced_output/balanced_glm45air_legal_court_opinions_200.parquet:legal_court_balanced"
+    "${GLM_GATING_DIR}/gating_glm45air_gsm8k_200.parquet:gsm8k_regular"
+    "${GLM_GATING_DIR}/balanced_output/balanced_glm45air_gsm8k_200.parquet:gsm8k_balanced"
 )
 
 MAX_RETRIES=3
@@ -146,6 +146,12 @@ for exp_entry in "${EXPERIMENTS[@]}"; do
 
     run_dir="$RESULTS_DIR/$run_name"
     mkdir -p "$run_dir"
+
+    if [[ "$dataset" == gsm8k* ]]; then
+        BENCH_DATASET_PATH="${BENCH_DATASET_PATH:-$REPO_DIR/datasets/gsm8k_lengths.npy}"
+    else
+        BENCH_DATASET_PATH="${BENCH_DATASET_PATH:-$REPO_DIR/datasets/sharegpt_lengths.npy}"
+    fi
 
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     log "[$EXP_NUM/$TOTAL] $run_name"

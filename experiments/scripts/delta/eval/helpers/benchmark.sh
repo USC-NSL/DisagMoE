@@ -53,7 +53,9 @@ run_benchmark() {
     } > "$cmd_file"
 
     local http_code
-    http_code=$(curl -s \
+    # Unset LD_LIBRARY_PATH for curl: env.sh's conda paths conflict with
+    # the system libldap (OpenSSL version mismatch), silently breaking curl.
+    http_code=$(env -i HOME="$HOME" PATH="$PATH" curl -s \
         -o "$result_file" \
         -w "%{http_code}" \
         -X POST "http://localhost:${SERVER_PORT}/run_once" \

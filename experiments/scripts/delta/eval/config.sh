@@ -9,7 +9,7 @@
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 # RESULTS_DIR is NOT set here — eval scripts require it as $1.
 GATING_DIR="$REPO_DIR/gating_profiles"
-MINICONDA="/projects/bgro/spark36/miniconda3"
+MINICONDA="$HOME/miniconda3"
 CONDA_ENV="amoe"
 SERVER_PORT=6699
 
@@ -27,7 +27,7 @@ HOST_IFNAME="hsn0"       # HPE Slingshot NIC for NCCL data plane
 PLACEMENT="colocate"
 DP_SIZE=$WORLD_SIZE
 EP_SIZE=$WORLD_SIZE
-MEM_FRAC=0.98            # Initial fraction; reduced on OOM retries
+MEM_FRAC=0.92            # Initial fraction; reduced on OOM retries
 MAX_BATCH_SIZE_ATTN=256
 MAX_BATCH_SIZE_EXP=1024
 MAX_PENDING_SENDS=16
@@ -39,7 +39,7 @@ DEFRAG_WEIGHT_DECAY=0.8
 DEFRAG_LOOKAHEAD_STEPS=4
 DEFRAG_LOOKBACK_STEPS=4
 
-# ── Benchmark — 10 000 requests, 2000 rps, dataset generator (sharegpt) ───────
+# ── Benchmark — 10 000 requests, 2000 rps, dataset generator (auto-selected per experiment) ──
 BENCH_RATE=${BENCH_RATE:-2000}
 BENCH_TIME=${BENCH_TIME:-5}            # 2000 rps × 5 s = 10 000 requests
 BENCH_GENERATOR=${BENCH_GENERATOR:-"dataset"}
@@ -49,7 +49,7 @@ BENCH_MIN_IN=${BENCH_MIN_IN:-256}
 BENCH_MAX_IN=${BENCH_MAX_IN:-512}
 BENCH_MIN_OUT=${BENCH_MIN_OUT:-256}
 BENCH_MAX_OUT=${BENCH_MAX_OUT:-512}
-BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-600}   # 10-min hard cap; run expected to finish in <6 min
+BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-1800}
 
 # ── Peak-state window for --analyze-throughput (seconds after benchmark start)
 ANALYZE_THROUGHPUT_WINDOW="15,60"

@@ -18,7 +18,7 @@
 #
 # Run directory naming: <RESULTS_DIR>/<system>-<dataset>/
 #   e.g.  asyncmoe-sharegpt_regular/
-#         asyncmoe-legal_court_balanced/
+#         asyncmoe-gsm8k_balanced/
 #
 # Prerequisites:
 #   - SLURM allocation active (4 nodes × 4 A100-SXM4-40GB = 16 GPUs)
@@ -59,16 +59,12 @@ fi
 # ── Experiment matrix ─────────────────────────────────────────────────────────
 # Format: "absolute_path_to_parquet:dataset_label"
 # Run directories will be named: ${SYSTEM_NAME}-${dataset_label}
-#
-# Gate profiles — FILL IN paths before running.
-# Regular profiles: captured from real inference traces.
-# Balanced profiles: pre-generated and placed in gating_profiles/balanced_output/.
 
 EXPERIMENTS=(
-    "${GATING_DIR}/gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"                        # TODO: verify
-    "${GATING_DIR}/balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"     # TODO: verify
-    "${GATING_DIR}/gating_legal_court_opinions_200.parquet:legal_court_regular"                    # TODO: verify
-    "${GATING_DIR}/balanced_output/balanced_legal_court_opinions_200.parquet:legal_court_balanced" # TODO: verify
+    "${GATING_DIR}/gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"
+    "${GATING_DIR}/gptosss_balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"
+    "${GATING_DIR}/gating_math_gsm8k_200.parquet:gsm8k_regular"
+    "${GATING_DIR}/gptosss_balanced_output/balanced_math_gsm8k_200.parquet:gsm8k_balanced"
 )
 
 MAX_RETRIES=3
@@ -154,6 +150,12 @@ for exp_entry in "${EXPERIMENTS[@]}"; do
 
     run_dir="$RESULTS_DIR/$run_name"
     mkdir -p "$run_dir"
+
+    if [[ "$dataset" == gsm8k* ]]; then
+        BENCH_DATASET_PATH="${BENCH_DATASET_PATH:-$REPO_DIR/datasets/gsm8k_lengths.npy}"
+    else
+        BENCH_DATASET_PATH="${BENCH_DATASET_PATH:-$REPO_DIR/datasets/sharegpt_lengths.npy}"
+    fi
 
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     log "[$EXP_NUM/$TOTAL] $run_name"

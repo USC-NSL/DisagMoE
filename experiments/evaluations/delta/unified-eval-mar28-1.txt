@@ -23,7 +23,7 @@ Eval scripts to run (in order):
   Network     : HPE Slingshot (hsn0)
   Home dir    : /u/spark36
   Project dir : /projects/bgro/spark36
-  Miniconda   : /projects/bgro/spark36/miniconda3
+  Miniconda   : ~/miniconda3
 
   Conda envs:
     amoe       — AsyncMoE (Python 3.12, torch 2.6, vllm 0.8.2)
@@ -40,11 +40,13 @@ Read the eval docs for each system — they contain all config and script detail
 ### Gating profile setup (REQUIRED)
 
 AsyncMoE eval scripts expect GATING_DIR = ~/DisagMoE/gating_profiles (set in
-config.sh as $REPO_DIR/gating_profiles). This directory does NOT exist yet on
-delta. The actual profiles live at ~/gating_profiles/. Create a symlink before
-running AsyncMoE evals:
+config.sh as $REPO_DIR/gating_profiles). The actual profiles live at
+~/gating_profiles/. Verify the symlink exists before running; create it if not:
 
-       ln -s ~/gating_profiles ~/DisagMoE/gating_profiles
+       ls ~/DisagMoE/gating_profiles && echo "symlink OK" \
+           || ln -s ~/gating_profiles ~/DisagMoE/gating_profiles
+
+If ~/gating_profiles itself is missing, abort and locate the profiles first.
 
 SGLang profiles are already at ~/sglang/gating_profiles/ (no action needed).
 
@@ -62,9 +64,6 @@ Gating profiles (AsyncMoE — via ~/gating_profiles/):
     - balanced_output/balanced_glm45air_sharegpt_200.parquet                     (sharegpt balanced — CONFIRMED)
     - gating_glm45air_gsm8k_200.parquet                                          (gsm8k regular — CONFIRMED)
     - balanced_output/balanced_glm45air_gsm8k_200.parquet                        (gsm8k balanced — CONFIRMED)
-
-  Note: gptoss_eval.sh references legal_court profiles which may not exist in
-  ~/gating_profiles/. These will be auto-skipped (SKIP: profile_not_found).
 
 Gating profiles (SGLang — via ~/sglang/gating_profiles/):
     - gating_gptoss120b_sharegpt_200.parquet                                     (sharegpt regular — CONFIRMED)
@@ -88,9 +87,10 @@ For each of the 3 eval scripts above, follow the same pattern:
 
   2. Activate the correct conda env and source env if needed:
 
-       AsyncMoE scripts → source ~/DisagMoE/experiments/scripts/delta/env.sh
-                          (this activates conda env 'amoe' and sets LD_LIBRARY_PATH)
-       SGLang scripts   → conda activate sglang
+       AsyncMoE scripts → source ~/miniconda3/etc/profile.d/conda.sh
+                          source ~/DisagMoE/experiments/scripts/delta/env.sh
+                          (initializes conda, activates env 'amoe', sets LD_LIBRARY_PATH)
+       SGLang scripts   → source ~/miniconda3/etc/profile.d/conda.sh && conda activate sglang
 
   3. cd to the correct repo root:
 
@@ -108,10 +108,14 @@ For each of the 3 eval scripts above, follow the same pattern:
 
        OUTDIR=~/unified-eval-mar28-1
        TAG=<short name, e.g. asyncmoe-gptoss, asyncmoe-glm45air, sglang-gptoss>
-       RESULTS=$OUTDIR/${TAG}-results
+       RESULTS=$OUTDIR/${TAG}          # results dir: {system}-{model}/{dataset}
        mkdir -p "$RESULTS"
 
-       nohup bash <script> "$RESULTS" > "$OUTDIR/${TAG}.log" 2>&1 &
+       # SLURM_JOB_ID / SLURM_JOB_NODELIST are set automatically inside an
+       # srun --pty shell. HEAD_IP is auto-detected via hostname -I.
+       # Set them explicitly only when launching from a non-SLURM shell.
+       SLURM_JOB_ID=<JOBID> SLURM_JOB_NODELIST=<NODELIST> HEAD_IP=<HEAD_IP> \
+           nohup bash <script> "$RESULTS" > "$OUTDIR/${TAG}.log" 2>&1 &
        echo $! > "$OUTDIR/${TAG}.pid"
 
   6. Monitor until the script prints its completion message, then move to the next.
