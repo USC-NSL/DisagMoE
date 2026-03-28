@@ -4,7 +4,7 @@
 #
 # Requires (from config.sh):
 #   SERVER_PORT, BENCH_CURL_TIMEOUT
-#   BENCH_RATE, BENCH_TIME, BENCH_GENERATOR, BENCH_DATASET_PATH, BENCH_MAX_SEQ_LEN
+#   BENCH_RATE, BENCH_TIME, BENCH_GENERATOR, BENCH_DATASET_PATH, BENCH_MAX_CONTEXT_LEN
 #   BENCH_MIN_IN, BENCH_MAX_IN, BENCH_MIN_OUT, BENCH_MAX_OUT
 
 log_bench() { echo "$(date '+%Y-%m-%d %H:%M:%S') [bench] $*"; }
@@ -20,7 +20,7 @@ run_benchmark() {
     log_bench "Sending benchmark:" \
         "rate=${BENCH_RATE} rps, time=${BENCH_TIME}s," \
         "generator=${BENCH_GENERATOR}, dataset=${BENCH_DATASET_PATH:-none}," \
-        "max_seq_len=${BENCH_MAX_SEQ_LEN:-none}," \
+        "max_seq_len=${BENCH_MAX_CONTEXT_LEN:-none}," \
         "in=${BENCH_MIN_IN}-${BENCH_MAX_IN}, out=${BENCH_MIN_OUT}-${BENCH_MAX_OUT}"
 
     local payload
@@ -29,13 +29,13 @@ run_benchmark() {
     "time": %d,
     "distribution": "%s",
     "dataset_path": "%s",
-    "max_seq_len": %s,
+    "dataset_max_context_len": %s,
     "min_input_len": %d,
     "max_input_len": %d,
     "min_output_len": %d,
     "max_output_len": %d
 }' "$BENCH_RATE" "$BENCH_TIME" \
-   "$BENCH_GENERATOR" "$BENCH_DATASET_PATH" "${BENCH_MAX_SEQ_LEN:-null}" \
+   "$BENCH_GENERATOR" "$BENCH_DATASET_PATH" "${BENCH_MAX_CONTEXT_LEN:-null}" \
    "$BENCH_MIN_IN" "$BENCH_MAX_IN" \
    "$BENCH_MIN_OUT" "$BENCH_MAX_OUT")
 

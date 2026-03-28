@@ -48,10 +48,10 @@ def run_once_endpoint():
     if generator_type is DatasetGenerator:
         dataset_path = data.get('dataset_path') or getattr(args, 'dataset_path', None)
         assert dataset_path is not None, "dataset_path required when using distribution=dataset"
-        max_seq_len = data.get('max_seq_len') or getattr(args, 'max_seq_len', None)
+        max_context_len = data.get('dataset_max_context_len') or getattr(args, 'dataset_max_context_len', None)
         new_args.dataset_path = dataset_path
-        new_args.max_seq_len = max_seq_len
-        generator = DatasetGenerator(rate, 0, dataset_path, max_seq_len)
+        new_args.dataset_max_context_len = max_context_len
+        generator = DatasetGenerator(rate, 0, dataset_path, max_context_len)
     else:
         generator = generator_type(rate, 0, 0, 0, 0, 0)
     new_args.num_requests = generator.get_num_requests(duration)

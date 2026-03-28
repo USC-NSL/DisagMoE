@@ -499,8 +499,8 @@ async def run_benchmark(master: Controller, args,
     if GeneratorType is DatasetGenerator:
         dataset_path = getattr(args, "dataset_path", None)
         assert dataset_path is not None, "--dataset-path required when using --generator-type=dataset"
-        max_seq_len = getattr(args, "max_seq_len", None)
-        generator = DatasetGenerator(rate, 1, dataset_path, max_seq_len)
+        max_context_len = getattr(args, "dataset_max_context_len", None)
+        generator = DatasetGenerator(rate, 1, dataset_path, max_context_len)
     else:
         generator = GeneratorType(rate, 1, min_input_len, max_input_len, min_output_len, max_output_len)
     workload = generator.generate_num(num_requests)

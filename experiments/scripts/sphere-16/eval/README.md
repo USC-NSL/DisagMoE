@@ -64,7 +64,7 @@ Final cleanup: `kill_server` + `stop_ray`.
 | Initial memory fraction | 0.98 |
 | OOM step | −0.02 per retry |
 | Batch sizes | attn=256, expert=1024 |
-| Benchmark | 2000 rps × 5s = 10k reqs, in/out 256–512 uniform |
+| Benchmark | 2000 rps × 5s = 10k reqs, dataset generator (sharegpt), max context len 2048, in/out 256–512 fallback |
 
 ---
 

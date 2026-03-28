@@ -9,7 +9,7 @@ def add_workload_arguments(parser: ArgumentParser):
     parser.add_argument("--min-output-len", type=int, default=80, help="maximum prefill length for each seqeunce")
     parser.add_argument("--max-output-len", type=int, default=120, help="length of output sequence")
     parser.add_argument("--dataset-path", type=str, default=None, help="path to .npy dataset lengths file (shape [N,2]: input_len, output_len). Used with --generator-type=dataset")
-    parser.add_argument("--max-seq-len", type=int, default=None, help="max total sequence length (input+output) to filter dataset samples. Used with --generator-type=dataset")
+    parser.add_argument("--dataset-max-context-len", type=int, default=None, help="max total context length (input+output) to filter dataset samples. Used with --generator-type=dataset")
     parser.add_argument("--gate-profile-file", type=str, default=None, help="path to gate profile file to upload and broadcast to workers")
     
 def add_runtime_arguments(parser: ArgumentParser):

@@ -77,18 +77,18 @@ class OfflineGenerator(Generator):
 class DatasetGenerator(Generator):
     """Replays input/output lengths from a pre-extracted .npy file (shape [N,2])."""
     
-    def __init__(self, rate: int, cv: float, dataset_path: str, max_seq_len: int = None):
+    def __init__(self, rate: int, cv: float, dataset_path: str, max_context_len: int = None):
         self.rate = rate
         self.cv = cv
         self._lengths = np.load(dataset_path)  # (N, 2)
         assert self._lengths.ndim == 2 and self._lengths.shape[1] == 2, \
             f"Expected shape (N, 2), got {self._lengths.shape}"
-        if max_seq_len is not None:
+        if max_context_len is not None:
             seq_lens = self._lengths[:, 0] + self._lengths[:, 1]
-            mask = seq_lens <= max_seq_len
+            mask = seq_lens <= max_context_len
             self._lengths = self._lengths[mask]
             assert len(self._lengths) > 0, \
-                f"No requests with seq_len <= {max_seq_len} in {dataset_path}"
+                f"No requests with seq_len <= {max_context_len} in {dataset_path}"
     
     @override
     def generate_arrivals(self, n_request: int) -> List[int]:
@@ -97,14 +97,14 @@ class DatasetGenerator(Generator):
         return arrivals
     
     @override
-    def generate_input_lens(self, n_request: int) -> List[int]:
-        indices = np.random.randint(0, len(self._lengths), n_request)
-        return self._lengths[indices, 0]
-    
-    @override
-    def generate_output_lens(self, n_request: int) -> List[int]:
-        indices = np.random.randint(0, len(self._lengths), n_request)
-        return self._lengths[indices, 1]
+    def generate_num(self, num: int) -> Workload:
+        arrivals = self.generate_arrivals(num)
+        indices = np.random.randint(0, len(self._lengths), num)
+        input_lens = self._lengths[indices, 0]
+        output_lens = self._lengths[indices, 1]
+        print("Using Workload Generator:", self.__class__.__name__, 
+              f"generated {num} requests, maximal arrival {arrivals[-1]}s.")
+        return Workload(arrivals, input_lens, output_lens)
 
 class IncrementalPoissonGenerator(Generator):
     
