@@ -61,6 +61,10 @@ launch_server() {
         --gate-profile-file "$gate_profile"
     )
 
+    if [ -n "${ANALYZE_THROUGHPUT_WINDOW:-}" ]; then
+        cmd+=(--analyze-throughput-window "$ANALYZE_THROUGHPUT_WINDOW")
+    fi
+
     if [ "${NUM_SHARED_EXPERTS:-0}" -gt 0 ]; then
         cmd+=(--num-shared-experts "$NUM_SHARED_EXPERTS")
         if [ -n "${SHARED_EXPERT_INTERMEDIATE_SIZE:-}" ]; then

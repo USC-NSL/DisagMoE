@@ -92,11 +92,36 @@ ssh sgpu0
 # 2. Activate conda
 conda activate disag12
 
-# 3. Run (RESULTS_DIR is required as the first argument)
+# 3. Run all experiments (RESULTS_DIR is required as the first argument)
 cd ~/DisagMoE
-bash experiments/scripts/sphere-16/eval-gptoss/ep16_eval.sh /path/to/my_results \
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/my_results \
     |& tee /path/to/my_results/ep16_eval.log
 ```
+
+### Running a single experiment
+
+Use `--list` to see available experiments and `--only` to select which to run:
+
+```bash
+# List available experiments (prints index + name, then exits)
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --list
+
+# Run by index (1-based)
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --only 1
+
+# Run multiple by index
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --only 1,3
+
+# Run by name substring (matches against run name, e.g. "asyncmoe-sharegpt_regular")
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --only sharegpt
+
+# Run one exact experiment
+bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --only sharegpt_regular
+```
+
+The `--only` filter accepts comma-separated values. Each value is matched as
+a 1-based index (if numeric) or as a substring of the run name (e.g.
+`asyncmoe-sharegpt_regular`). Omitting `--only` runs all experiments.
 
 ---
 

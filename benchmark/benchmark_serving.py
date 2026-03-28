@@ -420,10 +420,19 @@ def analyze_throughput(args,
         time_sums = sampler_df.groupby(pd.cut(sampler_df['time_stamp'], bins=time_bins))['num_tokens'].sum()
         time_sums /= time_bin
         
-        num_bins = len(time_sums)
-        peak_throughput_time_range = 60 # seconds
-        step = peak_throughput_time_range // 2 // time_bin
-        peak_throughput_range = time_sums[num_bins // 2 - step : num_bins // 2 + step]
+        window = getattr(args, 'analyze_throughput_window', None)
+        if window:
+            win_lo, win_hi = [float(x) for x in window.split(',')]
+            t0 = sampler_df['time_stamp'].iloc[0]
+            mask = [(t0 + win_lo <= (iv.left + iv.right) / 2 <= t0 + win_hi) for iv in time_sums.index]
+            peak_throughput_range = time_sums[mask]
+        else:
+            num_bins = len(time_sums)
+            peak_throughput_time_range = 60
+            step = peak_throughput_time_range // 2 // time_bin
+            peak_throughput_range = time_sums[num_bins // 2 - step : num_bins // 2 + step]
+        if len(peak_throughput_range) == 0:
+            return sum(time_sums) / len(time_sums)
         return sum(peak_throughput_range) / len(peak_throughput_range)
     
     # queueing delay
@@ -459,9 +468,16 @@ def analyze_throughput(args,
         all_itls.sort(key=lambda x: x[0])
         t_start = all_itls[0][0]
         t_end = all_itls[-1][0]
-        t_mid = (t_start + t_end) / 2
-        t_lo = t_mid - peak_time_range / 2
-        t_hi = t_mid + peak_time_range / 2
+        
+        window = getattr(args, 'analyze_throughput_window', None)
+        if window:
+            win_lo, win_hi = [float(x) for x in window.split(',')]
+            t_lo = t_start + win_lo
+            t_hi = t_start + win_hi
+        else:
+            t_mid = (t_start + t_end) / 2
+            t_lo = t_mid - peak_time_range / 2
+            t_hi = t_mid + peak_time_range / 2
         
         peak_itls = np.array([itl for t, itl in all_itls if t_lo <= t <= t_hi])
         if len(peak_itls) == 0:

@@ -3,10 +3,18 @@
 #
 # Usage:
 #   conda activate disag12
-#   bash experiments/scripts/sphere-16/eval/glm45air_eval.sh <RESULTS_DIR>
+#   bash experiments/scripts/sphere-16/eval/glm45air_eval.sh <RESULTS_DIR> [OPTIONS]
 #
 #   RESULTS_DIR  required; a parent directory that holds one sub-dir per run.
 #                Example: ~/results/ep16_glm45air
+#
+#   Options:
+#     --list          Print numbered experiment list and exit
+#     --only FILTER   Run only experiments matching FILTER (comma-separated
+#                     indices or name substrings). Examples:
+#                       --only 1,3              # by index
+#                       --only sharegpt         # all sharegpt experiments
+#                       --only sharegpt_regular # single experiment by exact label
 #
 # Run directory naming: <RESULTS_DIR>/<system>-<dataset>/
 #   e.g.  asyncmoe-sharegpt_regular/
@@ -24,7 +32,27 @@ source "$EVAL_DIR/helpers/ray.sh"
 source "$EVAL_DIR/helpers/server.sh"
 source "$EVAL_DIR/helpers/benchmark.sh"
 
-RESULTS_DIR="${1:?ERROR: RESULTS_DIR is required as the first argument (e.g. ~/results/ep16_glm45air)}"
+ONLY_FILTER=""
+LIST_ONLY=0
+RESULTS_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --only) ONLY_FILTER="${2:?ERROR: --only requires a comma-separated list}"; shift 2 ;;
+        --list) LIST_ONLY=1; shift ;;
+        -*) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
+        *)
+            if [[ -z "$RESULTS_DIR" ]]; then RESULTS_DIR="$1"; shift
+            else echo "ERROR: Unexpected argument: $1" >&2; exit 1; fi
+            ;;
+    esac
+done
+
+if [[ "$LIST_ONLY" -eq 0 ]] && [[ -z "$RESULTS_DIR" ]]; then
+    echo "ERROR: RESULTS_DIR is required (e.g. ~/results/ep16_glm45air)" >&2
+    echo "Usage: $0 <RESULTS_DIR> [--list] [--only FILTER]" >&2
+    exit 1
+fi
 
 GLM_GATING_DIR="$GATING_DIR/glm45air_gating_profiles"
 
@@ -62,6 +90,31 @@ archive_attempt_artifacts() {
     fi
 }
 
+# ── Experiment filter ─────────────────────────────────────────────────────────
+should_run_experiment() {
+    local idx="$1" label="$2"
+    [[ -z "$ONLY_FILTER" ]] && return 0
+    IFS=',' read -ra FILTERS <<< "$ONLY_FILTER"
+    for f in "${FILTERS[@]}"; do
+        f="${f#"${f%%[![:space:]]*}"}"
+        f="${f%"${f##*[![:space:]]}"}"
+        if [[ "$f" =~ ^[0-9]+$ ]] && [[ "$f" -eq "$idx" ]]; then return 0; fi
+        if [[ "$label" == *"$f"* ]]; then return 0; fi
+    done
+    return 1
+}
+
+if [[ "$LIST_ONLY" -eq 1 ]]; then
+    echo "Available experiments:"
+    _i=0
+    for exp_entry in "${EXPERIMENTS[@]}"; do
+        IFS=: read -r _gp _ds <<< "$exp_entry"
+        _i=$((_i + 1))
+        printf "  %2d. %s-%s\n" "$_i" "$SYSTEM_NAME" "$_ds"
+    done
+    exit 0
+fi
+
 mkdir -p "$RESULTS_DIR"
 log "EP16 evaluation starting"
 log "  System      : $SYSTEM_NAME"
@@ -70,6 +123,7 @@ log "  Results dir : $RESULTS_DIR"
 log "  Cluster     : ${N_NODE} nodes × ${N_GPU_PER_NODE} GPUs (${WORLD_SIZE} total)"
 log "  Experiments : ${#EXPERIMENTS[@]}, up to $MAX_RETRIES retries each"
 log "  Initial MEM_FRAC: $MEM_FRAC"
+[[ -n "$ONLY_FILTER" ]] && log "  Filter      : --only $ONLY_FILTER"
 
 EXP_NUM=0
 TOTAL=${#EXPERIMENTS[@]}
@@ -79,6 +133,12 @@ for exp_entry in "${EXPERIMENTS[@]}"; do
     EXP_NUM=$((EXP_NUM + 1))
 
     run_name="${SYSTEM_NAME}-${dataset}"
+
+    if ! should_run_experiment "$EXP_NUM" "$run_name"; then
+        log "[$EXP_NUM/$TOTAL] SKIP (--only filter): $run_name"
+        continue
+    fi
+
     run_dir="$RESULTS_DIR/$run_name"
     mkdir -p "$run_dir"
 
@@ -111,6 +171,11 @@ for exp_entry in "${EXPERIMENTS[@]}"; do
                 break
             else
                 log "Benchmark failed on attempt $attempt."
+                if is_oom "$server_log"; then
+                    new_frac=$(awk "BEGIN {printf \"%.2f\", $MEM_FRAC - $MEM_FRAC_STEP}")
+                    log "OOM detected during benchmark — reducing MEM_FRAC: $MEM_FRAC -> $new_frac"
+                    MEM_FRAC="$new_frac"
+                fi
             fi
         else
             if is_oom "$server_log"; then

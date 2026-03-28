@@ -1,7 +1,7 @@
-sphere-16-unified-eval-glm-mar27
+unified-experiment-name: sphere-16-unified-eval-glm-mar27-round2
 
 Run eval for two systems (AsyncMoE + SGLang) sequentially on the Sphere-16 cluster.
-All outputs go under: ~/DisagMoE/experiments/sphere-16-unified-eval/
+All outputs go under: ~/DisagMoE/experiments/<unified-experiment-name>/
 
 Both systems share the SAME cluster — NEVER run them simultaneously.
 Run each eval script one at a time. Only start the next after the previous finishes.
@@ -48,6 +48,28 @@ For each of the 4 eval scripts above, follow the same pattern:
   6. Monitor until the script prints its completion message, then move to the next.
 
 
+## RUNNING A SINGLE EXPERIMENT
+
+All 4 eval scripts support --list and --only options for selective execution:
+
+  List available experiments (prints index + name, then exits):
+       bash <script> "$RESULTS" --list
+
+  Run specific experiments by index (1-based):
+       bash <script> "$RESULTS" --only 1
+       bash <script> "$RESULTS" --only 1,3
+
+  Run by name substring (matches against the run name):
+       bash <script> "$RESULTS" --only sharegpt_regular
+       bash <script> "$RESULTS" --only sharegpt
+
+  For SGLang scripts, filter by server profile:
+       bash <script> "$RESULTS" --only pp8tp2
+       bash <script> "$RESULTS" --only ep16-sharegpt_regular
+
+  Omitting --only runs all experiments (default behavior, unchanged).
+
+
 ## MONITORING
 
 Check each running script at least every 6 minutes:
@@ -72,6 +94,7 @@ Do NOT change benchmark parameters, model configs, or parallelism strategies.
 
 After all 4 scripts complete, write:
     ~/DisagMoE/experiments/sphere-16-unified-eval/experiment_report.md
+    Please also copy a summary of experiment results data (tput/mean ITL/p99 ITL) to ~/paper-repo/results/<unified-experiment-name>, make some comparison plots, and push to remote origin.
 
 Include:
   - Per-experiment status (SUCCESS/FAILED, attempts taken, reason if failed)

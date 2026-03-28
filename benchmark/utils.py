@@ -89,6 +89,9 @@ def add_analysis_arguments(parser: ArgumentParser):
     parser.add_argument("--trace", action="store_true", default=False, help="generate trace")
     parser.add_argument("--enable-trace-detail", action="store_true", default=False, help="generate trace")
     parser.add_argument("--analyze-throughput", action="store_true", default=False, help="analyze throughput")
+    parser.add_argument("--analyze-throughput-window", type=str, default=None,
+                        help="peak-state window as START_S,END_S after benchmark start (e.g. '15,60'). "
+                             "Overrides the default middle-60s selection.")
     parser.add_argument("--enable-advanced-logging", action="store_true", default=False, help="enable advanced logging for MoE diagnostics")
     parser.add_argument("--advanced-logging-dir", type=str, default="./advanced_logs", help="output directory for advanced logs")
     parser.add_argument("--advanced-logging-sample-rate", type=float, default=0.1, help="fraction of MoE steps to instrument (0.0-1.0)")

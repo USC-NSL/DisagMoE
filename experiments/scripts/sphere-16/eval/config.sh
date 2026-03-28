@@ -56,5 +56,8 @@ BENCH_MIN_OUT=${BENCH_MIN_OUT:-256}
 BENCH_MAX_OUT=${BENCH_MAX_OUT:-512}
 BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-600}
 
+# ── Peak-state window for --analyze-throughput (seconds after benchmark start)
+ANALYZE_THROUGHPUT_WINDOW="15,60"
+
 # ── Server startup timeout ────────────────────────────────────────────────────
 SERVER_READY_TIMEOUT=300   # 5 min — no NFS contention on Sphere
