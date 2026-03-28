@@ -1,13 +1,13 @@
 #!/usr/bin/bash
-# config.sh — Fixed cluster / model / runtime / benchmark config for Delta EP16
-# Source this file; do not execute directly.
+# config.sh — Shared cluster / runtime / benchmark config for Delta EP16
+# Source this file from a model-specific config; do not execute directly.
 #
-# Usage: source experiments/scripts/delta/eval/config.sh
+# Model-specific variables (MODEL_NAME, quant settings, shared-expert flags)
+# are set in gptoss_config.sh / glm45air_config.sh, which source this file.
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-LOG_BASE="$REPO_DIR/experiments/amoe-081"
-# RESULTS_DIR is NOT set here — ep16_eval.sh requires it as $1.
+# RESULTS_DIR is NOT set here — eval scripts require it as $1.
 GATING_DIR="$REPO_DIR/gating_profiles"
 MINICONDA="/projects/bgro/spark36/miniconda3"
 CONDA_ENV="amoe"
@@ -20,12 +20,6 @@ SYSTEM_NAME="asyncmoe"    # used as the prefix in per-run directory names
 N_NODE=4
 N_GPU_PER_NODE=4
 WORLD_SIZE=16
-
-# ── Model — gptoss_120b full config (36 layers, 128 experts, top-4, bf16) ────
-MODEL_NAME="gptoss_120b"
-ATTN_QKV_QUANT="none"
-MOE_LINEAR_QUANT="none"
-# NUM_LAYERS not set — model default (36) is the full config
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 TRANSPORT="zmq"
@@ -56,6 +50,9 @@ BENCH_MAX_IN=${BENCH_MAX_IN:-512}
 BENCH_MIN_OUT=${BENCH_MIN_OUT:-256}
 BENCH_MAX_OUT=${BENCH_MAX_OUT:-512}
 BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-600}   # 10-min hard cap; run expected to finish in <6 min
+
+# ── Peak-state window for --analyze-throughput (seconds after benchmark start)
+ANALYZE_THROUGHPUT_WINDOW="15,60"
 
 # ── Server startup timeout ────────────────────────────────────────────────────
 SERVER_READY_TIMEOUT=1200  # 20 min — NFS import contention on Delta can be slow

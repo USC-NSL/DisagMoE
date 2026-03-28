@@ -10,6 +10,8 @@
 #   PLACEMENT, DP_SIZE, EP_SIZE, TRANSPORT, HOST_IFNAME
 #   UNIFIED_SCHEDULER_TYPE, DEFRAG_WEIGHT_DECAY,
 #   DEFRAG_LOOKAHEAD_STEPS, DEFRAG_LOOKBACK_STEPS
+#   NUM_SHARED_EXPERTS (optional, default 0),
+#   SHARED_EXPERT_INTERMEDIATE_SIZE (optional)
 
 log_server() { echo "$(date '+%Y-%m-%d %H:%M:%S') [server] $*"; }
 
@@ -60,19 +62,30 @@ launch_server() {
         --gate-profile-file "$gate_profile"
     )
 
+    if [ -n "${ANALYZE_THROUGHPUT_WINDOW:-}" ]; then
+        cmd+=(--analyze-throughput-window "$ANALYZE_THROUGHPUT_WINDOW")
+    fi
+
+    if [ "${NUM_SHARED_EXPERTS:-0}" -gt 0 ]; then
+        cmd+=(--num-shared-experts "$NUM_SHARED_EXPERTS")
+        if [ -n "${SHARED_EXPERT_INTERMEDIATE_SIZE:-}" ]; then
+            cmd+=(--shared-expert-intermediate-size "$SHARED_EXPERT_INTERMEDIATE_SIZE")
+        fi
+    fi
+
     # Save the exact command for reproducibility / manual replay
     {
         printf '# Server command\n'
         printf '# Generated: %s\n' "$(date)"
         printf '# mem_frac: %s\n\n' "$MEM_FRAC"
         printf 'cd %s\n' "$REPO_DIR"
-        printf 'nohup'
+        printf 'nohup env NCCL_RUNTIME_CONNECT=0'
         for arg in "${cmd[@]}"; do printf ' \\\n    %q' "$arg"; done
         printf ' \\\n    > %q 2>&1 &\n' "$server_log"
     } > "$cmd_file"
 
     cd "$REPO_DIR"
-    nohup "${cmd[@]}" > "$server_log" 2>&1 &
+    nohup env NCCL_RUNTIME_CONNECT=0 "${cmd[@]}" > "$server_log" 2>&1 &
     SERVER_PID=$!
     log_server "Server PID: $SERVER_PID (command saved to $(basename "$cmd_file"))"
 }

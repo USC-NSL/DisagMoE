@@ -1,15 +1,19 @@
-# AsyncMoE EP16 Final Evaluation — NCSA Delta
+# AsyncMoE EP16 Evaluation — NCSA Delta
 
 ## File layout
 
 ```
 eval/
-  ep16_eval.sh      # main: experiment matrix + orchestration loop
-  config.sh         # all fixed variables (sourced by main)
+  gptoss_eval.sh       # main: gptoss experiment matrix + orchestration loop
+  glm45air_eval.sh     # main: glm45air experiment matrix + orchestration loop
+  config.sh            # shared cluster/runtime/benchmark config (sourced by model configs)
+  gptoss_config.sh     # gptoss_120b model config (sources config.sh)
+  glm45air_config.sh   # glm45air_106b model config (sources config.sh)
+  ep16_eval.sh         # (legacy) original single-model eval script
   helpers/
-    ray.sh          # restart_ray(), stop_ray()
-    server.sh       # launch_server(), wait_for_server(), kill_server(), is_oom()
-    benchmark.sh    # run_benchmark()
+    ray.sh             # restart_ray(), stop_ray()
+    server.sh          # launch_server(), wait_for_server(), kill_server(), is_oom()
+    benchmark.sh       # run_benchmark()
   README.md
 ```
 
@@ -18,9 +22,9 @@ To change any single concern, edit only that one file.
 
 ---
 
-## What the main script does
+## What the main scripts do
 
-For each of the 4 experiments `{sharegpt, legal-court} × {regular, balanced}`,
+For each experiment in the matrix (e.g. `{sharegpt, legal_court} × {regular, balanced}`),
 up to `MAX_RETRIES=3` times:
 
 1. **`restart_ray`** — kills existing server + srun worker steps, stops Ray
@@ -33,6 +37,7 @@ up to `MAX_RETRIES=3` times:
    up to `SERVER_READY_TIMEOUT=1200s` (NFS import on Delta can be slow).
    - If the server exits early, calls **`is_oom`** on its log. On OOM,
      `MEM_FRAC` is decreased by `MEM_FRAC_STEP=0.02` before the next attempt.
+   - OOM is also checked when the benchmark itself fails (runtime OOM).
 4. **`run_benchmark`** — saves the exact `curl` command to
    `bench_cmd.sh`, then POSTs to `/run_once`; saves response JSON to
    `result.json`.
@@ -41,36 +46,30 @@ Final cleanup: `kill_server` + `stop_ray`.
 
 ---
 
+## Config architecture
+
+- **`config.sh`** — shared cluster, runtime, scheduler, and benchmark settings
+- **`gptoss_config.sh`** — sources `config.sh`, then sets gptoss_120b model vars
+- **`glm45air_config.sh`** — sources `config.sh`, then sets glm45air_106b model vars (includes shared expert config)
+
+Each eval script sources its model-specific config, which in turn sources the shared config.
+
+---
+
 ## Fixed config (edit `config.sh`)
 
 | Parameter | Value |
 |---|---|
-| Model | `gptoss_120b` (36 layers, 128 experts, top-4, bf16) |
 | Cluster | 4 nodes × 4 A100-SXM4-40GB = EP16 |
 | Placement | `colocate`, dp=16, ep=16 |
 | Transport | ZMQ, `--host-ifname hsn0` |
 | Scheduler | `defrag` (decay=0.8, lookahead=4, lookback=4) |
 | Optimizations | `--cuda-graph-attn --cuda-graph-expert --less-than-sm90` |
-| Initial memory fraction | 0.98 |
+| Initial memory fraction | 0.98 (0.95 for glm45air) |
 | OOM step | −0.02 per retry |
 | Batch sizes | attn=256, expert=1024 |
 | Benchmark | 2000 rps × 5s = 10k reqs, dataset generator (sharegpt), max context len 2048, in/out 256–512 fallback (env-overridable) |
-| Advanced logging | disabled |
-
----
-
-## Placeholders to fill in (`ep16_eval.sh`)
-
-Set the four gate profile paths in the `EXPERIMENTS` array:
-
-```bash
-EXPERIMENTS=(
-    ".../gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"
-    ".../balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"
-    ".../gating_legal_court_opinions_200.parquet:legal_court_regular"
-    ".../balanced_output/balanced_legal_court_opinions_200.parquet:legal_court_balanced"
-)
-```
+| Throughput analysis window | 15–60s |
 
 ---
 
@@ -83,15 +82,44 @@ srun --jobid=<JOBID> --nodelist=<HEAD_NODE> --overlap --pty bash
 # 2. Source environment
 source ~/DisagMoE/experiments/scripts/delta/env.sh
 
-# 3. Run (RESULTS_DIR is required as the first argument)
+# 3. Run gptoss experiments
 cd ~/DisagMoE
-bash experiments/scripts/delta/eval/ep16_eval.sh /path/to/my_results \
-    |& tee experiments/amoe-081/ep16_eval.log
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/my_results \
+    |& tee /path/to/my_results/gptoss_eval.log
+
+# 4. Run glm45air experiments
+bash experiments/scripts/delta/eval/glm45air_eval.sh /path/to/my_results \
+    |& tee /path/to/my_results/glm45air_eval.log
 
 # Optional: override benchmark parameters via environment
 BENCH_RATE=500 BENCH_TIME=10 \
-    bash experiments/scripts/delta/eval/ep16_eval.sh /path/to/my_results
+    bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/my_results
 ```
+
+### Running a single experiment
+
+Use `--list` to see available experiments and `--only` to select which to run:
+
+```bash
+# List available experiments (prints index + name, then exits)
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --list
+
+# Run by index (1-based)
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --only 1
+
+# Run multiple by index
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --only 1,3
+
+# Run by name substring (matches against run name, e.g. "asyncmoe-sharegpt_regular")
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --only sharegpt
+
+# Run one exact experiment
+bash experiments/scripts/delta/eval/gptoss_eval.sh /path/to/results --only sharegpt_regular
+```
+
+The `--only` filter accepts comma-separated values. Each value is matched as
+a 1-based index (if numeric) or as a substring of the run name (e.g.
+`asyncmoe-sharegpt_regular`). Omitting `--only` runs all experiments.
 
 ---
 
