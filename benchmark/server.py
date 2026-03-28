@@ -7,7 +7,7 @@ from copy import copy
 
 from benchmark_serving import benchmark_serving, launch, benchmark_warmup
 from utils import get_parser_base
-from workload import get_generator
+from workload import get_generator, DatasetGenerator
 import disagmoe_c
 from disagmoe.utils.logger import new_logger
 from disagmoe.frontend.controller import Controller
@@ -45,7 +45,13 @@ def run_once_endpoint():
     new_args.rate = rate
     new_args.generator_type = distribution
     generator_type = get_generator(distribution)
-    generator = generator_type(rate, 0, 0, 0, 0, 0)
+    if generator_type is DatasetGenerator:
+        dataset_path = data.get('dataset_path') or getattr(args, 'dataset_path', None)
+        assert dataset_path is not None, "dataset_path required when using distribution=dataset"
+        max_seq_len = data.get('max_seq_len') or getattr(args, 'max_seq_len', None)
+        generator = DatasetGenerator(rate, 0, dataset_path, max_seq_len)
+    else:
+        generator = generator_type(rate, 0, 0, 0, 0, 0)
     new_args.num_requests = generator.get_num_requests(duration)
     new_args.min_input_len = min_input_len
     new_args.max_input_len = max_input_len

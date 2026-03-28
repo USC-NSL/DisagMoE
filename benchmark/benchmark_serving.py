@@ -14,7 +14,7 @@ from disagmoe.config import (
     EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
-from workload import PoissonGenerator, Workload, UniformGenerator, get_generator
+from workload import PoissonGenerator, Workload, UniformGenerator, DatasetGenerator, get_generator
 from utils import get_parser_base
 import disagmoe_c as c
 from disagmoe.utils.logger import new_logger
@@ -480,7 +480,13 @@ async def run_benchmark(master: Controller, args,
                         min_output_len, max_output_len, 
                         rate, warmup=False):
     GeneratorType = get_generator(generator_type)
-    generator = GeneratorType(rate, 1, min_input_len, max_input_len, min_output_len, max_output_len)
+    if GeneratorType is DatasetGenerator:
+        dataset_path = getattr(args, "dataset_path", None)
+        assert dataset_path is not None, "--dataset-path required when using --generator-type=dataset"
+        max_seq_len = getattr(args, "max_seq_len", None)
+        generator = DatasetGenerator(rate, 1, dataset_path, max_seq_len)
+    else:
+        generator = GeneratorType(rate, 1, min_input_len, max_input_len, min_output_len, max_output_len)
     workload = generator.generate_num(num_requests)
     pbar = tqdm.tqdm(total=num_requests)
     t_start = time.perf_counter()

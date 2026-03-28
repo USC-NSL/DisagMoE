@@ -3,12 +3,13 @@ from argparse import ArgumentParser
 def add_workload_arguments(parser: ArgumentParser):
     parser.add_argument("-n", "--num-requests", type=int, default=1000, help="number of requests to generate")
     parser.add_argument("-r", "--rate", type=float, default=0, help="rate of incoming requests, seconds per request")
-    parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson' and 'uniform'.")
+    parser.add_argument("--generator-type", type=str, default="poisson", help="generator type, including 'poisson', 'uniform', 'incremental_poisson' and 'dataset'.")
     parser.add_argument("--min-input-len", type=int, default=30, help="minimum prefill length for each seqeunce")
     parser.add_argument("--max-input-len", type=int, default=70, help="initial prefill length for each seqeunce")
     parser.add_argument("--min-output-len", type=int, default=80, help="maximum prefill length for each seqeunce")
     parser.add_argument("--max-output-len", type=int, default=120, help="length of output sequence")
-    
+    parser.add_argument("--dataset-path", type=str, default=None, help="path to .npy dataset lengths file (shape [N,2]: input_len, output_len). Used with --generator-type=dataset")
+    parser.add_argument("--max-seq-len", type=int, default=None, help="max total sequence length (input+output) to filter dataset samples. Used with --generator-type=dataset")
     parser.add_argument("--gate-profile-file", type=str, default=None, help="path to gate profile file to upload and broadcast to workers")
     
 def add_runtime_arguments(parser: ArgumentParser):
