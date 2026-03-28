@@ -18,7 +18,7 @@
 #
 # Run directory naming: <RESULTS_DIR>/<system>-<dataset>/
 #   e.g.  asyncmoe-sharegpt_regular/
-#         asyncmoe-legal_court_balanced/
+#         asyncmoe-gsm8k_balanced/
 #
 # Prerequisites:
 #   - Run from sgpu0 with disag12 conda env active
@@ -65,8 +65,8 @@ fi
 EXPERIMENTS=(
     "${GATING_DIR}/gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"
     "${GATING_DIR}/gptosss_balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"
-    "${GATING_DIR}/gating_legal_court_opinions_200.parquet:legal_court_regular"
-    "${GATING_DIR}/gptosss_balanced_output/balanced_legal_court_opinions_200.parquet:legal_court_balanced"
+    "${GATING_DIR}/gating_math_gsm8k_200.parquet:gsm8k_regular"
+    "${GATING_DIR}/gptosss_balanced_output/balanced_math_gsm8k_200.parquet:gsm8k_balanced"
 )
 
 MAX_RETRIES=3
@@ -104,8 +104,11 @@ should_run_experiment() {
     for f in "${FILTERS[@]}"; do
         f="${f#"${f%%[![:space:]]*}"}"
         f="${f%"${f##*[![:space:]]}"}"
-        if [[ "$f" =~ ^[0-9]+$ ]] && [[ "$f" -eq "$idx" ]]; then return 0; fi
-        if [[ "$label" == *"$f"* ]]; then return 0; fi
+        if [[ "$f" =~ ^[0-9]+$ ]]; then
+            [[ "$f" -eq "$idx" ]] && return 0
+        else
+            [[ "$label" == *"$f"* ]] && return 0
+        fi
     done
     return 1
 }

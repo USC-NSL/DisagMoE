@@ -29,7 +29,7 @@ eval-gptoss/
 
 ## What the main script does
 
-For each of the 4 experiments `{sharegpt, legal-court} × {regular, balanced}`,
+For each of the 4 experiments `{sharegpt, gsm8k} × {regular, balanced}`,
 up to `MAX_RETRIES=3` times:
 
 1. **`restart_ray`** — stops Ray on all nodes via SSH, restarts head on
@@ -76,8 +76,8 @@ Set the four gate profile paths in the `EXPERIMENTS` array:
 EXPERIMENTS=(
     ".../gating_gptoss120b_sharegpt_200.parquet:sharegpt_regular"
     ".../balanced_output/balanced_gptoss120b_sharegpt_200.parquet:sharegpt_balanced"
-    ".../gating_legal_court_opinions_200.parquet:legal_court_regular"
-    ".../balanced_output/balanced_legal_court_opinions_200.parquet:legal_court_balanced"
+    ".../gating_math_gsm8k_200.parquet:gsm8k_regular"
+    ".../balanced_output/balanced_math_gsm8k_200.parquet:gsm8k_balanced"
 )
 ```
 
@@ -137,8 +137,8 @@ Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
     bench_cmd.sh                        # exact curl command (replayable)
     result.json                         # benchmark response JSON
   asyncmoe-sharegpt_balanced/          ...
-  asyncmoe-legal_court_regular/        ...
-  asyncmoe-legal_court_balanced/       ...
+  asyncmoe-gsm8k_regular/              ...
+  asyncmoe-gsm8k_balanced/             ...
 ```
 
 On retries (e.g. OOM), failed-attempt artifacts are preserved under `attempt<N>/`; the final successful attempt remains at the top level.
