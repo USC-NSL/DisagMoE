@@ -68,6 +68,30 @@ Final cleanup: `kill_server` + `stop_ray`.
 
 ---
 
+## IMPORTANT: Gate profile vs. sequence length profile
+
+The gate profile and the benchmark sequence length distribution are **independent configs**.
+Changing the gate profile (e.g. from `sharegpt` to `gsm8k`) only changes the expert routing
+pattern — it does NOT automatically change the input/output sequence length distribution.
+
+By default, all experiments use `BENCH_DATASET_PATH` (set to `sharegpt_lengths.npy`) and
+fixed bounds `in=256–512, out=256–512`. To use gsm8k-representative sequence lengths, you
+must override per-workload:
+
+```bash
+BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy \
+    bash experiments/scripts/sphere-16/eval/gptoss_eval.sh /path/to/results --only gsm8k
+```
+
+If you forget this step, gsm8k and sharegpt experiments will produce nearly identical
+throughput/latency — because the actual workload (sequence lengths) is the same.
+
+**The SGLang eval scripts handle this automatically** via `BENCH_DATASET_PATHS` + `npy`
+dataset mode. The AsyncMoE eval scripts currently do not auto-resolve per-workload — you
+must override manually or update the script.
+
+---
+
 ## Placeholders to fill in (`ep16_eval.sh`)
 
 Set the four gate profile paths in the `EXPERIMENTS` array:

@@ -45,29 +45,25 @@ class Detokenizer:
         return connect_addr
     
     def run(self) -> None:
-        self.start_timestamp_ms = t_now_high_ms()
+        self.last_log_ms = t_now_high_ms()
         while True:
             batch = self.detokenizer_socket.recv_pyobj()
             with self.lock:
                 self.process_batch(batch)
-                
-    def log_throughput(self) -> None:
-        cur_time_ms = t_now_high_ms()
-        elapsed_time_ms = cur_time_ms - self.start_timestamp_ms
-        token_throughput = self.token_processed * 1000 / elapsed_time_ms if elapsed_time_ms > 0 else 0.0
-        get_logger().info(f"Detokenizer: token throughput: {token_throughput/1000:.2f}k tokens/s")
-        self.token_processed = 0
-        self.iter = 0
-        self.start_timestamp_ms = cur_time_ms
 
     def process_batch(self, batch: BatchDecodeResult):
         num_tokens = len(batch.req_ids)
         cur_time_ms = t_now_high_ms()
         self.token_processed += num_tokens
-        
-        self.detokenizer_step_counter += 1
-        if self.detokenizer_step_counter % 100 == 0:
-            self.log_throughput()
+
+        elapsed_ms = cur_time_ms - self.last_log_ms
+        if elapsed_ms >= 1000:
+            tput = self.token_processed * 1000 / elapsed_ms
+            get_logger().info(
+                f"Detokenizer: token throughput: {tput/1000:.2f}k tokens/s"
+            )
+            self.token_processed = 0
+            self.last_log_ms = cur_time_ms
         
         for i in range(num_tokens):
             rid = batch.req_ids[i]
