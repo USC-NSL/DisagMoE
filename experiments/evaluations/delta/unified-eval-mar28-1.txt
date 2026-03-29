@@ -173,3 +173,46 @@ Include:
   - Summary table from all result.json files
   - Any script modifications made (exact diffs) — or state "none"
   - Anomalies observed during monitoring
+
+
+## LESSONS LEARNED (from unified-eval-mar28-1 run)
+
+### AsyncMoE
+
+- SLURM env vars (SLURM_JOB_ID, SLURM_JOB_NODELIST) and HEAD_IP must be
+  explicitly set when launching nohup from a non-SLURM shell. Inside srun
+  --pty bash they are set automatically.
+- MEM_FRAC=0.92 works for both gptoss and glm45air on ep16.
+- gsm8k experiments require datasets/gsm8k_lengths.npy; sharegpt experiments
+  require datasets/sharegpt_lengths.npy. Both eval scripts now auto-select.
+- The MINICONDA path moved from /projects/bgro/spark36/miniconda3 to ~/miniconda3.
+  config.sh updated to use $HOME/miniconda3.
+
+### SGLang
+
+- --disable-custom-all-reduce is required on ALL EP profiles (ep16, ep8).
+  Without it, CUDA graph capture hangs indefinitely (Gloo fallback deadlock).
+  evallib/server.sh updated; was previously only set on pp4tp4.
+
+- MEM_FRAC is profile-dependent:
+    ep16, ep16_limited, pp4tp4 → 0.65 (confirmed; 0.70 deadlocks with
+                                       mooncake-nccl during capture)
+    ep8                        → 0.85 minimum (8-GPU sharding, ~30 GB
+                                       weights/GPU; 0.75 still OOM)
+  config.sh updated: MEM_FRAC=0.65, EP8_MEM_FRAC=0.85.
+  server.sh automatically applies EP8_MEM_FRAC for ep8 profile.
+
+- CUDA_LAUNCH_BLOCKING=1 deadlocks with mooncake-nccl (async dependency).
+  Do not use for production runs.
+
+- Use MODEL_PATH="lmsys/gpt-oss-120b-bf16" (HuggingFace ID). Local copies
+  at /projects/bgro/spark36/models/ may be stale. Works with --load-format dummy.
+
+- Balanced gate profiles live in gptosss_balanced_output/ (triple-s), not
+  balanced_output/. config_gptoss.sh corrected.
+
+- Always monitor server_head.log directly, not just the [main] eval output.
+  OOM errors and worker crashes only appear in server_head.log / server_wN.log.
+
+- Killing a stuck eval: kill $PID only removes the nohup wrapper. Always
+  pkill -9 -f sglang on all nodes + tmux kill-session for sglang-head/wN.

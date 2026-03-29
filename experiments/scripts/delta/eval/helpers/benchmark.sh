@@ -3,7 +3,7 @@
 # Source this file; do not execute directly.
 #
 # Requires (from config.sh):
-#   SERVER_PORT, BENCH_CURL_TIMEOUT
+#   SERVER_PORT, BENCH_CURL_TIMEOUT_SHAREGPT, BENCH_CURL_TIMEOUT_GSM8K
 #   BENCH_RATE, BENCH_TIME, BENCH_GENERATOR, BENCH_DATASET_PATH, BENCH_MAX_CONTEXT_LEN
 #   BENCH_MIN_IN, BENCH_MAX_IN, BENCH_MIN_OUT, BENCH_MAX_OUT
 
@@ -16,6 +16,13 @@ log_bench() { echo "$(date '+%Y-%m-%d %H:%M:%S') [bench] $*"; }
 run_benchmark() {
     local result_file="$1"
     local cmd_file="$2"
+
+    local curl_timeout
+    if [[ "${BENCH_DATASET_PATH:-}" == *gsm8k* ]]; then
+        curl_timeout="${BENCH_CURL_TIMEOUT_GSM8K:-300}"
+    else
+        curl_timeout="${BENCH_CURL_TIMEOUT_SHAREGPT:-600}"
+    fi
 
     log_bench "Sending benchmark:" \
         "rate=${BENCH_RATE} rps, time=${BENCH_TIME}s," \
@@ -49,7 +56,7 @@ run_benchmark() {
         printf '    -X POST "http://localhost:%s/run_once" \\\n' "$SERVER_PORT"
         printf '    -H "Content-Type: application/json" \\\n'
         printf "    -d '%s' \\\n" "$payload"
-        printf '    --max-time %s\n' "$BENCH_CURL_TIMEOUT"
+        printf '    --max-time %s\n' "$curl_timeout"
     } > "$cmd_file"
 
     local http_code
@@ -61,13 +68,13 @@ run_benchmark() {
         -X POST "http://localhost:${SERVER_PORT}/run_once" \
         -H "Content-Type: application/json" \
         -d "$payload" \
-        --max-time "$BENCH_CURL_TIMEOUT")
+        --max-time "$curl_timeout")
 
     if [ "$http_code" = "200" ]; then
         log_bench "Benchmark complete (HTTP 200). Result: $result_file"
         return 0
     else
-        log_bench "ERROR: HTTP $http_code (000 = curl timeout after ${BENCH_CURL_TIMEOUT}s)."
+        log_bench "ERROR: HTTP $http_code (000 = curl timeout after ${curl_timeout}s)."
         printf '{"error":"http_%s"}\n' "$http_code" > "$result_file"
         return 1
     fi

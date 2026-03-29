@@ -69,6 +69,8 @@ Each eval script sources its model-specific config, which in turn sources the sh
 | OOM step | −0.02 per retry |
 | Batch sizes | attn=256, expert=1024 |
 | Benchmark | 2000 rps × 5s = 10k reqs, dataset auto-selected per experiment (sharegpt or gsm8k), max context len 2048, in/out 256–512 fallback (env-overridable) |
+| Benchmark timeout | sharegpt: 600s, gsm8k: 300s (auto-selected from dataset path) |
+| Server ready timeout | 600s |
 | Throughput analysis window | 15–60s |
 
 ---
