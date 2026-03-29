@@ -166,3 +166,5 @@ Run directories are named `<system>-<dataset>` under `RESULTS_DIR`.
 ```
 
 On retries (e.g. OOM), failed-attempt artifacts are preserved under `attempt<N>/`; the final successful attempt remains at the top level.
+
+To plot global batch size (running/waiting) timelines: `python experiments/scripts/sphere-16/eval/plot_asyncmoe_inflight_timeline.py <RESULTS_DIR>`
