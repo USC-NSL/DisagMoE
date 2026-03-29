@@ -46,7 +46,7 @@ DEFRAG_LOOKBACK_STEPS=4
 
 # ── Benchmark — 10 000 requests, 2000 rps, dataset generator (sharegpt) ───────
 BENCH_RATE=${BENCH_RATE:-2000}
-BENCH_TIME=${BENCH_TIME:-5}
+BENCH_TIME=${BENCH_TIME:-10}
 BENCH_GENERATOR=${BENCH_GENERATOR:-"dataset"}
 BENCH_DATASET_PATH=${BENCH_DATASET_PATH:-"$REPO_DIR/datasets/sharegpt_lengths.npy"}
 BENCH_MAX_CONTEXT_LEN=${BENCH_MAX_CONTEXT_LEN:-2048}
@@ -54,10 +54,10 @@ BENCH_MIN_IN=${BENCH_MIN_IN:-256}
 BENCH_MAX_IN=${BENCH_MAX_IN:-512}
 BENCH_MIN_OUT=${BENCH_MIN_OUT:-256}
 BENCH_MAX_OUT=${BENCH_MAX_OUT:-512}
-BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-600}
+BENCH_CURL_TIMEOUT=${BENCH_CURL_TIMEOUT:-1200}
 
 # ── Peak-state window for --analyze-throughput (seconds after benchmark start)
-ANALYZE_THROUGHPUT_WINDOW="15,60"
+ANALYZE_THROUGHPUT_WINDOW="15,45"
 
 # ── Server startup timeout ────────────────────────────────────────────────────
 SERVER_READY_TIMEOUT=300   # 5 min — no NFS contention on Sphere

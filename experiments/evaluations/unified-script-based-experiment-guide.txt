@@ -1,4 +1,7 @@
-unified-experiment-name: sphere-16-unified-eval-glm-mar27-round2
+unified-experiment-name: sphere-16-unified-eval-glm-mar28
+
+Special note for this exp: SKIP all the sglang ep-limitted settings! See the Checklist
+Special note for this exp: recommending to use --only to run each setting one by one, and inspect per server log periodically (rather than just read runner log).
 
 Run eval for two systems (AsyncMoE + SGLang) sequentially on the Sphere-16 cluster.
 All outputs go under: ~/DisagMoE/experiments/<unified-experiment-name>/
@@ -95,6 +98,7 @@ Do NOT change benchmark parameters, model configs, or parallelism strategies.
 After all 4 scripts complete, write:
     ~/DisagMoE/experiments/sphere-16-unified-eval/experiment_report.md
     Please also copy a summary of experiment results data (tput/mean ITL/p99 ITL) to ~/paper-repo/results/<unified-experiment-name>, make some comparison plots, and push to remote origin.
+    Post-process for sglang runs: should inspect the server log, look at the decoding throughput log lines, filter out ONLY the throughputs during which the concurrent in-flight reqest number is in top 10% of that run (i.e. filter out the peak steady-state tput), this number is called "adjusted peak tput", should be in report and used for the plots. 
 
 Include:
   - Per-experiment status (SUCCESS/FAILED, attempts taken, reason if failed)
