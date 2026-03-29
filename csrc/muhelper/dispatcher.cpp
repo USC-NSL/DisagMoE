@@ -7,7 +7,6 @@
 #include "transport_factory.h"
 
 #include <cereal/archives/binary.hpp>
-#include <chrono>
 #include <pthread.h>
 
 struct MetadataWithPeerId {
@@ -267,16 +266,11 @@ void UnifiedDispatcher::run() {
 
     while (!this->end_flag) {
         _clean_rank_pending_sends();
-        _try_flush_queues();
 
         std::vector<TokenBatch> incoming;
         {
             std::unique_lock<std::mutex> lock(this->mtx);
-            if (_has_buffered_sends()) {
-                this->cv.wait_for(lock, std::chrono::microseconds(100), [&] {
-                    return !this->send_queue.empty() || this->end_flag;
-                });
-            } else {
+            if (!_has_buffered_sends()) {
                 this->cv.wait(lock, [&] {
                     return !this->send_queue.empty() || this->end_flag;
                 });
