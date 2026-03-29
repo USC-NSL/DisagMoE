@@ -34,7 +34,7 @@ up to `MAX_RETRIES=3` times:
    `server_cmd.sh`, then starts `benchmark/server.py` in the
    background (`nohup`), logging to `server.log`.
 3. **`wait_for_server`** — polls the log for `Running on http://0.0.0.0:6699`,
-   up to `SERVER_READY_TIMEOUT=1200s` (NFS import on Delta can be slow).
+   up to `SERVER_READY_TIMEOUT=600s`.
    - If the server exits early, calls **`is_oom`** on its log. On OOM,
      `MEM_FRAC` is decreased by `MEM_FRAC_STEP=0.02` before the next attempt.
    - OOM is also checked when the benchmark itself fails (runtime OOM).
@@ -85,8 +85,12 @@ srun --jobid=<JOBID> --nodelist=<HEAD_NODE> --overlap --pty bash
 source ~/miniconda3/etc/profile.d/conda.sh
 source ~/DisagMoE/experiments/scripts/delta/env.sh
 
-# 3. Verify no lingering processes from a previous run
+# 3. Kill any lingering processes from a previous run
+#    (kill $PID only removes the nohup wrapper — children must be killed explicitly)
 ps aux | grep -E 'ray|server\.py|benchmark' | grep -v grep
+pkill -f "benchmark/server.py" 2>/dev/null || true
+pkill -9 -f "ray::" 2>/dev/null || true
+~/miniconda3/envs/amoe/bin/ray stop --force 2>/dev/null || true
 
 # 4. Launch gptoss in background
 #    If running from inside an srun --pty shell, SLURM_JOB_ID / SLURM_JOB_NODELIST
