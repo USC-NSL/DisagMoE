@@ -215,6 +215,7 @@ void UnifiedDispatcher::_try_flush_queues() {
         auto& q = rank_queues_[r];
         if (q.buffered.empty() || q.channel_id < 0) continue;
         if (q.in_flight >= max_in_flight_per_rank_) continue;
+        if ((int)rank_pending_sends_.size() >= max_pending_sends_) break;
 
         TokenBatch merged = _merge_for_rank(q.buffered);
         q.buffered.clear();
