@@ -31,7 +31,7 @@ private:
 
     std::queue<PendingRankSend> rank_pending_sends_;
     std::vector<RankQueue> rank_queues_;
-    int max_in_flight_per_rank_{1};
+    int max_in_flight_per_rank_{2};
 
     inline int _attn_get_channel_id(int dp_rank);
 
