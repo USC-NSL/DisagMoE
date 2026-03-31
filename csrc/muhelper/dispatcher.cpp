@@ -215,7 +215,10 @@ void UnifiedDispatcher::_try_flush_queues() {
         auto& q = rank_queues_[r];
         if (q.buffered.empty() || q.channel_id < 0) continue;
         if (q.in_flight >= max_in_flight_per_rank_) continue;
-        if ((int)rank_pending_sends_.size() >= max_pending_sends_) break;
+        // Global limit caps total in-flight sends, but every rank is
+        // guaranteed at least 1 slot to prevent deadlock when
+        // num_ranks * max_in_flight_per_rank > max_pending_sends.
+        if (q.in_flight >= 1 && (int)rank_pending_sends_.size() >= max_pending_sends_) continue;
 
         TokenBatch merged = _merge_for_rank(q.buffered);
         q.buffered.clear();
