@@ -1,7 +1,10 @@
-unified-experiment-name: sphere-16-unified-eval-glm-mar28
+unified-experiment-name: sphere-16-unified-eval-glm-mar28-round2
 
 Special note for this exp: SKIP all the sglang ep-limitted settings! See the Checklist
-Special note for this exp: recommending to use --only to run each setting one by one, and inspect per server log periodically (rather than just read runner log).
+Special note for this exp: recommending to use --only to run each setting one by one, and inspect the SERVER LOG periodically!!!!! (rather than just read runner log). Only this way you can idenfity the issues (e.g. timeout too early OR file path not found OR OOM OR real bug OR etc) and step-in.
+Special note for this exp: for sglang EP8, should override the mem fraction to 0.87, if not working (OOM) 0.85
+Special note for this exp: right after finishing every single script, push the basic metric results and plot the global-bsz timeline plot and push to paper repo mentioned below.
+SPecial note for this exp: run 40k total reqs 4000rps for ALL gsm8k experiemnts, override the configs! 
 
 Run eval for two systems (AsyncMoE + SGLang) sequentially on the Sphere-16 cluster.
 All outputs go under: ~/DisagMoE/experiments/<unified-experiment-name>/
@@ -17,7 +20,7 @@ Eval scripts to run (in order):
   4. SGLang glm45air     ~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh
 
 
-## BEFORE YOU START
+## IMPORANT: BEFORE YOU START
 
 Read BOTH READMEs in full — they contain all cluster, config, and script details:
   - ~/DisagMoE/experiments/scripts/sphere-16/eval/README.md

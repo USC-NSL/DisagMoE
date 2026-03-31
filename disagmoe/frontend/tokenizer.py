@@ -25,6 +25,7 @@ class Detokenizer:
         
         self.token_processed = 0
         self.iter = 0
+        self.itl_buffer: list = []
         
         self.lock = threading.Lock()
         initialize_logger(f"Detokenizer")
@@ -57,11 +58,20 @@ class Detokenizer:
         self.token_processed += num_tokens
 
         elapsed_ms = cur_time_ms - self.last_log_ms
-        if elapsed_ms >= 1000:
+        if elapsed_ms >= 10000:
             tput = self.token_processed * 1000 / elapsed_ms
+            itl_str = ""
+            if self.itl_buffer:
+                self.itl_buffer.sort()
+                n = len(self.itl_buffer)
+                mean_itl = sum(self.itl_buffer) / n
+                p50_itl = self.itl_buffer[n // 2]
+                p99_itl = self.itl_buffer[int(n * 0.99)]
+                itl_str = f" | ITL mean={mean_itl:.1f}ms p50={p50_itl:.1f}ms p99={p99_itl:.1f}ms"
             get_logger().info(
-                f"Detokenizer: token throughput: {tput/1000:.2f}k tokens/s"
+                f"Detokenizer: token throughput: {tput/1000:.2f}k tokens/s{itl_str}"
             )
+            self.itl_buffer.clear()
             self.token_processed = 0
             self.last_log_ms = cur_time_ms
         
@@ -70,6 +80,8 @@ class Detokenizer:
             
             if rid in self.slo_stats:
                 stat = self.slo_stats[rid]
+                if stat.t_tokens:
+                    self.itl_buffer.append(cur_time_ms - stat.t_tokens[-1])
                 stat.t_tokens.append(cur_time_ms)
             else:
                 self.active_num_requests += 1

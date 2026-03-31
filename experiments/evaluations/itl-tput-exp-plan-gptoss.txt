@@ -10,17 +10,17 @@ Instruction for running asyncmoe (~/DisagMoE) experiments:
 
 experiment config variables:
     system: asyncmoe, sglang-fake-prefill EP16 mem-frac 0.77
-    req-rates: 100 req/s, 50req/s, 40, 30, 20, 10; sending at the corresponding rps for 200sec, then wait for finish.
+    req-rates: 150rps, 100, 50, 25 for sharegpt; 200rps, 150, 100, 50, 25 for gsm8k; sending at the corresponding rps for 200sec, then wait for finish.
 So 2 * 6 = 12 runs needed in total, 12 set of performance metrics need to collect!
 
 Fixed requirements:
     model: gptoss-120b
     input/output len: both set to 256-512 uniformly sampled
-    profile: sharegpt
+    profile: sharegpt, gsm8k
     use balanced profile variant: yes
 
 Rules for experiment runs:
-- Run sglang runs first, then asyncmoe
+- Run asyncmoe first then sglang
 - NEVER launch server or invoke requests (e.g. curl) blockingly in the foreground, always launch in tmux (asyncmoe always finish within 6min after benchmark sent), and check progress at least every 5 minutes for both sglang/asyncmoe runs. For asyncmoe, if the system is progressing normally, should see detokenizer tput logs EVERY second, if no detokenizer log since last check, that means the system is in a hang state, kill the server directly, and retry.
 - for asyncmoe, every config, at most 3 retries, for sglang, at most 2; but when you just get started to run a system, you may try a bit more because you weren't familiar with it.
 - between each asyncmoe runs, need to clear the ray cluster to restart, otherwise will get no free GPU error

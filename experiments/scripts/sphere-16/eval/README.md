@@ -8,7 +8,7 @@ Workers:   sgpu2 (10.0.0.2), sgpu3 (10.0.0.3), sgpu4 (10.0.0.4),
            sgpu9 (10.0.0.8)
 Network:   RoCE via ens1f1np1 (mlx5_1 HCA)
 Conda env: disag12 (Python 3.12)
-Note: there is NO NFS on sphere cluster, every node is fully bare-metal. You can ssh into every worker.
+Note: there is NO NFS on sphere cluster, every node is fully bare-metal. You can ssh into every worker to sync files if you change some code.
 
 ## File layout
 
