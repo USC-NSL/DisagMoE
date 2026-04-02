@@ -63,7 +63,7 @@ EXPERIMENTS=(
     "${GLM_GATING_DIR}/balanced_output/balanced_glm45air_gsm8k_200.parquet:gsm8k_balanced"
 )
 
-MAX_RETRIES=3
+MAX_RETRIES=2
 MEM_FRAC_STEP=0.02
 
 # ─────────────────────────────────────────────────────────────────────────────

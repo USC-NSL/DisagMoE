@@ -69,7 +69,7 @@ EXPERIMENTS=(
     "${GATING_DIR}/gptosss_balanced_output/balanced_math_gsm8k_200.parquet:gsm8k_balanced"
 )
 
-MAX_RETRIES=3
+MAX_RETRIES=2
 MEM_FRAC_STEP=0.02
 
 # ─────────────────────────────────────────────────────────────────────────────

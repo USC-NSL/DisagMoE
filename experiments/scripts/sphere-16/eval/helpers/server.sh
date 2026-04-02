@@ -72,6 +72,11 @@ launch_server() {
         fi
     fi
 
+    if [ -n "${SERVER_EXTRA_ARGS:-}" ]; then
+        read -ra _extra <<< "$SERVER_EXTRA_ARGS"
+        cmd+=("${_extra[@]}")
+    fi
+
     {
         printf '# Server command\n'
         printf '# Generated: %s\n' "$(date)"
