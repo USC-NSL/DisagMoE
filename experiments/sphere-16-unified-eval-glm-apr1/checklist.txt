@@ -1,0 +1,152 @@
+sphere-16-unified-eval-glm-apr1 — Benchmark Checklist (16 total)
+=========================================================================
+GLM-only eval round. gptoss benchmarks already done in sphere-16-unified-eval-glm-mar28-round2.
+NOTE: SKIP all SGLang ep16_limited experiments.
+NOTE: Use --only to run each setting one by one and inspect SERVER LOG periodically. Server log shows the errors, while eval script doesn't. If you spot error in server, you can kill the attempt before wasting more time for eval script to timeout.
+NOTE: SGLang EP8 GLM uses MEM_FRAC=0.87, if OOM 0.84.
+NOTE: pp8tp2 + GLM had KV cache shape mismatch issues in previous round — watch closely, likely need to step-in and fix the bug, but defer fixing pptp to after finish other things.
+NOTE: Right after finishing every single script, push basic metrics + global-bsz timeline to paper repo.
+NOTE: If sglang tput for gsm8k and sharegpt are almost the same, then there must be something wrong, one thing to try is to change the sglang code and set DEFAULT_FORCE_STREAM_INTERVAL = 10 (currently is 1).
+NOTE: know issues of sglang includes having vast number of bench request errors, it's okay to have some requests failed out of the 10k/20k, but if most fails, there's a problem and you should see the previous NOTE
+NOTE: Another known issue of sglang is sometimes there will be little bit memory leak in the kv-block allocator, usually that's okay. If it really becomes the problem, you need to fix.
+NOTE: We DO NOT necessarily need all runs to finish 100%, as long as most requests finishes or we have at least 100 seconds of server progress (tput etc) logs after the bench launch, it's sufficient for us to compute metric results. So sometimes even if something timed out, we can still have it.
+NOTE: If you stepped-in any thing, to fix things, or do soemthing special (that wasn't asked), please all write them down in step-in.txt in the sphere-16-unified-eval-glm-apr1/
+
+Benchmark config overrides (GLM):
+  gsm8k:    20k reqs at 2krps  (AsyncMoE default; SGLang default)
+  sharegpt: 10k reqs at 1krps  (AsyncMoE: BENCH_RATE=1000; SGLang: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000)
+
+Metrics to record per benchmark: throughput (tput), mean ITL, p99 ITL
+
+
+WORKLOAD PROFILES (gate profile + sequence length .npy):
+=========================================================================
+
+  sharegpt workloads:
+    Gate (glm):      gating_glm45air_sharegpt_200.parquet
+    Balanced (glm):  balanced_glm45air_sharegpt_200.parquet
+    Seq lengths:     datasets/sharegpt_lengths.npy
+
+  gsm8k workloads:
+    Gate (glm):      gating_glm45air_gsm8k_200.parquet
+    Balanced (glm):  balanced_glm45air_gsm8k_200.parquet
+    Seq lengths:     datasets/gsm8k_lengths.npy
+
+  All parquet files verified ✓ in both repos (DisagMoE + sglang-fake-prefill).
+
+
+SCRIPT 1: AsyncMoE glm45air  (~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: glm45air_106b (45L, 128E, top-8, 1 shared expert)
+  TAG: asyncmoe-glm45air | RESULTS: $OUTDIR/asyncmoe-glm45air-results
+  MAX_RETRIES: 2 | MEM_FRAC: 0.95 (from glm45air_config.sh)
+  Seq lengths: BENCH_DATASET_PATH override required for gsm8k
+
+  sharegpt (override: BENCH_RATE=1000 → 10k reqs at 1krps):
+  [ ]  1. asyncmoe-sharegpt_regular       gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+  [ ]  2. asyncmoe-sharegpt_balanced      gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+  gsm8k (default rate: 2krps × 10s = 20k reqs; override BENCH_DATASET_PATH):
+  [ ]  3. asyncmoe-gsm8k_regular          gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+  [ ]  4. asyncmoe-gsm8k_balanced         gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  Launch commands:
+    # sharegpt (10k reqs, 1krps)
+    BENCH_RATE=1000 bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_regular
+    BENCH_RATE=1000 bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_balanced
+
+    # gsm8k (20k reqs, 2krps — default rate, override dataset)
+    BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only gsm8k_regular
+    BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only gsm8k_balanced
+
+
+SCRIPT 2: SGLang glm45air  (~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: zai-org/GLM-4.5-Air
+  TAG: sglang-glm45air | RESULTS: $OUTDIR/sglang-glm45air-results
+  MAX_RETRIES: 2 | MEM_FRAC: 0.77 (default; ep8 override to 0.87)
+  SKIP ep16_limited
+  Seq lengths: auto-resolved from BENCH_DATASET_PATHS in config.sh (npy mode)
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ]  5. sglang_ep16-sharegpt_regular    gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+    [ ]  6. sglang_ep16-sharegpt_balanced   gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ]  7. sglang_ep16-gsm8k_regular       gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+    [ ]  8. sglang_ep16-gsm8k_balanced      gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):  ⚠ KNOWN ISSUE: KV cache shape mismatch in previous round
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ]  9. sglang_pp8tp2-sharegpt_regular  gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+    [ ] 10. sglang_pp8tp2-sharegpt_balanced gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ] 11. sglang_pp8tp2-gsm8k_regular     gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+    [ ] 12. sglang_pp8tp2-gsm8k_balanced    gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes, MEM_FRAC=0.87, if OOM 0.85):
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ] 13. sglang_ep8-sharegpt_regular     gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+    [ ] 14. sglang_ep8-sharegpt_balanced    gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ] 15. sglang_ep8-gsm8k_regular        gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+    [ ] 16. sglang_ep8-gsm8k_balanced       gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  Launch commands:
+    # ep16 sharegpt (10k reqs, 1krps)
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-sharegpt_regular
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-sharegpt_balanced
+
+    # ep16 gsm8k (20k reqs, 2krps — default)
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-gsm8k_regular
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-gsm8k_balanced
+
+    # pp8tp2 sharegpt
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-sharegpt_regular
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-sharegpt_balanced
+
+    # pp8tp2 gsm8k
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-gsm8k_regular
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-gsm8k_balanced
+
+    # ep8 sharegpt (MEM_FRAC=0.87)
+    MEM_FRAC=0.87 BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-sharegpt_regular
+    MEM_FRAC=0.87 BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-sharegpt_balanced
+
+    # ep8 gsm8k (MEM_FRAC=0.87)
+    MEM_FRAC=0.87 bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-gsm8k_regular
+    MEM_FRAC=0.87 bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-gsm8k_balanced
+
+EXTRA TASK:
+  Looking at the log of any sglang ep16 server, you can see the number of allocated kv-cache amount.
+  You should mathematically compute the mem fraction where the allocated kv-cache space is half of the kv space allocated for 0.77 runs.
+  For gptoss, the half of 0.77 was 0.58, glm should be similar. After you have a guess, launch a server in /tmp and check the kv-space log to see if your guess is right (close to half)
+  Then, you can run 4 more experiments where all the parameters are the same as ep16, except different mem frac. Those runs are named as "ep16_halfkv"
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-unified-eval-glm-apr1
+
+EXECUTION ORDER (sequential, one at a time):
+  1. Script 1 (AsyncMoE glm45air)  — 4 experiments
+  2. Script 2 (SGLang glm45air)    — 12 experiments (skip ep16_limited)
+
+TOTAL: 16 experiments
+
+POST-RUN:
+  [ ] Extract metrics from server logs (both systems) via parse_detokenizer_logs.py:
+        python experiments/evaluations/parse_detokenizer_logs.py $OUTDIR [--csv $OUTDIR/metrics.csv] [--window START,END]
+      This parses detokenizer throughput/ITL lines from server.log (AsyncMoE) and
+      logs/server_head.log (SGLang), computing throughput-weighted tput/mean ITL/p50 ITL/p99 ITL, and generate csv.
+  [ ] Write experiment_report.md in $OUTDIR
+  [ ] Copy results summary to ~/paper-repo/results/sphere-16-unified-eval-glm-apr1
+  [ ] Plot global-bsz timeline plots and comparison plots
+  [ ] Push paper-repo to remote
