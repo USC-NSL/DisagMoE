@@ -42,11 +42,17 @@ def load_device_data(adv_log_dir: Path):
         queuing = {}
         queue_snapshots = {}
         if q_path.exists():
-            with open(q_path) as f:
-                queuing = json.load(f)
+            try:
+                with open(q_path) as f:
+                    queuing = json.load(f)
+            except json.JSONDecodeError:
+                print(f"  WARNING: corrupt JSON, skipping {q_path}")
         if qs_path.exists():
-            with open(qs_path) as f:
-                queue_snapshots = json.load(f)
+            try:
+                with open(qs_path) as f:
+                    queue_snapshots = json.load(f)
+            except json.JSONDecodeError:
+                print(f"  WARNING: corrupt JSON, skipping {qs_path}")
         data[dev_id] = {
             "moe_steps": moe,
             "queuing_delays": queuing,
