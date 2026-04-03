@@ -11,6 +11,7 @@ from disagmoe.config import (
     qwen3_30b_config,
     gptoss_120b_config,
     glm45air_106b_config,
+    glm45air_half_config,
     EngineConfig,
 )
 from disagmoe.frontend.datatypes import SloStat, TraceContext, SamplerStepInfo
@@ -186,6 +187,8 @@ def launch(args):
         model_config = gptoss_120b_config
     elif args.model == "glm45air_106b":
         model_config = glm45air_106b_config
+    elif args.model == "glm45air_half":
+        model_config = glm45air_half_config
     elif args.model == "mixtral":
         model_config = mixtral_config
     else:

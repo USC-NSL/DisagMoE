@@ -1,0 +1,132 @@
+sphere-16-ablation-apr1 — Defrag Scheduler Ablation Checklist
+=========================================================================
+Model: gptoss 120B (36L, 128E, top-4, 0 shared experts)
+Cluster: Sphere-16 (8 nodes × 2 L40S GPUs = 16 total)
+Workloads: sharegpt_balanced + gsm8k_balanced
+Benchmark: sharegpt 20k reqs @ 2krps, gsm8k 20k reqs @ 2krps
+MEM_FRAC: 0.97 for all runs
+Eval script: ~/DisagMoE/experiments/scripts/sphere-16/eval/gptoss_eval.sh
+
+Three configurations (A, B, C), for now just run sharegpt
+
+NOTE: If you stepped-in any thing, to fix things, or do soemthing special (that wasn't asked), please all write them down in step-in.txt in the sphere-16-unified-eval-glm-apr1/
+
+
+OPTIMIZATION INVENTORY
+=========================================================================
+
+  1. GDRCopy optimization
+     Controls host↔GPU copies via GDRCopy pinned memory instead of cudaMemcpy.
+     Toggle: disagmoe/utils/gdr_context.py line 5: use_gdrcopy_optimization = True/False
+     IMPORTANT: No CLI flag. Must edit the file and sync to ALL worker nodes (no NFS).
+
+  2. Compute-communication overlap (overlap scheduler)
+     The engine main loop has two variants:
+       - single_module_loop_overlap (default) — pipelines send with next compute
+       - single_module_loop          — synchronous: compute → wait → send → next
+     Toggle: disagmoe/frontend/engine.py line 674:
+       Overlap ON:  self.loop_thread = Thread(target=self.single_module_loop_overlap)
+       Overlap OFF: self.loop_thread = Thread(target=self.single_module_loop)
+     IMPORTANT: No CLI flag. Must edit the file and sync to ALL worker nodes (no NFS).
+
+  3. Defrag scheduler lookahead/lookback
+     Default: lookahead=4, lookback=4 (full defrag)
+     MBFS: lookahead=1, lookback=0 (minimum batch first scheduling)
+     Toggle: env vars DEFRAG_LOOKAHEAD_STEPS / DEFRAG_LOOKBACK_STEPS
+
+
+CONFIGURATIONS
+=========================================================================
+
+  A. FULL DEFRAG (baseline)
+     All optimizations ON: gdrcopy=ON, overlap=ON, lookahead=4, lookback=4
+     No code changes. Default config.
+     Env: MEM_FRAC=0.97
+
+  B. NO GDRCOPY + NO OVERLAP
+     gdrcopy=OFF: edit gdr_context.py → use_gdrcopy_optimization = False
+     overlap=OFF: edit engine.py line 674 → target=self.single_module_loop
+     Sync both files to all worker nodes.
+     Scheduler unchanged: lookahead=4, lookback=4
+     Env: MEM_FRAC=0.97
+
+  C. MBFS (defrag with lookahead=1, lookback=0)
+     All HW optimizations ON: gdrcopy=ON, overlap=ON
+     Scheduler: lookahead=1, lookback=0
+     Env: MEM_FRAC=0.97 DEFRAG_LOOKAHEAD_STEPS=1 DEFRAG_LOOKBACK_STEPS=0
+     NOTE: Restore gdr_context.py and engine.py to defaults before running!
+
+
+CODE CHANGES NEEDED
+=========================================================================
+
+  For Config B (disable both optimizations):
+
+    File 1: disagmoe/utils/gdr_context.py line 5
+      FROM: use_gdrcopy_optimization = True
+      TO:   use_gdrcopy_optimization = False
+
+    File 2: disagmoe/frontend/engine.py line 674
+      FROM: self.loop_thread = Thread(target=self.single_module_loop_overlap)
+      TO:   self.loop_thread = Thread(target=self.single_module_loop)
+
+    Sync command (run after BOTH edits):
+      for node in sgpu2 sgpu3 sgpu4 sgpu6 sgpu7 sgpu8 sgpu9; do
+        scp ~/DisagMoE/disagmoe/utils/gdr_context.py $node:~/DisagMoE/disagmoe/utils/gdr_context.py
+        scp ~/DisagMoE/disagmoe/frontend/engine.py $node:~/DisagMoE/disagmoe/frontend/engine.py
+      done
+
+  For Config C (restore defaults):
+    Revert both files to their original state, then sync again.
+
+
+EXPERIMENTS
+=========================================================================
+
+  Config A: Full Defrag (baseline)
+    Prep: ensure gdr_context.py and engine.py are at defaults (no edits)
+    [ ] A1. sharegpt_balanced  (20k @ 2krps)
+    [ ] A2. gsm8k_balanced     (20k @ 2krps)
+
+    Launch:
+      RESULTS=$OUTDIR/config-a-full-defrag-results
+      MEM_FRAC=0.97 bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only sharegpt_balanced
+      MEM_FRAC=0.97 bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only gsm8k_balanced
+
+  Config B: No GDRCopy + No Overlap
+    Prep: apply code changes (2 files), sync to all worker nodes
+    [ ] B1. sharegpt_balanced  (20k @ 2krps)
+    [ ] B2. gsm8k_balanced     (20k @ 2krps)
+
+    Launch:
+      RESULTS=$OUTDIR/config-b-no-gdr-no-overlap-results
+      MEM_FRAC=0.97 bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only sharegpt_balanced
+      MEM_FRAC=0.97 bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only gsm8k_balanced
+
+  Config C: MBFS (lookahead=1, lookback=0)
+    Prep: RESTORE both files to defaults, sync to all worker nodes
+    [ ] C1. sharegpt_balanced  (20k @ 2krps)
+    [ ] C2. gsm8k_balanced     (20k @ 2krps)
+
+    Launch:
+      RESULTS=$OUTDIR/config-c-mbfs-results
+      MEM_FRAC=0.97 DEFRAG_LOOKAHEAD_STEPS=1 DEFRAG_LOOKBACK_STEPS=0 \
+        bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only sharegpt_balanced
+      MEM_FRAC=0.97 DEFRAG_LOOKAHEAD_STEPS=1 DEFRAG_LOOKBACK_STEPS=0 \
+        bash experiments/scripts/sphere-16/eval/gptoss_eval.sh "$RESULTS" --only gsm8k_balanced
+
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-ablation-apr1
+
+EXECUTION ORDER (sequential):
+  1. Config A (baseline) — 2 experiments, no code changes
+  2. Config B (no gdr, no overlap) — 2 experiments, requires 2 file edits + sync
+  3. Config C (MBFS) — 2 experiments, restore files + sync
+
+TOTAL: 6 experiments
+
+POST-RUN:
+  [ ] Restore gdr_context.py and engine.py to defaults, sync to all nodes
+  [ ] Extract metrics via parse_detokenizer_logs.py
+  [ ] Create ablation comparison plots

@@ -1,0 +1,129 @@
+sphere-16-unified-eval-glm-mar28-round2 — Benchmark Checklist (32 total)
+=========================================================================
+Round 2: sequence length profiles now correctly matched per workload.
+NOTE: All SGLang ep16_limited experiments are SKIPPED per guide.
+NOTE: SGLang ep8 + GLM uses MEM_FRAC=0.87, if oom, 0.85.
+
+Metrics to record per benchmark: throughput (tput), mean ITL, p99 ITL
+
+
+WORKLOAD PROFILES (gate profile + sequence length .npy):
+=========================================================================
+
+  sharegpt workloads:
+    Gate (gptoss):   gating_gptoss120b_sharegpt_200.parquet
+    Gate (glm):      gating_glm45air_sharegpt_200.parquet
+    Seq lengths:     datasets/sharegpt_lengths.npy  (92735 samples, mean in=176, mean out=302)
+
+  gsm8k workloads:
+    Gate (gptoss):   gating_math_gsm8k_200.parquet
+    Gate (glm):      gating_glm45air_gsm8k_200.parquet
+    Seq lengths:     datasets/gsm8k_lengths.npy  (8792 samples, mean in=58, mean out=101)
+
+  Balanced variants use balanced_output/ versions of the same gate profiles.
+
+
+SCRIPT 1: AsyncMoE gptoss  (~/DisagMoE/experiments/scripts/sphere-16/eval/gptoss_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: gptoss_120b (36L, 128E, top-4)
+  TAG: asyncmoe-gptoss | RESULTS: $OUTDIR/asyncmoe-gptoss-results
+  Seq lengths: BENCH_DATASET_PATH=$REPO_DIR/datasets/sharegpt_lengths.npy (default)
+               Override for gsm8k: BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy
+
+  [x]  1. asyncmoe-sharegpt_regular       gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=asyncmoe-gptoss-results/asyncmoe-sharegpt_regular | complete-metrics
+  [x]  2. asyncmoe-sharegpt_balanced      gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=asyncmoe-gptoss-results/asyncmoe-sharegpt_balanced | complete-metrics
+  [x]  3. asyncmoe-gsm8k_regular          gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=asyncmoe-gptoss-results/asyncmoe-gsm8k_regular | complete-metrics
+  [x]  4. asyncmoe-gsm8k_balanced         gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=asyncmoe-gptoss-results/asyncmoe-gsm8k_balanced | complete-metrics
+
+
+SCRIPT 2: AsyncMoE glm45air  (~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: glm45air_106b (45L, 128E, top-8, 1 shared expert)
+  TAG: asyncmoe-glm45air | RESULTS: $OUTDIR/asyncmoe-glm45air-results
+  Seq lengths: same override pattern as Script 1
+
+  [x]  5. asyncmoe-sharegpt_regular       gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=asyncmoe-glm45air-results/asyncmoe-sharegpt_regular | complete-metrics
+  [x]  6. asyncmoe-sharegpt_balanced      gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=asyncmoe-glm45air-results/asyncmoe-sharegpt_balanced | complete-metrics
+  [x]  7. asyncmoe-gsm8k_regular          gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy | out=asyncmoe-glm45air-results/asyncmoe-gsm8k_regular | complete-metrics
+  [!]  8. asyncmoe-gsm8k_balanced         gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+
+SCRIPT 3: SGLang gptoss  (~/sglang-fake-prefill/experiments/sphere/eval/gptoss_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: lmsys/gpt-oss-120b-bf16
+  TAG: sglang-gptoss | RESULTS: $OUTDIR/sglang-gptoss-results
+  SKIP ep16_limited — use: --only _ep16-,pp8tp2,ep8
+  Seq lengths: auto-resolved from BENCH_DATASET_PATHS in config.sh (npy mode)
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+  [x]  9. sglang_ep16-sharegpt_regular    gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep16-sharegpt_regular | complete-metrics
+  [x] 10. sglang_ep16-sharegpt_balanced   gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep16-sharegpt_balanced | complete-metrics
+  [x] 11. sglang_ep16-gsm8k_regular       gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep16-gsm8k_regular | complete-metrics
+  [x] 12. sglang_ep16-gsm8k_balanced      gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep16-gsm8k_balanced | complete-metrics
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):
+  [x] 13. sglang_pp8tp2-sharegpt_regular  gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_pp8tp2-sharegpt_regular | complete-metrics
+  [x] 14. sglang_pp8tp2-sharegpt_balanced gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_pp8tp2-sharegpt_balanced | complete-metrics
+  [x] 15. sglang_pp8tp2-gsm8k_regular     gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_pp8tp2-gsm8k_regular | complete-metrics
+  [x] 16. sglang_pp8tp2-gsm8k_balanced    gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_pp8tp2-gsm8k_balanced | complete-metrics
+
+  ep16_halfkv (tp=16, dp=16, ep=16, 8 nodes, MEM_FRAC=0.58 → ~50% KV cache):
+  [~] 33. sglang_ep16_halfkv-sharegpt_regular    gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep16_halfkv-sharegpt_regular | partial-metrics (completed=15820/20000)
+  [~] 34. sglang_ep16_halfkv-sharegpt_balanced   gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep16_halfkv-sharegpt_balanced | partial-metrics (completed=15565/20000)
+  [~] 35. sglang_ep16_halfkv-gsm8k_regular       gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep16_halfkv-gsm8k_regular | partial-metrics (completed=16165/20000)
+  [~] 36. sglang_ep16_halfkv-gsm8k_balanced      gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep16_halfkv-gsm8k_balanced | partial-metrics (completed=16034/20000)
+
+  PyTorch-profiled reruns (collect only the head node's rank profile; no need to save all ranks):
+  [ ] 37. sglang_ep16_ptprofile-sharegpt_regular         gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | reqs=20000 rps=2000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16-sharegpt_regular | profile=torch
+  [ ] 38. sglang_ep16_ptprofile-gsm8k_regular            gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | reqs=40000 rps=4000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16-gsm8k_regular | profile=torch
+  [ ] 39. sglang_ep16_halfkv_ptprofile-sharegpt_regular  gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | reqs=20000 rps=2000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16_halfkv-sharegpt_regular | profile=torch
+  [ ] 40. sglang_ep16_halfkv_ptprofile-sharegpt_balanced gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | reqs=20000 rps=2000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16_halfkv-sharegpt_balanced | profile=torch
+  [ ] 41. sglang_ep16_halfkv_ptprofile-gsm8k_regular     gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | reqs=40000 rps=4000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16_halfkv-gsm8k_regular | profile=torch
+  [ ] 42. sglang_ep16_halfkv_ptprofile-gsm8k_balanced    gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | reqs=40000 rps=4000 | token_streaming=disabled | out=sglang-gptoss-rerun-results/sglang_ep16_halfkv-gsm8k_balanced | profile=torch
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes):
+  [x] 17. sglang_ep8-sharegpt_regular     gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep8-sharegpt_regular | complete-metrics
+  [x] 18. sglang_ep8-sharegpt_balanced    gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-gptoss-results/sglang_ep8-sharegpt_balanced | complete-metrics
+  [x] 19. sglang_ep8-gsm8k_regular        gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep8-gsm8k_regular | complete-metrics
+  [x] 20. sglang_ep8-gsm8k_balanced       gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-gptoss-results/sglang_ep8-gsm8k_balanced | complete-metrics
+
+
+SCRIPT 4: SGLang glm45air  (~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: zai-org/GLM-4.5-Air
+  TAG: sglang-glm45air | RESULTS: $OUTDIR/sglang-glm45air-results
+  SKIP ep16_limited — use: --only _ep16-,ep8
+  SKIP pp8tp2 — known bug: KV cache shape mismatch in SGLang PP + GLM
+  ep8 uses MEM_FRAC=0.85
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+  [~] 21. sglang_ep16-sharegpt_regular    gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_ep16-sharegpt_regular | partial-server-tput
+  [x] 22. sglang_ep16-sharegpt_balanced   gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_ep16-sharegpt_balanced | complete-metrics
+  [x] 23. sglang_ep16-gsm8k_regular       gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-glm45air-results/sglang_ep16-gsm8k_regular | complete-metrics
+  [x] 24. sglang_ep16-gsm8k_balanced      gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-glm45air-results/sglang_ep16-gsm8k_balanced | complete-metrics
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):
+  [x] 25. sglang_pp8tp2-sharegpt_regular  gate=gating_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_pp8tp2-sharegpt_regular | complete-metrics
+  [x] 26. sglang_pp8tp2-sharegpt_balanced gate=balanced_gptoss120b_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_pp8tp2-sharegpt_balanced | complete-metrics
+  [-] 27. sglang_pp8tp2-gsm8k_regular     gate=gating_math_gsm8k_200  seqlen=gsm8k_lengths.npy
+  [~] 28. sglang_pp8tp2-gsm8k_balanced    gate=balanced_math_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-glm45air-results/sglang_pp8tp2-gsm8k_balanced | partial-server-tput
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes):
+  [~] 29. sglang_ep8-sharegpt_regular     gate=gating_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_ep8-sharegpt_regular | partial-server-tput
+  [~] 30. sglang_ep8-sharegpt_balanced    gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy | out=sglang-glm45air-results/sglang_ep8-sharegpt_balanced | partial-server-tput
+  [x] 31. sglang_ep8-gsm8k_regular        gate=gating_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-glm45air-results/sglang_ep8-gsm8k_regular | complete-metrics
+  [x] 32. sglang_ep8-gsm8k_balanced       gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy | out=sglang-glm45air-results/sglang_ep8-gsm8k_balanced | complete-metrics
+
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-unified-eval-glm-mar28-round2
+
+EXECUTION ORDER (sequential, one at a time):
+  1. Script 1 (AsyncMoE gptoss)     — 4 experiments (run sharegpt first, then gsm8k with BENCH_DATASET_PATH override)
+  2. Script 2 (AsyncMoE glm45air)   — 4 experiments (same override pattern)
+  3. Script 3 (SGLang gptoss)       — 12 experiments (skip ep16_limited; npy auto-resolves per workload)
+  4. Script 4 (SGLang glm45air)     — 8 experiments (skip ep16_limited + pp8tp2; ep8 MEM_FRAC=0.85)
+
+TOTAL: 38 experiments (4 skipped: SGLang pp8tp2 GLM, 4 new: ep16_halfkv gptoss, 6 new: gptoss PyTorch-profiled reruns)
+
+POST-RUN:
+  [x] Write experiment_report.md in $OUTDIR
+  [x] Copy results summary to ~/paper-repo/results/sphere-16-unified-eval-glm-mar28-round2
+  [x] Create comparison plots (with round 1 for reference)
+  [!] Push paper-repo to remote

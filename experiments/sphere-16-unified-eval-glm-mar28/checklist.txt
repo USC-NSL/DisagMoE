@@ -1,0 +1,95 @@
+sphere-16-unified-eval-glm-mar28 — Benchmark Checklist (32 total)
+===================================================================
+NOTE: All SGLang ep16_limited experiments are SKIPPED per guide.
+
+Metrics to record per benchmark: throughput (tput), mean ITL, p99 ITL
+
+
+SCRIPT 1: AsyncMoE gptoss  (~/DisagMoE/experiments/scripts/sphere-16/eval/gptoss_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: gptoss_120b (36L, 128E, top-4)
+  TAG: asyncmoe-gptoss | RESULTS: $OUTDIR/asyncmoe-gptoss-results
+
+  [x]  1. asyncmoe-sharegpt_regular       (gptoss, sharegpt, regular gating)
+  [x]  2. asyncmoe-sharegpt_balanced      (gptoss, sharegpt, balanced gating)
+  [x]  3. asyncmoe-gsm8k_regular          (gptoss, gsm8k, regular gating)
+  [x]  4. asyncmoe-gsm8k_balanced         (gptoss, gsm8k, balanced gating)
+
+
+SCRIPT 2: AsyncMoE glm45air  (~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: glm45air_106b (45L, 128E, top-8, 1 shared expert)
+  TAG: asyncmoe-glm45air | RESULTS: $OUTDIR/asyncmoe-glm45air-results
+
+  [x]  5. asyncmoe-sharegpt_regular       (glm45air, sharegpt, regular gating)
+  [x]  6. asyncmoe-sharegpt_balanced      (glm45air, sharegpt, balanced gating)
+  [x]  7. asyncmoe-gsm8k_regular          (glm45air, gsm8k, regular gating)
+  [x]  8. asyncmoe-gsm8k_balanced         (glm45air, gsm8k, balanced gating)
+
+
+SCRIPT 3: SGLang gptoss  (~/sglang-fake-prefill/experiments/sphere/eval/gptoss_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: lmsys/gpt-oss-120b-bf16
+  TAG: sglang-gptoss | RESULTS: $OUTDIR/sglang-gptoss-results
+  SKIP ep16_limited — used: --only _ep16-,pp8tp2,ep8
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+  [x]  9. sglang_ep16-sharegpt_regular    (gptoss, ep16, sharegpt, regular)
+  [x] 10. sglang_ep16-sharegpt_balanced   (gptoss, ep16, sharegpt, balanced)  — retried after symlink fix
+  [x] 11. sglang_ep16-gsm8k_regular       (gptoss, ep16, gsm8k, regular)
+  [x] 12. sglang_ep16-gsm8k_balanced      (gptoss, ep16, gsm8k, balanced)
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):
+  [x] 13. sglang_pp8tp2-sharegpt_regular  (gptoss, pp8tp2, sharegpt, regular)
+  [x] 14. sglang_pp8tp2-sharegpt_balanced (gptoss, pp8tp2, sharegpt, balanced)
+  [x] 15. sglang_pp8tp2-gsm8k_regular     (gptoss, pp8tp2, gsm8k, regular)
+  [x] 16. sglang_pp8tp2-gsm8k_balanced    (gptoss, pp8tp2, gsm8k, balanced)
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes):
+  [x] 17. sglang_ep8-sharegpt_regular     (gptoss, ep8, sharegpt, regular)
+  [x] 18. sglang_ep8-sharegpt_balanced    (gptoss, ep8, sharegpt, balanced)
+  [x] 19. sglang_ep8-gsm8k_regular        (gptoss, ep8, gsm8k, regular)
+  [x] 20. sglang_ep8-gsm8k_balanced       (gptoss, ep8, gsm8k, balanced)
+
+
+SCRIPT 4: SGLang glm45air  (~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: zai-org/GLM-4.5-Air
+  TAG: sglang-glm45air | RESULTS: $OUTDIR/sglang-glm45air-results
+  SKIP ep16_limited — used: --only _ep16-,pp8tp2,ep8
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+  [x] 21. sglang_ep16-sharegpt_regular    (glm45air, ep16, sharegpt, regular)
+  [x] 22. sglang_ep16-sharegpt_balanced   (glm45air, ep16, sharegpt, balanced)
+  [x] 23. sglang_ep16-gsm8k_regular       (glm45air, ep16, gsm8k, regular)
+  [x] 24. sglang_ep16-gsm8k_balanced      (glm45air, ep16, gsm8k, balanced)
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):
+  [!] 25. sglang_pp8tp2-sharegpt_regular  FAILED — KV cache shape mismatch bug (SGLang PP + GLM)
+  [!] 26. sglang_pp8tp2-sharegpt_balanced FAILED — KV cache shape mismatch bug (SGLang PP + GLM)
+  [!] 27. sglang_pp8tp2-gsm8k_regular     FAILED — KV cache shape mismatch bug (SGLang PP + GLM)
+  [!] 28. sglang_pp8tp2-gsm8k_balanced    FAILED — KV cache shape mismatch bug (SGLang PP + GLM)
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes):
+  [x] 29. sglang_ep8-sharegpt_regular     (glm45air, ep8, sharegpt, regular) — retried with MEM_FRAC=0.85
+  [x] 30. sglang_ep8-sharegpt_balanced    (glm45air, ep8, sharegpt, balanced) — retried with MEM_FRAC=0.85
+  [x] 31. sglang_ep8-gsm8k_regular        (glm45air, ep8, gsm8k, regular) — retried with MEM_FRAC=0.85
+  [x] 32. sglang_ep8-gsm8k_balanced       (glm45air, ep8, gsm8k, balanced) — retried with MEM_FRAC=0.85
+
+
+===================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-unified-eval-glm-mar28
+
+EXECUTION ORDER (sequential, one at a time):
+  1. Script 1 (AsyncMoE gptoss)     — all 4 experiments       ✅ 4/4 SUCCESS
+  2. Script 2 (AsyncMoE glm45air)   — all 4 experiments       ✅ 4/4 SUCCESS
+  3. Script 3 (SGLang gptoss)       — 12 experiments          ✅ 12/12 SUCCESS
+  4. Script 4 (SGLang glm45air)     — 12 experiments          ⚠️ 8/12 SUCCESS, 4 FAILED (pp8tp2 code bug)
+
+POST-RUN:
+  [x] Write experiment_report.md in $OUTDIR
+  [x] Copy results summary to ~/paper-repo/results/sphere-16-unified-eval-glm-mar28
+  [x] Create comparison plots (tput, mean ITL, p99 ITL)
+  [x] Push paper-repo to remote
+
+INTERVENTIONS:
+  1. Created symlink balanced_output → gptosss_balanced_output on all 8 nodes (config path mismatch)
+  2. Increased BENCH_CURL_TIMEOUT 600→1200 in AsyncMoE config.sh (benchmark exceeded client timeout)
+  3. Used --only _ep16- instead of ep16 to avoid matching ep16_limited
+  4. Made MEM_FRAC overridable in SGLang config.sh, retried ep8 GLM with MEM_FRAC=0.85 (SUCCESS)

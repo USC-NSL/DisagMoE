@@ -154,3 +154,15 @@ glm45air_106b_config = ModelConfig(
     dtype = torch.bfloat16,
     top_k = 8,
 )
+
+glm45air_half_config = ModelConfig(
+    hidden_size = 4096,
+    num_layers = 23,
+    head_dim = 128,
+    num_heads = 96,
+    num_kv_heads = 8,
+    num_experts = 128,
+    intermediate_size = 1408,
+    dtype = torch.bfloat16,
+    top_k = 8,
+)

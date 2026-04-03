@@ -1,0 +1,121 @@
+sphere-16-tput-itl-mar30 — Throughput vs ITL Sweep Checklist (22 total)
+=========================================================================
+Goal: Measure throughput and ITL at varying request rates for gptoss-120b
+on AsyncMoE and SGLang EP16, using balanced gate profiles only.
+
+Metrics to record per run: token throughput, median ITL, p99 ITL, e2e duration
+
+
+CLUSTER & SYSTEM SETUP
+=========================================================================
+  Cluster:     8 nodes × 2 L40S = 16 GPUs (Sphere-16)
+  Model:       gptoss_120b (36L, 128E, top-4, bf16)
+  Gate:        balanced variants only
+  AsyncMoE:    conda disag12 | cwd ~/DisagMoE     | MEM_FRAC=0.98
+  SGLang:      conda sglang-fp | cwd ~/sglang-fake-prefill | MEM_FRAC=0.77
+
+  Run AsyncMoE first, then SGLang. Never run simultaneously.
+  Between each AsyncMoE run, restart Ray cluster.
+
+
+BENCHMARK PARAMETERS (differ from standard eval)
+=========================================================================
+  Duration:        200 seconds at each rate (not the usual 10s)
+  Distribution:    dataset (using .npy files, same as mar28-round2)
+  Input bounds:    min=256, max=512
+  Output bounds:   min=256, max=512
+  Max context len: 2048
+  Retries:         AsyncMoE max 3, SGLang max 2
+  No advanced_logging / sglang recorder
+
+
+REQUEST RATES
+=========================================================================
+  sharegpt:  200, 150, 100, 50, 25 rps  (5 rates)
+  gsm8k:    300, 200, 150, 100, 50, 25 rps  (6 rates)
+
+
+WORKLOAD PROFILES (gate profile + sequence length .npy):
+=========================================================================
+  sharegpt:
+    Gate:       gptosss_balanced_output/balanced_gptoss120b_sharegpt_200.parquet
+    Seq lens:   datasets/sharegpt_lengths.npy
+
+  gsm8k:
+    Gate:       gptosss_balanced_output/balanced_math_gsm8k_200.parquet
+    Seq lens:   datasets/gsm8k_lengths.npy
+
+
+SCRIPT 1: AsyncMoE gptoss  (~/DisagMoE/experiments/scripts/sphere-16/eval/gptoss_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: gptoss_120b
+  TAG: asyncmoe-gptoss | RESULTS: $OUTDIR/asyncmoe-gptoss-results
+  Launch format: follow gptoss_eval.sh / config.sh patterns
+  Override per run: BENCH_RATE, BENCH_TIME=200, BENCH_DATASET_PATH (for gsm8k)
+
+  sharegpt_balanced (gate=balanced_gptoss120b_sharegpt_200, seqlen=sharegpt_lengths.npy):
+  [x]  1. asyncmoe-sharegpt_balanced-200rps    rate=200  time=200  reqs=40000  | tput=23660 itl_mean=299ms itl_p99=379ms
+  [x]  2. asyncmoe-sharegpt_balanced-150rps    rate=150  time=200  reqs=30000  | tput=20117 itl_mean=281ms itl_p99=383ms
+  [x]  3. asyncmoe-sharegpt_balanced-100rps    rate=100  time=200  reqs=20000  | tput=15195 itl_mean=210ms itl_p99=259ms
+  [x]  4. asyncmoe-sharegpt_balanced-50rps     rate=50   time=200  reqs=10000  | tput=8286  itl_mean=147ms itl_p99=165ms
+  [x]  5. asyncmoe-sharegpt_balanced-25rps     rate=25   time=200  reqs=5000   | tput=4737  itl_mean=123ms itl_p99=132ms
+
+  gsm8k_balanced (gate=balanced_math_gsm8k_200, seqlen=gsm8k_lengths.npy):
+  [x]  6. asyncmoe-gsm8k_balanced-300rps       rate=300  time=200  reqs=60000  | tput=25126 itl_mean=239ms itl_p99=293ms
+  [x]  7. asyncmoe-gsm8k_balanced-200rps       rate=200  time=200  reqs=40000  | tput=18539 itl_mean=173ms itl_p99=210ms
+  [x]  8. asyncmoe-gsm8k_balanced-150rps       rate=150  time=200  reqs=30000  | tput=14252 itl_mean=144ms itl_p99=159ms
+  [x]  9. asyncmoe-gsm8k_balanced-100rps       rate=100  time=200  reqs=20000  | tput=9657  itl_mean=126ms itl_p99=136ms
+  [x] 10. asyncmoe-gsm8k_balanced-50rps        rate=50   time=200  reqs=10000  | tput=4811  itl_mean=103ms itl_p99=109ms
+  [x] 11. asyncmoe-gsm8k_balanced-25rps        rate=25   time=200  reqs=5000   | tput=2509  itl_mean=85ms  itl_p99=91ms
+
+
+SCRIPT 2: SGLang gptoss EP16  (~/sglang-fake-prefill/experiments/sphere/eval/gptoss_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: lmsys/gpt-oss-120b-bf16
+  TAG: sglang-gptoss | RESULTS: $OUTDIR/sglang-gptoss-results
+  Launch format: follow sglang eval script patterns, EP16 config only
+  MEM_FRAC=0.77 (if OOM, decrease by 0.02 per retry)
+  HTTP streaming: disabled (--disable-stream) due to HTTP connection pressure at sustained rates
+  Override per run: BENCH_REQUEST_RATE, BENCH_NUM_PROMPTS, BENCH_DISABLE_STREAM=1
+
+  sharegpt_balanced (gate=balanced_gptoss120b_sharegpt_200, seqlen=sharegpt_lengths.npy):
+  [~] 12. sglang_ep16-sharegpt_balanced-200rps    rate=200  reqs=40000  | tput=13369 completed=24339/40000 (partial, conn resets)
+  [~] 13. sglang_ep16-sharegpt_balanced-150rps    rate=150  reqs=30000  | tput=13067 completed=21225/30000 (partial, conn resets)
+  [x] 14. sglang_ep16-sharegpt_balanced-100rps    rate=100  reqs=20000  | tput=13047 completed=20000/20000
+  [!] 15. sglang_ep16-sharegpt_balanced-50rps     CRASHED: Gloo all_gather crash in prepare_mlp_sync_batch_raw (sgpu9 connection closed)
+  [!] 16. sglang_ep16-sharegpt_balanced-25rps     CRASHED: Same Gloo crash (2 attempts)
+
+  gsm8k_balanced (gate=balanced_math_gsm8k_200, seqlen=gsm8k_lengths.npy):
+  [!] 17. sglang_ep16-gsm8k_balanced-300rps       BLOCKED: Gloo crash bug
+  [!] 18. sglang_ep16-gsm8k_balanced-200rps       BLOCKED: Gloo crash bug
+  [!] 19. sglang_ep16-gsm8k_balanced-150rps       BLOCKED: Gloo crash bug
+  [!] 20. sglang_ep16-gsm8k_balanced-100rps       BLOCKED: Gloo crash bug
+  [!] 21. sglang_ep16-gsm8k_balanced-50rps        BLOCKED: Gloo crash bug
+  [!] 22. sglang_ep16-gsm8k_balanced-25rps        CRASHED: Gloo all_gather crash in prepare_mlp_sync_batch_raw (sgpu9)
+
+  SGLANG BLOCKER: Consistent RuntimeError in prepare_mlp_sync_batch_raw →
+    torch.distributed.all_gather_into_tensor → Gloo connection closed by peer [10.0.0.8]
+    Crash occurs ~25s into benchmark at ~500 in-flight requests. Affects all rates/workloads.
+    100rps sharegpt completed (possibly lucky timing). 50rps/25rps crash 100% of attempts.
+
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-tput-itl-mar30
+
+EXECUTION ORDER (sequential, one at a time):
+  1. AsyncMoE sharegpt_balanced: 200 → 150 → 100 → 50 → 25 rps  (5 runs)
+  2. AsyncMoE gsm8k_balanced:    300 → 200 → 150 → 100 → 50 → 25 rps  (6 runs)
+  3. SGLang sharegpt_balanced:   200 → 150 → 100 → 50 → 25 rps  (5 runs)
+  4. SGLang gsm8k_balanced:      300 → 200 → 150 → 100 → 50 → 25 rps  (6 runs)
+
+TOTAL: 22 runs (11 AsyncMoE + 11 SGLang)
+
+MONITORING:
+  AsyncMoE: detokenizer tput logs every second = healthy; no logs for >60s = hung → kill & retry
+  SGLang:   check server log for decoding throughput; if no progress >5min → kill & retry
+  Each run ~200s benchmark + server startup (~3-5min) ≈ 8-10min per run
+  Estimated total: ~4-5 hours
+
+POST-RUN:
+  [ ] Write results per run to ~/paper-repo/results/itl-exp-mar30/
+  [ ] Commit & push after each run
+  [ ] Write overall experiment_report.md in $OUTDIR
+  [ ] Create tput-vs-ITL sweep plots (x=rate, y=tput or y=ITL) and push to paper-repo

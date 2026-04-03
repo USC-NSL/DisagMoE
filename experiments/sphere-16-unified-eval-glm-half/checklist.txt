@@ -1,0 +1,177 @@
+sphere-16-unified-eval-glm-half — Benchmark Checklist (8 total)
+=========================================================================
+Half-layer GLM eval round. GLM-4.5-Air with 22 layers removed (45 → 23 layers).
+Using dummy weights so layer reduction is safe.
+Balanced gate profiles only — no "regular" runs.
+NOTE: SKIP all SGLang ep16_limited experiments.
+NOTE: Use --only to run each setting one by one and inspect SERVER LOG periodically.
+NOTE: SGLang EP8 GLM uses MEM_FRAC=0.87, if OOM 0.84.
+NOTE: pp8tp2 + GLM had KV cache shape mismatch issues in previous rounds — watch closely.
+NOTE: Right after finishing every single script, push basic metrics + global-bsz timeline to paper repo.
+NOTE: If sglang tput for gsm8k and sharegpt are almost the same, try DEFAULT_FORCE_STREAM_INTERVAL = 10.
+NOTE: Known sglang issues: bench request errors (some OK, most failing = problem), minor kv-block allocator memory leak.
+NOTE: We DO NOT necessarily need all runs to finish 100%, as long as most requests finish or we have at least 100 seconds of server progress logs after bench launch.
+NOTE: If you stepped-in anything, write it down in step-in.txt in sphere-16-unified-eval-glm-half/
+
+CODE CHANGES REQUIRED BEFORE RUNNING:
+=========================================================================
+
+  AsyncMoE (~/DisagMoE):
+    - disagmoe/config.py: new config `glm45air_half_config` (23 layers) already added
+    - benchmark/utils.py: model choice `glm45air_half` already added
+    - benchmark/benchmark_serving.py: mapping for `glm45air_half` already added
+    - Eval config: create glm45air_half_config.sh (copy glm45air_config.sh, change MODEL_NAME)
+    - NOTE: since there is no NFS, sync changed files to ALL worker nodes
+
+  SGLang (~/sglang-fake-prefill):
+    - python/sglang/srt/server_args.py: new arg `--num-hidden-layers-override` already added
+    - python/sglang/srt/models/glm4_moe.py: override applied after dense_offset hack
+    - Eval config: set CUSTOMIZED_ARGS="--num-hidden-layers-override 23" in config_glm4air.sh
+      (or create a new config_glm4air_half.sh to avoid touching the original)
+    - NOTE: since there is no NFS, sync changed files to ALL worker nodes
+
+
+Benchmark config overrides (GLM half-layer):
+  gsm8k:    40k reqs at 4krps  (AsyncMoE: BENCH_NUM_PROMPTS=40000 BENCH_RATE=4000; SGLang: BENCH_NUM_PROMPTS=40000 BENCH_REQUEST_RATE=4000)
+  sharegpt: 20k reqs at 2krps  (AsyncMoE default; SGLang default)
+  MEM_FRAC for gsm8k: 0.93 (OOM at 0.95 due to CUDA graph memory pressure)
+
+Metrics to record per benchmark: throughput (tput), mean ITL, p99 ITL
+
+
+WORKLOAD PROFILES (gate profile + sequence length .npy):
+=========================================================================
+
+  sharegpt workloads:
+    Gate (glm):      balanced_glm45air_sharegpt_200.parquet
+    Seq lengths:     datasets/sharegpt_lengths.npy
+
+  gsm8k workloads:
+    Gate (glm):      balanced_glm45air_gsm8k_200.parquet
+    Seq lengths:     datasets/gsm8k_lengths.npy
+
+  Same gate profiles as full-layer GLM. The gate profiles have per-layer routing
+  for 45 layers, but the model only has 23 layers now. Layers 23-44 in the profile
+  will simply be ignored since those layers don't exist. This is fine for
+  throughput/latency benchmarking with dummy weights.
+
+
+SCRIPT 1: AsyncMoE glm45air-half  (~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh)
+  conda: disag12 | cwd: ~/DisagMoE | model: glm45air_half (23L, 128E, top-8, 1 shared expert)
+  TAG: asyncmoe-glm45air-half | RESULTS: $OUTDIR/asyncmoe-glm45air-half-results
+  MAX_RETRIES: 2 | MEM_FRAC: 0.95 (from glm45air_config.sh — may need lower with half layers)
+  Seq lengths: BENCH_DATASET_PATH override required for gsm8k
+
+  SETUP: Create glm45air_half_config.sh (or override MODEL_NAME inline):
+    Option A: create experiments/scripts/sphere-16/eval/glm45air_half_config.sh
+              (copy glm45air_config.sh, change MODEL_NAME="glm45air_half")
+              then create glm45air_half_eval.sh (copy glm45air_eval.sh, source the new config)
+    Option B: override inline with MODEL_NAME env var or --num-layers flag:
+              SERVER_EXTRA_ARGS="--num-layers 23" bash experiments/scripts/sphere-16/eval/glm45air_eval.sh ...
+              (the server.sh helper already supports SERVER_EXTRA_ARGS)
+
+  sharegpt (override: BENCH_RATE=1000 → 10k reqs at 1krps):
+  [ ]  1. asyncmoe-sharegpt_balanced      gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+  gsm8k (default rate: 2krps × 10s = 20k reqs; override BENCH_DATASET_PATH):
+  [ ]  2. asyncmoe-gsm8k_balanced         gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  Launch commands (using Option B — inline override with --num-layers):
+    # sharegpt (10k reqs, 1krps)
+    BENCH_RATE=1000 SERVER_EXTRA_ARGS="--num-layers 23" \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_balanced
+
+    # gsm8k (20k reqs, 2krps — default rate, override dataset)
+    BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy SERVER_EXTRA_ARGS="--num-layers 23" \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only gsm8k_balanced
+
+
+SCRIPT 2: SGLang glm45air-half  (~/sglang-fake-prefill/experiments/sphere/eval/glm4air_eval.sh)
+  conda: sglang-fp | cwd: ~/sglang-fake-prefill | model: zai-org/GLM-4.5-Air (overridden to 23 layers)
+  TAG: sglang-glm45air-half | RESULTS: $OUTDIR/sglang-glm45air-half-results
+  MAX_RETRIES: 2 | MEM_FRAC: 0.77 (default; ep8 override to 0.87)
+  SKIP ep16_limited
+  Seq lengths: auto-resolved from BENCH_DATASET_PATHS in config.sh (npy mode)
+
+  SETUP: Set CUSTOMIZED_ARGS to include --num-hidden-layers-override 23
+    Option A: edit config_glm4air.sh directly:
+              CUSTOMIZED_ARGS="--num-hidden-layers-override 23"
+    Option B: create config_glm4air_half.sh (copy, add the override arg)
+              then create glm4air_half_eval.sh (copy, source the new config)
+    NOTE: CUSTOMIZED_ARGS only applies to ep16/ep16_limited/ep8, NOT pp8tp2.
+          For pp8tp2, the override must be added separately — but pp8tp2 uses
+          _build_server_cmd which doesn't append CUSTOMIZED_ARGS.
+          FIX: either patch evallib/server.sh to always append CUSTOMIZED_ARGS,
+          or pass the override via environment variable approach.
+          Simplest fix: in evallib/server.sh, move the CUSTOMIZED_ARGS block
+          outside the apply_customized_args guard, or set apply_customized_args=1
+          for pp8tp2 as well.
+
+  ep16 (tp=16, dp=16, ep=16, 8 nodes):
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ]  3. sglang_ep16-sharegpt_balanced   gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ]  4. sglang_ep16-gsm8k_balanced      gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  ep8 (tp=8, dp=8, ep=8, 4 nodes, MEM_FRAC=0.87, if OOM 0.85):
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ]  5. sglang_ep8-sharegpt_balanced    gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ]  6. sglang_ep8-gsm8k_balanced       gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  pp8tp2 (pp=8, tp=2, 8 nodes):  ⚠ KNOWN ISSUE: KV cache shape mismatch in previous round
+    sharegpt (override: BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000):
+    [ ]  7. sglang_pp8tp2-sharegpt_balanced gate=balanced_glm45air_sharegpt_200  seqlen=sharegpt_lengths.npy
+
+    gsm8k (default: 20k reqs, 2krps):
+    [ ]  8. sglang_pp8tp2-gsm8k_balanced    gate=balanced_glm45air_gsm8k_200  seqlen=gsm8k_lengths.npy
+
+  Launch commands (assuming CUSTOMIZED_ARGS="--num-hidden-layers-override 23" in config):
+    # ep16 sharegpt (10k reqs, 1krps)
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-sharegpt_balanced
+
+    # ep16 gsm8k (20k reqs, 2krps — default)
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only _ep16-gsm8k_balanced
+
+    # ep8 sharegpt (MEM_FRAC=0.87)
+    MEM_FRAC=0.87 BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-sharegpt_balanced
+
+    # ep8 gsm8k (MEM_FRAC=0.87)
+    MEM_FRAC=0.87 bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only ep8-gsm8k_balanced
+
+    # pp8tp2 sharegpt
+    BENCH_NUM_PROMPTS=10000 BENCH_REQUEST_RATE=1000 \
+        bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-sharegpt_balanced
+
+    # pp8tp2 gsm8k
+    bash experiments/sphere/eval/glm4air_eval.sh "$RESULTS" --only pp8tp2-gsm8k_balanced
+
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-unified-eval-glm-half
+
+EXECUTION ORDER (sequential, one at a time):
+  1. Script 1 (AsyncMoE glm45air-half)  — 2 experiments
+  2. Script 2 (SGLang glm45air-half)    — 6 experiments (skip ep16_limited; ep8 before pp8tp2)
+
+TOTAL: 8 experiments
+
+PRE-RUN CHECKLIST:
+  [ ] Sync DisagMoE code changes to all worker nodes (no NFS)
+  [ ] Sync sglang-fake-prefill code changes to all worker nodes (no NFS)
+  [ ] Verify --num-hidden-layers-override works: launch a quick sglang server in /tmp
+      with GLM-4.5-Air + --num-hidden-layers-override 23 and check logs show 23 layers
+  [ ] Verify glm45air_half config works: launch a quick AsyncMoE server with
+      --model glm45air_half and check it starts with 23 layers
+
+POST-RUN:
+  [ ] Extract metrics from server logs (both systems) via parse_detokenizer_logs.py:
+        python experiments/evaluations/parse_detokenizer_logs.py $OUTDIR [--csv $OUTDIR/metrics.csv] [--window START,END]
+  [ ] Write experiment_report.md in $OUTDIR
+  [ ] Copy results summary to ~/paper-repo/results/sphere-16-unified-eval-glm-half
+  [ ] Plot global-bsz timeline plots and comparison plots
+  [ ] Push paper-repo to remote

@@ -63,7 +63,7 @@ def add_model_arguments(parser: ArgumentParser):
         "--model",
         type=str,
         required=True,
-        choices=["mixtral", "qwen3_235b", "qwen3_30b", "gptoss_120b", "glm45air_106b"],
+        choices=["mixtral", "qwen3_235b", "qwen3_30b", "gptoss_120b", "glm45air_106b", "glm45air_half"],
         help="model configuration to use for benchmarking",
     )
     parser.add_argument("-L", "--num-layers", type=int, default=None, help="number of layers")

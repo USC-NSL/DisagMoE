@@ -1,0 +1,275 @@
+sphere-16-congestion-mar31 — Network Congestion Tolerance Checklist (8 total)
+=========================================================================
+Goal: Compare AsyncMoE and SGLang EP16 tolerance to trace-driven network
+interference on gptoss-120b sharegpt workload (balanced gate profile).
+
+Uses the interference_gen/ tool to replay real cloud noise traces on
+the cluster's RoCE links while running the serving benchmark.
+
+
+CLUSTER & SYSTEM SETUP
+=========================================================================
+  Cluster:     8 nodes × 2 L40S = 16 GPUs (Sphere-16)
+  Model:       gptoss_120b (36L, 128E, top-4, bf16)
+  Gate:        balanced variant only (sharegpt)
+  AsyncMoE:    conda disag12 | cwd ~/DisagMoE     | MEM_FRAC=0.98
+  SGLang:      conda sglang-fp | cwd ~/sglang-fake-prefill | MEM_FRAC=0.77
+  Interference: ~/DisagMoE/interference_gen/
+
+  Run AsyncMoE first, then SGLang. Never simultaneously.
+
+
+BENCHMARK PARAMETERS (same as itl-tput sweep)
+=========================================================================
+  Rate:            400 rps
+  Duration:        100 seconds
+  Total requests:  40000 (asyncmoe: rate×time, sglang: BENCH_NUM_PROMPTS)
+  Distribution:    dataset (sharegpt_lengths.npy)
+  Input bounds:    min=256, max=512
+  Output bounds:   min=256, max=512
+  Max context len: 2048
+  SGLang:          BENCH_DISABLE_STREAM=1 (mandatory)
+  Retries:         AsyncMoE max 3, SGLang max 2
+
+
+INTERFERENCE TRACES
+=========================================================================
+  All traces replayed via interference_gen/ with --link-capacity-gbps 200.
+  Calibration runs automatically (~2 min) before interference begins.
+  Allow 2 min after starting interference script for calibration to complete
+  BEFORE launching the serving benchmark.
+
+  Trace 1: AWS-ring
+    Trace name:  aws_hpc_metal
+    Topology:    ring (all 8 nodes)
+    Character:   persistent moderate jitter (CoV=0.039)
+    Command:
+      cd ~/DisagMoE/interference_gen
+      ./run_ring.sh \
+        --nodes sgpu0:10.0.0.1,sgpu2:10.0.0.2,sgpu3:10.0.0.3,sgpu4:10.0.0.4,sgpu6:10.0.0.5,sgpu7:10.0.0.6,sgpu8:10.0.0.7,sgpu9:10.0.0.8 \
+        --trace aws_hpc_metal --link-capacity-gbps 200
+
+  Trace 2: Azure-ring
+    Trace name:  azure_hpc_200g
+    Topology:    ring (all 8 nodes)
+    Character:   rare mild dips (CoV=0.0077)
+    Command:
+      cd ~/DisagMoE/interference_gen
+      ./run_ring.sh \
+        --nodes sgpu0:10.0.0.1,sgpu2:10.0.0.2,sgpu3:10.0.0.3,sgpu4:10.0.0.4,sgpu6:10.0.0.5,sgpu7:10.0.0.6,sgpu8:10.0.0.7,sgpu9:10.0.0.8 \
+        --trace azure_hpc_200g --link-capacity-gbps 200
+
+  Trace 3: AWS-single-link (sgpu0↔sgpu2)
+    Trace name:  aws_hpc_metal
+    Topology:    two-node (sgpu0→sgpu2 only)
+    Character:   persistent moderate jitter on one link, rest unaffected
+    Command:
+      cd ~/DisagMoE/interference_gen
+      ./run_interfere.sh --peer-host sgpu2 --peer-ip 10.0.0.2 \
+        --trace aws_hpc_metal --link-capacity-gbps 200
+
+  To stop interference:
+    Ring:    ./run_ring.sh --nodes sgpu0:10.0.0.1,...,sgpu9:10.0.0.8 --stop
+    2-node:  ./run_interfere.sh --peer-host sgpu2 --stop
+
+
+BASELINE (no interference) — already collected from itl-tput sweep
+=========================================================================
+  Will be collected as run #1 (asyncmoe) and run #5 (sglang) at 400rps.
+
+
+EXPERIMENT RUNS (8 total = 2 systems × (1 baseline + 3 traces))
+=========================================================================
+  Each run has two phases:
+    Phase A: Start interference, wait 2 min for calibration
+    Phase B: Launch serving benchmark (same procedure as itl-tput sweep)
+  After benchmark completes, stop interference, then move to next run.
+
+  AsyncMoE (conda disag12, sharegpt_balanced, 400rps, 100s):
+  [ ]  1. asyncmoe + no-interference (baseline)   | fresh baseline at 400rps
+  [ ]  2. asyncmoe + AWS-ring                      | ring interference on all links
+  [ ]  3. asyncmoe + Azure-ring                    | ring interference on all links
+  [ ]  4. asyncmoe + AWS-single-link (sgpu0↔sgpu2) | single-link interference
+
+  SGLang EP16 (conda sglang-fp, sharegpt_balanced, 400rps, 100s):
+  [ ]  5. sglang + no-interference (baseline)      | fresh baseline at 400rps
+  [ ]  6. sglang + AWS-ring                        | ring interference on all links
+  [ ]  7. sglang + Azure-ring                      | ring interference on all links
+  [ ]  8. sglang + AWS-single-link (sgpu0↔sgpu2)  | single-link interference
+
+
+RUN PROCEDURE (per experiment)
+=========================================================================
+
+  1. PRE-FLIGHT: kill any previous interference + serving processes
+     (see itl-tput-sweep-guide.md for the full kill procedure)
+
+  2. START INTERFERENCE (in a separate tmux session):
+     tmux new-session -d -s interfere
+     tmux send-keys -t interfere "<ring or 2-node command from above>" Enter
+
+  3. WAIT 2 MINUTES for calibration to complete.
+     Verify calibration done:
+       grep "Calibration complete\|Starting interference" <interfere tmux output>
+
+  4. LAUNCH BENCHMARK (in another tmux session):
+     Follow the exact same per-run procedure from itl-tput-sweep-guide.md
+     for AsyncMoE or SGLang, with RATE=400, TIME=100, and PROFILE=sharegpt_balanced.
+
+  5. WAIT FOR BENCHMARK to complete (monitor as usual).
+
+  6. STOP INTERFERENCE:
+     tmux send-keys -t interfere C-c
+     # or use the --stop command
+     tmux kill-session -t interfere
+
+  7. RENAME output directory to include trace tag:
+      mv .../asyncmoe-sharegpt_balanced \
+         .../asyncmoe-sharegpt_balanced-400rps-aws-ring
+      (or -azure-ring, -aws-single-link, -no-interference)
+
+  8. COLLECT METRICS: run parse_detokenizer_logs.py on the experiment dir.
+
+
+OUTPUT DIRECTORY LAYOUT
+=========================================================================
+  experiments/sphere-16-congestion-mar31/
+  ├── checklist.txt
+  ├── metrics.csv
+  ├── asyncmoe-gptoss-results/
+  │   ├── asyncmoe-sharegpt_balanced-400rps-no-interference/
+  │   ├── asyncmoe-sharegpt_balanced-400rps-aws-ring/
+  │   ├── asyncmoe-sharegpt_balanced-400rps-azure-ring/
+  │   └── asyncmoe-sharegpt_balanced-400rps-aws-single-link/
+  └── sglang-gptoss-results/
+      ├── sglang_ep16-sharegpt_balanced-400rps-no-interference/
+      ├── sglang_ep16-sharegpt_balanced-400rps-aws-ring/
+      ├── sglang_ep16-sharegpt_balanced-400rps-azure-ring/
+      └── sglang_ep16-sharegpt_balanced-400rps-aws-single-link/
+
+
+METRICS TO COMPARE
+=========================================================================
+  For each run, compute from detokenizer logs (parse_detokenizer_logs.py):
+    - peak throughput (tokens/s)
+    - average throughput (tokens/s)
+    - throughput-weighted ITL mean, median, p99 (ms)
+
+  Key comparisons:
+    - Throughput degradation:  (baseline_tput - interference_tput) / baseline_tput
+    - ITL inflation:           interference_itl / baseline_itl
+    - Per-trace comparison:    AWS-ring (heavy) vs Azure-ring (mild) vs single-link
+
+
+=========================================================================
+OUTDIR=~/DisagMoE/experiments/sphere-16-congestion-mar31
+
+EXECUTION ORDER:
+  1. AsyncMoE no-interference baseline (run 1)
+  2. AsyncMoE + AWS-ring (run 2)
+  3. AsyncMoE + Azure-ring (run 3)
+  4. AsyncMoE + AWS-single-link (run 4)
+  5. SGLang no-interference baseline (run 5)
+  6. SGLang + AWS-ring (run 6)
+  7. SGLang + Azure-ring (run 7)
+  8. SGLang + AWS-single-link (run 8)
+
+TOTAL: 8 runs
+Estimated time: ~12 min per run (2 min calibration + 5-7 min benchmark + cleanup)
+  → 8 runs ≈ 1.5 hours
+
+
+WARNINGS — FREQUENTLY ENCOUNTERED ISSUES
+=========================================================================
+
+  1. AFTER CLUSTER REBOOT: gdrdrv + ldconfig must be restored
+     Reboots wipe the gdrdrv kernel module and ld.so.conf entries. On EVERY
+     node, run:
+       cd ~/gdrcopy && sudo bash ./insmod.sh
+       sudo ldconfig
+     Then verify: python -c "import disagmoe_c"  (disag12 env)
+                  python -c "import sglang"       (sglang-fp env)
+     sgpu7 in particular was never fully set up — it may need apt packages
+     (libzmq3-dev, libnccl2, etc.), miniconda rsync, and make pip from scratch.
+
+  2. SGLANG: ports 25000-25005 and 30000 MUST be freed before every run
+     SGLang binds to these ports and zombie processes hold them after kills.
+     Always run fuser -k on ALL ports on ALL nodes as pre-flight:
+       for n in sgpu0 sgpu2 sgpu3 sgpu4 sgpu6 sgpu7 sgpu8 sgpu9; do
+         ssh $n "pkill -9 -f sglang; fuser -k 25000/tcp 25001/tcp 25002/tcp \
+           25003/tcp 25004/tcp 25005/tcp 30000/tcp" &
+       done; wait; sleep 8
+     Verify with: fuser 25000/tcp 30000/tcp  (must produce no output)
+
+  3. SGLANG: --disable-stream is MANDATORY
+     Without it, sustained request rates cause HTTP connection exhaustion
+     (ConnectionResetError / Cannot assign requested address). This means
+     SGLang ITL from bench_result.json will be zero — use the server-side
+     detokenizer logs (logs/server_head.log) for ITL data instead.
+
+  4. SGLANG: Gloo crash in prepare_mlp_sync_batch_raw
+     torch.distributed.all_gather_into_tensor can throw "Connection closed
+     by peer" from a specific node. This was caused by flaky hardware and
+     resolved by a full cluster reboot. If it recurs, reboot the cluster.
+
+  5. ASYNCMOE: check detokenizer tput logs as health signal
+     AsyncMoE detokenizer logs "token throughput: XX.XXk tokens/s" every
+     ~10 seconds. If no log line appears for >60 seconds, the system is
+     hung — kill the server and retry. This is the ONLY reliable way to
+     detect hangs; the benchmark curl may appear to still be running.
+
+  6. EVAL SCRIPT OUTPUT DIRECTORY NAMING
+     Both eval scripts write to a fixed default directory name (e.g.
+     asyncmoe-sharegpt_balanced or sglang_ep16-sharegpt_balanced).
+     You MUST rename it after each run (the && mv in the tmux command).
+     If the eval script crashes, the rename doesn't happen — rename manually
+     before the next run, or the next run will overwrite the data.
+
+  7. INTERFERENCE + BENCHMARK TIMING
+     Start interference FIRST. Wait the full 2 minutes for calibration to
+     finish before launching the benchmark. If you start the benchmark
+     during calibration, the first ~2 min of benchmark data will be under
+     no interference (misleading results). Verify calibration is done:
+       grep "Calibration complete\|Starting interference" <interfere log>
+
+  8. INTERFERENCE CLEANUP
+     Always stop interference AFTER the benchmark finishes. If you kill
+     interference mid-benchmark, the results will mix interference and
+     no-interference periods. Use the --stop command or Ctrl-C in the
+     interfere tmux session.
+
+  9. CODE SYNC AFTER CHANGES
+     No NFS on this cluster. After ANY code change on sgpu0, rsync to
+     all workers before running. If C++ changed, rebuild (make pip) on
+     every node. Python-only changes need rsync only.
+
+
+POST-EXPERIMENT DATA PROCESSING
+=========================================================================
+
+  Parser script: ~/DisagMoE/experiments/evaluations/parse_detokenizer_logs.py
+
+  This script reads server logs from both AsyncMoE (server.log) and SGLang
+  (logs/server_head.log), extracts per-second throughput and ITL metrics,
+  and computes throughput-weighted aggregates. The weighting ensures that
+  steady-state (high-tput) periods dominate over ramp-up and drain phases.
+
+  Usage:
+    conda activate disag12
+    cd ~/DisagMoE
+    python experiments/evaluations/parse_detokenizer_logs.py \
+      experiments/sphere-16-congestion-mar31/ \
+      --csv experiments/sphere-16-congestion-mar31/metrics.csv
+
+  NOTE: The parser auto-discovers asyncmoe-gptoss-results/ and
+  sglang-gptoss-results/ subdirectories. Result dirs must follow the
+  naming pattern <system>-<workload>-<rate>rps (e.g. asyncmoe-sharegpt_balanced-300rps).
+  The congestion trace tag (e.g. -aws-ring) will be included in the directory
+  name but the parser only needs the system/workload/rate prefix to match.
+  You may need to adjust parse_run_name() regex if using non-standard suffixes.
+
+  Output CSV columns:
+    system, workload, rate_rps, num_samples, peak_tput, avg_tput,
+    weighted_itl_mean_ms, weighted_itl_median_ms, weighted_itl_p99_ms
+
+  For full documentation, see: experiments/evaluations/itl-tput-sweep-guide.md
