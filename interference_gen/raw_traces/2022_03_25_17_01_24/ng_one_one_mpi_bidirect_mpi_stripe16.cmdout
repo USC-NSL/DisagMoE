@@ -1,0 +1,28 @@
+# Info:   (0): Netgauge v2.4.6 MPI enabled (P=2, threadlevel=0) (../code/netgauge/netgauge -c 1000 -g 1 -s -16777216 -f ../data/azure_hbv2_rush_hour/2022_03_25_17_01_24/ng_one_one_mpi_bidirect.out.tmp -m mpi -x one_one_mpi_bidirect )
+# initializing MPI_Wtime timer
+# Info:   (0): writing data to ng.out
+1 bytes 	 -> 1.70 us 	 == 4.44 Mbit/s
+2 bytes 	 -> 1.70 us 	 == 9.14 Mbit/s
+4 bytes 	 -> 1.70 us 	 == 18.29 Mbit/s
+8 bytes 	 -> 1.70 us 	 == 36.57 Mbit/s
+16 bytes 	 -> 1.70 us 	 == 73.14 Mbit/s
+32 bytes 	 -> 1.75 us 	 == 116.42 Mbit/s
+64 bytes 	 -> 1.85 us 	 == 232.73 Mbit/s
+128 bytes 	 -> 1.90 us 	 == 465.45 Mbit/s
+256 bytes 	 -> 2.45 us 	 == 731.69 Mbit/s
+512 bytes 	 -> 2.55 us 	 == 1437.70 Mbit/s
+1024 bytes 	 -> 2.65 us 	 == 2776.95 Mbit/s
+2048 bytes 	 -> 2.90 us 	 == 4890.75 Mbit/s
+4096 bytes 	 -> 3.60 us 	 == 7801.90 Mbit/s
+8192 bytes 	 -> 4.35 us 	 == 12852.72 Mbit/s
+16384 bytes 	 -> 5.55 us 	 == 20805.08 Mbit/s
+32768 bytes 	 -> 7.40 us 	 == 31968.78 Mbit/s
+65536 bytes 	 -> 10.50 us 	 == 46192.78 Mbit/s
+131072 bytes 	 -> 19.05 us 	 == 40018.93 Mbit/s
+262144 bytes 	 -> 22.75 us 	 == 87196.04 Mbit/s
+524288 bytes 	 -> 34.90 us 	 == 107678.78 Mbit/s
+1048576 bytes 	 -> 62.60 us 	 == 123720.31 Mbit/s
+2097152 bytes 	 -> 114.31 us 	 == 136392.37 Mbit/s
+4194304 bytes 	 -> 211.66 us 	 == 146357.82 Mbit/s
+8388608 bytes 	 -> 412.92 us 	 == 154976.88 Mbit/s
+16777216 bytes 	 -> 811.80 us 	 == 161387.66 Mbit/s

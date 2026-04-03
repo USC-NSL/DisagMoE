@@ -1,0 +1,20 @@
+# Info:   (0): Netgauge v2.4.6 MPI enabled (P=1, threadlevel=0) (./netgauge/netgauge -o ../data/oracle-hpc/2022_07_13_13_09_16/ng_osnoise.out.tmp -m mpi -x noise )
+# initializing MPI_Wtime timer
+# Info:   (0): writing data to ../data/oracle-hpc/2022_07_13_13_09_16/ng_osnoise.out.tmp
+# Info:   (0): performing Selfish benchmark
+# min clock cycles per rank: 104 
+Minimal cycle length [ns]: 103.938533 
+Number of iterations (recorded+unrecorded): 1848268150 
+Threshold: [% minimal cycle length]: 900 
+[0] CPU overhead due to noise: 0.09%
+[0] Measurement period: 51.72 s
+# Info:   (0): Netgauge v2.4.6 MPI enabled (P=1, threadlevel=0) (./netgauge/netgauge -o ../data/oracle-hpc/2022_07_13_13_09_16/ng_osnoise.out.tmp -m mpi -x noise )
+# initializing MPI_Wtime timer
+# Info:   (0): writing data to ../data/oracle-hpc/2022_07_13_13_09_16/ng_osnoise.out.tmp
+# Info:   (0): performing Selfish benchmark
+# min clock cycles per rank: 105 
+Minimal cycle length [ns]: 104.963125 
+Number of iterations (recorded+unrecorded): 1940647907 
+Threshold: [% minimal cycle length]: 900 
+[0] CPU overhead due to noise: 0.09%
+[0] Measurement period: 54.31 s

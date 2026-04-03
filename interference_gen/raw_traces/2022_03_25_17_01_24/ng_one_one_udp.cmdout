@@ -1,0 +1,20 @@
+# Info:   (0): Netgauge v2.4.6 MPI enabled (P=2, threadlevel=0) (../code/netgauge/netgauge -c 1000 -g 1 -s -16777216 -f ../data/azure_hbv2_rush_hour/2022_03_25_17_01_24/ng_one_one.out.tmp -m udp -S 10.2.0.0/24 -x one_one )
+# initializing MPI_Wtime timer
+# Info:   (0): The selected communication module udp is unreliable, the run may hang if data loss occurs!
+# Info:   (0): writing data to ng.out
+1 bytes 	 -> 82.36 us 	 == 0.09 Mbit/s
+2 bytes 	 -> 84.56 us 	 == 0.18 Mbit/s
+4 bytes 	 -> 83.36 us 	 == 0.36 Mbit/s
+8 bytes 	 -> 84.55 us 	 == 0.72 Mbit/s
+16 bytes 	 -> 82.61 us 	 == 1.45 Mbit/s
+32 bytes 	 -> 83.60 us 	 == 2.88 Mbit/s
+64 bytes 	 -> 81.91 us 	 == 5.82 Mbit/s
+128 bytes 	 -> 83.30 us 	 == 11.46 Mbit/s
+256 bytes 	 -> 84.30 us 	 == 22.65 Mbit/s
+512 bytes 	 -> 88.56 us 	 == 44.14 Mbit/s
+1024 bytes 	 -> 86.00 us 	 == 87.05 Mbit/s
+2048 bytes 	 -> 114.86 us 	 == 134.51 Mbit/s
+4096 bytes 	 -> 125.06 us 	 == 243.07 Mbit/s
+8192 bytes 	 -> 162.86 us 	 == 375.97 Mbit/s
+16384 bytes 	 -> 238.21 us 	 == 513.37 Mbit/s
+32768 bytes 	 -> 314.47 us 	 == 740.48 Mbit/s

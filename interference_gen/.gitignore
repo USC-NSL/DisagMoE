@@ -1,0 +1,10 @@
+# Compiled executables
+ucx_receiver
+ucx_sender
+ucx_ring_node
+
+# Binary data
+ring_schedule.bin
+
+# Python cache
+__pycache__/
