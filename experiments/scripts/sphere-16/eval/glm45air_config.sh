@@ -10,5 +10,6 @@ MOE_LINEAR_QUANT="none"
 NUM_SHARED_EXPERTS=1
 SHARED_EXPERT_INTERMEDIATE_SIZE=1408
 
-# GLM-4.5-Air needs lower initial MEM_FRAC due to shared expert activation overhead
-MEM_FRAC=${MEM_FRAC:-0.95}
+# GLM-4.5-Air needs lower initial MEM_FRAC due to shared expert + top-8 routing memory overhead
+# Hard override: config.sh sets 0.98, but GLM OOMs at runtime with that value
+MEM_FRAC=${MEM_FRAC_OVERRIDE:-0.90}

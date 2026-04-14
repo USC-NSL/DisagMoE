@@ -2,8 +2,8 @@
 
 ## sphere cluster Sphere-16 Cluster Setup & Launch Notes
 Cluster: 8 nodes × 2 L40S GPUs = 16 GPUs total
-Head node: sgpu0 (10.0.0.1)
-Workers:   sgpu2 (10.0.0.2), sgpu3 (10.0.0.3), sgpu4 (10.0.0.4),
+Head node: sgpu2 (10.0.0.1)
+Workers:   sgpu3 (10.0.0.2), sgpu4 (10.0.0.3), sgpu5 (10.0.0.4),
            sgpu6 (10.0.0.5), sgpu7 (10.0.0.6), sgpu8 (10.0.0.7),
            sgpu9 (10.0.0.8)
 Network:   RoCE via ens1f1np1 (mlx5_1 HCA)

@@ -20,9 +20,9 @@ N_NODE=8
 N_GPU_PER_NODE=2
 WORLD_SIZE=16
 
-HEAD_NODE="sgpu0"
+HEAD_NODE="sgpu2"
 HEAD_IP="10.0.0.1"
-WORKER_NODES=(sgpu2 sgpu3 sgpu4 sgpu6 sgpu7 sgpu8 sgpu9)
+WORKER_NODES=(sgpu3 sgpu4 sgpu5 sgpu6 sgpu7 sgpu8 sgpu9)
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 TRANSPORT="zmq"

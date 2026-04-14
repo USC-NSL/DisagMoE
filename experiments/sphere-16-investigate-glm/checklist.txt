@@ -1,0 +1,102 @@
+sphere-16-investigate-glm — Experiment Checklist
+=========================================================================
+GLM investigation round on new testbed (sgpu2-9).
+Objectives:
+  1. Reproduce AsyncMoE GLM experiments (no SGLang) with new testbed
+  2. Test advanced logging enhancement (dispatcher/pool behaviors)
+  3. Investigate GLM performance bottleneck vs gptoss
+
+Testbed:
+  Head: sgpu2 (10.0.0.1)
+  Workers: sgpu3 (10.0.0.2), sgpu4 (10.0.0.3), sgpu5 (10.0.0.4),
+           sgpu6 (10.0.0.5), sgpu7 (10.0.0.6), sgpu8 (10.0.0.7),
+           sgpu9 (10.0.0.8)
+  GPUs: 8 nodes x 2 L40S = 16 total
+  Conda: disag12
+
+Model: glm45air_106b (45L, 128E, top-8, 1 shared expert, bf16)
+System: AsyncMoE only (no SGLang in this round)
+
+Benchmark config (GLM):
+  gsm8k:    20k reqs at 2krps  (default rate)
+  sharegpt: 10k reqs at 1krps  (BENCH_RATE=1000)
+
+Metrics: throughput (tput), mean ITL, p99 ITL
+
+WORKLOAD PROFILES:
+=========================================================================
+
+  sharegpt workloads:
+    Gate (glm):      gating_glm45air_sharegpt_200.parquet
+    Balanced (glm):  balanced_glm45air_sharegpt_200.parquet
+    Seq lengths:     datasets/sharegpt_lengths.npy
+
+  gsm8k workloads:
+    Gate (glm):      gating_glm45air_gsm8k_200.parquet
+    Balanced (glm):  balanced_glm45air_gsm8k_200.parquet
+    Seq lengths:     datasets/gsm8k_lengths.npy
+
+
+PART A: Reproduce AsyncMoE GLM (4 experiments)
+=========================================================================
+Script: ~/DisagMoE/experiments/scripts/sphere-16/eval/glm45air_eval.sh
+Conda: disag12 | cwd: ~/DisagMoE | model: glm45air_106b
+TAG: asyncmoe-glm45air | RESULTS: $OUTDIR/asyncmoe-glm45air-results
+MAX_RETRIES: 2 | MEM_FRAC: 0.95
+
+  sharegpt (BENCH_RATE=1000 -> 10k reqs at 1krps):
+  [ ]  1. asyncmoe-sharegpt_regular       gate=gating_glm45air_sharegpt_200
+  [ ]  2. asyncmoe-sharegpt_balanced      gate=balanced_glm45air_sharegpt_200
+
+  gsm8k (default rate 2krps, override BENCH_DATASET_PATH):
+  [ ]  3. asyncmoe-gsm8k_regular          gate=gating_glm45air_gsm8k_200
+  [ ]  4. asyncmoe-gsm8k_balanced         gate=balanced_glm45air_gsm8k_200
+
+  Launch commands:
+    RESULTS=~/DisagMoE/experiments/sphere-16-investigate-glm/asyncmoe-glm45air-results
+
+    # sharegpt (10k reqs, 1krps)
+    BENCH_RATE=1000 bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_regular
+    BENCH_RATE=1000 bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_balanced
+
+    # gsm8k (20k reqs, 2krps)
+    BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only gsm8k_regular
+    BENCH_DATASET_PATH=$REPO_DIR/datasets/gsm8k_lengths.npy \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only gsm8k_balanced
+
+
+PART B: Advanced Logging Test (1 experiment with logging enabled)
+=========================================================================
+Run a single experiment with --enable-advanced-logging to test the new
+dispatcher/pool logging enhancement.
+
+  [ ]  5. asyncmoe-sharegpt_regular + advanced logging
+         Same as experiment 1, but with SERVER_EXTRA_ARGS="--enable-advanced-logging"
+
+  Launch command:
+    RESULTS=~/DisagMoE/experiments/sphere-16-investigate-glm/asyncmoe-glm45air-advlog
+    SERVER_EXTRA_ARGS="--enable-advanced-logging" BENCH_RATE=1000 \
+        bash experiments/scripts/sphere-16/eval/glm45air_eval.sh "$RESULTS" --only sharegpt_regular
+
+  Post-processing:
+    python experiments/process_and_plot_advanced_logging.py \
+        "$RESULTS/asyncmoe-sharegpt_regular/advanced_logs" \
+        "$RESULTS/asyncmoe-sharegpt_regular/plots"
+
+
+PART C: Performance Investigation
+=========================================================================
+After reproducing, analyze:
+  - [ ] Compare GLM tput vs gptoss baseline (from sphere-16-tput-itl-mar30)
+  - [ ] Analyze advanced logs: dispatcher put latency, queue depths, MoE step times
+  - [ ] Check if dispatcher backpressure (max_pending_sends) is the bottleneck
+  - [ ] Analyze expert batch size distribution (top-8 → 2x more dispatch work)
+  - [ ] Check shared expert sequential overhead on attention GPU
+
+
+POST-RUN:
+=========================================================================
+  [ ] Extract metrics via parse_detokenizer_logs.py
+  [ ] Process advanced logs
+  [ ] Write report.md in this directory

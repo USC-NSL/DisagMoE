@@ -867,6 +867,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             batch.data = torch.rand((1, self.model_config.hidden_size), dtype=torch.bfloat16, device=self.device)
             batch.metadata = meta.to_c()
             self.pool.put_batch(batch)
+            self._advanced_logger.log_pool_put(1)
         except zmq.Again:
             pass
         
@@ -881,6 +882,23 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             elapsed_ms = evt_start.elapsed_time(evt_end)  # accurate GPU time
             self._advanced_logger.log_moe_step(bsz, elapsed_ms)
             self._pending_moe_events.popleft()
+
+    def _drain_transport_stats(self):
+        if not self._advanced_logger.enabled:
+            return
+
+        if self.pool is not None:
+            for (peer_id, layer_id, num_tokens, num_bytes,
+                 posted_ts_s, completed_ts_s, is_local) in self.pool.drain_recv_completion_stats():
+                self._advanced_logger.log_recv_completion(
+                    peer_id, layer_id, num_tokens, num_bytes,
+                    posted_ts_s, completed_ts_s, is_local)
+
+        if self.dispatcher is not None:
+            for (start_ts_s, end_ts_s, pending_before,
+                 max_pending, yield_count) in self.dispatcher.drain_pending_send_stall_stats():
+                self._advanced_logger.log_pending_send_stall(
+                    start_ts_s, end_ts_s, pending_before, max_pending, yield_count)
 
     @torch.inference_mode()
     def single_module_loop_overlap(self):
@@ -901,6 +919,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         try:
             while not self.end_flag:
                 self._drain_moe_events()
+                self._drain_transport_stats()
                 self.recv_new_request()
                 _sched_t0 = time.perf_counter()
                 if self._advanced_logger.enabled:
@@ -971,6 +990,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         try:
             while not self.end_flag:
                 self._timer.start("schedule")
+                self._drain_transport_stats()
                 self.recv_new_request()
                 if self._advanced_logger.enabled:
                     trace = self.scheduler.schedule_trace()
@@ -1046,6 +1066,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         if self._pending_moe_events:
             torch.cuda.synchronize()
             self._drain_moe_events()
+        self._drain_transport_stats()
         return self._advanced_logger.dump(suffix)
 
     def get_advanced_log_data(self) -> Optional[dict]:
@@ -1054,6 +1075,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         if self._pending_moe_events:
             torch.cuda.synchronize()
             self._drain_moe_events()
+        self._drain_transport_stats()
         return self._advanced_logger.get_data()
     
     def get_pool_snapshot(self) -> List[int]:

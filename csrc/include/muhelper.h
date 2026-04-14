@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <tuple>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -58,6 +59,9 @@ protected:
 
     std::queue<std::pair<TokenBatch, cudaEvent_t>> pending_sends;
     int max_pending_sends_{16};
+    std::mutex stats_mutex_;
+    // (start_ts_s, end_ts_s, pending_before, max_pending, yield_count)
+    std::vector<std::tuple<double, double, int, int, int>> pending_send_stalls_;
 
     ParallelConfig cfg;
 
@@ -83,6 +87,8 @@ public:
     void put(TokenBatch batch, int rank = 0);
 
     void set_max_pending_sends(int val) { max_pending_sends_ = val; }
+
+    std::vector<std::tuple<double, double, int, int, int>> drain_pending_send_stall_stats();
 
 };
 
@@ -172,7 +178,12 @@ protected:
         batch_metadata_t meta;
         torch::Tensor tensor;
         cudaEvent_t event;  // For async NCCL recv completion polling
+        double posted_ts_s;
     };
+
+    std::mutex recv_stats_mutex_;
+    // (peer_id, layer_id, num_tokens, num_bytes, posted_ts_s, completed_ts_s, is_local)
+    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> recv_completions_;
 
 public:
     MuPool(
@@ -228,6 +239,8 @@ public:
     std::shared_ptr<LayerSchedulerBase> get_layer_scheduler() { return this->layer_scheduler; }
 
     virtual TokenBatch get_batch_from_layer(int layer_id) = 0;
+
+    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> drain_recv_completion_stats();
 };
 
 class MuExpertPool: public MuPool {

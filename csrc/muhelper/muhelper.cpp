@@ -8,6 +8,7 @@
 #include <utility>
 #include <atomic>
 #include <thread>
+#include <chrono>
 #include <pthread.h>
 
 #include "distributed.hpp"
@@ -37,6 +38,11 @@ struct MetadataWithPeerId {
         archive(peer_id, metadata);
     }
 };
+
+static double wall_time_s() {
+    using clock = std::chrono::system_clock;
+    return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+}
 
 // MuHelper
 
@@ -120,6 +126,10 @@ void MuDispatcher::clean_pending_sends() {
 }
 
 void MuDispatcher::drain_pending_sends_to(int max_pending) {
+    bool blocked = false;
+    double block_start_s = 0.0;
+    int pending_before = 0;
+    int yield_count = 0;
     while ((int)this->pending_sends.size() >= max_pending) {
         auto &pr = this->pending_sends.front();
         cudaError_t err = cudaEventQuery(pr.second);
@@ -127,8 +137,19 @@ void MuDispatcher::drain_pending_sends_to(int max_pending) {
             CUDACHECK(cudaEventDestroy(pr.second));
             this->pending_sends.pop();
         } else {
+            if (!blocked) {
+                blocked = true;
+                block_start_s = wall_time_s();
+                pending_before = this->pending_sends.size();
+            }
+            yield_count ++;
             std::this_thread::yield();
         }
+    }
+    if (blocked) {
+        std::lock_guard<std::mutex> lock(this->stats_mutex_);
+        this->pending_send_stalls_.emplace_back(
+            block_start_s, wall_time_s(), pending_before, max_pending, yield_count);
     }
 }
 
@@ -203,6 +224,13 @@ void MuDispatcher::put(TokenBatch batch, int rank) {
     // batch.data = batch.data.clone().detach();
     this->send_queue.push(std::make_pair(batch, rank));
     this->cv.notify_one();
+}
+
+std::vector<std::tuple<double, double, int, int, int>> MuDispatcher::drain_pending_send_stall_stats() {
+    std::lock_guard<std::mutex> lock(this->stats_mutex_);
+    auto stats = this->pending_send_stalls_;
+    this->pending_send_stalls_.clear();
+    return stats;
 }
 
 /*
@@ -428,6 +456,13 @@ MuPool::MuPool(
 
 MuPool::~MuPool() {}
 
+std::vector<std::tuple<int, int, int, size_t, double, double, bool>> MuPool::drain_recv_completion_stats() {
+    std::lock_guard<std::mutex> lock(this->recv_stats_mutex_);
+    auto stats = this->recv_completions_;
+    this->recv_completions_.clear();
+    return stats;
+}
+
 void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
     std::vector<uint8_t> data;
@@ -524,11 +559,19 @@ void MuPool::run() {
 
             auto *channel = this->peer_channels[peer_id].get();
             bool is_local = (dynamic_cast<NcclChannel*>(channel) == nullptr);
+            const size_t num_bytes = meta->num_element() * meta->get_datatype_size();
+            const double posted_ts_s = wall_time_s();
 
             if (is_local) {
                 // TensorLocalChannel: synchronous, completes immediately
                 channel->recv_batch(tensor, *meta);
                 channel->sync();
+                {
+                    std::lock_guard<std::mutex> lock(this->recv_stats_mutex_);
+                    this->recv_completions_.emplace_back(
+                        peer_id, meta->layer_id, meta->num_tokens(), num_bytes,
+                        posted_ts_s, wall_time_s(), true);
+                }
                 this->process_batch(tensor, meta);
             } else {
                 // NcclChannel: post recv, record event, add to pending queue
@@ -536,7 +579,7 @@ void MuPool::run() {
                 cudaEvent_t ev;
                 CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
                 channel->record_event(ev);
-                pending_recvs.push_back(MuPoolPendingRecv{peer_id, meta, tensor, ev});
+                pending_recvs.push_back(MuPoolPendingRecv{peer_id, meta, tensor, ev, posted_ts_s});
             }
 
             drain_count++;
@@ -546,6 +589,17 @@ void MuPool::run() {
         for (auto it = pending_recvs.begin(); it != pending_recvs.end(); ) {
             if (cudaEventQuery(it->event) == cudaSuccess) {
                 CUDACHECK(cudaEventDestroy(it->event));
+                {
+                    std::lock_guard<std::mutex> lock(this->recv_stats_mutex_);
+                    this->recv_completions_.emplace_back(
+                        it->peer_id,
+                        it->meta->layer_id,
+                        it->meta->num_tokens(),
+                        it->meta->num_element() * it->meta->get_datatype_size(),
+                        it->posted_ts_s,
+                        wall_time_s(),
+                        false);
+                }
                 this->process_batch(it->tensor, it->meta);
                 it = pending_recvs.erase(it);
             } else {
