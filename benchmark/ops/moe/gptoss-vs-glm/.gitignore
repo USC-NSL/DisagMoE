@@ -1,0 +1,3 @@
+plots/
+__pycache__/
+*.csv

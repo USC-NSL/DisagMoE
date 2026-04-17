@@ -1,0 +1,8 @@
+results/
+results_fanin/
+plots/
+nccl_ext/build/
+__pycache__/
+*.so
+*.o
+*.d
