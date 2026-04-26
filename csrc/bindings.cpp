@@ -36,6 +36,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     //     .def("put", &MuAttnDispatcher::put, py::arg("TensorBatch"));
     py::class_<MuPool, std::shared_ptr<MuPool>>(m, "MuPool")
         .def("put_batch", &MuPool::put_batch)
+        .def("set_tracing_enabled", &MuPool::set_tracing_enabled)
         .def("drain_recv_completion_stats", &MuPool::drain_recv_completion_stats);
         
     py::class_<Scheduler, std::shared_ptr<Scheduler>>(m, "Scheduler")
@@ -59,6 +60,7 @@ PYBIND11_MODULE(disagmoe_c, m) {
     py::class_<MuDispatcher, std::shared_ptr<MuDispatcher>>(m, "MuDispatcher")
         .def("put", &MuDispatcher::put)
         .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends)
+        .def("set_tracing_enabled", &MuDispatcher::set_tracing_enabled)
         .def("drain_pending_send_stall_stats", &MuDispatcher::drain_pending_send_stall_stats);
 
     py::class_<ChannelInfo>(m, "ChannelInfo")

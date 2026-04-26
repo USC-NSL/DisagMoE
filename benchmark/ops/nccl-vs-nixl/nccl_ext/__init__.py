@@ -14,3 +14,5 @@ _mod = load(
 
 NcclChannel = _mod.NcclChannel
 get_nccl_unique_id_bytes = _mod.get_nccl_unique_id_bytes
+nccl_group_start = _mod.nccl_group_start
+nccl_group_end = _mod.nccl_group_end

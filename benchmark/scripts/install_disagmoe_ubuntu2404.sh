@@ -84,6 +84,46 @@ git submodule update --init --recursive
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
+echo "[4/8] Installing MLNX_OFED (required for nvidia_peermem / GPU-Direct RDMA)..."
+if ofed_info -s >/dev/null 2>&1; then
+  echo "  MLNX_OFED already installed: $(ofed_info -s)"
+else
+  OFED_VER="24.10-1.1.4.0"
+  OFED_DIR="MLNX_OFED_LINUX-${OFED_VER}-ubuntu24.04-x86_64"
+  OFED_TGZ="${OFED_DIR}.tgz"
+  OFED_URL="https://content.mellanox.com/ofed/MLNX_OFED-${OFED_VER}/${OFED_TGZ}"
+  cd /tmp
+  if [ ! -f "$OFED_TGZ" ]; then
+    wget -q "$OFED_URL" -O "$OFED_TGZ"
+  fi
+  tar xzf "$OFED_TGZ"
+  cd "$OFED_DIR"
+  sudo ./mlnxofedinstall --add-kernel-support --without-fw-update --force < /dev/null
+  sudo /etc/init.d/openibd restart
+  cd "$REPO_DIR"
+fi
+
+echo "[4/8] Building nvidia_peermem against MLNX_OFED RDMA stack..."
+NVIDIA_VER=$(modinfo nvidia 2>/dev/null | awk '/^version:/{print $2}')
+if [ -n "$NVIDIA_VER" ]; then
+  sudo dkms build "nvidia/${NVIDIA_VER}" -k "$(uname -r)" --force || true
+  sudo dkms install "nvidia/${NVIDIA_VER}" -k "$(uname -r)" --force || true
+fi
+
+echo "[4/8] Loading nvidia_peermem (with PeerMappingOverride)..."
+PEERMEM_CONF="/etc/modprobe.d/nvidia-peermem.conf"
+if [ ! -f "$PEERMEM_CONF" ] || ! grep -q PeerMappingOverride "$PEERMEM_CONF"; then
+  echo 'options nvidia NVreg_RegistryDwords="PeerMappingOverride=1;"' | sudo tee "$PEERMEM_CONF" >/dev/null
+fi
+if ! lsmod | grep -q nvidia_peermem; then
+  sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset gdrdrv 2>/dev/null || true
+  sudo rmmod nvidia 2>/dev/null || true
+  sudo modprobe nvidia NVreg_RegistryDwords="PeerMappingOverride=1;"
+  sudo modprobe nvidia_uvm nvidia_drm nvidia_modeset
+  sudo modprobe nvidia_peermem
+fi
+lsmod | grep nvidia_peermem && echo "  nvidia_peermem loaded OK" || echo "  WARNING: nvidia_peermem failed to load"
+
 echo "[4/8] Installing NCCL packages..."
 sudo apt-get install -y libnccl2 libnccl-dev
 

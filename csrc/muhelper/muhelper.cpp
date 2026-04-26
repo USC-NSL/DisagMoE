@@ -126,6 +126,7 @@ void MuDispatcher::clean_pending_sends() {
 }
 
 void MuDispatcher::drain_pending_sends_to(int max_pending) {
+    const bool tracing = this->tracing_enabled_.load(std::memory_order_relaxed); // [TRACING]
     bool blocked = false;
     double block_start_s = 0.0;
     int pending_before = 0;
@@ -137,16 +138,18 @@ void MuDispatcher::drain_pending_sends_to(int max_pending) {
             CUDACHECK(cudaEventDestroy(pr.second));
             this->pending_sends.pop();
         } else {
-            if (!blocked) {
+            // [TRACING] record stall metadata only when tracing is on
+            if (tracing && !blocked) {
                 blocked = true;
                 block_start_s = wall_time_s();
                 pending_before = this->pending_sends.size();
             }
-            yield_count ++;
+            if (tracing) yield_count++;
             std::this_thread::yield();
         }
     }
-    if (blocked) {
+    // [TRACING] accumulate stall event
+    if (tracing && blocked) {
         std::lock_guard<std::mutex> lock(this->stats_mutex_);
         this->pending_send_stalls_.emplace_back(
             block_start_s, wall_time_s(), pending_before, max_pending, yield_count);
@@ -536,6 +539,7 @@ void MuPool::run() {
     auto pool_endpoint = disagmoe::mq_endpoint_factory()(this->device_id, true, -1);
     this->mq->bind(pool_endpoint);
 
+    const bool tracing = this->tracing_enabled_.load(std::memory_order_relaxed); // [TRACING]
     std::vector<MuPoolPendingRecv> pending_recvs;
 
     while (!this->end_flag) {
@@ -559,14 +563,14 @@ void MuPool::run() {
 
             auto *channel = this->peer_channels[peer_id].get();
             bool is_local = (dynamic_cast<NcclChannel*>(channel) == nullptr);
-            const size_t num_bytes = meta->num_element() * meta->get_datatype_size();
-            const double posted_ts_s = wall_time_s();
+            const double posted_ts_s = tracing ? wall_time_s() : 0.0; // [TRACING]
 
             if (is_local) {
-                // TensorLocalChannel: synchronous, completes immediately
                 channel->recv_batch(tensor, *meta);
                 channel->sync();
-                {
+                // [TRACING] record local-recv completion
+                if (tracing) {
+                    const size_t num_bytes = meta->num_element() * meta->get_datatype_size();
                     std::lock_guard<std::mutex> lock(this->recv_stats_mutex_);
                     this->recv_completions_.emplace_back(
                         peer_id, meta->layer_id, meta->num_tokens(), num_bytes,
@@ -574,7 +578,6 @@ void MuPool::run() {
                 }
                 this->process_batch(tensor, meta);
             } else {
-                // NcclChannel: post recv, record event, add to pending queue
                 channel->recv_batch(tensor, *meta);
                 cudaEvent_t ev;
                 CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
@@ -589,7 +592,8 @@ void MuPool::run() {
         for (auto it = pending_recvs.begin(); it != pending_recvs.end(); ) {
             if (cudaEventQuery(it->event) == cudaSuccess) {
                 CUDACHECK(cudaEventDestroy(it->event));
-                {
+                // [TRACING] record NCCL recv completion
+                if (tracing) {
                     std::lock_guard<std::mutex> lock(this->recv_stats_mutex_);
                     this->recv_completions_.emplace_back(
                         it->peer_id,

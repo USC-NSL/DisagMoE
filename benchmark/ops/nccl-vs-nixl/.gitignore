@@ -1,5 +1,6 @@
 results/
 results_fanin/
+results_fanin_8node/
 plots/
 nccl_ext/build/
 __pycache__/

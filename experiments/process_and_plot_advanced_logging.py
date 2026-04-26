@@ -851,7 +851,7 @@ def plot_pending_send_stalls(data: dict, out_path: Path):
 
 
 GLOBAL_REQ_RE = re.compile(
-    r"^(?P<ts>\d+\.\d+) - \[INFO\].*Global DP scheduler: #running requests: (?P<running>\d+), #waiting requests: (?P<waiting>\d+)"
+    r"(?P<ts>\d+\.\d+) - \[INFO\].*Global DP scheduler: #running requests: (?P<running>\d+), #waiting requests: (?P<waiting>\d+)"
 )
 
 

@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <memory>
 #include <tuple>
+#include <atomic>
 
 #include "datatypes.hpp"
 #include "metadata.hpp"
@@ -59,9 +60,13 @@ protected:
 
     std::queue<std::pair<TokenBatch, cudaEvent_t>> pending_sends;
     int max_pending_sends_{16};
-    std::mutex stats_mutex_;
+
+    // [TRACING] Runtime toggle for advanced-logging instrumentation.
+    // When false (default), no timestamps, mutex locks, or stats accumulation occur.
+    std::atomic<bool> tracing_enabled_{false};
+    std::mutex stats_mutex_;                       // [TRACING]
     // (start_ts_s, end_ts_s, pending_before, max_pending, yield_count)
-    std::vector<std::tuple<double, double, int, int, int>> pending_send_stalls_;
+    std::vector<std::tuple<double, double, int, int, int>> pending_send_stalls_; // [TRACING]
 
     ParallelConfig cfg;
 
@@ -88,7 +93,9 @@ public:
 
     void set_max_pending_sends(int val) { max_pending_sends_ = val; }
 
-    std::vector<std::tuple<double, double, int, int, int>> drain_pending_send_stall_stats();
+    void set_tracing_enabled(bool v) { tracing_enabled_.store(v, std::memory_order_relaxed); } // [TRACING]
+
+    std::vector<std::tuple<double, double, int, int, int>> drain_pending_send_stall_stats(); // [TRACING]
 
 };
 
@@ -177,13 +184,14 @@ protected:
         int peer_id;
         batch_metadata_t meta;
         torch::Tensor tensor;
-        cudaEvent_t event;  // For async NCCL recv completion polling
-        double posted_ts_s;
+        cudaEvent_t event;
+        double posted_ts_s;         // [TRACING] only populated when tracing_enabled_
     };
 
-    std::mutex recv_stats_mutex_;
-    // (peer_id, layer_id, num_tokens, num_bytes, posted_ts_s, completed_ts_s, is_local)
-    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> recv_completions_;
+    // [TRACING] Runtime toggle for advanced-logging instrumentation.
+    std::atomic<bool> tracing_enabled_{false};
+    std::mutex recv_stats_mutex_;   // [TRACING]
+    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> recv_completions_; // [TRACING]
 
 public:
     MuPool(
@@ -240,7 +248,9 @@ public:
 
     virtual TokenBatch get_batch_from_layer(int layer_id) = 0;
 
-    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> drain_recv_completion_stats();
+    void set_tracing_enabled(bool v) { tracing_enabled_.store(v, std::memory_order_relaxed); } // [TRACING]
+
+    std::vector<std::tuple<int, int, int, size_t, double, double, bool>> drain_recv_completion_stats(); // [TRACING]
 };
 
 class MuExpertPool: public MuPool {

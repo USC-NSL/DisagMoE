@@ -662,6 +662,11 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
             self.device_id,
             sample_rate=getattr(self.engine_config, "advanced_logging_sample_rate", 0.1),
         )
+        if self._advanced_logger.enabled:
+            if self.pool is not None:
+                self.pool.set_tracing_enabled(True)
+            if self.dispatcher is not None:
+                self.dispatcher.set_tracing_enabled(True)
     
     def start(self):
         # attention TP is deprecated
