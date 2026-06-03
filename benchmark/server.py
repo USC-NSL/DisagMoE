@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 import sys
 
@@ -150,7 +151,10 @@ def dump_advanced_logs_endpoint():
 async def init(master: Controller, args):
     master.start_polling_results()
     await master.start_scheduler()
-    await benchmark_warmup(master, args)
+    if os.environ.get("SKIP_WARMUP", "") == "1":
+        logger.info("SKIP_WARMUP=1 set, skipping benchmark warmup")
+    else:
+        await benchmark_warmup(master, args)
     await master.stop_scheduler()
     await master.stop_polling_results()
 

@@ -90,10 +90,16 @@ class AttentionEngineMixin:
         self.req_tracker: Dict[int, int] = {}
         
         post_process_max_num_tokens = self.engine_config.max_batch_size_attn * self.model_config.top_k
-        self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
-        self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
-        self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
-        self.sample_continue_ids_gdr = GdrDoubleBuffer(self.engine_config.max_batch_size_attn, dtype=torch.int64, device="cuda")
+        if use_gdrcopy_optimization:
+            self.attn_token_mapping_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+            self.attn_topk_weights_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.float32, device="cuda")
+            self.attn_topk_ids_staging_gdr = GdrDoubleBuffer(post_process_max_num_tokens, dtype=torch.int32, device="cuda")
+            self.sample_continue_ids_gdr = GdrDoubleBuffer(self.engine_config.max_batch_size_attn, dtype=torch.int64, device="cuda")
+        else:
+            self.attn_token_mapping_gdr = None
+            self.attn_topk_weights_staging_gdr = None
+            self.attn_topk_ids_staging_gdr = None
+            self.sample_continue_ids_gdr = None
         
     @nvtx_range("attn_engine.attn_driver_preprocess")
     def _attn_driver_preprocess(
@@ -413,8 +419,12 @@ class ExpertEngineMixin:
 
         _log_memory_usage("After building expert executor")
         
-        self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
-        self.expert_token_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
+        if use_gdrcopy_optimization:
+            self.expert_token_mapping_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.int32, device="cuda")
+            self.expert_token_weights_staging_gdr = GdrDoubleBuffer(self.expert_max_batch_size, dtype=torch.float32, device="cuda")
+        else:
+            self.expert_token_mapping_gdr = None
+            self.expert_token_weights_staging_gdr = None
     
     def preprocess_batch_expert(self, batch: TokenBatchCWrapper) -> Optional[ExpertForwardBatch]:
         meta_c = batch.metadata
@@ -667,6 +677,26 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 self.pool.set_tracing_enabled(True)
             if self.dispatcher is not None:
                 self.dispatcher.set_tracing_enabled(True)
+            try:
+                import disagmoe_c as _dc
+                if hasattr(_dc, "nixl_set_tracing_enabled"):
+                    _dc.nixl_set_tracing_enabled(True)
+            except Exception:
+                pass
+            import atexit, signal
+            def _atexit_dump():
+                try:
+                    self.dump_advanced_logs("_atexit")
+                except Exception as _e:
+                    try: get_logger().warning(f"atexit dump failed: {_e}")
+                    except Exception: pass
+            atexit.register(_atexit_dump)
+            def _sig_dump(_signum, _frame):
+                _atexit_dump()
+                os._exit(0)
+            for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1):
+                try: signal.signal(_sig, _sig_dump)
+                except Exception: pass
     
     def start(self):
         # attention TP is deprecated
@@ -904,6 +934,30 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                  max_pending, yield_count) in self.dispatcher.drain_pending_send_stall_stats():
                 self._advanced_logger.log_pending_send_stall(
                     start_ts_s, end_ts_s, pending_before, max_pending, yield_count)
+            if hasattr(self.dispatcher, "drain_send_msg_size_stats"):
+                for (peer_cid, layer_id, num_tokens, num_bytes,
+                     ts_s, transport) in self.dispatcher.drain_send_msg_size_stats():
+                    self._advanced_logger.log_dispatcher_send(
+                        peer_cid, layer_id, num_tokens, num_bytes, ts_s, transport)
+
+        try:
+            import disagmoe_c as _dc
+            if hasattr(_dc, "nixl_drain_send_traces"):
+                for trace in _dc.nixl_drain_send_traces():
+                    self._advanced_logger.log_nixl_send_trace(trace)
+            if hasattr(_dc, "nixl_drain_recv_traces"):
+                for trace in _dc.nixl_drain_recv_traces():
+                    self._advanced_logger.log_nixl_recv_trace(trace)
+        except Exception:
+            pass
+
+    def _schedule_batch_with_optional_trace(self):
+        if not self._advanced_logger.enabled:
+            return self.scheduler.schedule(), None
+        if not use_gdrcopy_optimization:
+            return self.scheduler.schedule(), None
+        trace = self.scheduler.schedule_trace()
+        return trace.batch, trace.pool_snapshot
 
     @torch.inference_mode()
     def single_module_loop_overlap(self):
@@ -920,27 +974,32 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
         forward_batch = None
         last_batch = None
         idle_conunt = 0
-        
+
+        _inf_iter_count = 0
+        _inf_sched_ns = 0
+        _inf_proc_ns = 0
+        _inf_post_ns = 0
+        _inf_had_batch = 0
+        _inf_had_last = 0
+        _inf_t_window = time.perf_counter()
+
         try:
             while not self.end_flag:
+                _inf_iter_count += 1
+                _it_t0 = time.perf_counter()
                 self._drain_moe_events()
                 self._drain_transport_stats()
                 self.recv_new_request()
                 _sched_t0 = time.perf_counter()
-                if self._advanced_logger.enabled:
-                    trace = self.scheduler.schedule_trace()
-                    batch = trace.batch
-                    _trace_snapshot = trace.pool_snapshot
-                else:
-                    batch = self.scheduler.schedule()
+                batch, _trace_snapshot = self._schedule_batch_with_optional_trace()
                 forward_batch = None
                 if batch.data is not None:
                     _sched_ms = (time.perf_counter() - _sched_t0) * 1000.0
                     idle_conunt = 0
                     batch_wrapper = TokenBatchCWrapper.from_c(batch)
                     meta = batch_wrapper.metadata
-                    if self._advanced_logger.enabled:
-                        _sched_ts = time.time()
+                    _sched_ts = time.time() if self._advanced_logger.enabled else 0.0
+                    if self._advanced_logger.enabled and _trace_snapshot is not None:
                         _pool_snapshot = list(_trace_snapshot)
                         _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                         _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)
@@ -950,12 +1009,17 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                         _delay_ms = _sched_ms / max(1, meta.num_tokens())
                         for _eid in set(meta.exp_ids):
                             self._advanced_logger.log_queuing_delay(_layer, _eid, _delay_ms, _sched_ts)
+                    _proc_t0 = time.perf_counter()
                     forward_batch = self.preprocess_batch(batch_wrapper)
                     if forward_batch is not None:
                         result = forward_batch.proc_func(forward_batch)
                         result_queue.append((forward_batch, result))
                     self.step_profile(batch.metadata.num_tokens())
-                    
+                    _inf_proc_ns += int((time.perf_counter() - _proc_t0) * 1e9)
+                    _inf_had_batch += 1
+                    _inf_sched_ns += int((_proc_t0 - _sched_t0) * 1e9)
+
+                _post_t0 = time.perf_counter()
                 if last_batch:
                     tmp_batch, tmp_result = result_queue.popleft()
                     if tmp_batch is None:
@@ -966,10 +1030,29 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                             tmp_result.sync_event = None
                         final_result = tmp_batch.post_proc_func(tmp_batch, tmp_result)
                         self.post_process(final_result, sync_event=tmp_result.sync_event)
+                    _inf_had_last += 1
                 elif batch.data is None:
                     idle_conunt += 1
-                    
+                _inf_post_ns += int((time.perf_counter() - _post_t0) * 1e9)
+
                 last_batch = forward_batch
+
+                if _inf_iter_count % 500 == 0:
+                    _now = time.perf_counter()
+                    _wnd = _now - _inf_t_window
+                    get_logger().info(
+                        f"[INF_LOOP dev={self.device_id}] iters={_inf_iter_count} "
+                        f"had_batch={_inf_had_batch} had_last={_inf_had_last} idle={idle_conunt} "
+                        f"avg_sched_ms={_inf_sched_ns/1e6/max(1,_inf_had_batch):.3f} "
+                        f"avg_proc_ms={_inf_proc_ns/1e6/max(1,_inf_had_batch):.3f} "
+                        f"avg_post_ms={_inf_post_ns/1e6/max(1,_inf_had_last):.3f} "
+                        f"window_s={_wnd:.2f} "
+                        f"iters/sec={500/max(_wnd,1e-9):.1f}"
+                    )
+                    _inf_iter_count = 0
+                    _inf_sched_ns = _inf_proc_ns = _inf_post_ns = 0
+                    _inf_had_batch = _inf_had_last = 0
+                    _inf_t_window = _now
         except Exception as e:
             get_logger().error(f"Exception in single_module_loop_overlap: {e}")
             with open(f"engine-{self.device_id}.err", "wt") as f:
@@ -997,12 +1080,7 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 self._timer.start("schedule")
                 self._drain_transport_stats()
                 self.recv_new_request()
-                if self._advanced_logger.enabled:
-                    trace = self.scheduler.schedule_trace()
-                    batch = trace.batch
-                    _trace_snapshot = trace.pool_snapshot
-                else:
-                    batch = self.scheduler.schedule()
+                batch, _trace_snapshot = self._schedule_batch_with_optional_trace()
                 if batch.data is None:
                     if not prev_schedule_empty:
                         prev_schedule_empty = True
@@ -1020,8 +1098,8 @@ class Engine(AttentionEngineMixin, ExpertEngineMixin, EngineProfilerMixin):
                 batch_wrapper = TokenBatchCWrapper.from_c(batch)
                 meta: BatchMetadata = batch_wrapper.metadata
 
-                if self._advanced_logger.enabled:
-                    _sched_ts = time.time()
+                _sched_ts = time.time() if self._advanced_logger.enabled else 0.0
+                if self._advanced_logger.enabled and _trace_snapshot is not None:
                     _pool_snapshot = list(_trace_snapshot)
                     _num_attn_in_pool = len(_pool_snapshot) - self.model_total_num_layers
                     _unified_layer = meta.layer_id + (_num_attn_in_pool if meta.is_expert() else 0)

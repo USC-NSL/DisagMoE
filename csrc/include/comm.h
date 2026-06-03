@@ -33,6 +33,7 @@ protected:
 
 public:
     Channel(int party_local, int party_other): local(party_local), other(party_other) {}
+    virtual ~Channel() = default;
 
     virtual void send_raw(uintptr_t data, const BatchMetadata& metadata) = 0;
     virtual void recv_raw(uintptr_t data, const BatchMetadata& metadata) = 0;
@@ -57,6 +58,10 @@ public:
     virtual void warmup_recv(int *recv_buf, int count) {}
 
     virtual void record_event(cudaEvent_t &event) {}
+
+    virtual bool is_nixl() const { return false; }
+
+    virtual bool is_local() const { return false; }
 
 };
 
@@ -118,9 +123,15 @@ class TensorLocalChannel: public Channel {
         void sync() override;
 
         void record_event(cudaEvent_t &event) override;
+
+        bool is_local() const override { return true; }
 };
 
+class NixlChannel;
+
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id);
+
+Channel_t create_nixl_channel(int party_local, int party_other);
 
 Channel_t create_local_channel(int device_id);
 

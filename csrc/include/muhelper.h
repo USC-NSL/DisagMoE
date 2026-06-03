@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 #include <memory>
+#include <map>
 #include <tuple>
 #include <atomic>
 
@@ -16,6 +17,18 @@
 #include "comm.h"
 #include "transport_factory.h"
 #include "layer.h"
+
+struct MetadataWithPeerId {
+    int peer_id;
+    int nixl_slot_id{-1};
+    int nixl_seq{-1};
+    BatchMetadata metadata;
+
+    template<class Archive>
+    void serialize(Archive &archive) {
+        archive(peer_id, nixl_slot_id, nixl_seq, metadata);
+    }
+};
 
 class MuHelper {
 
@@ -67,6 +80,9 @@ protected:
     std::mutex stats_mutex_;                       // [TRACING]
     // (start_ts_s, end_ts_s, pending_before, max_pending, yield_count)
     std::vector<std::tuple<double, double, int, int, int>> pending_send_stalls_; // [TRACING]
+    // Per-send message-size record: (peer_cid, layer_id, num_tokens, bytes, ts_s, transport)
+    // transport: 0 = NCCL, 1 = NIXL, 2 = local
+    std::vector<std::tuple<int, int, int, size_t, double, int>> send_msg_sizes_;
 
     ParallelConfig cfg;
 
@@ -96,6 +112,8 @@ public:
     void set_tracing_enabled(bool v) { tracing_enabled_.store(v, std::memory_order_relaxed); } // [TRACING]
 
     std::vector<std::tuple<double, double, int, int, int>> drain_pending_send_stall_stats(); // [TRACING]
+
+    std::vector<std::tuple<int, int, int, size_t, double, int>> drain_send_msg_size_stats();
 
 };
 
@@ -170,7 +188,18 @@ protected:
 
     std::shared_ptr<LayerSchedulerBase> layer_scheduler;
 
-    void recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking = false);
+    void recv_metadata(MetadataWithPeerId &packed_data, bool non_blocking = false);
+
+    struct NixlPendingMeta {
+        int peer_id;
+        int slot_id;
+        int seq;
+        batch_metadata_t meta;
+        double posted_ts_s;
+        double t_meta_arrived_s{0.0};
+    };
+
+    std::map<std::pair<int, int>, NixlPendingMeta> pending_metas_;
 
     virtual void process_batch(torch::Tensor tensor, batch_metadata_t &meta) = 0;
 
@@ -185,7 +214,13 @@ protected:
         batch_metadata_t meta;
         torch::Tensor tensor;
         cudaEvent_t event;
-        double posted_ts_s;         // [TRACING] only populated when tracing_enabled_
+        double posted_ts_s;
+        int nixl_slot_id{-1};
+        int nixl_seq{-1};
+        size_t nixl_bytes{0};
+        double t_meta_arrived_s{0.0};
+        double t_data_ready_s{0.0};
+        double t_d2d_issued_s{0.0};
     };
 
     // [TRACING] Runtime toggle for advanced-logging instrumentation.

@@ -8,6 +8,10 @@
 #include "pool.h"
 #include "scheduler.h"
 
+#if USE_NIXL
+#include "nixl_context.h"
+#endif
+
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -32,6 +36,27 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     std::vector<Channel_t> out_channels;
     Channel_t local_channel = nullptr;
 
+#if USE_NIXL
+    std::vector<int> remote_peers;
+    remote_peers.reserve(inbound_peer_ids.size() + outbound_peer_ids.size());
+    for (auto peer_id : inbound_peer_ids) {
+        if (peer_id != local_id) {
+            remote_peers.push_back(peer_id);
+        }
+    }
+    for (auto peer_id : outbound_peer_ids) {
+        if (peer_id != local_id) {
+            remote_peers.push_back(peer_id);
+        }
+    }
+    std::sort(remote_peers.begin(), remote_peers.end());
+    remote_peers.erase(std::unique(remote_peers.begin(), remote_peers.end()), remote_peers.end());
+
+    int local_cuda_device = 0;
+    CUDACHECK(cudaGetDevice(&local_cuda_device));
+    NixlContext::instance().initialize(local_id, remote_peers, local_cuda_device);
+#endif
+
     // inbound channels
     for (size_t i = 0; i < n_in; i ++) {
         auto peer_id = inbound_peer_ids[i];
@@ -40,7 +65,11 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
             channel = create_local_channel(local_id);
             local_channel = channel;
         } else {
+#if USE_NIXL
+            channel = create_nixl_channel(local_id, peer_id);
+#else
             channel = create_nccl_channel(local_id, peer_id, string_to_nccl_unique_id(inbound_nccl_ids[peer_id]));
+#endif
         }
         in_channels.push_back(channel);
     }
@@ -52,11 +81,19 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
         if (peer_id == local_id) {
             channel = local_channel;
         } else {
+#if USE_NIXL
+            channel = create_nixl_channel(local_id, peer_id);
+#else
             channel = create_nccl_channel(local_id, peer_id, string_to_nccl_unique_id(outbound_nccl_ids[peer_id]));
+#endif
         }
         out_channels.push_back(channel);
     }
 
+#if USE_NIXL
+    cudaDeviceSynchronize();
+    DMOE_LOG(INFO) << "Rank " << local_id << ": All NIXL channels initialized" << LEND;
+#else
     ncclGroupStart();
     for (size_t i = 0; i < n_in; i++) {
         in_channels[i]->initialize();
@@ -78,6 +115,7 @@ std::tuple<std::vector<Channel_t>, std::vector<Channel_t>> init_all_channels(
     // only enqueues work). See docs/investigate_hang.md for full analysis.
 
     DMOE_LOG(INFO) << "Rank " << local_id << ": All NCCL channels initialized" << LEND;
+#endif
     return std::make_tuple(in_channels, out_channels);
 }
 

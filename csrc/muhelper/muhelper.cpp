@@ -28,16 +28,10 @@
 
 #include <cereal/archives/binary.hpp>
 
-// Struct to pack peer_id and metadata together
-struct MetadataWithPeerId {
-    int peer_id;
-    BatchMetadata metadata;
-
-    template<class Archive>
-    void serialize(Archive &archive) {
-        archive(peer_id, metadata);
-    }
-};
+#if USE_NIXL
+#include "nixl_channel.h"
+#include "nixl_context.h"
+#endif
 
 static double wall_time_s() {
     using clock = std::chrono::system_clock;
@@ -161,6 +155,35 @@ void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
 
     this->drain_pending_sends_to(this->max_pending_sends_);
 
+    const bool tracing = this->tracing_enabled_.load(std::memory_order_relaxed);
+    const int log_num_tokens = batch.metadata ? batch.metadata->num_tokens() : 0;
+    const size_t log_bytes = batch.metadata
+        ? batch.metadata->num_element() * batch.metadata->get_datatype_size()
+        : 0;
+    const int log_layer_id = batch.metadata ? batch.metadata->layer_id : -1;
+
+#if USE_NIXL
+    if (this->channels[cid]->is_nixl()) {
+        this->channels[cid]->send_batch(batch.data, *batch.metadata);
+
+        MetadataWithPeerId packed_data;
+        packed_data.peer_id = this->device_id;
+        packed_data.metadata = *batch.metadata;
+        auto* nixl_channel = static_cast<NixlChannel*>(this->channels[cid].get());
+        packed_data.nixl_slot_id = nixl_channel->last_slot_id();
+        packed_data.nixl_seq = nixl_channel->last_seq();
+        auto data = cerealize_(packed_data);
+        this->peer_mq[cid]->send(data.c_str(), data.size());
+
+        if (tracing) {
+            std::lock_guard<std::mutex> lock(this->stats_mutex_);
+            this->send_msg_sizes_.emplace_back(
+                cid, log_layer_id, log_num_tokens, log_bytes, wall_time_s(), /*transport=*/1);
+        }
+        return;
+    }
+#endif
+
     MetadataWithPeerId packed_data;
     packed_data.peer_id = this->device_id;
     packed_data.metadata = *batch.metadata;
@@ -172,11 +195,34 @@ void MuDispatcher::send_batch_nonblocking(int cid, const TokenBatch &batch) {
     CUDACHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
     this->channels[cid]->record_event(event);
     this->pending_sends.push(std::make_pair(batch, event));
+
+    if (tracing) {
+        const int transport_kind = this->channels[cid]->is_local() ? 2 : 0;
+        std::lock_guard<std::mutex> lock(this->stats_mutex_);
+        this->send_msg_sizes_.emplace_back(
+            cid, log_layer_id, log_num_tokens, log_bytes, wall_time_s(), transport_kind);
+    }
 }
 
 void MuDispatcher::_send_batch(int cid, uintptr_t buf, const BatchMetadata& meta) {
     tx_range _{"MuDispatcher::_send_batch"};
     // DMOE_LOG(WARNING) << "sending batch to channel " << cid << " current device: " << this->device_id_str << LEND;
+
+#if USE_NIXL
+    if (this->channels[cid]->is_nixl()) {
+        this->channels[cid]->send_raw(buf, meta);
+
+        MetadataWithPeerId packed_data;
+        packed_data.peer_id = this->device_id;
+        packed_data.metadata = meta;
+        auto* nixl_channel = static_cast<NixlChannel*>(this->channels[cid].get());
+        packed_data.nixl_slot_id = nixl_channel->last_slot_id();
+        packed_data.nixl_seq = nixl_channel->last_seq();
+        auto data = cerealize_(packed_data);
+        this->peer_mq[cid]->send(data.c_str(), data.size());
+        return;
+    }
+#endif
 
     // Pack peer_id and metadata into a single message
     MetadataWithPeerId packed_data;
@@ -233,6 +279,13 @@ std::vector<std::tuple<double, double, int, int, int>> MuDispatcher::drain_pendi
     std::lock_guard<std::mutex> lock(this->stats_mutex_);
     auto stats = this->pending_send_stalls_;
     this->pending_send_stalls_.clear();
+    return stats;
+}
+
+std::vector<std::tuple<int, int, int, size_t, double, int>> MuDispatcher::drain_send_msg_size_stats() {
+    std::lock_guard<std::mutex> lock(this->stats_mutex_);
+    auto stats = std::move(this->send_msg_sizes_);
+    this->send_msg_sizes_.clear();
     return stats;
 }
 
@@ -466,19 +519,18 @@ std::vector<std::tuple<int, int, int, size_t, double, double, bool>> MuPool::dra
     return stats;
 }
 
-void MuPool::recv_metadata(int &peer_id, batch_metadata_t &meta, bool non_blocking) {
+void MuPool::recv_metadata(MetadataWithPeerId &packed_data, bool non_blocking) {
     // DMOE_LOG(DEBUG) << "fetching a msg ..." << LEND;
     std::vector<uint8_t> data;
     bool ok = mq->recv(data, non_blocking);
     if (!ok) {
-        meta = nullptr;
+        packed_data.peer_id = -1;
+        packed_data.nixl_slot_id = -1;
+        packed_data.nixl_seq = -1;
         return;
     }
     // Unpack peer_id and metadata from a single message
-    MetadataWithPeerId packed_data;
     decerealize_(reinterpret_cast<char*>(data.data()), data.size(), packed_data);
-    peer_id = packed_data.peer_id;
-    meta = std::make_shared<BatchMetadata>(std::move(packed_data.metadata));
     // DMOE_LOG(INFO) << "receive metadata: " << *meta << LEND;
 }
 
@@ -541,20 +593,97 @@ void MuPool::run() {
 
     const bool tracing = this->tracing_enabled_.load(std::memory_order_relaxed); // [TRACING]
     std::vector<MuPoolPendingRecv> pending_recvs;
+    const bool has_nixl = std::any_of(
+        this->channels.begin(), this->channels.end(),
+        [](const Channel_t& channel) { return channel->is_nixl(); });
+
+    uint64_t pool_iter_count = 0;
+    uint64_t pool_iter_had_work = 0;
+    uint64_t pool_iter_slept = 0;
+    uint64_t pool_total_xfer_drained = 0;
+    uint64_t pool_total_meta_recv = 0;
+    uint64_t pool_total_data_ready = 0;
+    auto pool_stats_last = std::chrono::steady_clock::now();
 
     while (!this->end_flag) {
-        // 1. Receive metadata: block only if nothing is pending, else non-blocking
-        bool should_block = pending_recvs.empty();
+        ++pool_iter_count;
+        bool _iter_had_work = false;
+#if USE_NIXL
+        if (has_nixl) {
+            auto& nixl_ctx = NixlContext::instance();
+            if (nixl_ctx.has_pending_xfers()) {
+                const int _drained = nixl_ctx.drain_pending_xfers();
+                pool_total_xfer_drained += _drained;
+                if (_drained > 0) _iter_had_work = true;
+            }
+            nixl_ctx.poll_notifs();
+            if (nixl_ctx.has_ready_notifs() && !pending_metas_.empty())
+            for (auto it = pending_metas_.begin(); it != pending_metas_.end();) {
+                auto &pending = it->second;
+                if (!nixl_ctx.consume_ready(pending.peer_id, pending.seq)) {
+                    ++it;
+                    continue;
+                }
+
+                const double t_data_ready_s = tracing ? wall_time_s() : 0.0;
+
+                torch::Tensor tensor = torch::empty(
+                    {pending.meta->num_tokens(), pending.meta->token_hidden_dim()},
+                    torch::TensorOptions().dtype(torch::kBFloat16).device(torch::kCUDA, 0)
+                );
+                const size_t num_bytes = pending.meta->num_element() * pending.meta->get_datatype_size();
+                cudaStream_t recv_strm = get_current_torch_stream(0);
+                CUDACHECK(cudaMemcpyAsync(
+                    tensor.data_ptr(),
+                    reinterpret_cast<void*>(nixl_ctx.recv_slot_ptr(pending.peer_id, pending.slot_id)),
+                    num_bytes,
+                    cudaMemcpyDeviceToDevice,
+                    recv_strm));
+                cudaEvent_t ev;
+                CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
+                CUDACHECK(cudaEventRecord(ev, recv_strm));
+
+                const double t_d2d_issued_s = tracing ? wall_time_s() : 0.0;
+
+                MuPoolPendingRecv recv_entry;
+                recv_entry.peer_id = pending.peer_id;
+                recv_entry.meta = pending.meta;
+                recv_entry.tensor = tensor;
+                recv_entry.event = ev;
+                recv_entry.posted_ts_s = pending.posted_ts_s;
+                recv_entry.nixl_slot_id = pending.slot_id;
+                recv_entry.nixl_seq = pending.seq;
+                recv_entry.nixl_bytes = num_bytes;
+                recv_entry.t_meta_arrived_s = pending.t_meta_arrived_s;
+                recv_entry.t_data_ready_s = t_data_ready_s;
+                recv_entry.t_d2d_issued_s = t_d2d_issued_s;
+                pending_recvs.push_back(std::move(recv_entry));
+                it = pending_metas_.erase(it);
+                ++pool_total_data_ready;
+                _iter_had_work = true;
+            }
+        }
+#endif
+
+        bool should_block = pending_recvs.empty() && pending_metas_.empty();
+#if USE_NIXL
+        if (has_nixl) {
+            should_block = false;
+        }
+#endif
         int drain_count = 0;
+        bool got_anything = false;
 
         do {
-            int peer_id;
-            batch_metadata_t meta;
-            recv_metadata(peer_id, meta, /*non_blocking=*/ !should_block);
+            MetadataWithPeerId packed_data;
+            recv_metadata(packed_data, /*non_blocking=*/ !should_block);
             should_block = false;
 
-            if (meta.get() == nullptr)
+            if (packed_data.peer_id < 0)
                 break;
+
+            const int peer_id = packed_data.peer_id;
+            batch_metadata_t meta = std::make_shared<BatchMetadata>(std::move(packed_data.metadata));
 
             torch::Tensor tensor = torch::empty(
                 {meta->num_tokens(), meta->token_hidden_dim()},
@@ -562,7 +691,8 @@ void MuPool::run() {
             );
 
             auto *channel = this->peer_channels[peer_id].get();
-            bool is_local = (dynamic_cast<NcclChannel*>(channel) == nullptr);
+            const bool is_local = channel->is_local();
+            const bool is_nixl = channel->is_nixl();
             const double posted_ts_s = tracing ? wall_time_s() : 0.0; // [TRACING]
 
             if (is_local) {
@@ -577,12 +707,27 @@ void MuPool::run() {
                         posted_ts_s, wall_time_s(), true);
                 }
                 this->process_batch(tensor, meta);
+#if USE_NIXL
+            } else if (is_nixl) {
+                if (meta->num_element() == 0 || packed_data.nixl_slot_id < 0 || packed_data.nixl_seq < 0) {
+                    this->process_batch(tensor, meta);
+                } else {
+                    NixlPendingMeta entry;
+                    entry.peer_id = peer_id;
+                    entry.slot_id = packed_data.nixl_slot_id;
+                    entry.seq = packed_data.nixl_seq;
+                    entry.meta = meta;
+                    entry.posted_ts_s = posted_ts_s;
+                    entry.t_meta_arrived_s = posted_ts_s;
+                    pending_metas_[{peer_id, packed_data.nixl_seq}] = std::move(entry);
+                }
+#endif
             } else {
                 channel->recv_batch(tensor, *meta);
                 cudaEvent_t ev;
                 CUDACHECK(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming));
                 channel->record_event(ev);
-                pending_recvs.push_back(MuPoolPendingRecv{peer_id, meta, tensor, ev, posted_ts_s});
+                pending_recvs.push_back(MuPoolPendingRecv{peer_id, meta, tensor, ev, posted_ts_s, -1});
             }
 
             drain_count++;
@@ -604,11 +749,61 @@ void MuPool::run() {
                         wall_time_s(),
                         false);
                 }
+#if USE_NIXL
+                if (it->nixl_slot_id >= 0) {
+                    auto& nixl_ctx = NixlContext::instance();
+                    const double t_event_signaled = tracing ? wall_time_s() : 0.0;
+                    nixl_ctx.send_credit(it->peer_id, it->nixl_slot_id);
+                    if (tracing && nixl_ctx.tracing_enabled()) {
+                        const double t_credit_sent = wall_time_s();
+                        nixl_ctx.record_recv_trace(NixlRecvTraceTuple{
+                            it->peer_id,
+                            it->nixl_seq,
+                            it->nixl_slot_id,
+                            it->nixl_bytes,
+                            it->t_meta_arrived_s,
+                            it->t_data_ready_s - it->t_meta_arrived_s,
+                            t_event_signaled - it->t_d2d_issued_s,
+                            t_credit_sent - t_event_signaled,
+                            t_credit_sent - it->t_meta_arrived_s,
+                        });
+                    }
+                }
+#endif
                 this->process_batch(it->tensor, it->meta);
                 it = pending_recvs.erase(it);
             } else {
                 ++it;
             }
+        }
+        if (drain_count > 0) {
+            pool_total_meta_recv += drain_count;
+            _iter_had_work = true;
+        }
+#if USE_NIXL
+        if (has_nixl && !_iter_had_work) {
+            std::this_thread::yield();
+            ++pool_iter_slept;
+        }
+#endif
+        if (_iter_had_work) ++pool_iter_had_work;
+
+        if (pool_iter_count % 100000 == 0) {
+            auto now = std::chrono::steady_clock::now();
+            double dt = std::chrono::duration<double>(now - pool_stats_last).count();
+            DMOE_LOG(INFO) << "[POOL_STATS dev=" << this->device_id
+                << "] iters=" << pool_iter_count
+                << " had_work=" << pool_iter_had_work
+                << " slept=" << pool_iter_slept
+                << " meta_recv=" << pool_total_meta_recv
+                << " data_ready=" << pool_total_data_ready
+                << " xfer_drained=" << pool_total_xfer_drained
+                << " pending_recvs=" << pending_recvs.size()
+                << " pending_metas=" << pending_metas_.size()
+                << " window_s=" << dt
+                << " iters/sec=" << (100000.0 / std::max(dt, 1e-9))
+                << LEND;
+            pool_stats_last = now;
         }
     }
 
@@ -777,6 +972,25 @@ void MuAttentionPool::put_batch_to_attn_queue(int layer_id, const TokenBatch &at
     }
 
     this->attn_data_queue[layer_id].push_back(attn_batch);
+
+    static thread_local uint64_t put_count = 0;
+    static thread_local uint64_t put_layer_sum = 0;
+    static thread_local int put_last_layer = -1;
+    static thread_local int put_last_largest = -1;
+    ++put_count;
+    put_layer_sum += layer_id;
+    put_last_layer = layer_id;
+    put_last_largest = this->largest_batch_layer_id_;
+    if (put_count % 1000 == 0) {
+        DMOE_LOG(INFO) << "[SCHED_PUT dev=" << this->device_id
+            << "] count=" << put_count
+            << " avg_layer=" << (put_layer_sum / put_count)
+            << " last_layer=" << put_last_layer
+            << " last_largest=" << put_last_largest
+            << " largest_size=" << this->largest_batch_size_
+            << " queue_depth_at_layer=" << this->attn_data_queue[put_last_layer].size()
+            << LEND;
+    }
 }
 
 void MuAttentionPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta) {
@@ -790,11 +1004,55 @@ void MuAttentionPool::process_batch(torch::Tensor tensor, batch_metadata_t &meta
 TokenBatch MuAttentionPool::get_batch_from_layer(int layer_id) {
     std::lock_guard<std::mutex> lock(this->batch_mutex);
 
+    static thread_local uint64_t get_count = 0;
+    static thread_local uint64_t get_empty_lbs = 0;
+    static thread_local uint64_t get_oor = 0;
+    static thread_local uint64_t get_empty_queue = 0;
+    static thread_local uint64_t get_success = 0;
+    static thread_local uint64_t get_layer_mismatch = 0;
+    ++get_count;
+
     if (this->largest_batch_size_ == 0) {
+        ++get_empty_lbs;
+        if (get_count % 1000 == 0) {
+            DMOE_LOG(INFO) << "[SCHED_GET dev=" << this->device_id
+                << "] count=" << get_count
+                << " empty_lbs=" << get_empty_lbs
+                << " oor=" << get_oor
+                << " empty_queue=" << get_empty_queue
+                << " success=" << get_success
+                << " layer_mismatch=" << get_layer_mismatch
+                << " largest_lid=" << this->largest_batch_layer_id_
+                << LEND;
+        }
         return {};
     }
 
     if (layer_id < 0 || layer_id >= (int)this->attn_data_queue.size()) {
+        ++get_oor;
+        return {};
+    }
+
+    if (this->attn_data_queue[layer_id].empty()) {
+        ++get_empty_queue;
+        if (layer_id != this->largest_batch_layer_id_) {
+            ++get_layer_mismatch;
+        }
+        if (get_count % 1000 == 0) {
+            DMOE_LOG(INFO) << "[SCHED_GET dev=" << this->device_id
+                << "] count=" << get_count
+                << " empty_lbs=" << get_empty_lbs
+                << " empty_queue=" << get_empty_queue
+                << " success=" << get_success
+                << " layer_mismatch=" << get_layer_mismatch
+                << " req_lid=" << layer_id
+                << " largest_lid=" << this->largest_batch_layer_id_
+                << " largest_size=" << this->largest_batch_size_
+                << LEND;
+        }
+        this->tokens_per_layer_[layer_id] = 0;
+        this->num_batches_per_layer_[layer_id] = 0;
+        maintain_largest_batch();
         return {};
     }
 
@@ -805,6 +1063,17 @@ TokenBatch MuAttentionPool::get_batch_from_layer(int layer_id) {
 
     std::vector<TokenBatch> batches {};
     batches.swap(this->attn_data_queue[layer_id]);
+    ++get_success;
+    if (get_count % 1000 == 0) {
+        DMOE_LOG(INFO) << "[SCHED_GET dev=" << this->device_id
+            << "] count=" << get_count
+            << " empty_lbs=" << get_empty_lbs
+            << " empty_queue=" << get_empty_queue
+            << " success=" << get_success
+            << " layer_mismatch=" << get_layer_mismatch
+            << " req_lid=" << layer_id
+            << LEND;
+    }
     return TokenBatch::merge(batches);
 }
 
@@ -825,29 +1094,58 @@ void TokenTopKPool::put_batch(TokenBatch batch) {
 
     int n = meta->num_tokens();
 
-    // DMOE_LOG(INFO) << "TokenTopKPool putting batch: " << *meta << LEND;
-    
+    static thread_local std::unordered_map<int, double> first_arrival_ts;
+    static thread_local uint64_t topk_emit_count = 0;
+    static thread_local double topk_sum_age_us = 0.0;
+    static thread_local double topk_max_age_us = 0.0;
+    static thread_local uint64_t topk_put_count = 0;
+    static thread_local uint64_t topk_pool_size_sum = 0;
+
+    const double now = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    ++topk_put_count;
+    topk_pool_size_sum += this->pool_.size();
+
     for (int i = 0; i < n; i++) {
         int seq_id = meta->req_ids[i];
-        // DMOE_LOG(INFO) << "seq " << seq_id << ", dp rank " << meta->attn_dp_ranks[i] << LEND;
 
         auto it = this->pool_.find(seq_id);
         if (it == this->pool_.end()) {
             this->pool_[seq_id] = TokenTopKInfo(
-                seq_id, 
-                meta->init_prefill_lens[i], 
+                seq_id,
+                meta->init_prefill_lens[i],
                 meta->attn_dp_ranks[i],
                 batch.data[i]
             );
+            first_arrival_ts[seq_id] = now;
         } else {
             it->second.append_tensor(batch.data[i]);
             if (it->second.count() == this->top_k) {
-                // OPTMIZE: we can directy insert token info to scheduling queue to save one memory copy
                 this->ready_tokens.emplace_back(it->second);
-                // DMOE_LOG(INFO) << "ready token: " << it->second << LEND;
+                auto ts_it = first_arrival_ts.find(seq_id);
+                if (ts_it != first_arrival_ts.end()) {
+                    double age_us = (now - ts_it->second) * 1e6;
+                    topk_sum_age_us += age_us;
+                    if (age_us > topk_max_age_us) topk_max_age_us = age_us;
+                    first_arrival_ts.erase(ts_it);
+                }
+                ++topk_emit_count;
                 this->pool_.erase(it);
             }
         }
+    }
+
+    if (topk_put_count % 200 == 0) {
+        DMOE_LOG(INFO) << "[TOPK_STATS top_k=" << this->top_k
+            << "] put=" << topk_put_count
+            << " emits=" << topk_emit_count
+            << " avg_pool_size=" << (topk_pool_size_sum / topk_put_count)
+            << " cur_pool_size=" << this->pool_.size()
+            << " avg_age_us=" << (topk_emit_count > 0 ? topk_sum_age_us / topk_emit_count : 0.0)
+            << " max_age_us=" << topk_max_age_us
+            << " ready_pending=" << this->ready_tokens.size()
+            << LEND;
     }
 }
 

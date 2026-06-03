@@ -5,6 +5,10 @@
 #include "metadata.hpp"
 #include "batch.hpp"
 
+#if USE_NIXL
+#include "nixl_channel.h"
+#endif
+
 #include <iomanip>
 #include <mutex>
 #include <memory>
@@ -173,6 +177,16 @@ void TensorLocalChannel::record_event(cudaEvent_t &event) {
 Channel_t create_nccl_channel(int party_local, int party_other, ncclUniqueId unique_id) {
     auto channel = std::make_shared<NcclChannel>(party_local, party_other, unique_id);
     return channel;
+}
+
+Channel_t create_nixl_channel(int party_local, int party_other) {
+#if USE_NIXL
+    return std::make_shared<NixlChannel>(party_local, party_other);
+#else
+    (void)party_local;
+    (void)party_other;
+    throw std::runtime_error("create_nixl_channel called when USE_NIXL=0");
+#endif
 }
 
 Channel_t create_local_channel(int device_id) {

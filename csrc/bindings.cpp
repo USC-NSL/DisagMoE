@@ -17,6 +17,10 @@
 #include "tensor_utils.hpp"
 #include "grouped_gemm.h"
 
+#if USE_NIXL
+#include "nixl_context.h"
+#endif
+
 #define REGISTER_STRUCT(name, ...) py::class_<name>(m, #name).def(py::init<__VA_ARGS__>())
 #define REGISTER_FUNC(name) m.def(#name, &name)
 
@@ -61,7 +65,28 @@ PYBIND11_MODULE(disagmoe_c, m) {
         .def("put", &MuDispatcher::put)
         .def("set_max_pending_sends", &MuDispatcher::set_max_pending_sends)
         .def("set_tracing_enabled", &MuDispatcher::set_tracing_enabled)
-        .def("drain_pending_send_stall_stats", &MuDispatcher::drain_pending_send_stall_stats);
+        .def("drain_pending_send_stall_stats", &MuDispatcher::drain_pending_send_stall_stats)
+        .def("drain_send_msg_size_stats", &MuDispatcher::drain_send_msg_size_stats);
+
+#if USE_NIXL
+    m.def("nixl_set_tracing_enabled", [](bool v) {
+        NixlContext::instance().set_tracing_enabled(v);
+    });
+    m.def("nixl_drain_send_traces", []() {
+        return NixlContext::instance().drain_send_traces();
+    });
+    m.def("nixl_drain_recv_traces", []() {
+        return NixlContext::instance().drain_recv_traces();
+    });
+#else
+    m.def("nixl_set_tracing_enabled", [](bool) {});
+    m.def("nixl_drain_send_traces", []() {
+        return std::vector<std::tuple<int,int,int,size_t,int,double,double,double,double,double,double>>{};
+    });
+    m.def("nixl_drain_recv_traces", []() {
+        return std::vector<std::tuple<int,int,int,size_t,double,double,double,double,double>>{};
+    });
+#endif
 
     py::class_<ChannelInfo>(m, "ChannelInfo")
         .def(py::init<const std::vector<ExpertId> &, const std::vector<int> &, int>())

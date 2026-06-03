@@ -13,6 +13,8 @@ import os
 CSRC_DIR = os.path.abspath("csrc")
 THIRD_PARTY_DIR = os.path.abspath("third_party")
 
+ENABLE_NIXL = os.environ.get("ENABLE_NIXL", "0") == "1"
+
 CUDA_HOME = os.environ.get("CUDA_HOME", "/usr/local/cuda")
 CUDA_INCLUDE_DIR = os.environ.get("CUDA_INCLUDE_DIR", os.path.join(CUDA_HOME, "include"))
 CUDA_LIBRARY_DIR = os.environ.get("CUDA_LIBRARY_DIR", os.path.join(CUDA_HOME, "lib"))
@@ -40,6 +42,62 @@ GDRCOPY_INCLUDE_DIR = os.path.join(GDRCOPY_HOME, "include")
 GDRCOPY_LIBRARY_DIR = os.path.join(GDRCOPY_HOME, "lib")
 KERNEL_USE_GDRCOPY = os.environ.get("KERNEL_USE_GDRCOPY", "1")
 D_ENABLE_HANG_DEBUGGER = os.environ.get("D_ENABLE_HANG_DEBUGGER", "0")
+
+def _detect_nixl_lib_dir():
+    try:
+        import sysconfig
+        import glob
+        site = sysconfig.get_paths().get("purelib")
+        if site:
+            for pat in (".nixl_cu12.mesonpy.libs", "nixl_cu12.libs", "nixl.libs"):
+                hits = glob.glob(os.path.join(site, pat))
+                if hits:
+                    return hits[0]
+    except Exception:
+        pass
+    return None
+
+NIXL_HOME = os.environ.get("NIXL_HOME", "")
+NIXL_INCLUDE_DIR = os.environ.get(
+    "NIXL_INCLUDE_DIR",
+    os.path.join(NIXL_HOME, "src", "api", "cpp") if NIXL_HOME else "",
+)
+NIXL_CAPI_INCLUDE_DIR = os.environ.get(
+    "NIXL_CAPI_INCLUDE_DIR",
+    os.path.join(NIXL_HOME, "src", "bindings", "rust") if NIXL_HOME else "",
+)
+NIXL_LIBRARY_DIR = os.environ.get("NIXL_LIBRARY_DIR", "") or (_detect_nixl_lib_dir() or "")
+
+extra_includes = []
+extra_libdirs = []
+extra_libs = []
+extra_macros = []
+extra_link_args = []
+
+if ENABLE_NIXL:
+    missing = [name for name, val in [
+        ("NIXL_INCLUDE_DIR", NIXL_INCLUDE_DIR),
+        ("NIXL_CAPI_INCLUDE_DIR", NIXL_CAPI_INCLUDE_DIR),
+        ("NIXL_LIBRARY_DIR", NIXL_LIBRARY_DIR),
+    ] if not val]
+    if missing:
+        raise RuntimeError(
+            "ENABLE_NIXL=1 but the following env vars are unset and could not "
+            "be auto-detected: " + ", ".join(missing) + ". Set NIXL_HOME to "
+            "point at a NIXL source checkout (defines NIXL_INCLUDE_DIR and "
+            "NIXL_CAPI_INCLUDE_DIR), or set each path explicitly. "
+            "NIXL_LIBRARY_DIR is auto-detected from the pip-installed "
+            "nixl_cu12 package's .libs directory if available."
+        )
+    extra_includes.append(NIXL_INCLUDE_DIR)
+    extra_includes.append(NIXL_CAPI_INCLUDE_DIR)
+    extra_libdirs.append(NIXL_LIBRARY_DIR)
+    extra_libs.append("nixl")
+    extra_libs.append("nixl_capi")
+    extra_macros.append(("USE_NIXL", "1"))
+    extra_link_args.append(f"-Wl,-rpath,{NIXL_LIBRARY_DIR}")
+else:
+    extra_macros.append(("USE_NIXL", "0"))
 
 def find_all_c_targets(path):
     res = []
@@ -74,6 +132,7 @@ ext_modules = [
             C_INCLUDE_PATH,
             CPP_INCLUDE_PATH,
             GDRCOPY_INCLUDE_DIR,
+            *extra_includes,
         ] if d],
         library_dirs=[d for d in [
             CUDA_LIBRARY_DIR,
@@ -85,9 +144,11 @@ ext_modules = [
             GDRCOPY_LIBRARY_DIR,
             "/usr/local/lib",
             "/usr/lib",
+            *extra_libdirs,
         ] if d],
-        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi"],
+        libraries=["cudart", "nccl", "zmq", "ucp", "ucs", "uct", "torch", "c10", "torch_cpu", "gdrapi", *extra_libs],
         extra_compile_args=["-lstdc++", "-O2", "-w", "-std=c++17"],
+        extra_link_args=extra_link_args,
         define_macros=[
             ("D_ENABLE_RAY", "1"),
             ("D_ENABLE_NVTX", "1"),
@@ -95,6 +156,7 @@ ext_modules = [
             ("TEMP_DIR", f'"{TMPDIR}"'),
             ("KERNEL_USE_GDRCOPY", KERNEL_USE_GDRCOPY),
             ("D_ENABLE_HANG_DEBUGGER", D_ENABLE_HANG_DEBUGGER),
+            *extra_macros,
         ],
         language='c++',
     ),
