@@ -1,6 +1,6 @@
-# DisagMoE
+# StreamInfer
 
-Disaggregated Mixture-of-Experts serving system.
+Barrier-free distributed Mixture-of-Experts serving system.
 
 ## Dependencies
 
@@ -10,7 +10,7 @@ Disaggregated Mixture-of-Experts serving system.
 |---|---|---|
 | CUDA Toolkit | 12.x | |
 | GCC | 13+ | C++17 required |
-| UCX | 1.15+ | For high-performance transport (`ucp`, `ucs`, `uct`) |
+| UCX | 1.15+ | For high-performance transport (`ucp`, `ucs`, `uct`), optional |
 | GDRCopy | 2.x | GPUDirect RDMA (`libgdrapi`) |
 | libzmq | 4.x | ZeroMQ C library; also needs cppzmq C++ headers (`zmq.hpp`) |
 
@@ -51,8 +51,8 @@ Disaggregated Mixture-of-Experts serving system.
 ### 1. Python environment
 
 ```bash
-conda create -n amoe python=3.12.8 -y
-conda activate amoe
+conda create -n streaminfer python=3.12.8 -y
+conda activate streaminfer
 pip install torch==2.6.0 torchvision torchaudio
 pip install vllm==0.8.2
 ```
